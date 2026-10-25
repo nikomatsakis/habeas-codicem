@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::error::Error;
 use std::io;
+use std::io::Write;
 use std::path::PathBuf;
 
 mod agents;
@@ -27,6 +28,13 @@ enum Command {
         install_skills: bool,
     },
     Agents,
+    Status {
+        #[arg(long)]
+        all: bool,
+    },
+    Info {
+        selector: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -61,5 +69,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         } => setup::run(path.as_deref(), install_skills),
         // {impl}`requirements.cli.agents`
         Command::Agents => agents::run(),
+        // {impl}`requirements.cli.status`
+        Command::Status { all } => {
+            let root = setup::project_root(true)?;
+            io::stdout()
+                .lock()
+                .write_all(habeas::status_markdown(&root, all)?.as_bytes())?;
+            Ok(())
+        }
+        // {impl}`requirements.cli.info`
+        Command::Info { selector } => {
+            let root = setup::project_root(true)?;
+            io::stdout()
+                .lock()
+                .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;
+            Ok(())
+        }
     }
 }

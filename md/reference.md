@@ -43,6 +43,15 @@ Each reference must name an existing requirement. Its evidence must include an i
 
 The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, and uncovered references. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book.
 
+Run `habeas status` from within the project to list requirements needing attention and their validation findings. `habeas status --all` shows every requirement and its evidence state. Use `habeas info <full-name>` to print a requirement's detail page as Markdown, including its current text, rationale, inputs, and findings. The selector also accepts a regular expression over full names:
+
+```sh
+habeas info requirements.ci.inputs
+habeas info '^requirements\.cli\.'
+```
+
+An exact full name takes priority over interpreting the selector as a regular expression. Agent skills installed by Habeas point to `habeas info` for looking up requirement details.
+
 To add an evidence index, list a chapter in `SUMMARY.md` and put this directive in it:
 
 ```text

@@ -31,6 +31,15 @@ During local development, `habeas setup --path /path/to/habeas-codicem --install
 
 Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command.
 
+Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or input lines. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use an exact full name or a regular expression:
+
+```sh
+habeas info requirements.ci.inputs
+habeas info '^requirements\.cli\.'
+```
+
+The bundled agent skills describe `habeas info` as a way to look up requirements while working.
+
 For a requirements index, add a chapter to `SUMMARY.md` containing `:::{requirements-index}` on one line and `:::` on the next. The preprocessor lists evidence states there and adds a detail subchapter for each requirement.
 
 A requirement uses a colon-fenced directive. Its body includes all Markdown up to the matching closing fence:

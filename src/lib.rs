@@ -699,3 +699,6 @@ mod tests {
         assert!(content[blocks[0].end..].contains("Outside."));
     }
 }
+
+mod commands;
+pub use commands::{info_markdown, status_markdown};

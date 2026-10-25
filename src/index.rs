@@ -9,8 +9,8 @@ use mdbook_preprocessor::config::Config;
 use serde_json::Value;
 
 use crate::{
-    Definition, chapter_href, colon_fence, escape_html, overlaps_protected, protected_ranges,
-    requirement_blocks, shield_badge, validate_repository,
+    Definition, EvidenceReport, chapter_href, colon_fence, escape_html, overlaps_protected,
+    protected_ranges, requirement_blocks, shield_badge, validate_repository,
 };
 
 pub(crate) struct IndexPlan {
@@ -104,12 +104,18 @@ fn encode_url_segment(segment: &str) -> String {
     encoded
 }
 
-#[derive(Clone, Copy)]
-enum EvidenceState {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EvidenceState {
     Valid,
     Missing,
     DeterminationFalse,
     Invalid,
+}
+
+pub(crate) struct LoadedDetailEvidence {
+    state: EvidenceState,
+    record: Option<String>,
+    errors: Vec<String>,
 }
 
 struct DetailEvidence<'a> {
@@ -118,9 +124,64 @@ struct DetailEvidence<'a> {
     errors: &'a [String],
 }
 
+impl LoadedDetailEvidence {
+    pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
+        let evidence_path = root.join("evidence").join(format!("{name}.json"));
+        let prefix = format!("evidence/{name}.json:");
+        let mut errors = report
+            .errors
+            .iter()
+            .filter(|error| error.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        // {impl}`requirements.index.invalid_detail`
+        let record = match fs::read_to_string(&evidence_path) {
+            Ok(record) => Some(record),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                errors.push(format!("{prefix} cannot read evidence: {error}"));
+                None
+            }
+        };
+        let state = if record.is_none() && !evidence_path.exists() {
+            EvidenceState::Missing
+        } else if errors.is_empty() {
+            EvidenceState::Valid
+        } else if errors
+            .iter()
+            .all(|error| error.starts_with(&format!("{prefix} determination is false")))
+        {
+            EvidenceState::DeterminationFalse
+        } else {
+            EvidenceState::Invalid
+        };
+        Self {
+            state,
+            record,
+            errors,
+        }
+    }
+
+    pub(crate) fn state(&self) -> EvidenceState {
+        self.state
+    }
+
+    pub(crate) fn errors(&self) -> &[String] {
+        &self.errors
+    }
+
+    fn borrowed(&self) -> DetailEvidence<'_> {
+        DetailEvidence {
+            state: self.state,
+            record: self.record.as_deref(),
+            errors: &self.errors,
+        }
+    }
+}
+
 impl EvidenceState {
     // {impl}`requirements.index.state`
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Valid => "Valid",
             Self::Missing => "Missing",
@@ -208,38 +269,11 @@ impl IndexPlan {
         let mut pages = Vec::new();
         for (name, detail_path) in &self.detail_paths {
             let evidence_path = root.join("evidence").join(format!("{name}.json"));
-            let prefix = format!("evidence/{name}.json:");
-            let mut errors = report
-                .errors
-                .iter()
-                .filter(|error| error.starts_with(&prefix))
-                .cloned()
-                .collect::<Vec<_>>();
-            // {impl}`requirements.index.invalid_detail`
-            let record = match fs::read_to_string(&evidence_path) {
-                Ok(record) => Some(record),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => {
-                    errors.push(format!("{prefix} cannot read evidence: {error}"));
-                    None
-                }
-            };
-            let state = if record.is_none() && !evidence_path.exists() {
-                EvidenceState::Missing
-            } else if errors.is_empty() {
-                EvidenceState::Valid
-            } else if errors
-                .iter()
-                .all(|error| error.starts_with(&format!("{prefix} determination is false")))
-            {
-                EvidenceState::DeterminationFalse
-            } else {
-                EvidenceState::Invalid
-            };
+            let evidence = LoadedDetailEvidence::load(root, name, &report);
             let detail_href = chapter_href(&self.chapter_path, detail_path, None);
             rows.push_str(&format!(
                 "| [`{name}`]({detail_href}) | {} |\n",
-                state.label()
+                evidence.state().label()
             ));
 
             let definition = definitions
@@ -250,11 +284,7 @@ impl IndexPlan {
                 detail_path,
                 &self.chapter_path,
                 definition,
-                DetailEvidence {
-                    state,
-                    record: record.as_deref(),
-                    errors: &errors,
-                },
+                evidence.borrowed(),
                 source_links.as_ref(),
             );
             // {impl}`requirements.index.source_links`
@@ -339,17 +369,47 @@ fn render_detail_page(
         Some(&format!("habeas-req-{name}")),
     );
     let index_href = chapter_href(detail_path, index_path, None);
-    let mut content = format!(
-        "# `{name}`\n\n[Requirements index]({index_href}) · [View definition]({definition_href})\n\n\
-         {}\n\n\
-         ## Requirement\n\n",
-        shield_badge(
-            "evidence",
-            detail_evidence.state.label(),
-            detail_evidence.state.color()
-        )
-    );
-    for line in definition.text.lines() {
+    render_detail_sections(
+        format!(
+            "# `{name}`\n\n[Requirements index]({index_href}) · [View definition]({definition_href})\n\n"
+        ),
+        &definition.text,
+        detail_evidence,
+        source_links,
+    )
+}
+
+// {impl}`requirements.cli.info`
+pub(crate) fn render_cli_detail_page(
+    name: &str,
+    source: &str,
+    text: &str,
+    evidence: &LoadedDetailEvidence,
+) -> String {
+    render_detail_sections(
+        format!("# `{name}`\n\nDefinition: `{source}`\n\n"),
+        text,
+        evidence.borrowed(),
+        None,
+    )
+}
+
+// {impl}`requirements.index.detail_format`
+// {impl}`requirements.index.invalid_detail`
+// {impl}`requirements.cli.info`
+fn render_detail_sections(
+    mut content: String,
+    definition_text: &str,
+    detail_evidence: DetailEvidence<'_>,
+    source_links: Option<&SourceLinks>,
+) -> String {
+    content.push_str(&shield_badge(
+        "evidence",
+        detail_evidence.state.label(),
+        detail_evidence.state.color(),
+    ));
+    content.push_str("\n\n## Requirement\n\n");
+    for line in definition_text.lines() {
         content.push_str("> ");
         content.push_str(line);
         content.push('\n');

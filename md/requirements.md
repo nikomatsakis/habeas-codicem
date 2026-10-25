@@ -116,6 +116,14 @@ Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas a
 Running `habeas agents` in a Cargo project MUST install all bundled skills for agents to bootstrap requirements, author requirements, and maintain evidence in `.agents/skills/`. It MUST NOT overwrite an existing skill with different content.
 :::
 
+:::{req} cli.status
+`habeas status` MUST list requirements in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST show each listed requirement's evidence state and validation findings. `habeas status --all` MUST list every requirement with its state. Both forms MUST work from a directory within a Cargo and mdBook project and report invalid arguments clearly.
+:::
+
+:::{req} cli.info
+`habeas info <selector>` MUST select an exact full requirement name when it matches; otherwise it MUST treat the selector as a regular expression over full requirement names. It MUST print matching requirements in full-name order as Markdown with the same Requirement, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid expression or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement.
+:::
+
 :::{req} cli.bootstrap_skill
 Habeas MUST bundle a skill for deriving initial requirements from an existing codebase. The skill MUST direct agents to read the code and tests, map every first-party test to at least one requirement, identify and map every source unit implementing end-user-visible functionality or interactions to a requirement, and report gaps rather than claim complete coverage without an independent inventory review.
 :::
