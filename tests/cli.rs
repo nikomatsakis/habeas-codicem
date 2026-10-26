@@ -19,6 +19,6 @@ fn renderer_support_and_invalid_commands() {
     for args in [["unknown"].as_slice(), ["setup", "--wrong"].as_slice()] {
         let output = Command::new(binary).args(args).output().unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("usage: habeas"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: habeas"));
     }
 }
