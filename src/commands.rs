@@ -7,6 +7,7 @@ use regex::Regex;
 use crate::escape_html;
 use crate::evidence::inspect_repository;
 use crate::index::{EvidenceState, LoadedDetailEvidence, render_cli_detail_page};
+use crate::markdown::render_evidence_table;
 
 // {impl}`requirements.cli.status`
 pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
@@ -40,7 +41,8 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
             "All requirements have valid evidence.\n"
         });
     } else {
-        output.push_str(&render_status_table(&rows));
+        // {impl}`requirements.cli.shared_status_rendering`
+        output.push_str(&render_evidence_table(&rows));
     }
 
     let other_findings = inspection
@@ -65,34 +67,6 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
         output.push_str("</code></pre>\n");
     }
     Ok(output)
-}
-
-// {impl}`requirements.cli.status_table_alignment`
-fn render_status_table(rows: &[(String, &'static str)]) -> String {
-    let requirement_width = rows
-        .iter()
-        .map(|(requirement, _)| requirement.len())
-        .max()
-        .unwrap_or_default()
-        .max("Requirement".len());
-    let evidence_width = rows
-        .iter()
-        .map(|(_, evidence)| evidence.len())
-        .max()
-        .unwrap_or_default()
-        .max("Evidence".len());
-    let mut table = String::new();
-    for (requirement, evidence) in [("Requirement", "Evidence"), ("---", "---")] {
-        table.push_str(&format!(
-            "| {requirement:<requirement_width$} | {evidence:<evidence_width$} |\n"
-        ));
-    }
-    for (requirement, evidence) in rows {
-        table.push_str(&format!(
-            "| {requirement:<requirement_width$} | {evidence:<evidence_width$} |\n"
-        ));
-    }
-    table
 }
 
 // {impl}`requirements.cli.info`

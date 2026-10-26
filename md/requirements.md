@@ -124,6 +124,10 @@ Running `habeas agents` in a Cargo project MUST install all bundled skills for a
 When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Requirement and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.
 :::
 
+:::{req} cli.shared_status_rendering
+`habeas status` and the mdBook requirements index MUST generate their Requirement/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different requirements and supply different name cells so mdBook can link to detail pages.
+:::
+
 :::{req} cli.info
 `habeas info <selector>` MUST select an exact full requirement name when it matches; otherwise it MUST treat the selector as a regular expression over full requirement names. It MUST print matching requirements in full-name order as Markdown with the same Requirement, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid expression or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement.
 :::

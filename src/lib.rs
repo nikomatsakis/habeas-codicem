@@ -701,4 +701,5 @@ mod tests {
 }
 
 mod commands;
+mod markdown;
 pub use commands::{info_markdown, status_markdown};
