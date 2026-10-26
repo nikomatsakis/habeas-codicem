@@ -100,6 +100,10 @@ evidence/requirements.ci.inputs.json: requirement text changed (md/requirements.
 The Habeas crate MUST have a Cargo integration test that invokes `habeas::validate()` against its own project, so its own requirements and evidence are checked recursively by `cargo test`.
 :::
 
+:::{req} cli.clap
+The `habeas` CLI MUST use `clap` to define and parse its commands and options.
+:::
+
 :::{req} cli.mdbook
 The `mdbook` subcommand MUST act as the mdBook preprocessor for HTML books, rendering requirement definitions and linked reference badges. This project's `book.toml` MUST configure `cargo habeas mdbook` as the `habeas` preprocessor, using a repository-local Cargo alias for `cargo run --release -p habeas --`. Consumer books MUST continue to invoke the installed `habeas mdbook` CLI directly.
 :::
