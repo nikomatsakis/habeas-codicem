@@ -12,10 +12,9 @@ use crate::index::{EvidenceState, LoadedDetailEvidence, render_cli_detail_page};
 pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     let mut output = String::from("# Requirements status\n\n");
-    let mut rows = String::from("| Requirement | Evidence |\n| --- | --- |\n");
+    let mut rows = Vec::new();
     let mut findings = String::new();
     let mut associated_errors = BTreeSet::new();
-    let mut count = 0;
 
     for name in inspection.requirements.keys() {
         let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);
@@ -26,8 +25,7 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
             continue;
         }
 
-        count += 1;
-        rows.push_str(&format!("| `{name}` | {} |\n", evidence.state().label()));
+        rows.push((format!("`{name}`"), evidence.state().label()));
         if !evidence.errors().is_empty() {
             findings.push_str(&format!("\n### `{name}`\n\n<pre><code>"));
             findings.push_str(&escape_html(&evidence.errors().join("\n\n")));
@@ -35,14 +33,14 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
         }
     }
 
-    if count == 0 {
+    if rows.is_empty() {
         output.push_str(if all {
             "No requirements found.\n"
         } else {
             "All requirements have valid evidence.\n"
         });
     } else {
-        output.push_str(&rows);
+        output.push_str(&render_status_table(&rows));
     }
 
     let other_findings = inspection
@@ -67,6 +65,34 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
         output.push_str("</code></pre>\n");
     }
     Ok(output)
+}
+
+// {impl}`requirements.cli.status_table_alignment`
+fn render_status_table(rows: &[(String, &'static str)]) -> String {
+    let requirement_width = rows
+        .iter()
+        .map(|(requirement, _)| requirement.len())
+        .max()
+        .unwrap_or_default()
+        .max("Requirement".len());
+    let evidence_width = rows
+        .iter()
+        .map(|(_, evidence)| evidence.len())
+        .max()
+        .unwrap_or_default()
+        .max("Evidence".len());
+    let mut table = String::new();
+    for (requirement, evidence) in [("Requirement", "Evidence"), ("---", "---")] {
+        table.push_str(&format!(
+            "| {requirement:<requirement_width$} | {evidence:<evidence_width$} |\n"
+        ));
+    }
+    for (requirement, evidence) in rows {
+        table.push_str(&format!(
+            "| {requirement:<requirement_width$} | {evidence:<evidence_width$} |\n"
+        ));
+    }
+    table
 }
 
 // {impl}`requirements.cli.info`

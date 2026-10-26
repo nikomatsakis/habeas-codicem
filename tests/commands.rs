@@ -108,12 +108,15 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
         ("uncovered", "Invalid"),
     ] {
         assert!(
-            text.contains(&format!("| `requirements.{name}` | {state} |")),
+            text.lines().any(|line| {
+                line.starts_with(&format!("| `requirements.{name}`"))
+                    && line.contains(&format!("| {state}"))
+            }),
             "{text}"
         );
     }
-    assert!(!text.contains("| `requirements.ready` |"), "{text}");
-    assert!(!text.contains("| `requirements.xready` |"), "{text}");
+    assert!(!text.contains("| `requirements.ready`"), "{text}");
+    assert!(!text.contains("| `requirements.xready`"), "{text}");
     assert!(text.contains("missing for requirement"), "{text}");
     assert!(text.contains("determination is false"), "{text}");
     assert!(text.contains("requirement text changed"), "{text}");
@@ -135,10 +138,14 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
         "xready",
     ];
     let positions = names
-        .map(|name| all.find(&format!("| `requirements.{name}` |")).unwrap())
+        .map(|name| all.find(&format!("| `requirements.{name}`")).unwrap())
         .to_vec();
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{all}");
-    assert!(all.contains("| `requirements.ready` | Valid |"), "{all}");
+    assert!(
+        all.lines()
+            .any(|line| { line.starts_with("| `requirements.ready`") && line.contains("| Valid") }),
+        "{all}"
+    );
 }
 
 // {test}`requirements.cli.info`
@@ -226,4 +233,51 @@ fn commands_report_invalid_arguments_and_unmatched_selectors() {
         String::from_utf8_lossy(&unmatched.stderr).contains("no requirements match"),
         "{unmatched:?}"
     );
+}
+
+// {test}`requirements.cli.status_table_alignment`
+#[test]
+fn status_tables_align_each_column_to_its_widest_cell() {
+    let temp = fixture();
+    for args in [["status"].as_slice(), ["status", "--all"].as_slice()] {
+        let output = habeas(temp.path(), args);
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        let table = text
+            .lines()
+            .skip_while(|line| !line.starts_with("| "))
+            .take_while(|line| line.starts_with("| "))
+            .collect::<Vec<_>>();
+        assert!(table.len() > 2, "{text}");
+        let pipes = table[0]
+            .match_indices('|')
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(pipes.len(), 3, "{text}");
+        for line in &table {
+            let actual = line
+                .match_indices('|')
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, pipes, "{text}");
+            for cell in line.split('|').skip(1).take(2) {
+                assert!(cell.starts_with(' ') && cell.ends_with(' '), "{text}");
+                assert!(!cell[1..].starts_with(' '), "{text}");
+            }
+        }
+        for column in 0..2 {
+            let content_width = table
+                .iter()
+                .map(|line| line.split('|').nth(column + 1).unwrap().trim().len())
+                .max()
+                .unwrap();
+            assert_eq!(
+                pipes[column + 1] - pipes[column] - 3,
+                content_width,
+                "{text}"
+            );
+        }
+        assert_eq!(table[1].split('|').nth(1).unwrap().trim(), "---");
+        assert_eq!(table[1].split('|').nth(2).unwrap().trim(), "---");
+    }
 }

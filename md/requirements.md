@@ -120,6 +120,10 @@ Running `habeas agents` in a Cargo project MUST install all bundled skills for a
 `habeas status` MUST list requirements in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST show each listed requirement's evidence state and validation findings. `habeas status --all` MUST list every requirement with its state. Both forms MUST work from a directory within a Cargo and mdBook project and report invalid arguments clearly.
 :::
 
+:::{req} cli.status_table_alignment
+When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Requirement and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.
+:::
+
 :::{req} cli.info
 `habeas info <selector>` MUST select an exact full requirement name when it matches; otherwise it MUST treat the selector as a regular expression over full requirement names. It MUST print matching requirements in full-name order as Markdown with the same Requirement, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid expression or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement.
 :::
