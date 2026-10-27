@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::markdown::render_evidence_table;
 use crate::{
-    Definition, EvidenceReport, chapter_href, colon_fence, escape_html, overlaps_protected,
-    protected_ranges, requirement_blocks, shield_badge, validate_repository,
+    Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,
+    escape_html, overlaps_protected, protected_ranges, shield_badge, validate_repository,
 };
 
 pub(crate) struct IndexPlan {
@@ -204,6 +204,7 @@ impl EvidenceState {
 
 impl IndexPlan {
     // {impl}`requirements.index.chapter`
+    // {impl}`requirements.examples.index`
     pub(crate) fn find(
         book: &Book,
         definitions: &BTreeMap<String, Definition>,
@@ -257,6 +258,7 @@ impl IndexPlan {
     }
 
     // {impl}`requirements.index.state`
+    // {impl}`requirements.examples.index`
     pub(crate) fn populate(
         &self,
         book: &mut Book,
@@ -272,14 +274,13 @@ impl IndexPlan {
             let evidence_path = root.join("evidence").join(format!("{name}.json"));
             let evidence = LoadedDetailEvidence::load(root, name, &report);
             let detail_href = chapter_href(&self.chapter_path, detail_path, None);
-            rows.push((
-                format!("[`{name}`]({detail_href})"),
-                evidence.state().label(),
-            ));
-
             let definition = definitions
                 .get(name)
-                .expect("every detail page has a requirement definition");
+                .expect("every detail page has a definition");
+            rows.push((
+                format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
+                evidence.state().label(),
+            ));
             let content = render_detail_page(
                 name,
                 detail_path,
@@ -359,6 +360,7 @@ fn evidence_edit_path(book_src: &Path, name: &str) -> PathBuf {
 
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.index.invalid_detail`
+// {impl}`requirements.examples.index`
 fn render_detail_page(
     name: &str,
     detail_path: &Path,
@@ -370,7 +372,7 @@ fn render_detail_page(
     let definition_href = chapter_href(
         detail_path,
         &definition.path,
-        Some(&format!("habeas-req-{name}")),
+        Some(&definition.kind.anchor(name)),
     );
     let index_href = chapter_href(detail_path, index_path, None);
     render_detail_sections(
@@ -378,6 +380,7 @@ fn render_detail_page(
             "# `{name}`\n\n[Requirements index]({index_href}) · [View definition]({definition_href})\n\n"
         ),
         &definition.text,
+        definition.kind,
         detail_evidence,
         source_links,
     )
@@ -393,6 +396,7 @@ pub(crate) fn render_cli_detail_page(
     render_detail_sections(
         format!("# `{name}`\n\nDefinition: `{source}`\n\n"),
         text,
+        DefinitionKind::Requirement,
         evidence.borrowed(),
         None,
     )
@@ -404,6 +408,7 @@ pub(crate) fn render_cli_detail_page(
 fn render_detail_sections(
     mut content: String,
     definition_text: &str,
+    kind: DefinitionKind,
     detail_evidence: DetailEvidence<'_>,
     source_links: Option<&SourceLinks>,
 ) -> String {
@@ -412,7 +417,14 @@ fn render_detail_sections(
         detail_evidence.state.label(),
         detail_evidence.state.color(),
     ));
-    content.push_str("\n\n## Requirement\n\n");
+    content.push_str(&format!(
+        "\n\n## {}\n\n",
+        if kind == DefinitionKind::Example {
+            "Example"
+        } else {
+            "Requirement"
+        }
+    ));
     for line in definition_text.lines() {
         content.push_str("> ");
         content.push_str(line);
@@ -538,7 +550,7 @@ fn code_language(file: Option<&str>) -> &'static str {
 // {impl}`requirements.index.chapter`
 fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {
     let protected = protected_ranges(content);
-    let requirements = requirement_blocks(content);
+    let definitions = definition_blocks(content);
     let mut lines = Vec::new();
     let mut position = 0;
     for segment in content.split_inclusive('\n') {
@@ -561,7 +573,7 @@ fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {
         };
         if suffix.trim_end() != "{requirements-index}"
             || overlaps_protected(start, body_start, &protected)
-            || requirements
+            || definitions
                 .iter()
                 .any(|block| block.start <= start && start < block.end)
         {
@@ -609,7 +621,7 @@ mod tests {
         DetailEvidence, EvidenceState, IndexPlan, SourceLinks, code_language, evidence_edit_path,
         marker_ranges, render_detail_page,
     };
-    use crate::{Definition, preprocess_book};
+    use crate::{Definition, DefinitionKind, preprocess_book};
 
     // {test}`requirements.index.chapter`
     #[test]
@@ -810,6 +822,7 @@ mod tests {
         let definition = Definition {
             path: Path::new("requirements/core.md").to_path_buf(),
             text: "Ready MUST work.\n\n## Example\n\nUse the CLI.".to_owned(),
+            kind: DefinitionKind::Requirement,
         };
         let record = json!({
             "requirement": "Stale text.",
@@ -886,6 +899,7 @@ mod tests {
         let definition = Definition {
             path: Path::new("requirements/core.md").to_path_buf(),
             text: "Ready MUST work.".to_owned(),
+            kind: DefinitionKind::Requirement,
         };
         let record = json!({
             "rationale": "Checked.",
@@ -977,6 +991,7 @@ mod tests {
             Definition {
                 path: Path::new("requirements.md").to_path_buf(),
                 text: "Ready MUST work.".to_owned(),
+                kind: DefinitionKind::Requirement,
             },
         )]);
         let error = match IndexPlan::find(&book, &definitions) {
@@ -992,6 +1007,7 @@ mod tests {
         let definition = Definition {
             path: Path::new("requirements.md").to_path_buf(),
             text: "Ready MUST work.".to_owned(),
+            kind: DefinitionKind::Requirement,
         };
         let detail = Path::new("requirements-index/requirements.ready.md");
         let index = Path::new("requirements-index.md");
@@ -1031,5 +1047,89 @@ mod tests {
         assert!(missing.contains("> Ready MUST work."));
         assert!(missing.contains("No rationale recorded."));
         assert!(missing.contains("No inputs recorded."));
+    }
+
+    // {test}`requirements.examples.index`
+    // {test}`requirements.index.detail_format`
+    // {test}`requirements.index.invalid_detail`
+    #[test]
+    fn index_lists_examples_and_links_their_detail_pages() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("md")).unwrap();
+        fs::create_dir_all(temp.path().join("evidence")).unwrap();
+        fs::write(temp.path().join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        let source = ":::{req} ready\nReady.\n:::\n\n:::{example} pending\nPending case. CITE`rules.ready`\n:::\n\n:::{example} missing\nMissing case. CITE`rules.ready`\n:::\n"
+            .replace("CITE", "{cite}");
+        fs::write(temp.path().join("md/rules.md"), &source).unwrap();
+        fs::write(
+            temp.path().join("evidence/rules.pending.json"),
+            json!({
+                "example": "Pending case. CITE`rules.ready`".replace("CITE", "{cite}"),
+                "determination": false,
+                "rationale": "The case still needs a test.",
+                "inputs": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            source.to_owned(),
+            "rules.md",
+            Vec::new(),
+        ));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".to_owned(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
+        preprocess_book(&mut book, temp.path()).unwrap();
+
+        let chapters = book.chapters().collect::<Vec<_>>();
+        assert!(chapters[0].content.contains(
+            "id=\"habeas-example-rules.pending\" href=\"requirements-index/rules.pending.html\""
+        ));
+        let index = chapters[1];
+        assert!(
+            index
+                .content
+                .contains("| [`rules.pending`](requirements-index/rules.pending.html) (example)")
+        );
+        assert!(
+            index
+                .content
+                .contains("| [`rules.missing`](requirements-index/rules.missing.html) (example)")
+        );
+        let pending = index
+            .sub_items
+            .iter()
+            .find_map(|item| match item {
+                BookItem::Chapter(chapter) if chapter.name == "rules.pending" => Some(chapter),
+                _ => None,
+            })
+            .unwrap();
+        assert!(pending.content.contains("## Example\n\n> Pending case."));
+        assert!(
+            pending
+                .content
+                .contains("[View definition](../rules.html#habeas-example-rules.pending)")
+        );
+        assert!(pending.content.contains("The case still needs a test."));
+
+        let missing = index
+            .sub_items
+            .iter()
+            .find_map(|item| match item {
+                BookItem::Chapter(chapter) if chapter.name == "rules.missing" => Some(chapter),
+                _ => None,
+            })
+            .unwrap();
+        assert!(missing.content.contains("## Example\n\n> Missing case."));
+        assert!(missing.content.contains("## Validation findings"));
+        assert!(missing.content.contains("missing for example"));
+        assert!(missing.content.contains("No rationale recorded."));
     }
 }

@@ -1,6 +1,7 @@
 use std::process::Command;
 
 // {test}`requirements.cli.invocation`
+// {test}`reference.cli.unknown_command`
 #[test]
 fn renderer_support_and_invalid_commands() {
     let binary = env!("CARGO_BIN_EXE_habeas");
