@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise Habeas's CLI, skills, and hook through a real Symposium consumer.
+"""Exercise Habeas's local CLI, skills, and hook through a Symposium consumer.
 
 Run with `python3 tests/symposium_hook_smoke.py`. Set SYMPOSIUM_BIN to test a
-specific cargo-agents binary. The test uses an isolated configuration and
-installs this checkout through Cargo in place of a registry release.
+specific cargo-agents binary. The test gives Symposium a local executable
+that runs the current checkout with Cargo, without installing the CLI.
 """
 
 import errno
@@ -69,31 +69,49 @@ def main():
     if cargo is None or symposium is None:
         raise RuntimeError("cargo and cargo-agents must be installed")
 
-    subprocess.run([cargo, "build", "--locked", "--bin", "habeas"], cwd=repo, check=True)
-    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
-    if not target_dir.is_absolute():
-        target_dir = repo / target_dir
-    habeas = target_dir / "debug" / ("habeas.exe" if os.name == "nt" else "habeas")
-
     with tempfile.TemporaryDirectory(prefix="habeas-symposium-hook-") as temporary:
         root = Path(temporary)
         project = root / "consumer"
-        cargo_home = root / "cargo-home"
         symposium_home = root / "symposium-home"
-        wrapper_dir = root / "wrapper"
+        local_crate = root / "habeas-current"
+        source_skills = repo / "assets" / "skills"
         for directory in (
             project / "md",
             project / "src",
-            cargo_home / "bin",
             symposium_home,
-            wrapper_dir,
+            local_crate / "src",
         ):
             directory.mkdir(parents=True)
+
+        runner = root / "habeas-local"
+        runner.write_text(
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(cargo)} run --locked --quiet "
+            f"--manifest-path {shlex.quote(str(repo / 'Cargo.toml'))} "
+            '--bin habeas -- "$@"\n'
+        )
+        runner.chmod(0o755)
+        manifest = (repo / "Cargo.toml").read_text()
+        cargo_installation = (
+            'source = "cargo"\ncrate = "habeas"\n'
+            'executable = "habeas"\nglobal = true'
+        )
+        if manifest.count(cargo_installation) != 1:
+            raise AssertionError("Habeas's Cargo installation declaration changed")
+        (local_crate / "Cargo.toml").write_text(
+            manifest.replace(
+                cargo_installation,
+                f"executable = {json.dumps(str(runner))}",
+                1,
+            )
+        )
+        (local_crate / "src" / "lib.rs").write_text("")
+        shutil.copytree(source_skills, local_crate / "assets" / "skills")
 
         (project / "Cargo.toml").write_text(
             '[package]\nname = "habeas-hook-consumer"\nversion = "0.1.0"\n'
             'edition = "2024"\n\n[dev-dependencies]\n'
-            f"habeas = {{ path = {json.dumps(str(repo))} }}\n"
+            f"habeas = {{ path = {json.dumps(str(local_crate))} }}\n"
         )
         (project / "Cargo.lock").write_bytes((repo / "Cargo.lock").read_bytes())
         (project / "book.toml").write_text('[book]\nsrc = "md"\n')
@@ -105,41 +123,10 @@ def main():
             "[defaults]\nsymposium-recommendations = false\nuser-plugins = false\n"
         )
 
-        # Replace only the registry source with this checkout. Cargo still
-        # performs the installation into the isolated global bin directory.
-        wrapper = wrapper_dir / "cargo"
-        marker = root / "habeas-install-invoked"
-        original_cargo_home = os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))
-        wrapper.write_text(
-            "#!/bin/sh\n"
-            'if [ "$1" = "binstall" ]; then exit 1; fi\n'
-            'if [ "$1" = "install" ]; then\n'
-            '  for argument in "$@"; do\n'
-            '    case "$argument" in\n'
-            '      habeas|habeas@*)\n'
-            f"        export CARGO_HOME={shlex.quote(original_cargo_home)}\n"
-            f"        {shlex.quote(cargo)} install --path {shlex.quote(str(repo))} "
-            f"--root {shlex.quote(str(cargo_home))} --locked --offline --debug || exit $?\n"
-            f"        touch {shlex.quote(str(marker))}\n"
-            "        exit 0\n"
-            "        ;;\n"
-            "    esac\n"
-            "  done\n"
-            "fi\n"
-            f"export CARGO_HOME={shlex.quote(original_cargo_home)}\n"
-            f"exec {shlex.quote(cargo)} \"$@\"\n"
-        )
-        wrapper.chmod(0o755)
-
         env = os.environ.copy()
-        env.update(
-            CARGO_HOME=str(cargo_home),
-            SYMPOSIUM_HOME=str(symposium_home),
-            SYMPOSIUM_CARGO=str(wrapper),
-            PATH=os.pathsep.join((str(cargo_home / "bin"), env["PATH"])),
-        )
+        env["SYMPOSIUM_HOME"] = str(symposium_home)
         metadata = subprocess.run(
-            [str(wrapper), "metadata", "--format-version", "1", "--all-features"],
+            [cargo, "metadata", "--format-version", "1", "--all-features"],
             cwd=project,
             env=env,
             text=True,
@@ -206,13 +193,8 @@ def main():
                 f"Hook diagnostics: {last_stderr}\n"
                 f"Plugin status: {status.stdout}\n{status.stderr}"
             )
-        # {test}`requirements.integration.symposium_cli`
-        installed_habeas = cargo_home / "bin" / habeas.name
-        if not marker.exists() or not installed_habeas.exists():
-            raise AssertionError("Symposium did not acquire the Habeas hook command")
-
         subprocess.run(
-            [installed_habeas, "setup", "--path", str(repo)], cwd=project, check=True
+            [runner, "setup", "--path", str(repo)], cwd=project, check=True
         )
         configured_context = session_start()
         if "Habeas Codicem is not fully configured" in configured_context:
@@ -220,7 +202,6 @@ def main():
 
         # {test}`requirements.integration.symposium`
         skills_dir = project / ".agents" / "skills"
-        source_skills = repo / "assets" / "skills"
         skill_names = sorted(
             path.name for path in source_skills.iterdir() if (path / "SKILL.md").is_file()
         )
@@ -240,7 +221,6 @@ def main():
         (next_crate / "src").mkdir(parents=True)
         (next_crate / "src" / "lib.rs").write_text("")
         shutil.copytree(source_skills, next_crate / "assets" / "skills")
-        manifest = (repo / "Cargo.toml").read_text()
         current_version_line = f'version = "{current_version}"'
         if current_version_line not in manifest:
             raise AssertionError("Cargo did not report the current Habeas version")
@@ -256,7 +236,7 @@ def main():
             f"habeas = {{ path = {json.dumps(str(next_crate))} }}\n"
         )
         updated_metadata = subprocess.run(
-            [str(wrapper), "metadata", "--format-version", "1", "--all-features"],
+            [cargo, "metadata", "--format-version", "1", "--all-features"],
             cwd=project,
             env=env,
             text=True,
@@ -284,7 +264,7 @@ def main():
             raise AssertionError("Symposium kept the old skill after the selected version changed")
 
     print(
-        "Symposium installed the CLI and current skills, refreshed changed skills, "
+        "Symposium dispatched the local CLI, installed current skills, refreshed changed skills, "
         "and delivered setup advice only when needed."
     )
 

@@ -153,7 +153,7 @@ For a Cargo workspace that depends on `habeas`, interactive `cargo agents sync` 
 :::
 
 :::{req} integration.symposium_cli
-The enabled Habeas Symposium plugin MUST make the `habeas` CLI available in Cargo's global executable directory before its session-start hook advises an agent to run `habeas setup`.
+The enabled Habeas Symposium plugin MUST request a global Cargo installation of the `habeas` CLI and use that installation as its session-start hook command, so the CLI is available when the hook advises an agent to run `habeas setup`.
 :::
 
 :::{req} integration.symposium_setup_hook
