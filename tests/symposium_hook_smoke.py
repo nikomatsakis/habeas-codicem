@@ -135,7 +135,8 @@ def main():
         env.update(
             CARGO_HOME=str(cargo_home),
             SYMPOSIUM_HOME=str(symposium_home),
-            PATH=os.pathsep.join((str(wrapper_dir), str(cargo_home / "bin"), env["PATH"])),
+            SYMPOSIUM_CARGO=str(wrapper),
+            PATH=os.pathsep.join((str(cargo_home / "bin"), env["PATH"])),
         )
         metadata = subprocess.run(
             [str(wrapper), "metadata", "--format-version", "1", "--all-features"],
