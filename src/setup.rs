@@ -8,6 +8,8 @@ use toml_edit::{Array, DocumentMut, Item, value};
 const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 
+// {impl}`requirements.cli.setup_css`
+// {impl}`requirements.integration.symposium_setup_hook`
 fn css_relative(source_path: &Path) -> String {
     source_path
         .join("habeas.css")
@@ -20,6 +22,8 @@ fn css_relative(source_path: &Path) -> String {
         .join("/")
 }
 
+// {impl}`requirements.cli.setup_local_path`
+// {impl}`requirements.integration.symposium_setup_hook`
 fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
     manifest
         .get("dev-dependencies")
@@ -28,6 +32,7 @@ fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
         .is_some()
 }
 
+// {impl}`requirements.integration.symposium_setup_hook`
 pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {
     fs::read_to_string(root.join("Cargo.toml"))
         .ok()
@@ -35,6 +40,8 @@ pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {
         .is_some_and(|manifest| has_habeas_dev_dependency(&manifest))
 }
 
+// {impl}`requirements.cli.setup_project`
+// {impl}`requirements.integration.symposium_setup_hook`
 pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|directory| {

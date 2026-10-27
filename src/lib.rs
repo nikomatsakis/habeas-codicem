@@ -6,10 +6,15 @@ use std::path::{Component, Path, PathBuf};
 use mdbook_preprocessor::book::Book;
 use pulldown_cmark::{Event, Parser, Tag};
 
+mod add_input;
+mod definition_glob;
 mod evidence;
 mod index;
+mod inputs;
 mod rust_coverage;
+mod rust_items;
 
+pub use add_input::{InputMode, InputTarget, add_input};
 pub use evidence::{EvidenceReport, validate_repository};
 
 /// Validate the current Cargo and mdBook project for use in a Cargo test.
@@ -709,7 +714,7 @@ mod tests {
     // {test}`requirements.references.markdown_literals`
     #[test]
     fn markdown_examples_and_escaped_references_stay_literal() {
-        let marker = format!("{{impl}}`requirements.ready`");
+        let marker = ["{", "impl}`requirements.ready`"].concat();
         let content = format!("`{marker}`\n\n```text\n{marker}\n```\n\n\\{marker}");
         let mut book = Book::new();
         book.push_item(Chapter::new(
@@ -743,8 +748,8 @@ mod tests {
     // {test}`requirements.references.targets`
     #[test]
     fn references_in_requirement_bodies_are_scanned_as_markdown() {
-        let known = format!("{{cite}}`requirements.ready`");
-        let example = format!("{{cite}}`missing.example`");
+        let known = ["{", "cite}`requirements.ready`"].concat();
+        let example = ["{", "cite}`missing.example`"].concat();
         let content = format!(":::{{req}} ready\nSee {known}.\n\n```text\n{example}\n```\n:::");
         let references = reference_roles(&content, true);
         assert_eq!(references.len(), 1);
@@ -819,4 +824,4 @@ mod tests {
 
 mod commands;
 mod markdown;
-pub use commands::{info_markdown, status_markdown};
+pub use commands::{info_markdown, status_markdown, status_markdown_filtered};

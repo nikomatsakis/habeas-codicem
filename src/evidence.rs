@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
+use crate::inputs::{InputSelector, ResolvedInput};
 use crate::{
     DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,
     reference_roles, valid_name,
@@ -24,6 +25,10 @@ pub(crate) struct Declaration {
     pub(crate) kind: DefinitionKind,
     pub(crate) text: String,
     pub(crate) source: String,
+    pub(crate) file: String,
+    pub(crate) line_start: usize,
+    pub(crate) line_end: usize,
+    pub(crate) raw_lines: Vec<String>,
 }
 
 // {impl}`requirements.integration.report_api`
@@ -32,7 +37,7 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 }
 
 pub(crate) struct RepositoryInspection {
-    pub(crate) requirements: BTreeMap<String, Declaration>,
+    pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) report: EvidenceReport,
 }
 
@@ -55,6 +60,9 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         let relative = file
             .strip_prefix(&evidence_root)
             .expect("evidence file is inside evidence directory");
+        if relative.starts_with("rust") && relative.to_string_lossy().ends_with(".rs.json") {
+            continue;
+        }
         let label = display_path(&root, file);
         let name = if relative.components().count() == 1 {
             relative
@@ -71,7 +79,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         } else {
             errors.push(format!("{label}: no matching requirement or example"));
         }
-        validate_evidence_file(&root, file, expected, &mut errors);
+        validate_evidence_file(&root, file, expected, &definitions, &mut errors);
     }
 
     // {impl}`requirements.ci.coverage`
@@ -88,23 +96,25 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     validate_references(&root, &definitions, &mut errors);
     // {impl}`requirements.references.rust_function_coverage`
     crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);
+    // {impl}`requirements.references.rust_function_attestations`
+    validate_rust_attestations(&root, &definitions, &mut errors);
 
     let examples = definitions
         .values()
         .filter(|definition| definition.kind == DefinitionKind::Example)
         .count();
     let requirements = definitions
-        .into_iter()
-        .filter(|(_, definition)| definition.kind == DefinitionKind::Requirement)
-        .collect::<BTreeMap<_, _>>();
+        .values()
+        .filter(|definition| definition.kind == DefinitionKind::Requirement)
+        .count();
     Ok(RepositoryInspection {
         report: EvidenceReport {
-            requirements: requirements.len(),
+            requirements,
             examples,
             evidence_files: evidence_files.len(),
             errors,
         },
-        requirements,
+        definitions,
     })
 }
 
@@ -198,10 +208,18 @@ fn collect_definitions(
 
             match definitions.entry(name.clone()) {
                 Entry::Vacant(slot) => {
+                    let raw_lines = content[block.start..block.end]
+                        .lines()
+                        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+                        .collect::<Vec<_>>();
                     slot.insert(Declaration {
                         kind: block.kind,
                         text,
                         source,
+                        file: label.clone(),
+                        line_start: line,
+                        line_end: line + raw_lines.len().saturating_sub(1),
+                        raw_lines,
                     });
                 }
                 Entry::Occupied(previous) => errors.push(format!(
@@ -294,6 +312,7 @@ fn validate_evidence_file(
     root: &Path,
     path: &Path,
     expected: Option<&Declaration>,
+    definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
 ) {
     let label = display_path(root, path);
@@ -370,18 +389,96 @@ fn validate_evidence_file(
 
     if let Some(inputs) = array_field(object, "inputs", &label, errors) {
         for (index, input) in inputs.iter().enumerate() {
-            validate_input(root, input, &format!("{label}: inputs[{index}]"), errors);
+            validate_input(
+                root,
+                definitions,
+                input,
+                &format!("{label}: inputs[{index}]"),
+                errors,
+            );
         }
     }
 }
 
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.input_containment`
-fn validate_input(root: &Path, input: &Value, label: &str, errors: &mut Vec<String>) {
+// {impl}`requirements.ci.rust_item_inputs`
+// {impl}`requirements.ci.requirements_inputs`
+fn validate_input(
+    root: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+    input: &Value,
+    label: &str,
+    errors: &mut Vec<String>,
+) -> Option<ResolvedInput> {
     let Some(object) = input.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
-        return;
+        return None;
     };
+    if object.contains_key("rust_file") || object.contains_key("rust_item") {
+        check_keys(object, &["rust_file", "rust_item", "text"], label, errors);
+        let rust_file = string_field(object, "rust_file", label, errors);
+        let rust_item = string_field(object, "rust_item", label, errors);
+        let text = text_field(object, label, errors);
+        let (Some(rust_file), Some(rust_item), Some(text)) = (rust_file, rust_item, text) else {
+            return None;
+        };
+        let selector = InputSelector::RustItem {
+            rust_file: rust_file.to_owned(),
+            rust_item: rust_item.to_owned(),
+        };
+        return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);
+    }
+    if object.contains_key("requirements") || object.contains_key("matches") {
+        check_keys(object, &["requirements", "matches", "text"], label, errors);
+        let requirements = string_field(object, "requirements", label, errors);
+        let matches = array_field(object, "matches", label, errors).and_then(|values| {
+            let mut names = Vec::new();
+            for (index, value) in values.iter().enumerate() {
+                match value.as_str() {
+                    Some(name) => names.push(name.to_owned()),
+                    None => errors.push(format!("{label}: matches[{index}] must be a string")),
+                }
+            }
+            if names.len() != values.len() {
+                return None;
+            }
+            if names.iter().collect::<BTreeSet<_>>().len() != names.len() {
+                errors.push(format!(
+                    "{label}: matches must have distinct definition names"
+                ));
+            }
+            Some(names)
+        });
+        let text = text_field(object, label, errors);
+        let (Some(requirements), Some(matches), Some(text)) = (requirements, matches, text) else {
+            return None;
+        };
+        let selector = InputSelector::Requirements {
+            requirements: requirements.to_owned(),
+        };
+        return validate_resolved_input(
+            root,
+            definitions,
+            &selector,
+            &text,
+            Some(&matches),
+            label,
+            errors,
+        );
+    }
+    validate_file_range_input(root, definitions, object, label, errors)
+}
+
+// {impl}`requirements.ci.schema`
+// {impl}`requirements.ci.inputs`
+fn validate_file_range_input(
+    root: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+    object: &Map<String, Value>,
+    label: &str,
+    errors: &mut Vec<String>,
+) -> Option<ResolvedInput> {
     check_keys(
         object,
         &["file", "line_start", "line_end", "text"],
@@ -406,29 +503,102 @@ fn validate_input(root: &Path, input: &Value, label: &str, errors: &mut Vec<Stri
     });
     let start = positive_integer_field(object, "line_start", label, errors);
     let end = positive_integer_field(object, "line_end", label, errors);
-    let text = array_field(object, "text", label, errors).and_then(|lines| {
-        let mut text = Vec::with_capacity(lines.len());
-        let mut valid = true;
-        for (index, line) in lines.iter().enumerate() {
-            if let Some(line) = line.as_str() {
-                text.push(line);
-            } else {
-                errors.push(format!("{label}: text[{index}] must be a string"));
-                valid = false;
-            }
-        }
-        valid.then_some(text)
-    });
+    let text = text_field(object, label, errors);
 
     if let (Some(start), Some(end)) = (start, end)
         && end < start
     {
         errors.push(format!("{label}: line_end must be at least line_start"));
-        return;
+        return None;
     }
-    if let (Some(file), Some(start), Some(end), Some(text)) = (file, start, end, text) {
-        validate_input_lines(root, file, start, end, &text, label, errors);
+    let (Some(file), Some(start), Some(end), Some(text)) = (file, start, end, text) else {
+        return None;
+    };
+    validate_input_lines(
+        root,
+        file,
+        start,
+        end,
+        &text.iter().map(String::as_str).collect::<Vec<_>>(),
+        label,
+        errors,
+    );
+    InputSelector::FileRange {
+        file: file.to_owned(),
+        line_start: start,
+        line_end: end,
     }
+    .resolve(root, definitions)
+    .ok()
+}
+
+// {impl}`requirements.ci.schema`
+fn text_field(
+    object: &Map<String, Value>,
+    label: &str,
+    errors: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    let values = array_field(object, "text", label, errors)?;
+    if values.is_empty() {
+        errors.push(format!("{label}: text must be a nonempty array"));
+    }
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value.as_str().map(str::to_owned).or_else(|| {
+                errors.push(format!("{label}: text[{index}] must be a string"));
+                None
+            })
+        })
+        .collect()
+}
+
+// {impl}`requirements.ci.rust_item_inputs`
+// {impl}`requirements.ci.requirements_inputs`
+fn validate_resolved_input(
+    root: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+    selector: &InputSelector,
+    text: &[String],
+    matches: Option<&[String]>,
+    label: &str,
+    errors: &mut Vec<String>,
+) -> Option<ResolvedInput> {
+    let resolved = match selector.resolve(root, definitions) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            errors.push(format!("{label}: {error}"));
+            return None;
+        }
+    };
+    if let Some(matches) = matches
+        && matches != resolved.matches
+    {
+        let missing = resolved
+            .matches
+            .iter()
+            .filter(|name| !matches.contains(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed = matches
+            .iter()
+            .filter(|name| !resolved.matches.contains(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        errors.push(format!(
+            "{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}"
+        ));
+    }
+    if text != resolved.text {
+        let old = text.iter().map(String::as_str).collect::<Vec<_>>();
+        let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();
+        errors.push(format!(
+            "{label}: input text changed for {selector:?}{}",
+            compact_diff(&old, &new)
+        ));
+    }
+    Some(resolved)
 }
 
 // {impl}`requirements.ci.inputs`
@@ -675,7 +845,7 @@ fn validate_references(
                 display_path(root, &evidence_file)
             ));
         }
-        let inputs = evidence_input_ranges(root, &evidence_file);
+        let inputs = evidence_input_ranges(root, &evidence_file, definitions);
         for reference in references {
             if !inputs.iter().any(|input| {
                 input.file == reference.file
@@ -783,7 +953,11 @@ fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceRefere
 }
 
 // {impl}`requirements.references.evidence_coverage`
-fn evidence_input_ranges(root: &Path, path: &Path) -> Vec<InputRange> {
+fn evidence_input_ranges(
+    root: &Path,
+    path: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+) -> Vec<InputRange> {
     let Some(inputs) = fs::read_to_string(path)
         .ok()
         .and_then(|content| serde_json::from_str::<Value>(&content).ok())
@@ -793,24 +967,273 @@ fn evidence_input_ranges(root: &Path, path: &Path) -> Vec<InputRange> {
     };
     inputs
         .iter()
-        .filter_map(|input| {
-            let file = input.get("file")?.as_str()?;
-            let file = fs::canonicalize(root.join(file)).ok()?;
-            if !file.starts_with(root) {
-                return None;
-            }
-            let line_start = usize::try_from(input.get("line_start")?.as_u64()?).ok()?;
-            let line_end = usize::try_from(input.get("line_end")?.as_u64()?).ok()?;
-            if line_start == 0 || line_end < line_start {
-                return None;
-            }
-            Some(InputRange {
-                file,
-                line_start,
-                line_end,
-            })
+        .filter_map(InputSelector::from_input)
+        .filter_map(|selector| selector.resolve(root, definitions).ok())
+        .flat_map(|resolved| {
+            resolved
+                .ranges
+                .into_iter()
+                .filter_map(|range| {
+                    Some(InputRange {
+                        file: fs::canonicalize(root.join(range.file)).ok()?,
+                        line_start: range.line_start,
+                        line_end: range.line_end,
+                    })
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
+}
+
+// {impl}`requirements.references.rust_function_attestations`
+// {impl}`requirements.ci.orphans`
+fn validate_rust_attestations(
+    root: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+    errors: &mut Vec<String>,
+) {
+    let mut expected_files = BTreeSet::new();
+    for file in crate::rust_coverage::rust_files(root, errors) {
+        let rust_file = display_path(root, &file);
+        let source = match fs::read_to_string(&file) {
+            Ok(source) => source,
+            Err(error) => {
+                errors.push(format!("{rust_file}: cannot read Rust source: {error}"));
+                continue;
+            }
+        };
+        let functions = match crate::rust_items::function_citations(&source, definitions) {
+            Ok(functions) => functions,
+            Err(_) => continue, // the Rust citation check reports this parse failure
+        };
+        if functions.is_empty() {
+            continue;
+        }
+        let evidence_path = root.join("evidence/rust").join(format!("{rust_file}.json"));
+        expected_files.insert(evidence_path.clone());
+        validate_rust_attestation_file(
+            root,
+            &evidence_path,
+            &rust_file,
+            &functions,
+            definitions,
+            errors,
+        );
+    }
+    let evidence_root = root.join("evidence/rust");
+    if evidence_root.is_dir() {
+        for file in files_with_extension(root, &evidence_root, "json", errors) {
+            if !expected_files.contains(&file) {
+                errors.push(format!(
+                    "{}: orphaned Rust attestation file",
+                    display_path(root, &file)
+                ));
+            }
+        }
+    }
+}
+
+// {impl}`requirements.references.rust_function_attestations`
+// {impl}`requirements.ci.schema`
+// {impl}`requirements.ci.determination`
+fn validate_rust_attestation_file(
+    root: &Path,
+    path: &Path,
+    rust_file: &str,
+    functions: &[(crate::rust_items::RustItem, BTreeSet<(String, String)>)],
+    definitions: &BTreeMap<String, Declaration>,
+    errors: &mut Vec<String>,
+) {
+    let label = display_path(root, path);
+    let purpose =
+        "review each function and confirm it cites every applicable requirement or named example";
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            for (function, _) in functions {
+                errors.push(format!(
+                    "{label}: {rust_file}:{} {}: missing Rust function attestation file; {purpose}",
+                    function.declaration_line, function.selector
+                ));
+            }
+            return;
+        }
+        Err(error) => {
+            errors.push(format!(
+                "{label}: cannot read Rust attestation: {error}; {purpose}"
+            ));
+            return;
+        }
+    };
+    let value: Value = match serde_json::from_str(&source) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{label}: invalid JSON: {error}; {purpose}"));
+            return;
+        }
+    };
+    let Some(object) = value.as_object() else {
+        errors.push(format!("{label}: expected a JSON object; {purpose}"));
+        return;
+    };
+    check_keys(object, &["rust_file", "functions"], &label, errors);
+    if let Some(recorded_file) = string_field(object, "rust_file", &label, errors)
+        && recorded_file != rust_file
+    {
+        errors.push(format!(
+            "{label}: rust_file is {recorded_file:?}, expected {rust_file:?}"
+        ));
+    }
+    let Some(entries) = array_field(object, "functions", &label, errors) else {
+        return;
+    };
+    let expected = functions
+        .iter()
+        .map(|(function, citations)| (function.selector.as_str(), (function, citations)))
+        .collect::<BTreeMap<_, _>>();
+    let mut present = BTreeSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let entry_label = format!("{label}: functions[{index}]");
+        let Some(entry) = entry.as_object() else {
+            errors.push(format!("{entry_label}: expected a JSON object"));
+            continue;
+        };
+        check_keys(
+            entry,
+            &[
+                "rust_item",
+                "citations",
+                "determination",
+                "rationale",
+                "inputs",
+            ],
+            &entry_label,
+            errors,
+        );
+        let Some(selector) = string_field(entry, "rust_item", &entry_label, errors) else {
+            continue;
+        };
+        let current = expected.get(selector);
+        let location = current.map_or_else(
+            || format!("{rust_file} {selector}"),
+            |(function, _)| {
+                format!(
+                    "{rust_file}:{} {selector} ({})",
+                    function.declaration_line, function.name
+                )
+            },
+        );
+        let entry_label = format!("{entry_label} ({location}; {purpose})");
+        if !present.insert(selector.to_owned()) {
+            errors.push(format!(
+                "{entry_label}: duplicate Rust function attestation"
+            ));
+        }
+        if current.is_none() {
+            errors.push(format!("{entry_label}: orphaned Rust function attestation"));
+        }
+        let recorded_citations =
+            array_field(entry, "citations", &entry_label, errors).map(|values| {
+                let mut citations = BTreeSet::new();
+                for (citation_index, value) in values.iter().enumerate() {
+                    let citation_label = format!("{entry_label}: citations[{citation_index}]");
+                    let Some(value) = value.as_object() else {
+                        errors.push(format!("{citation_label}: expected a JSON object"));
+                        continue;
+                    };
+                    check_keys(value, &["role", "name"], &citation_label, errors);
+                    let role = string_field(value, "role", &citation_label, errors);
+                    let name = string_field(value, "name", &citation_label, errors);
+                    if let (Some(role), Some(name)) = (role, name) {
+                        if !matches!(role, "impl" | "cite" | "test") {
+                            errors
+                                .push(format!("{citation_label}: invalid citation role {role:?}"));
+                        }
+                        if !definitions.contains_key(name) {
+                            errors.push(format!("{citation_label}: unknown definition {name:?}"));
+                        }
+                        if !citations.insert((role.to_owned(), name.to_owned())) {
+                            errors.push(format!("{citation_label}: duplicate citation"));
+                        }
+                    }
+                }
+                citations
+            });
+        if let (Some(recorded), Some((_, current))) = (recorded_citations.as_ref(), current)
+            && recorded != *current
+        {
+            errors.push(format!(
+                "{entry_label}: citation set changed; recorded {recorded:?}, current {current:?}"
+            ));
+        }
+        if recorded_citations.as_ref().is_some_and(BTreeSet::is_empty) {
+            errors.push(format!("{entry_label}: citations must not be empty"));
+        }
+        let determination = boolean_field(entry, "determination", &entry_label, errors);
+        let rationale = string_field(entry, "rationale", &entry_label, errors);
+        if rationale.is_some_and(|value| value.trim().is_empty()) {
+            errors.push(format!("{entry_label}: rationale must not be empty"));
+        }
+        if determination == Some(false) {
+            errors.push(format!(
+                "{entry_label}: determination is false: {}",
+                rationale.unwrap_or("")
+            ));
+        }
+        let Some(inputs) = array_field(entry, "inputs", &entry_label, errors) else {
+            continue;
+        };
+        let mut self_inputs = 0;
+        let mut definition_inputs = 0;
+        let mut matched_definitions = BTreeSet::new();
+        for (input_index, input) in inputs.iter().enumerate() {
+            let input_label = format!("{entry_label}: inputs[{input_index}]");
+            let input_selector = InputSelector::from_input(input);
+            let resolved = validate_input(root, definitions, input, &input_label, errors);
+            match input_selector {
+                Some(InputSelector::RustItem {
+                    rust_file: selected_file,
+                    rust_item,
+                }) if selected_file == rust_file && rust_item == selector => {
+                    self_inputs += 1;
+                }
+                Some(InputSelector::Requirements { .. }) => {
+                    definition_inputs += 1;
+                    if let Some(resolved) = resolved {
+                        matched_definitions.extend(resolved.matches);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if self_inputs != 1 {
+            errors.push(format!(
+                "{entry_label}: expected exactly one Rust-item input selecting this function, found {self_inputs}"
+            ));
+        }
+        if definition_inputs == 0 {
+            errors.push(format!(
+                "{entry_label}: expected at least one requirements input"
+            ));
+        }
+        if let Some((_, citations)) = current {
+            for (_, name) in citations.iter() {
+                if !matched_definitions.contains(name) {
+                    errors.push(format!(
+                        "{entry_label}: requirements inputs do not cover citation {name}"
+                    ));
+                }
+            }
+        }
+    }
+    for (selector, (function, _)) in expected {
+        if !present.contains(selector) {
+            errors.push(format!(
+                "{label}: {rust_file}:{} {selector}: missing Rust function attestation",
+                function.declaration_line
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -963,10 +1386,10 @@ mod tests {
             "# Requirements\n\n:::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let implementation = format!("{{impl}}`foo.bar.ready`");
-        let citation = format!("{{cite}}`foo.bar.ready`");
-        let test = format!("{{test}}`foo.bar.ready`");
-        let example = format!("{{cite}}`missing.example`");
+        let implementation = ["{", "impl}`foo.bar.ready`"].concat();
+        let citation = ["{", "cite}`foo.bar.ready`"].concat();
+        let test = ["{", "test}`foo.bar.ready`"].concat();
+        let example = ["{", "cite}`missing.example`"].concat();
         let source = format!("// {implementation}\n// {citation}\n");
         let notes = format!("# Notes\n\n{test}\n\n`{example}`\n\n```text\n{example}\n```\n");
         fs::write(temp.path().join("src/main.rs"), &source).unwrap();
@@ -1009,8 +1432,8 @@ mod tests {
             "# Requirements\n\n:::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let known = format!("{{test}}`foo.bar.ready`");
-        let unknown = format!("{{impl}}`missing.requirement`");
+        let known = ["{", "test}`foo.bar.ready`"].concat();
+        let unknown = ["{", "impl}`missing.requirement`"].concat();
         let source = format!("// {known}\n// {known}\n// {unknown}\n");
         fs::write(temp.path().join("src/main.rs"), &source).unwrap();
         fs::write(
@@ -1149,6 +1572,9 @@ mod tests {
     // {test}`requirements.examples.evidence`
     // {test}`requirements.ci.schema`
     // {test}`requirements.references.evidence_coverage`
+    // {test}`requirements.references.attestation_reassessment`
+    // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.ci.rust_item_inputs`
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
@@ -1191,12 +1617,80 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        let rust_evidence = temp.path().join("evidence/rust/src/main.rs.json");
+        fs::create_dir_all(rust_evidence.parent().unwrap()).unwrap();
+        fs::write(
+            &rust_evidence,
+            json!({
+                "rust_file": "src/main.rs",
+                "functions": [{
+                    "rust_item": "fn[checks_case]",
+                    "citations": [{"role": "test", "name": "rules.case"}],
+                    "determination": true,
+                    "rationale": "The sole function is a test of the named case. Its test citation names every behavior it asserts; the case cites the ready requirement.",
+                    "inputs": [
+                        {
+                            "rust_file": "src/main.rs",
+                            "rust_item": "fn[checks_case]",
+                            "text": test_source.lines().collect::<Vec<_>>()
+                        },
+                        {
+                            "requirements": "rules.*",
+                            "matches": ["rules.case", "rules.ready"],
+                            "text": [
+                                chapter.lines().nth(6).unwrap(),
+                                chapter.lines().nth(7).unwrap(),
+                                chapter.lines().nth(8).unwrap(),
+                                "",
+                                chapter.lines().nth(2).unwrap(),
+                                chapter.lines().nth(3).unwrap(),
+                                chapter.lines().nth(4).unwrap()
+                            ]
+                        }
+                    ]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
 
         let report = validate_repository(temp.path()).unwrap();
         assert_eq!(report.requirements, 1);
         assert_eq!(report.examples, 1);
-        assert_eq!(report.evidence_files, 2);
+        assert_eq!(report.evidence_files, 3);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let rust_original = fs::read_to_string(&rust_evidence).unwrap();
+        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();
+        bad_citations["functions"][0]["citations"] = json!([]);
+        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(errors.contains("citation set changed"), "{errors}");
+        assert!(errors.contains("citations must not be empty"), "{errors}");
+        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();
+        let copy = duplicate["functions"][0].clone();
+        duplicate["functions"].as_array_mut().unwrap().push(copy);
+        fs::write(&rust_evidence, duplicate.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("duplicate Rust function attestation"),
+            "{errors}"
+        );
+        fs::remove_file(&rust_evidence).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("missing Rust function attestation file"),
+            "{errors}"
+        );
+        fs::write(&rust_evidence, rust_original).unwrap();
+        let orphan = temp.path().join("evidence/rust/src/removed.rs.json");
+        fs::write(&orphan, "{}").unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("orphaned Rust attestation file"),
+            "{errors}"
+        );
+        fs::remove_file(orphan).unwrap();
 
         let old = fs::read_to_string(&example_path).unwrap();
         let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();
@@ -1205,6 +1699,28 @@ mod tests {
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(errors.contains("no input covers"), "{errors}");
         assert!(errors.contains("src/main.rs:1"), "{errors}");
+        fs::write(&example_path, &old).unwrap();
+        fs::write(
+            temp.path().join("src/main.rs"),
+            test_source.replace("assert!(true)", "assert!(false)"),
+        )
+        .unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("input text changed for RustItem"),
+            "{errors}"
+        );
+        fs::write(temp.path().join("src/main.rs"), &test_source).unwrap();
+        fs::write(
+            temp.path().join("md/rules.md"),
+            format!("{chapter}\n:::{req} added\nAdded.\n:::\n", req = "{req}"),
+        )
+        .unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("requirements glob matches changed"),
+            "{errors}"
+        );
 
         let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();
         evidence["example"] = "Outdated.".into();

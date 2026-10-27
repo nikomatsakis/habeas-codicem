@@ -131,7 +131,7 @@ fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
 }
 
 // {impl}`requirements.references.rust_function_coverage`
-fn comments(source: &str) -> Vec<Range<usize>> {
+pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
     let mut position = 0;
@@ -178,7 +178,7 @@ fn comments(source: &str) -> Vec<Range<usize>> {
 }
 
 // {impl}`requirements.references.rust_function_coverage`
-fn attached_comment_indices(
+pub(crate) fn attached_comment_indices(
     source: &str,
     comments: &[Range<usize>],
     function_start: usize,
@@ -267,11 +267,7 @@ fn missing_function_references(
 }
 
 // {impl}`requirements.references.rust_function_coverage`
-pub(crate) fn validate_rust_functions(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
-    errors: &mut Vec<String>,
-) {
+pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path::PathBuf> {
     let mut stack = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(directory) = stack.pop() {
@@ -321,7 +317,16 @@ pub(crate) fn validate_rust_functions(
         }
     }
     files.sort();
-    for file in files {
+    files
+}
+
+// {impl}`requirements.references.rust_function_coverage`
+pub(crate) fn validate_rust_functions(
+    root: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+    errors: &mut Vec<String>,
+) {
+    for file in rust_files(root, errors) {
         let label = display_path(root, &file);
         let source = match fs::read_to_string(&file) {
             Ok(source) => source,
@@ -376,6 +381,10 @@ mod tests {
                     kind: DefinitionKind::Requirement,
                     text: "Example.".to_owned(),
                     source: "md/requirements.md:1".to_owned(),
+                    file: "md/requirements.md".to_owned(),
+                    line_start: 1,
+                    line_end: 1,
+                    raw_lines: vec![],
                 },
             ),
             (
@@ -385,6 +394,10 @@ mod tests {
                     text: "Given the example, it works. CITE`requirements.example`"
                         .replace("CITE", "{cite}"),
                     source: "md/requirements.md:5".to_owned(),
+                    file: "md/requirements.md".to_owned(),
+                    line_start: 5,
+                    line_end: 5,
+                    raw_lines: vec![],
                 },
             ),
         ])

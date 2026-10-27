@@ -14,6 +14,7 @@ pub(crate) fn session_start() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// {impl}`requirements.integration.symposium_setup_hook`
 fn session_start_response(input: &Value, fallback_cwd: &Path) -> Value {
     let Some(event) = input.get("SessionStart") else {
         return json!({"SessionStart": {}});
