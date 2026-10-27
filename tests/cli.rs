@@ -16,12 +16,16 @@ fn renderer_support_and_invalid_setup_option() {
         .unwrap();
     assert!(!unsupported.status.success());
 
-    let invalid_setup = Command::new(binary)
-        .args(["setup", "--wrong"])
-        .output()
-        .unwrap();
-    assert!(!invalid_setup.status.success());
-    assert!(String::from_utf8_lossy(&invalid_setup.stderr).contains("Usage: habeas"));
+    for args in [
+        ["agents"].as_slice(),
+        ["setup", "--wrong"].as_slice(),
+        ["setup", "--install-skills"].as_slice(),
+        ["setup", "--path", ".", "--install-skills"].as_slice(),
+    ] {
+        let output = Command::new(binary).args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: habeas"));
+    }
 }
 
 // {test}`requirements.cli.invocation`

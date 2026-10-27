@@ -109,11 +109,7 @@ The `mdbook` subcommand MUST act as the mdBook preprocessor for HTML books, rend
 :::
 
 :::{req} cli.setup
-Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. With `--install-skills`, setup MUST also install all bundled skills in `.agents/skills/` without overwriting differing files. Without the flag, setup MUST NOT change `.agents/skills/`. The flag MUST work together with `--path <crate-dir>`. The non-Symposium getting started instructions MUST recommend `habeas setup --install-skills` and explain where the skills are copied.
-:::
-
-:::{req} cli.agents
-Running `habeas agents` in a Cargo project MUST install all bundled skills for agents to bootstrap requirements, author requirements, and maintain evidence in `.agents/skills/`. It MUST NOT overwrite an existing skill with different content.
+Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills.
 :::
 
 :::{req} cli.status
@@ -140,8 +136,8 @@ Habeas MUST bundle a skill for deriving initial requirements from an existing co
 The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST allow truthful false determinations while implementation is pending.
 :::
 
-:::{req} install.cargo
-The project documentation MUST advise users to install the CLI with `cargo install habeas`.
+:::{req} install.symposium
+The getting-started documentation MUST show users how to install and initialize Symposium, add `habeas` as a project dev dependency, enable its plugin with `cargo agents use habeas`, and then configure the project with the globally installed `habeas setup` command. It MUST explain how to refresh skills with `cargo agents sync` and how to preserve local edits when moving from skills copied by older Habeas versions.
 :::
 
 :::{req} layout.project
@@ -153,7 +149,11 @@ The Habeas Codicem book MUST configure mdBook's Git repository link for `nikomat
 :::
 
 :::{req} integration.symposium
-The Habeas crate MUST provide a root `Symposium.toml` with a `[[skills]]` group whose `source.path` is `assets/skills`. It MUST disable default skill groups so its bundled skills are selected from one source. It MUST declare a named `habeas` Cargo installation with `executable = "habeas"` and `global = true`, so `cargo agents use habeas` can provide the CLI globally.
+For a Cargo workspace that depends on `habeas`, enabling its Symposium plugin with `cargo agents use habeas` MUST make the agent skills shipped with the selected Habeas version available to the user's configured agents. After the selected version changes, `cargo agents sync` MUST provide the skills shipped with the new version.
+:::
+
+:::{req} integration.symposium_cli
+For a Cargo workspace that depends on `habeas`, `cargo agents use habeas` MUST install the `habeas` CLI into Cargo's global executable directory.
 :::
 
 :::{req} integration.ci
@@ -211,7 +211,7 @@ An evidence detail page MUST continue to show the current requirement or example
 :::
 
 :::{req} cli.invocation
-`habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message.
+`habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.
 :::
 
 :::{req} cli.setup_project

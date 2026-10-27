@@ -39,11 +39,10 @@ fn run(project: &Path, args: &[&str]) {
 }
 
 // {test}`requirements.cli.setup`
-// {test}`requirements.cli.agents`
 // {test}`requirements.cli.setup_css`
 // {test}`requirements.cli.setup_local_path`
 #[test]
-fn setup_and_agents_are_repeatable() {
+fn setup_is_repeatable() {
     let temp = fixture();
     let project = temp.path();
     let local_crate = env!("CARGO_MANIFEST_DIR");
@@ -51,17 +50,6 @@ fn setup_and_agents_are_repeatable() {
     run(project, &["setup", "--path", local_crate]);
     assert!(!project.join(".agents/skills").exists());
     run(project, &["setup", "--path", local_crate]);
-    run(project, &["setup", "--install-skills"]);
-    run(
-        project,
-        &["setup", "--path", local_crate, "--install-skills"],
-    );
-    run(
-        project,
-        &["setup", "--install-skills", "--path", local_crate],
-    );
-    run(project, &["agents"]);
-    run(project, &["agents"]);
 
     let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
     assert!(cargo.contains("[dev-dependencies]"));
@@ -77,43 +65,20 @@ fn setup_and_agents_are_repeatable() {
         "#[test]\nfn habeas() {\n    habeas::validate();\n}\n"
     );
     assert!(project.join("md/habeas.css").is_file());
-    assert_eq!(
-        fs::read_to_string(project.join(".agents/skills/habeas-bootstrap-requirements/SKILL.md"))
-            .unwrap(),
-        include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md")
-    );
-    assert_eq!(
-        fs::read_to_string(project.join(".agents/skills/habeas-requirements/SKILL.md")).unwrap(),
-        include_str!("../assets/skills/habeas-requirements/SKILL.md")
-    );
-    assert_eq!(
-        fs::read_to_string(project.join(".agents/skills/habeas-evidence/SKILL.md")).unwrap(),
-        include_str!("../assets/skills/habeas-evidence/SKILL.md")
-    );
+    assert!(!project.join(".agents/skills").exists());
 }
 
 // {test}`requirements.cli.setup`
-// {test}`requirements.cli.agents`
 #[test]
-fn setup_install_skills_preserves_differing_skill() {
+fn setup_preserves_existing_agent_skills() {
     let temp = fixture();
     let project = temp.path();
-    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
 
     let skill = project.join(".agents/skills/habeas-requirements/SKILL.md");
     fs::create_dir_all(skill.parent().unwrap()).unwrap();
     fs::write(&skill, "custom skill\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
-        .args(["setup", "--install-skills"])
-        .current_dir(project)
-        .env("CARGO_NET_OFFLINE", "true")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("already exists with different content")
-    );
+    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
     assert_eq!(fs::read_to_string(skill).unwrap(), "custom skill\n");
 }
 

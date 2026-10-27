@@ -9,21 +9,14 @@ const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n"
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 
 // {impl}`requirements.cli.setup_project`
-pub(crate) fn project_root(require_book: bool) -> Result<PathBuf, Box<dyn Error>> {
+pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     cwd.ancestors()
         .find(|directory| {
-            directory.join("Cargo.toml").is_file()
-                && (!require_book || directory.join("book.toml").is_file())
+            directory.join("Cargo.toml").is_file() && directory.join("book.toml").is_file()
         })
         .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            if require_book {
-                "cannot find a project with Cargo.toml and book.toml".into()
-            } else {
-                "cannot find a Cargo project".into()
-            }
-        })
+        .ok_or_else(|| "cannot find a project with Cargo.toml and book.toml".into())
 }
 
 // {impl}`requirements.cli.setup`
@@ -46,8 +39,8 @@ pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dy
 }
 
 // {impl}`requirements.cli.setup`
-pub(crate) fn run(local_crate: Option<&Path>, install_skills: bool) -> Result<(), Box<dyn Error>> {
-    let root = project_root(true)?;
+pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
     let book_path = root.join("book.toml");
     let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;
     // {impl}`requirements.cli.setup_project`
@@ -136,10 +129,6 @@ pub(crate) fn run(local_crate: Option<&Path>, install_skills: bool) -> Result<()
     write_new_or_same(&css_path, BADGE_CSS)?;
     write_new_or_same(&test_path, TEST_SOURCE)?;
     fs::write(&book_path, book.to_string())?;
-    // {impl}`requirements.cli.setup`
-    if install_skills {
-        crate::agents::install(&root)?;
-    }
     println!("Habeas configured in {}", root.display());
     Ok(())
 }
