@@ -10,7 +10,7 @@ Read the project's existing requirements, documentation, public entry points, im
 Keep two working inventories:
 
 - Every first-party runnable test or test case, including integration tests, doctests, and parameterized cases where present. Record the requirement or example IDs each test checks.
-- Every first-party source unit that appears to implement end-user-visible functionality or interactions. Record file locations and requirement IDs for relevant public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches. Do not count one tagged entry point as coverage for deeper user-visible code.
+- Every explicit function or method in first-party Rust sources, including trait declarations, test helpers, and internal helpers. Record its file location and the requirement or example IDs it cites. Also inventory relevant public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches. Do not count one tagged entry point as coverage for deeper code.
 
 Exclude generated and third-party code from the inventories. If a candidate looks user-facing but its purpose is unclear, keep it on the gap list until resolved.
 
@@ -20,7 +20,9 @@ Create or reuse the agreed, stable, chapter-qualified `{req}` requirements in th
 
 Put at least one `{test}` reference with a full requirement or example name on each test definition or individual case. A parameterized test can carry a reference at its case source or generating declaration when that is the only editable source. Add multiple references when a test checks multiple definitions. Do not use one file-level tag to stand in for unrelated tests.
 
-Map each inventoried user-visible source unit to a requirement and add `{impl}` references at meaningful implementation points, including distinct observable branches. Do not tag every line. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and evidence records. Each evidence record must cite exact current lines covering every reference to its definition. Judge the requirement or example from the code and test results; a tag alone does not justify `determination: true`.
+Add a requirement or example reference in a Rust comment attached to each inventoried function or method or within its body. An example must cite a requirement, so an example reference still traces the function to a requirement. A reference on an enclosing module or `impl` does not cover its functions. There is no waiver for an uncited function. If no behavior-specific requirement explains an internal helper, propose an explicit project requirement such as `internal-detail`, get the user's agreement, and cite it. Record evidence explaining why each such function adds no end-user-observable behavior beyond the requirements it supports. Do not use an internal-detail requirement to justify unspecified end-user-visible behavior.
+
+Review every end-user-observable result and branch, including errors and input handling. Verify that the code fulfills each applicable requirement and does not introduce additional observable behavior without an agreed requirement. When requirements interact, cite all of them at meaningful implementation points and explain how their texts jointly account for the behavior. For example, a `^C` shortcut needs a requirement that explains why it is accepted. A tag alone does not establish that the behavior matches the requirement. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and evidence records. Each evidence record must cite exact current lines covering every reference to its definition. Judge each requirement or example from the code and test results; a tag alone does not justify `determination: true`.
 
 For example, source comments can carry these references:
 
@@ -29,4 +31,4 @@ For example, source comments can carry these references:
 // {impl}`requirements.foo`
 ```
 
-Run the project tests and Habeas validation, then review both inventories independently: Habeas checks references that exist but does not detect an untagged test or omitted user-visible code. Report test-tag coverage and user-visible implementation coverage as mapped counts over total counts. Claim 100% only when both inventories have no unmapped items. List remaining gaps with file locations and reasons; do not invent evidence or silently exclude difficult cases.
+Run the project tests and Habeas validation, then review both inventories independently: Habeas can report an uncited Rust function but cannot judge whether its cited requirements fully explain its behavior. Report test-tag coverage and function coverage as mapped counts over total counts. Claim 100% only when both inventories have no unmapped items and every observable branch has been reviewed. List remaining gaps with file locations and reasons; do not invent evidence or silently exclude difficult cases.

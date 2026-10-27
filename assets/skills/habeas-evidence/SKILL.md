@@ -15,6 +15,10 @@ Each input names a repository-relative `file`, a 1-based inclusive `line_start` 
 
 For an example, cite at least one relevant test with `{test}`. In the rationale, name the tests and explain how their setup and assertions cover every interesting aspect and expected result. Inspect the tests and their results; a reference alone does not establish adequate coverage. Keep the determination false while coverage is missing.
 
-Run `cargo test --workspace` after changing requirements, examples, source references, or evidence. Read the full set of Habeas errors: missing and orphan records, malformed fields, false determinations, stale definition text, changed input lines, unknown references, and uncovered reference lines.
+When checking a determination against code, inspect every end-user-observable result and branch, including errors and input handling. Confirm that the code does what each applicable requirement says and introduces no additional observable behavior without an agreed requirement. When requirements interact, cite every applicable requirement at the relevant implementation point and explain in the rationale how their texts jointly account for the behavior. A citation alone does not prove the behavior is specified.
+
+Every explicit function or method in first-party Rust sources needs its own requirement or example reference, including trait methods and test helpers. Each example cites a requirement. Do not waive an uncited function because it is an internal helper. If no behavior-specific requirement explains it, propose an explicit project requirement such as `internal-detail` for the user's agreement, cite it, and give evidence for each such function explaining why it introduces no additional end-user-observable behavior. Do not use internal-detail to justify unspecified observable behavior.
+
+Run `cargo test --workspace` after changing requirements, examples, source references, or evidence. Read the full set of Habeas errors: missing and orphan records, malformed fields, false determinations, stale definition text, changed input lines, unknown references, uncovered reference lines, and uncited Rust functions.
 
 Do not make a failing check green by inventing input text or changing a determination without examining the cited files.

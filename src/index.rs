@@ -163,14 +163,18 @@ impl LoadedDetailEvidence {
         }
     }
 
+    // {impl}`requirements.index.state`
     pub(crate) fn state(&self) -> EvidenceState {
         self.state
     }
 
+    // {impl}`requirements.index.state`
     pub(crate) fn errors(&self) -> &[String] {
         &self.errors
     }
 
+    // {impl}`requirements.index.detail_format`
+    // {impl}`requirements.cli.info`
     fn borrowed(&self) -> DetailEvidence<'_> {
         DetailEvidence {
             state: self.state,

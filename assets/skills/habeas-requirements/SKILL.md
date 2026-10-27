@@ -15,6 +15,12 @@ Show the user the full IDs and text of existing requirements to reuse, plus the 
 
 After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior, add tests and traceability references, and maintain evidence. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Use the evidence skill for pending determinations while implementation is incomplete.
 
+## Reviewing code against requirements
+
+Inspect every end-user-observable result and branch, including errors and input handling. Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement. When requirements interact, cite every applicable requirement at the relevant implementation point and explain how their texts jointly account for the behavior. A citation alone does not explain why a behavior, such as accepting `^C`, is specified.
+
+Every explicit function or method in first-party Rust sources needs its own requirement or example reference in an attached Rust comment or within its body, including trait methods and test helpers. Each example cites a requirement. A reference on an enclosing module or `impl` does not cover its functions, and there is no uncited-function waiver. If no existing requirement explains an internal helper, propose a project requirement such as `internal-detail` for the user's agreement, cite it on the function, and record evidence explaining why each such function adds no end-user-observable behavior beyond the requirements it supports. Do not use an internal-detail requirement to justify otherwise unspecified observable behavior.
+
 ## Authoring format
 
 Put requirements in the book's Markdown source directory. Define each with a fenced `{req}` directive: the opening line is three or more colons followed by `{req} name`, and the closing line has at least as many colons. Derive the full name from the chapter path relative to that directory: remove `.md`, change `/` to `.`, and append the directive name. For nested chapters, omit a leading `reqs/` and a trailing `/index` or `/README`.

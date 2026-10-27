@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {test}`requirements.cli.setup`
 fn fixture() -> TempDir {
     let temp = TempDir::new().unwrap();
     fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -25,6 +26,8 @@ fn fixture() -> TempDir {
     temp
 }
 
+// {test}`requirements.cli.setup`
+// {test}`requirements.cli.agents`
 fn run(project: &Path, args: &[&str]) {
     let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .args(args)

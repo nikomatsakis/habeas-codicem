@@ -8,6 +8,7 @@ use pulldown_cmark::{Event, Parser, Tag};
 
 mod evidence;
 mod index;
+mod rust_coverage;
 
 pub use evidence::{EvidenceReport, validate_repository};
 
@@ -44,6 +45,8 @@ pub(crate) enum DefinitionKind {
 }
 
 impl DefinitionKind {
+    // {impl}`requirements.ci.errors`
+    // {impl}`requirements.examples.evidence`
     pub(crate) fn noun(self) -> &'static str {
         match self {
             Self::Requirement => "requirement",
@@ -51,6 +54,8 @@ impl DefinitionKind {
         }
     }
 
+    // {impl}`requirements.references.book_badges`
+    // {impl}`requirements.examples.index`
     pub(crate) fn badge(self) -> &'static str {
         match self {
             Self::Requirement => "req",
@@ -58,6 +63,8 @@ impl DefinitionKind {
         }
     }
 
+    // {impl}`requirements.references.book_badges`
+    // {impl}`requirements.examples.index`
     pub(crate) fn anchor(self, name: &str) -> String {
         format!("habeas-{}-{name}", self.badge())
     }
@@ -88,6 +95,7 @@ pub(crate) enum ReferenceKind {
 
 // {impl}`requirements.references.book_badges`
 impl ReferenceKind {
+    // {impl}`requirements.references.book_badges`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Impl => "impl",
@@ -96,6 +104,7 @@ impl ReferenceKind {
         }
     }
 
+    // {impl}`requirements.references.book_badges`
     fn color(self) -> &'static str {
         match self {
             Self::Impl => "237346",

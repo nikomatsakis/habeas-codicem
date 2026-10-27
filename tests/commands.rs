@@ -5,6 +5,8 @@ use std::process::{Command, Output};
 use serde_json::json;
 use tempfile::TempDir;
 
+// {test}`requirements.cli.status`
+// {test}`requirements.cli.info`
 fn fixture() -> TempDir {
     let temp = TempDir::new().unwrap();
     fs::create_dir_all(temp.path().join("md")).unwrap();
@@ -83,6 +85,8 @@ fn fixture() -> TempDir {
     temp
 }
 
+// {test}`requirements.cli.status`
+// {test}`requirements.cli.info`
 fn habeas(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_habeas"))
         .current_dir(dir)

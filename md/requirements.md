@@ -82,6 +82,10 @@ When `output.html.git-repository-url` names a GitHub repository and `output.html
 For every `{impl}`, `{cite}`, and `{test}` reference in a project source file, the evidence file for the referenced requirement or example MUST contain an `inputs` entry for that file whose inclusive line range covers the reference's line. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
 :::
 
+:::{req} references.rust_function_coverage
+During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST cite a requirement. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+:::
+
 :::{req} ci.errors
 Habeas MUST continue validating after an error and report all validation errors it finds in one run. Each error MUST identify the affected evidence file or requirement and explain the failure.
 :::
@@ -134,6 +138,14 @@ Habeas MUST bundle a skill for deriving initial requirements from an existing co
 
 :::{req} cli.requirements_review_skill
 The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST allow truthful false determinations while implementation is pending.
+:::
+
+:::{req} cli.behavior_review_guidance
+Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. Where requirements interact, agents MUST cite every applicable requirement at the relevant implementation point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
+:::
+
+:::{req} cli.internal_detail_guidance
+Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement, such as `internal-detail`, obtain the user's agreement, cite it on the function, and record evidence explaining why each such function introduces no additional end-user-observable behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.
 :::
 
 :::{req} install.symposium

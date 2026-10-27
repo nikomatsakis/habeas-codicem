@@ -86,6 +86,8 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     }
 
     validate_references(&root, &definitions, &mut errors);
+    // {impl}`requirements.references.rust_function_coverage`
+    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);
 
     let examples = definitions
         .values()
@@ -820,13 +822,18 @@ mod tests {
 
     use super::validate_repository;
 
+    // {test}`requirements.integration.report_api`
     fn fixture() -> TempDir {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("md/reqs/foo")).unwrap();
         fs::create_dir_all(temp.path().join("evidence")).unwrap();
         fs::create_dir_all(temp.path().join("src")).unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        fs::write(temp.path().join("src/main.rs"), "first line\nsecond line\n").unwrap();
+        fs::write(
+            temp.path().join("src/main.rs"),
+            "// first line\n// second line\n",
+        )
+        .unwrap();
         temp
     }
 
@@ -853,7 +860,7 @@ mod tests {
                     "file": "src/main.rs",
                     "line_start": 1,
                     "line_end": 2,
-                    "text": ["first line", "second line"]
+                    "text": ["// first line", "// second line"]
                 }]
             })
             .to_string(),
@@ -933,7 +940,7 @@ mod tests {
             "determination is false",
             "input text changed",
             "- changed line",
-            "+ first line",
+            "+ // first line",
             "requirement must be a string",
             "missing field \"determination\"",
             "inputs must be an array",

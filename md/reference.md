@@ -50,9 +50,11 @@ Source files and book chapters can mark lines as implementing, citing, or testin
 
 Each reference must name an existing requirement or example. Its evidence must include an input covering the line with the reference. In the book, references and definitions become linked badges.
 
+For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example cites a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit project requirement such as `internal-detail` and provide evidence explaining why it adds no otherwise unspecified user-visible behavior.
+
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, and uncovered references. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book.
+The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book.
 
 Run `habeas status` from within the project to list requirements needing attention and their validation findings. `habeas status --all` shows every requirement and its evidence state. Use `habeas info <full-name>` to print a requirement's detail page as Markdown, including its current text, rationale, inputs, and findings. The selector also accepts a regular expression over full names:
 
