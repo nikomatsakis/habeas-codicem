@@ -87,7 +87,6 @@ def main():
         env = os.environ.copy()
         env.update(
             CARGO_HOME=str(cargo_home),
-            CARGO_NET_OFFLINE="true",
             SYMPOSIUM_HOME=str(symposium_home),
             PATH=os.pathsep.join((str(wrapper_dir), str(cargo_home / "bin"), env["PATH"])),
         )
