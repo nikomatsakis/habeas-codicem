@@ -1,7 +1,7 @@
 {
   "requirement": "The enabled Habeas Symposium plugin MUST make the `habeas` CLI available in Cargo's global executable directory before its session-start hook advises an agent to run `habeas setup`.",
-  "determination": false,
-  "rationale": "Cargo metadata declares a global Cargo installation that the SessionStart hook references. An isolated consumer smoke test confirms Symposium requests acquisition before dispatch, but it substitutes the current checkout CLI for the crates.io install. Actual registry acquisition into Cargo’s global executable directory remains unverified.",
+  "determination": true,
+  "rationale": "The isolated consumer smoke test makes Symposium invoke its declared Cargo installation. Its Cargo wrapper redirects the unavailable registry artifact for this unreleased change to the current checkout, then runs a real cargo install --path into an isolated Cargo root. The test verifies the installed executable exists before the SessionStart setup advisory and successfully runs setup using that executable. Registry acquisition of a future published release is outside this checkout test.",
   "inputs": [
     {
       "file": "Cargo.toml",
@@ -23,6 +23,93 @@
         "format = \"symposium\"",
         "command = \"habeas\"",
         "args = [\"hook\", \"session-start\"]"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 108,
+      "line_end": 139,
+      "text": [
+        "        # Replace only the registry source with this checkout. Cargo still",
+        "        # performs the installation into the isolated global bin directory.",
+        "        wrapper = wrapper_dir / \"cargo\"",
+        "        marker = root / \"habeas-install-invoked\"",
+        "        original_cargo_home = os.environ.get(\"CARGO_HOME\", str(Path.home() / \".cargo\"))",
+        "        wrapper.write_text(",
+        "            \"#!/bin/sh\\n\"",
+        "            'if [ \"$1\" = \"binstall\" ]; then exit 1; fi\\n'",
+        "            'if [ \"$1\" = \"install\" ]; then\\n'",
+        "            '  for argument in \"$@\"; do\\n'",
+        "            '    case \"$argument\" in\\n'",
+        "            '      habeas|habeas@*)\\n'",
+        "            f\"        export CARGO_HOME={shlex.quote(original_cargo_home)}\\n\"",
+        "            f\"        {shlex.quote(cargo)} install --path {shlex.quote(str(repo))} \"",
+        "            f\"--root {shlex.quote(str(cargo_home))} --locked --offline --debug || exit $?\\n\"",
+        "            f\"        touch {shlex.quote(str(marker))}\\n\"",
+        "            \"        exit 0\\n\"",
+        "            \"        ;;\\n\"",
+        "            \"    esac\\n\"",
+        "            \"  done\\n\"",
+        "            \"fi\\n\"",
+        "            f\"export CARGO_HOME={shlex.quote(original_cargo_home)}\\n\"",
+        "            f\"exec {shlex.quote(cargo)} \\\"$@\\\"\\n\"",
+        "        )",
+        "        wrapper.chmod(0o755)",
+        "",
+        "        env = os.environ.copy()",
+        "        env.update(",
+        "            CARGO_HOME=str(cargo_home),",
+        "            SYMPOSIUM_HOME=str(symposium_home),",
+        "            PATH=os.pathsep.join((str(wrapper_dir), str(cargo_home / \"bin\"), env[\"PATH\"])),",
+        "        )"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 156,
+      "line_end": 163,
+      "text": [
+        "        # {test}`requirements.integration.symposium_setup_hook`",
+        "        interactive_sync(symposium, project, env)",
+        "        saved_config = (symposium_home / \"config.toml\").read_text()",
+        "        if \"auto-enable\" not in saved_config or \"habeas\" not in saved_config:",
+        "            raise AssertionError(\"Symposium did not record the decision to enable Habeas\")",
+        "        hook_registration = project / \".codex\" / \"hooks.json\"",
+        "        if not hook_registration.is_file() or \"session-start\" not in hook_registration.read_text():",
+        "            raise AssertionError(\"Symposium did not register its session-start hook\")"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 193,
+      "line_end": 218,
+      "text": [
+        "        incomplete_context = session_start()",
+        "        if \"Habeas Codicem is not fully configured\" not in incomplete_context:",
+        "            status = subprocess.run(",
+        "                [symposium, \"status\"],",
+        "                cwd=project,",
+        "                env=env,",
+        "                text=True,",
+        "                capture_output=True,",
+        "            )",
+        "            raise AssertionError(",
+        "                \"Symposium did not deliver Habeas's setup advisory. \"",
+        "                f\"Agent output: {incomplete_context!r}\\n\"",
+        "                f\"Hook diagnostics: {last_stderr}\\n\"",
+        "                f\"Plugin status: {status.stdout}\\n{status.stderr}\"",
+        "            )",
+        "        # {test}`requirements.integration.symposium_cli`",
+        "        installed_habeas = cargo_home / \"bin\" / habeas.name",
+        "        if not marker.exists() or not installed_habeas.exists():",
+        "            raise AssertionError(\"Symposium did not acquire the Habeas hook command\")",
+        "",
+        "        subprocess.run(",
+        "            [installed_habeas, \"setup\", \"--path\", str(repo)], cwd=project, check=True",
+        "        )",
+        "        configured_context = session_start()",
+        "        if \"Habeas Codicem is not fully configured\" in configured_context:",
+        "            raise AssertionError(\"Symposium kept advising setup after it was complete\")"
       ]
     }
   ]
