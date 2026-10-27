@@ -20,9 +20,9 @@ cargo add --dev habeas
 cargo agents sync
 ```
 
-Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. On Symposium versions that run hooks from dependency crates, its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
+Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
 
-Symposium 0.5.1 does not yet run hooks declared inside a dependency crate. Until a supporting release is available, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
+To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
 `habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
 

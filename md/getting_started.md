@@ -18,9 +18,9 @@ cargo agents sync
 
 Run `cargo agents sync` in your terminal and choose **Enable** when Symposium offers Habeas's plugin. Its default **Ask me later** choice leaves the plugin disabled.
 
-On Symposium versions that run hooks declared by a dependency crate, Habeas's hook checks setup when an agent starts a session in this project. If configuration is missing or incompatible, it advises the agent to run `habeas setup`. The hook does not change project files itself; the enabled plugin makes the CLI available for the advised command.
+Habeas's hook checks setup when an agent starts a session in this project. If configuration is missing or incompatible, it advises the agent to run `habeas setup`. The hook does not change project files itself.
 
-Symposium 0.5.1 does not yet run hooks declared inside a dependency crate. Until a supporting release is available, install the CLI and configure the project yourself:
+To configure the project before starting an agent session, or if your agent is not running Symposium hooks, install the CLI and configure the project yourself:
 
 ```sh
 cargo install habeas
