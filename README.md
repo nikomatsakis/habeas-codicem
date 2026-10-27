@@ -1,6 +1,6 @@
 # Habeas Codicem
 
-Habeas connects mdBook requirements to exact source evidence. A Cargo test checks requirement coverage, determinations, cited lines, and `{impl}`, `{cite}`, and `{test}` references.
+Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, cited lines, and `{impl}`, `{cite}`, and `{test}` references.
 
 ## Install
 
@@ -40,18 +40,21 @@ habeas info '^requirements\.cli\.'
 
 The bundled agent skills describe `habeas info` as a way to look up requirements while working.
 
-For a requirements index, add a chapter to `SUMMARY.md` containing `:::{requirements-index}` on one line and `:::` on the next. The preprocessor lists evidence states there and adds a detail subchapter for each requirement.
+For a requirements index, add a chapter to `SUMMARY.md` containing `:::{requirements-index}` on one line and `:::` on the next. The preprocessor lists evidence states there and adds a detail subchapter for each requirement and example.
 
-A requirement uses a colon-fenced directive. Its body includes all Markdown up to the matching closing fence:
+A requirement states general behavior. An example uses its own directive to show a concrete case and cites the requirement it illustrates. In `md/requirements.md`:
 
 ```text
 :::{req} forwarding.quit
 Pressing q MUST stop managed forwards.
+:::
 
-## Example
-An example or diagram can live here.
+:::{example} forwarding.two_active
+With two managed forwards active, pressing q stops both. {cite}`requirements.forwarding.quit`
 :::
 ```
+
+Tests can target the example with `{test}` followed by its full name, `requirements.forwarding.two_active`. The agent must explain in `evidence/requirements.forwarding.two_active.json` how those tests cover both active forwards and the result of pressing q. See [How it works](md/reference.md#examples).
 
 ## Developing and publishing the book
 

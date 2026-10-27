@@ -7,19 +7,21 @@ use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
 use crate::{
-    ReferenceKind, chapter_namespace, full_requirement_name, reference_roles, requirement_blocks,
-    valid_name,
+    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,
+    reference_roles, valid_name,
 };
 
 // {impl}`requirements.integration.report_api`
 #[derive(Debug)]
 pub struct EvidenceReport {
     pub requirements: usize,
+    pub examples: usize,
     pub evidence_files: usize,
     pub errors: Vec<String>,
 }
 
-pub(crate) struct Requirement {
+pub(crate) struct Declaration {
+    pub(crate) kind: DefinitionKind,
     pub(crate) text: String,
     pub(crate) source: String,
 }
@@ -30,7 +32,7 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 }
 
 pub(crate) struct RepositoryInspection {
-    pub(crate) requirements: BTreeMap<String, Requirement>,
+    pub(crate) requirements: BTreeMap<String, Declaration>,
     pub(crate) report: EvidenceReport,
 }
 
@@ -39,7 +41,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     let root = fs::canonicalize(root)?;
     let mut errors = Vec::new();
     let md_root = book_source_dir(&root, &mut errors);
-    let requirements = collect_requirements(&root, &md_root, &mut errors);
+    let definitions = collect_definitions(&root, &md_root, &mut errors);
     let evidence_root = root.join("evidence");
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
@@ -62,31 +64,41 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         } else {
             None
         };
-        let expected = name.and_then(|name| requirements.get(name));
+        let expected = name.and_then(|name| definitions.get(name));
 
         if let Some(name) = name.filter(|_| expected.is_some()) {
             present.insert(name.to_owned());
         } else {
-            errors.push(format!("{label}: no matching requirement"));
+            errors.push(format!("{label}: no matching requirement or example"));
         }
         validate_evidence_file(&root, file, expected, &mut errors);
     }
 
     // {impl}`requirements.ci.coverage`
-    for (name, requirement) in &requirements {
+    for (name, definition) in &definitions {
         if !present.contains(name) {
             errors.push(format!(
-                "evidence/{name}.json: missing for requirement at {}",
-                requirement.source
+                "evidence/{name}.json: missing for {} at {}",
+                definition.kind.noun(),
+                definition.source
             ));
         }
     }
 
-    validate_references(&root, &requirements, &mut errors);
+    validate_references(&root, &definitions, &mut errors);
 
+    let examples = definitions
+        .values()
+        .filter(|definition| definition.kind == DefinitionKind::Example)
+        .count();
+    let requirements = definitions
+        .into_iter()
+        .filter(|(_, definition)| definition.kind == DefinitionKind::Requirement)
+        .collect::<BTreeMap<_, _>>();
     Ok(RepositoryInspection {
         report: EvidenceReport {
             requirements: requirements.len(),
+            examples,
             evidence_files: evidence_files.len(),
             errors,
         },
@@ -126,12 +138,13 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 
 // {impl}`requirements.ci.definition_errors`
 // {impl}`requirements.ci.identifiers`
-fn collect_requirements(
+// {impl}`requirements.examples.definition`
+fn collect_definitions(
     root: &Path,
     md_root: &Path,
     errors: &mut Vec<String>,
-) -> BTreeMap<String, Requirement> {
-    let mut requirements = BTreeMap::new();
+) -> BTreeMap<String, Declaration> {
+    let mut definitions = BTreeMap::new();
 
     for file in files_with_extension(root, md_root, "md", errors) {
         let relative = file
@@ -150,7 +163,7 @@ fn collect_requirements(
             }
         };
         let namespace = chapter_namespace(relative);
-        for block in requirement_blocks(&content) {
+        for block in definition_blocks(&content) {
             let line = content[..block.start]
                 .bytes()
                 .filter(|byte| *byte == b'\n')
@@ -159,34 +172,64 @@ fn collect_requirements(
             let source = format!("{label}:{line}");
             let name = full_requirement_name(&namespace, &block.name);
             if !valid_name(&name) {
-                errors.push(format!("{source}: invalid requirement name {name:?}"));
+                errors.push(format!(
+                    "{source}: invalid {} name {name:?}",
+                    block.kind.noun()
+                ));
                 continue;
             }
 
             if !block.closed {
                 errors.push(format!(
-                    "{source}: requirement {name} is missing a closing colon fence"
+                    "{source}: {} {name} is missing a closing colon fence",
+                    block.kind.noun()
                 ));
             }
             // {impl}`requirements.ci.span`
             let text = content[block.body_start..block.body_end].trim().to_owned();
             if text.is_empty() {
-                errors.push(format!("{source}: requirement {name} has no text"));
+                errors.push(format!(
+                    "{source}: {} {name} has no text",
+                    block.kind.noun()
+                ));
             }
 
-            match requirements.entry(name.clone()) {
+            match definitions.entry(name.clone()) {
                 Entry::Vacant(slot) => {
-                    slot.insert(Requirement { text, source });
+                    slot.insert(Declaration {
+                        kind: block.kind,
+                        text,
+                        source,
+                    });
                 }
                 Entry::Occupied(previous) => errors.push(format!(
-                    "{source}: duplicate requirement {name}; first declared at {}",
+                    "{source}: duplicate {} {name}; first declared at {}",
+                    block.kind.noun(),
                     previous.get().source
                 )),
             }
         }
     }
 
-    requirements
+    for (name, definition) in &definitions {
+        if definition.kind == DefinitionKind::Example
+            && !reference_roles(&definition.text, true)
+                .into_iter()
+                .any(|reference| {
+                    reference.kind == ReferenceKind::Cite
+                        && definitions
+                            .get(reference.name)
+                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)
+                })
+        {
+            errors.push(format!(
+                "{}: example {name} must cite at least one requirement",
+                definition.source
+            ));
+        }
+    }
+
+    definitions
 }
 
 // {impl}`requirements.ci.coverage`
@@ -244,10 +287,11 @@ fn files_with_extension(
 }
 
 // {impl}`requirements.ci.schema`
+// {impl}`requirements.examples.evidence`
 fn validate_evidence_file(
     root: &Path,
     path: &Path,
-    expected: Option<&Requirement>,
+    expected: Option<&Declaration>,
     errors: &mut Vec<String>,
 ) {
     let label = display_path(root, path);
@@ -269,23 +313,33 @@ fn validate_evidence_file(
         errors.push(format!("{label}: expected a JSON object"));
         return;
     };
+    let kind = expected
+        .map(|definition| definition.kind)
+        .unwrap_or_else(|| {
+            if object.contains_key("example") {
+                DefinitionKind::Example
+            } else {
+                DefinitionKind::Requirement
+            }
+        });
+    let text_field = kind.noun();
     check_keys(
         object,
-        &["requirement", "determination", "rationale", "inputs"],
+        &[text_field, "determination", "rationale", "inputs"],
         &label,
         errors,
     );
 
     // {impl}`requirements.ci.requirement_text`
-    if let Some(text) = string_field(object, "requirement", &label, errors) {
+    if let Some(text) = string_field(object, text_field, &label, errors) {
         if text.trim().is_empty() {
-            errors.push(format!("{label}: requirement must not be empty"));
+            errors.push(format!("{label}: {text_field} must not be empty"));
         }
         if let Some(expected) = expected
             && text != expected.text
         {
             errors.push(format!(
-                "{label}: requirement text changed at {}{}",
+                "{label}: {text_field} text changed at {}{}",
                 expected.source,
                 compact_diff(
                     &text.split('\n').collect::<Vec<_>>(),
@@ -577,21 +631,22 @@ struct InputRange {
 
 // {impl}`requirements.references.evidence_coverage`
 // {impl}`requirements.references.targets`
+// {impl}`requirements.examples.evidence`
 fn validate_references(
     root: &Path,
-    requirements: &BTreeMap<String, Requirement>,
+    definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
 ) {
-    let mut by_requirement: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
+    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
     for reference in collect_references(root, errors) {
-        if requirements.contains_key(&reference.name) {
-            by_requirement
+        if definitions.contains_key(&reference.name) {
+            by_definition
                 .entry(reference.name.clone())
                 .or_default()
                 .push(reference);
         } else {
             errors.push(format!(
-                "{}:{}: {{{}}}`{}` has no matching requirement",
+                "{}:{}: {{{}}}`{}` has no matching requirement or example",
                 display_path(root, &reference.file),
                 reference.line,
                 reference.kind.label(),
@@ -600,8 +655,24 @@ fn validate_references(
         }
     }
 
-    for (name, references) in by_requirement {
+    for (name, definition) in definitions {
         let evidence_file = root.join("evidence").join(format!("{name}.json"));
+        let references = by_definition.remove(name).unwrap_or_default();
+        if definition.kind == DefinitionKind::Example
+            && !references
+                .iter()
+                .any(|reference| reference.kind == ReferenceKind::Test)
+            && fs::read_to_string(&evidence_file)
+                .ok()
+                .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+                .and_then(|value| value.get("determination").and_then(Value::as_bool))
+                == Some(true)
+        {
+            errors.push(format!(
+                "{}: example {name} has a true determination but no {{test}} reference",
+                display_path(root, &evidence_file)
+            ));
+        }
         let inputs = evidence_input_ranges(root, &evidence_file);
         for reference in references {
             if !inputs.iter().any(|input| {
@@ -1064,6 +1135,128 @@ mod tests {
                 "{opening} ... {closing}: {:?}",
                 report.errors
             );
+        }
+    }
+
+    // {test}`requirements.examples.definition`
+    // {test}`requirements.examples.evidence`
+    // {test}`requirements.ci.schema`
+    // {test}`requirements.references.evidence_coverage`
+    #[test]
+    fn cited_example_with_a_test_and_matching_evidence_validates() {
+        let temp = fixture();
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. CITE`rules.ready`\n:::\n"
+            .replace("CITE", "{cite}");
+        fs::write(temp.path().join("md/rules.md"), &chapter).unwrap();
+        let test_source = "// TEST`rules.case`\n#[test]\nfn checks_case() { assert!(true); }\n"
+            .replace("TEST", "{test}");
+        fs::write(temp.path().join("src/main.rs"), &test_source).unwrap();
+        fs::write(
+            temp.path().join("evidence/rules.ready.json"),
+            json!({
+                "requirement": "Ready.",
+                "determination": true,
+                "rationale": "The example cites this rule.",
+                "inputs": [{
+                    "file": "md/rules.md",
+                    "line_start": 8,
+                    "line_end": 8,
+                    "text": [chapter.lines().nth(7).unwrap()]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let example_path = temp.path().join("evidence/rules.case.json");
+        fs::write(
+            &example_path,
+            json!({
+                "example": "Given ready, it succeeds. CITE`rules.ready`".replace("CITE", "{cite}"),
+                "determination": true,
+                "rationale": "checks_case sets up ready and asserts the result.",
+                "inputs": [{
+                    "file": "src/main.rs",
+                    "line_start": 1,
+                    "line_end": 3,
+                    "text": test_source.lines().collect::<Vec<_>>()
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = validate_repository(temp.path()).unwrap();
+        assert_eq!(report.requirements, 1);
+        assert_eq!(report.examples, 1);
+        assert_eq!(report.evidence_files, 2);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let old = fs::read_to_string(&example_path).unwrap();
+        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();
+        uncovered["inputs"] = json!([]);
+        fs::write(&example_path, uncovered.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(errors.contains("no input covers"), "{errors}");
+        assert!(errors.contains("src/main.rs:1"), "{errors}");
+
+        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();
+        evidence["example"] = "Outdated.".into();
+        fs::write(&example_path, evidence.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(errors.contains("example text changed"), "{errors}");
+        assert!(errors.contains("- Outdated."), "{errors}");
+
+        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();
+        let example_text = wrong_field
+            .as_object_mut()
+            .unwrap()
+            .remove("example")
+            .unwrap();
+        wrong_field["requirement"] = example_text;
+        fs::write(&example_path, wrong_field.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(errors.contains("missing field \"example\""), "{errors}");
+        assert!(
+            errors.contains("unexpected field \"requirement\""),
+            "{errors}"
+        );
+
+        fs::remove_file(&example_path).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(errors.contains("missing for example"), "{errors}");
+    }
+
+    // {test}`requirements.ci.definition_errors`
+    // {test}`requirements.examples.definition`
+    // {test}`requirements.examples.evidence`
+    #[test]
+    fn example_errors_include_duplicates_invalid_bodies_and_missing_tests() {
+        let temp = fixture();
+        let chapter = ":::{req} repeated\nReady.\n:::\n\n:::{req} repeated\nAgain.\n:::\n\n:::{example} repeated\nGiven ready. CITE`rules.repeated`\n:::\n\n:::{example} case\nGiven ready. CITE`rules.repeated`\n:::\n\n:::{example} case\nAgain. CITE`rules.repeated`\n:::\n\n:::{example} empty\n \n:::\n\n:::{example} unclosed\nNo close."
+            .replace("CITE", "{cite}");
+        fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
+        fs::write(
+            temp.path().join("evidence/rules.case.json"),
+            json!({
+                "example": "Given ready. CITE`rules.repeated`".replace("CITE", "{cite}"),
+                "determination": true,
+                "rationale": "No test has been cited yet.",
+                "inputs": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        for detail in [
+            "duplicate requirement rules.repeated; first declared at md/rules.md:1",
+            "duplicate example rules.repeated; first declared at md/rules.md:1",
+            "duplicate example rules.case; first declared at md/rules.md:13",
+            "example rules.empty has no text",
+            "example rules.empty must cite at least one requirement",
+            "example rules.unclosed is missing a closing colon fence",
+            "example rules.case has a true determination but no {test} reference",
+        ] {
+            assert!(errors.contains(detail), "missing {detail:?} in:\n{errors}");
         }
     }
 }

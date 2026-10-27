@@ -1,6 +1,6 @@
 ---
 name: habeas-requirements
-description: Design and vet requirements for new features or user-visible behavior changes in a Habeas mdBook project before coding; also maintain requirements and references.
+description: Design and vet requirements and examples for user-visible behavior changes in a Habeas mdBook project before coding; maintain definitions and references.
 ---
 
 # Habeas requirements
@@ -25,7 +25,9 @@ Pressing q MUST stop managed forwards.
 :::
 ```
 
-Everything between the fences is the requirement body, including headings, examples, and diagrams. Use a longer outer colon fence when the body contains a nested colon directive. Use BCP 14 terms when stating obligations.
+Everything between the fences is the requirement body, including headings and diagrams. Use a longer outer colon fence when the body contains a nested colon directive. Use BCP 14 terms when stating obligations.
+
+Write a concrete case as a separate `{example}` directive with the same chapter-qualified naming and fence rules. Cite at least one requirement it illustrates from the example body. A true example determination needs test references and an evidence rationale explaining how the tests cover its interesting aspects. Keep names unique across requirements and examples.
 
 Use fully qualified names for implementation, citation, and test references. Place them on the relevant source or book line:
 
@@ -35,4 +37,4 @@ Use fully qualified names for implementation, citation, and test references. Pla
 {test}`requirements.forwarding.quit`
 ```
 
-When a requirement changes, update its `evidence/<full-name>.json` record. Run the Cargo tests to see all Habeas validation findings.
+When a requirement or example changes, update its `evidence/<full-name>.json` record. Run the Cargo tests to see all Habeas validation findings.

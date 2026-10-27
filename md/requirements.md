@@ -11,11 +11,11 @@ Every requirement defined by a fenced `{req}` directive in a chapter under the c
 :::
 
 :::{req} ci.orphans
-Every JSON file under `evidence/` MUST correspond to a declared requirement. Habeas MUST report JSON evidence files whose names have no matching requirement.
+Every JSON file under `evidence/` MUST correspond to a declared requirement or example. Habeas MUST report JSON evidence files whose names have no matching definition.
 :::
 
 :::{req} ci.schema
-Every evidence file MUST be a JSON object with exactly the fields `requirement`, `determination`, `rationale`, and `inputs`. `requirement` and `rationale` MUST be nonempty strings, `determination` MUST be a boolean, and `inputs` MUST be an array. Every input MUST be an object with exactly the fields `file`, `line_start`, `line_end`, and `text`; `file` MUST be a repository-relative string path, the line numbers MUST be positive integers, and `text` MUST be an array of strings.
+Every evidence file MUST be a JSON object with exactly the fields `requirement`, `determination`, `rationale`, and `inputs` for a requirement, or exactly `example`, `determination`, `rationale`, and `inputs` for an example. The `requirement` or `example` field and `rationale` MUST be nonempty strings, `determination` MUST be a boolean, and `inputs` MUST be an array. Every input MUST be an object with exactly the fields `file`, `line_start`, `line_end`, and `text`; `file` MUST be a repository-relative string path, the line numbers MUST be positive integers, and `text` MUST be an array of strings.
 
 ```json
 {
@@ -45,7 +45,7 @@ For every input, Habeas MUST verify that `line_start` and `line_end` identify an
 :::
 
 :::{req} references.targets
-Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement name. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.
+Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.
 
 ```text
 {impl}`requirements.references.targets`
@@ -55,7 +55,7 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
 :::
 
 :::{req} references.book_badges
-In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full requirement name and links to the badge at the corresponding `{req}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` directive MUST render as a Shields.io definition badge image; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`.
+In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`.
 :::
 
 :::{req} index.chapter
@@ -67,7 +67,7 @@ The requirements index MUST show each requirement's evidence state as Valid, Mis
 :::
 
 :::{req} index.detail_format
-Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement body as a Markdown block quote. It MUST render the recorded rationale as Markdown in a Rationale section. Each valid input MUST have its own subsection showing its file and inclusive line range, with the exact recorded lines in a fenced code block. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.
+Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement or example body as a Markdown block quote labeled by kind. It MUST render the recorded rationale as Markdown in a Rationale section. Each valid input MUST have its own subsection showing its file and inclusive line range, with the exact recorded lines in a fenced code block. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.
 :::
 
 :::{req} index.navigation
@@ -79,7 +79,7 @@ When `output.html.git-repository-url` names a GitHub repository and `output.html
 :::
 
 :::{req} references.evidence_coverage
-For every `{impl}`, `{cite}`, and `{test}` reference in a project source file, the evidence file for the referenced requirement MUST contain an `inputs` entry for that file whose inclusive line range covers the reference's line. Habeas MUST report every uncovered reference with its role, full requirement name, source file, and line number.
+For every `{impl}`, `{cite}`, and `{test}` reference in a project source file, the evidence file for the referenced requirement or example MUST contain an `inputs` entry for that file whose inclusive line range covers the reference's line. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
 :::
 
 :::{req} ci.errors
@@ -133,7 +133,7 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::
 
 :::{req} cli.bootstrap_skill
-Habeas MUST bundle a skill for deriving initial requirements from an existing codebase. The skill MUST direct agents to read the code and tests, map every first-party test to at least one requirement, identify and map every source unit implementing end-user-visible functionality or interactions to a requirement, and report gaps rather than claim complete coverage without an independent inventory review.
+Habeas MUST bundle a skill for deriving initial requirements from an existing codebase. The skill MUST direct agents to read the code and tests, map every first-party test to at least one requirement or example, identify and map every source unit implementing end-user-visible functionality or interactions to a requirement, and report gaps rather than claim complete coverage without an independent inventory review.
 :::
 
 :::{req} cli.requirements_review_skill
@@ -187,7 +187,7 @@ Requirement and reference names MUST have nonempty dot-separated segments contai
 :::
 
 :::{req} ci.definition_errors
-Validation MUST report a requirement with a missing closing fence, an empty body, or a duplicate full name. A duplicate-name error MUST identify both its declaration and the first declaration.
+Validation MUST report a requirement or example with a missing closing fence or an empty body. Full names of `{req}` and `{example}` definitions MUST be unique across both kinds. Habeas MUST report every duplicate full name, including requirement/requirement, example/example, and requirement/example pairs, and identify both the duplicate declaration and the first declaration.
 :::
 
 :::{req} ci.input_containment
@@ -207,7 +207,7 @@ The mdBook preprocessor MUST report an error when a generated evidence detail pa
 :::
 
 :::{req} index.invalid_detail
-An evidence detail page MUST continue to show the current requirement and validation findings when evidence is missing or invalid. It MUST show readable placeholders for missing rationale or inputs and expose the contents of an unreadable JSON record.
+An evidence detail page MUST continue to show the current requirement or example and validation findings when evidence is missing or invalid. It MUST show readable placeholders for missing rationale or inputs and expose the contents of an unreadable JSON record.
 :::
 
 :::{req} cli.invocation
@@ -224,4 +224,18 @@ An evidence detail page MUST continue to show the current requirement and valida
 
 :::{req} cli.setup_local_path
 When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.
+:::
+
+## Examples
+
+:::{req} examples.definition
+An mdBook chapter MAY define an example with an opening fence of at least three colons immediately followed by `{example} <name>` and a closing colon-only fence of at least the opening length. The full name MUST use the same chapter-derived namespace and valid-name rules as `{req}`. The body MUST include all Markdown between the fences, excluding surrounding whitespace, and MUST describe a concrete case with expected behavior. An example MUST contain at least one valid `{cite}` reference to a requirement it illustrates. An example directive inside a fenced code block MUST remain literal.
+:::
+
+:::{req} examples.evidence
+Every defined example MUST have an `evidence/<full-example-name>.json` file whose `example` string exactly matches the current example body. A true determination MUST have at least one `{test}` reference to the example, covered by an evidence input. The agent MUST identify the tests in the rationale and explain how their setup and assertions cover every interesting aspect and expected result of the example. Habeas MUST apply the same missing-evidence, false-determination, input validation, and reference-coverage checks used for requirements. It MUST report a true determination with no test reference and changed example text with a compact line-oriented diff.
+:::
+
+:::{req} examples.index
+When a `{requirements-index}` chapter exists, it MUST list examples as well as requirements, identify each entry's kind, show each example's evidence state, and add one evidence detail subchapter per example. An example definition badge MUST link to its detail page. The detail page MUST link back to the example's anchored definition and to the index; references to the example MUST link to its definition. An example detail page MUST show validation findings when its evidence is missing or invalid.
 :::

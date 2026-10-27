@@ -9,7 +9,7 @@ Read the project's existing requirements, documentation, public entry points, im
 
 Keep two working inventories:
 
-- Every first-party runnable test or test case, including integration tests, doctests, and parameterized cases where present. Record the requirement IDs each test checks.
+- Every first-party runnable test or test case, including integration tests, doctests, and parameterized cases where present. Record the requirement or example IDs each test checks.
 - Every first-party source unit that appears to implement end-user-visible functionality or interactions. Record file locations and requirement IDs for relevant public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches. Do not count one tagged entry point as coverage for deeper user-visible code.
 
 Exclude generated and third-party code from the inventories. If a candidate looks user-facing but its purpose is unclear, keep it on the gap list until resolved.
@@ -18,9 +18,9 @@ Treat requirements inferred from existing code as proposals. Show the user their
 
 Create or reuse the agreed, stable, chapter-qualified `{req}` requirements in the mdBook. State observable obligations with BCP 14 terms. Group tests that check the same behavior under one requirement; several tests MAY share an ID. For tests of internal invariants, write a requirement for the invariant they actually check rather than inventing a user-facing promise. Distinguish intended behavior from a possible bug or incidental implementation detail.
 
-Put at least one `{test}` reference with a full requirement name on each test definition or individual case. A parameterized test can carry a reference at its case source or generating declaration when that is the only editable source. Add multiple references when a test checks multiple requirements. Do not use one file-level tag to stand in for unrelated tests.
+Put at least one `{test}` reference with a full requirement or example name on each test definition or individual case. A parameterized test can carry a reference at its case source or generating declaration when that is the only editable source. Add multiple references when a test checks multiple definitions. Do not use one file-level tag to stand in for unrelated tests.
 
-Map each inventoried user-visible source unit to a requirement and add `{impl}` references at meaningful implementation points, including distinct observable branches. Do not tag every line. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and evidence records. Each evidence record must cite exact current lines covering every reference to its requirement. Judge the requirement from the code and test results; a tag alone does not justify `determination: true`.
+Map each inventoried user-visible source unit to a requirement and add `{impl}` references at meaningful implementation points, including distinct observable branches. Do not tag every line. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and evidence records. Each evidence record must cite exact current lines covering every reference to its definition. Judge the requirement or example from the code and test results; a tag alone does not justify `determination: true`.
 
 For example, source comments can carry these references:
 
