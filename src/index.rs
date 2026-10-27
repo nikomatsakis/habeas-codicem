@@ -8,9 +8,10 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 use mdbook_preprocessor::config::Config;
 use serde_json::Value;
 
+use crate::markdown::render_evidence_table;
 use crate::{
-    Definition, chapter_href, colon_fence, escape_html, overlaps_protected, protected_ranges,
-    requirement_blocks, shield_badge, validate_repository,
+    Definition, EvidenceReport, chapter_href, colon_fence, escape_html, overlaps_protected,
+    protected_ranges, requirement_blocks, shield_badge, validate_repository,
 };
 
 pub(crate) struct IndexPlan {
@@ -104,12 +105,18 @@ fn encode_url_segment(segment: &str) -> String {
     encoded
 }
 
-#[derive(Clone, Copy)]
-enum EvidenceState {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EvidenceState {
     Valid,
     Missing,
     DeterminationFalse,
     Invalid,
+}
+
+pub(crate) struct LoadedDetailEvidence {
+    state: EvidenceState,
+    record: Option<String>,
+    errors: Vec<String>,
 }
 
 struct DetailEvidence<'a> {
@@ -118,9 +125,64 @@ struct DetailEvidence<'a> {
     errors: &'a [String],
 }
 
+impl LoadedDetailEvidence {
+    pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
+        let evidence_path = root.join("evidence").join(format!("{name}.json"));
+        let prefix = format!("evidence/{name}.json:");
+        let mut errors = report
+            .errors
+            .iter()
+            .filter(|error| error.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        // {impl}`requirements.index.invalid_detail`
+        let record = match fs::read_to_string(&evidence_path) {
+            Ok(record) => Some(record),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                errors.push(format!("{prefix} cannot read evidence: {error}"));
+                None
+            }
+        };
+        let state = if record.is_none() && !evidence_path.exists() {
+            EvidenceState::Missing
+        } else if errors.is_empty() {
+            EvidenceState::Valid
+        } else if errors
+            .iter()
+            .all(|error| error.starts_with(&format!("{prefix} determination is false")))
+        {
+            EvidenceState::DeterminationFalse
+        } else {
+            EvidenceState::Invalid
+        };
+        Self {
+            state,
+            record,
+            errors,
+        }
+    }
+
+    pub(crate) fn state(&self) -> EvidenceState {
+        self.state
+    }
+
+    pub(crate) fn errors(&self) -> &[String] {
+        &self.errors
+    }
+
+    fn borrowed(&self) -> DetailEvidence<'_> {
+        DetailEvidence {
+            state: self.state,
+            record: self.record.as_deref(),
+            errors: &self.errors,
+        }
+    }
+}
+
 impl EvidenceState {
     // {impl}`requirements.index.state`
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Valid => "Valid",
             Self::Missing => "Missing",
@@ -204,42 +266,15 @@ impl IndexPlan {
         let config = Config::from_disk(root.join("book.toml")).map_err(io::Error::other)?;
         let source_links = SourceLinks::from_config(&config)?;
         let report = validate_repository(root)?;
-        let mut rows = String::from("| Requirement | Evidence |\n| --- | --- |\n");
+        let mut rows = Vec::new();
         let mut pages = Vec::new();
         for (name, detail_path) in &self.detail_paths {
             let evidence_path = root.join("evidence").join(format!("{name}.json"));
-            let prefix = format!("evidence/{name}.json:");
-            let mut errors = report
-                .errors
-                .iter()
-                .filter(|error| error.starts_with(&prefix))
-                .cloned()
-                .collect::<Vec<_>>();
-            // {impl}`requirements.index.invalid_detail`
-            let record = match fs::read_to_string(&evidence_path) {
-                Ok(record) => Some(record),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => {
-                    errors.push(format!("{prefix} cannot read evidence: {error}"));
-                    None
-                }
-            };
-            let state = if record.is_none() && !evidence_path.exists() {
-                EvidenceState::Missing
-            } else if errors.is_empty() {
-                EvidenceState::Valid
-            } else if errors
-                .iter()
-                .all(|error| error.starts_with(&format!("{prefix} determination is false")))
-            {
-                EvidenceState::DeterminationFalse
-            } else {
-                EvidenceState::Invalid
-            };
+            let evidence = LoadedDetailEvidence::load(root, name, &report);
             let detail_href = chapter_href(&self.chapter_path, detail_path, None);
-            rows.push_str(&format!(
-                "| [`{name}`]({detail_href}) | {} |\n",
-                state.label()
+            rows.push((
+                format!("[`{name}`]({detail_href})"),
+                evidence.state().label(),
             ));
 
             let definition = definitions
@@ -250,11 +285,7 @@ impl IndexPlan {
                 detail_path,
                 &self.chapter_path,
                 definition,
-                DetailEvidence {
-                    state,
-                    record: record.as_deref(),
-                    errors: &errors,
-                },
+                evidence.borrowed(),
                 source_links.as_ref(),
             );
             // {impl}`requirements.index.source_links`
@@ -265,6 +296,9 @@ impl IndexPlan {
             };
             pages.push((name.clone(), detail_path.clone(), content, source_path));
         }
+
+        // {impl}`requirements.cli.shared_status_rendering`
+        let rows = render_evidence_table(&rows);
 
         // {impl}`requirements.index.navigation`
         let mut found = false;
@@ -339,17 +373,47 @@ fn render_detail_page(
         Some(&format!("habeas-req-{name}")),
     );
     let index_href = chapter_href(detail_path, index_path, None);
-    let mut content = format!(
-        "# `{name}`\n\n[Requirements index]({index_href}) · [View definition]({definition_href})\n\n\
-         {}\n\n\
-         ## Requirement\n\n",
-        shield_badge(
-            "evidence",
-            detail_evidence.state.label(),
-            detail_evidence.state.color()
-        )
-    );
-    for line in definition.text.lines() {
+    render_detail_sections(
+        format!(
+            "# `{name}`\n\n[Requirements index]({index_href}) · [View definition]({definition_href})\n\n"
+        ),
+        &definition.text,
+        detail_evidence,
+        source_links,
+    )
+}
+
+// {impl}`requirements.cli.info`
+pub(crate) fn render_cli_detail_page(
+    name: &str,
+    source: &str,
+    text: &str,
+    evidence: &LoadedDetailEvidence,
+) -> String {
+    render_detail_sections(
+        format!("# `{name}`\n\nDefinition: `{source}`\n\n"),
+        text,
+        evidence.borrowed(),
+        None,
+    )
+}
+
+// {impl}`requirements.index.detail_format`
+// {impl}`requirements.index.invalid_detail`
+// {impl}`requirements.cli.info`
+fn render_detail_sections(
+    mut content: String,
+    definition_text: &str,
+    detail_evidence: DetailEvidence<'_>,
+    source_links: Option<&SourceLinks>,
+) -> String {
+    content.push_str(&shield_badge(
+        "evidence",
+        detail_evidence.state.label(),
+        detail_evidence.state.color(),
+    ));
+    content.push_str("\n\n## Requirement\n\n");
+    for line in definition_text.lines() {
         content.push_str("> ");
         content.push_str(line);
         content.push('\n');
@@ -571,6 +635,7 @@ mod tests {
     // {test}`requirements.index.state`
     // {test}`requirements.index.navigation`
     // {test}`requirements.index.source_links`
+    // {test}`requirements.cli.shared_status_rendering`
     #[test]
     fn index_shows_evidence_states_and_links_generated_chapters() {
         let temp = TempDir::new().unwrap();
@@ -645,10 +710,33 @@ mod tests {
             ("absent", "Missing"),
             ("uncovered", "Invalid"),
         ] {
-            assert!(index.content.contains(&format!(
-                "| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html) | {state} |"
-            )));
+            let link = format!(
+                "| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html)"
+            );
+            let row = index
+                .content
+                .lines()
+                .find(|line| line.starts_with(&link))
+                .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
+            assert_eq!(row.split('|').nth(2).unwrap().trim(), state);
         }
+        let table = index
+            .content
+            .lines()
+            .skip_while(|line| !line.starts_with("| "))
+            .take_while(|line| line.starts_with("| "))
+            .collect::<Vec<_>>();
+        let pipes = table[0]
+            .match_indices('|')
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        assert_eq!(pipes.len(), 3);
+        assert!(table.iter().all(|line| {
+            line.match_indices('|')
+                .map(|(position, _)| position)
+                .collect::<Vec<_>>()
+                == pipes
+        }));
         assert_eq!(index.sub_items.len(), 5);
         let ready = index
             .sub_items

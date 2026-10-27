@@ -9,6 +9,8 @@ description: Design and vet requirements for new features or user-visible behavi
 
 When a user requests new or changed user-visible behavior in a Habeas project, first read the relevant requirements, code, and tests. Identify requirements that already express the intended behavior. For gaps, draft the smallest set of observable obligations, including important outcomes and failure cases, without committing to an implementation.
 
+Run `habeas info <full-requirement-name>` to read a requirement's current text, evidence state, rationale, inputs, and validation findings as Markdown. The selector also accepts a regular expression over full requirement names when you need to inspect a group.
+
 Show the user the full IDs and text of existing requirements to reuse, plus the proposed chapter location, full IDs, and exact fenced text of any additions or changes. State open product choices separately. Ask the user to agree to or revise this requirement set. User-provided exact requirement text or explicit agreement earlier in the conversation counts as approval; a general request to build the feature does not. Keep drafts out of the mdBook while review is pending, and do not write implementation or test code yet.
 
 After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior, add tests and traceability references, and maintain evidence. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Use the evidence skill for pending determinations while implementation is incomplete.

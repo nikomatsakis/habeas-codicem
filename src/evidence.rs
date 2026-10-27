@@ -19,13 +19,23 @@ pub struct EvidenceReport {
     pub errors: Vec<String>,
 }
 
-struct Requirement {
-    text: String,
-    source: String,
+pub(crate) struct Requirement {
+    pub(crate) text: String,
+    pub(crate) source: String,
 }
 
 // {impl}`requirements.integration.report_api`
 pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
+    Ok(inspect_repository(root)?.report)
+}
+
+pub(crate) struct RepositoryInspection {
+    pub(crate) requirements: BTreeMap<String, Requirement>,
+    pub(crate) report: EvidenceReport,
+}
+
+// {impl}`requirements.integration.report_api`
+pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {
     let root = fs::canonicalize(root)?;
     let mut errors = Vec::new();
     let md_root = book_source_dir(&root, &mut errors);
@@ -74,10 +84,13 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 
     validate_references(&root, &requirements, &mut errors);
 
-    Ok(EvidenceReport {
-        requirements: requirements.len(),
-        evidence_files: evidence_files.len(),
-        errors,
+    Ok(RepositoryInspection {
+        report: EvidenceReport {
+            requirements: requirements.len(),
+            evidence_files: evidence_files.len(),
+            errors,
+        },
+        requirements,
     })
 }
 
