@@ -4,7 +4,7 @@ use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 
-mod agents;
+mod hook;
 mod setup;
 
 // {impl}`requirements.cli.clap`
@@ -24,10 +24,7 @@ enum Command {
     Setup {
         #[arg(long, value_name = "crate-dir")]
         path: Option<PathBuf>,
-        #[arg(long)]
-        install_skills: bool,
     },
-    Agents,
     Status {
         #[arg(long)]
         all: bool,
@@ -35,11 +32,21 @@ enum Command {
     Info {
         selector: String,
     },
+    #[command(hide = true)]
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
 }
 
 #[derive(Subcommand)]
 enum MdbookCommand {
     Supports { renderer: String },
+}
+
+#[derive(Subcommand)]
+enum HookCommand {
+    SessionStart,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -63,15 +70,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         // {impl}`requirements.cli.setup`
-        Command::Setup {
-            path,
-            install_skills,
-        } => setup::run(path.as_deref(), install_skills),
-        // {impl}`requirements.cli.agents`
-        Command::Agents => agents::run(),
+        Command::Setup { path } => setup::run(path.as_deref()),
         // {impl}`requirements.cli.status`
         Command::Status { all } => {
-            let root = setup::project_root(true)?;
+            let root = setup::project_root()?;
             io::stdout()
                 .lock()
                 .write_all(habeas::status_markdown(&root, all)?.as_bytes())?;
@@ -79,11 +81,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         // {impl}`requirements.cli.info`
         Command::Info { selector } => {
-            let root = setup::project_root(true)?;
+            let root = setup::project_root()?;
             io::stdout()
                 .lock()
                 .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;
             Ok(())
         }
+        // {impl}`requirements.integration.symposium_setup_hook`
+        Command::Hook {
+            command: HookCommand::SessionStart,
+        } => hook::session_start(),
     }
 }

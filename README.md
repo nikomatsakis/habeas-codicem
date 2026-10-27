@@ -4,30 +4,35 @@ Habeas connects mdBook requirements and examples to exact source evidence. A Car
 
 ## Install
 
-Install the CLI with:
+Install Symposium and select the agents you use:
 
 ```sh
-cargo install habeas
+cargo install symposium
+cargo agents init
 ```
-
-For development from a checkout, use `cargo install --path .`.
-
-The Symposium manifest declares a global CLI installation for users who run `cargo agents use habeas`.
 
 ## Add Habeas to a project
 
 Run these commands from a Cargo project that already has `book.toml` and a mdBook `SUMMARY.md`:
 
 ```sh
-habeas setup --install-skills
-cargo test --workspace
+cargo add --dev habeas
+cargo agents sync
 ```
 
-`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. The `--install-skills` flag also copies three bundled skills into `.agents/skills/` for bootstrapping requirements, authoring them, and recording evidence; you can move them afterward. Setup can be run again without duplicating configuration or overwriting differing files.
+Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
 
-With Symposium, run `cargo agents sync` in a project that depends on Habeas and approve its plugin to receive these same skills from `assets/skills`. The `habeas agents` command remains available to install just the skills.
+To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
-During local development, `habeas setup --path /path/to/habeas-codicem --install-skills` uses a local crate in place of the registry dependency and installs the skills.
+`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
+
+After setup, run `cargo test --workspace` to validate requirements and evidence.
+
+Run `cargo agents sync` after updating the Habeas dependency to refresh the bundled skills.
+
+If Habeas previously copied skills into `.agents/skills/habeas-*`, review them for local edits before the first Symposium sync. Save any edits under different names or elsewhere, remove those old copies, and then sync so Symposium can manage them.
+
+During local development, `habeas setup --path /path/to/habeas-codicem` uses a local crate in place of the registry dependency.
 
 Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command.
 

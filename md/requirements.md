@@ -109,11 +109,7 @@ The `mdbook` subcommand MUST act as the mdBook preprocessor for HTML books, rend
 :::
 
 :::{req} cli.setup
-Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. With `--install-skills`, setup MUST also install all bundled skills in `.agents/skills/` without overwriting differing files. Without the flag, setup MUST NOT change `.agents/skills/`. The flag MUST work together with `--path <crate-dir>`. The non-Symposium getting started instructions MUST recommend `habeas setup --install-skills` and explain where the skills are copied.
-:::
-
-:::{req} cli.agents
-Running `habeas agents` in a Cargo project MUST install all bundled skills for agents to bootstrap requirements, author requirements, and maintain evidence in `.agents/skills/`. It MUST NOT overwrite an existing skill with different content.
+Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills.
 :::
 
 :::{req} cli.status
@@ -140,8 +136,8 @@ Habeas MUST bundle a skill for deriving initial requirements from an existing co
 The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST allow truthful false determinations while implementation is pending.
 :::
 
-:::{req} install.cargo
-The project documentation MUST advise users to install the CLI with `cargo install habeas`.
+:::{req} install.symposium
+The getting-started documentation MUST tell users with a Cargo and mdBook project to install and initialize Symposium, run `cargo add --dev habeas`, and run `cargo agents sync`, reviewing the prompt to enable Habeas's plugin. It MUST explain that the session-start hook advises the agent to run `habeas setup` when configuration is incomplete, how to refresh skills after updating Habeas, and how to preserve local edits when migrating from skills copied by older Habeas versions.
 :::
 
 :::{req} layout.project
@@ -153,7 +149,15 @@ The Habeas Codicem book MUST configure mdBook's Git repository link for `nikomat
 :::
 
 :::{req} integration.symposium
-The Habeas crate MUST provide a root `Symposium.toml` with a `[[skills]]` group whose `source.path` is `assets/skills`. It MUST disable default skill groups so its bundled skills are selected from one source. It MUST declare a named `habeas` Cargo installation with `executable = "habeas"` and `global = true`, so `cargo agents use habeas` can provide the CLI globally.
+For a Cargo workspace that depends on `habeas`, interactive `cargo agents sync` MUST let the user enable Habeas's plugin. Once enabled, it MUST make the skills shipped with the selected Habeas version available to configured agents. After the selected version changes, `cargo agents sync` MUST provide the skills shipped with the new version.
+:::
+
+:::{req} integration.symposium_cli
+The enabled Habeas Symposium plugin MUST request a global Cargo installation of the `habeas` CLI and use that installation as its session-start hook command, so the CLI is available when the hook advises an agent to run `habeas setup`.
+:::
+
+:::{req} integration.symposium_setup_hook
+For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project depending on `habeas` MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.
 :::
 
 :::{req} integration.ci
@@ -211,7 +215,7 @@ An evidence detail page MUST continue to show the current requirement or example
 :::
 
 :::{req} cli.invocation
-`habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message.
+`habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.
 :::
 
 :::{req} cli.setup_project

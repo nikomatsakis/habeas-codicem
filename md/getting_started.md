@@ -2,40 +2,35 @@
 
 Start with a Cargo project that already has an mdBook (`book.toml` and a `SUMMARY.md` in the book source directory).
 
-## With Symposium
-
-For best results, install [Symposium](https://github.com/symposium-dev/symposium), then choose your agents once on this machine:
+Install [Symposium](https://github.com/symposium-dev/symposium) and select your agents once on this machine:
 
 ```sh
 cargo install symposium
 cargo agents init
 ```
 
-From the project directory, enable Habeas and sync its skills:
+From the project directory, add Habeas and sync your agent setup:
 
 ```sh
-cargo agents use habeas
+cargo add --dev habeas
 cargo agents sync
 ```
 
-Use `cargo agents use --global habeas` instead if you want the plugin enabled in every workspace. This `--global` flag controls where the plugin is enabled. Habeas's `Symposium.toml` separately requests that the CLI be installed in Cargo's global bin directory, where it is available on your `PATH`.
+Run `cargo agents sync` in your terminal and choose **Enable** when Symposium offers Habeas's plugin. Its default **Ask me later** choice leaves the plugin disabled.
 
-In Symposium 0.5.1, `use` and `sync` install the skills but do not install a standalone CLI merely because it appears in `[[installations]]`. Install the CLI, then configure this project:
+Habeas's hook checks setup when an agent starts a session in this project. If configuration is missing or incompatible, it advises the agent to run `habeas setup`. The hook does not change project files itself.
+
+To configure the project before starting an agent session, or if your agent is not running Symposium hooks, install the CLI and configure the project yourself:
 
 ```sh
 cargo install habeas
 habeas setup
 ```
 
-## Without Symposium
+`habeas setup` adds Habeas as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, and creates `tests/habeas.rs`. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence.
 
-If you prefer to install the CLI directly, use these two commands:
+Once the plugin is enabled, `cargo agents sync` provides Habeas's skills to your configured agents. Run it again after updating the Habeas dependency to refresh the skills.
 
-```sh
-cargo install habeas
-habeas setup --install-skills
-```
-
-`habeas setup` adds `habeas` as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, and creates `tests/habeas.rs`. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence. The `--install-skills` flag also copies three skills into `.agents/skills/` for bootstrapping requirements, authoring them, and recording evidence; you can move them afterward.
+If you previously ran `habeas agents` or `habeas setup --install-skills`, inspect the resulting `.agents/skills/habeas-*` directories for local edits before your first Symposium sync. Save customized files under different names or elsewhere, remove those old copies, and run `cargo agents sync` to receive Symposium-managed skills.
 
 Use the `habeas-bootstrap-requirements` skill to derive an initial set of requirements from an existing codebase and its tests. Setup does not write requirements or evidence for you. See [How it works](./reference.md) for those steps, the evidence index, and instructions for using a local checkout.

@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 fn fixture() -> TempDir {
@@ -38,12 +40,40 @@ fn run(project: &Path, args: &[&str]) {
     );
 }
 
+fn session_start(project: &Path, cwd: &Path) -> Value {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["hook", "session-start"])
+        .current_dir(project)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = json!({
+        "SessionStart": {
+            "session_id": "test-session",
+            "cwd": cwd,
+        }
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&input).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 // {test}`requirements.cli.setup`
-// {test}`requirements.cli.agents`
 // {test}`requirements.cli.setup_css`
 // {test}`requirements.cli.setup_local_path`
 #[test]
-fn setup_and_agents_are_repeatable() {
+fn setup_is_repeatable() {
     let temp = fixture();
     let project = temp.path();
     let local_crate = env!("CARGO_MANIFEST_DIR");
@@ -51,17 +81,6 @@ fn setup_and_agents_are_repeatable() {
     run(project, &["setup", "--path", local_crate]);
     assert!(!project.join(".agents/skills").exists());
     run(project, &["setup", "--path", local_crate]);
-    run(project, &["setup", "--install-skills"]);
-    run(
-        project,
-        &["setup", "--path", local_crate, "--install-skills"],
-    );
-    run(
-        project,
-        &["setup", "--install-skills", "--path", local_crate],
-    );
-    run(project, &["agents"]);
-    run(project, &["agents"]);
 
     let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
     assert!(cargo.contains("[dev-dependencies]"));
@@ -77,43 +96,20 @@ fn setup_and_agents_are_repeatable() {
         "#[test]\nfn habeas() {\n    habeas::validate();\n}\n"
     );
     assert!(project.join("md/habeas.css").is_file());
-    assert_eq!(
-        fs::read_to_string(project.join(".agents/skills/habeas-bootstrap-requirements/SKILL.md"))
-            .unwrap(),
-        include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md")
-    );
-    assert_eq!(
-        fs::read_to_string(project.join(".agents/skills/habeas-requirements/SKILL.md")).unwrap(),
-        include_str!("../assets/skills/habeas-requirements/SKILL.md")
-    );
-    assert_eq!(
-        fs::read_to_string(project.join(".agents/skills/habeas-evidence/SKILL.md")).unwrap(),
-        include_str!("../assets/skills/habeas-evidence/SKILL.md")
-    );
+    assert!(!project.join(".agents/skills").exists());
 }
 
 // {test}`requirements.cli.setup`
-// {test}`requirements.cli.agents`
 #[test]
-fn setup_install_skills_preserves_differing_skill() {
+fn setup_preserves_existing_agent_skills() {
     let temp = fixture();
     let project = temp.path();
-    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
 
     let skill = project.join(".agents/skills/habeas-requirements/SKILL.md");
     fs::create_dir_all(skill.parent().unwrap()).unwrap();
     fs::write(&skill, "custom skill\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
-        .args(["setup", "--install-skills"])
-        .current_dir(project)
-        .env("CARGO_NET_OFFLINE", "true")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("already exists with different content")
-    );
+    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
     assert_eq!(fs::read_to_string(skill).unwrap(), "custom skill\n");
 }
 
@@ -161,4 +157,45 @@ fn setup_rejects_invalid_book_configuration() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot find mdBook SUMMARY.md"));
+}
+
+// {test}`requirements.integration.symposium_setup_hook`
+#[test]
+fn session_start_advises_only_when_setup_is_incomplete() {
+    let temp = fixture();
+    let project = temp.path();
+    assert_eq!(
+        session_start(project, project),
+        json!({"SessionStart": {}}),
+        "a project without Habeas must not receive an advisory"
+    );
+    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+
+    let nested = project.join("src/nested");
+    fs::create_dir_all(&nested).unwrap();
+    assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+
+    let css = project.join("md/habeas.css");
+    fs::remove_file(&css).unwrap();
+    let book = fs::read_to_string(project.join("book.toml")).unwrap();
+    let response = session_start(project, &nested);
+    let context = response["SessionStart"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(context.contains("Habeas Codicem is not fully configured"));
+    assert!(context.contains("habeas setup"));
+    assert!(!css.exists(), "the hook must not recreate the stylesheet");
+    assert_eq!(fs::read_to_string(project.join("book.toml")).unwrap(), book);
+
+    fs::write(&css, include_str!("../md/habeas.css")).unwrap();
+    fs::write(
+        project.join("book.toml"),
+        book.replace("habeas mdbook", "wrong-preprocessor"),
+    )
+    .unwrap();
+    let response = session_start(project, &nested);
+    assert!(response["SessionStart"]["additionalContext"].is_string());
+
+    fs::remove_file(project.join("book.toml")).unwrap();
+    assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
 }
