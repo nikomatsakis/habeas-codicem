@@ -217,7 +217,7 @@ fn commands_report_invalid_arguments_and_unmatched_selectors() {
         let output = habeas(temp.path(), args);
         assert!(!output.status.success(), "{args:?}: {output:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("usage: habeas"),
+            String::from_utf8_lossy(&output.stderr).contains("Usage: habeas"),
             "{args:?}: {output:?}"
         );
     }
