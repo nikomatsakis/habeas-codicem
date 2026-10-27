@@ -232,6 +232,9 @@ def main():
             ).read_bytes():
                 raise AssertionError(f"Symposium did not install the current {name} skill")
 
+        # Symposium 0.5.1 debounces skill comparisons for five seconds and
+        # caches workspace dependencies by whole-second Cargo.lock mtime.
+        time.sleep(6)
         next_crate = root / "habeas-next"
         (next_crate / "src").mkdir(parents=True)
         (next_crate / "src" / "lib.rs").write_text("")
@@ -246,7 +249,6 @@ def main():
         changed_skill = next_crate / "assets" / "skills" / skill_names[0] / "SKILL.md"
         changed_skill.write_text(changed_skill.read_text() + "\nUpdated in the next release.\n")
 
-        old_lock_mtime = (project / "Cargo.lock").stat().st_mtime_ns
         (project / "Cargo.toml").write_text(
             '[package]\nname = "habeas-hook-consumer"\nversion = "0.1.0"\n'
             'edition = "2024"\n\n[dev-dependencies]\n'
@@ -267,17 +269,6 @@ def main():
             for package in packages
         ):
             raise AssertionError("Cargo did not select the next Habeas version")
-
-        # Symposium 0.5.1 uses whole-second lockfile mtimes for its workspace
-        # cache and a five-second debounce for skill content comparisons.
-        # Advance those clocks so this invocation tests the eligible sync.
-        lock = project / "Cargo.lock"
-        next_lock_mtime = max(lock.stat().st_mtime_ns, old_lock_mtime + 2_000_000_000)
-        os.utime(lock, ns=(next_lock_mtime, next_lock_mtime))
-        for name in skill_names:
-            marker = skills_dir / name / ".symposium"
-            past = marker.stat().st_mtime_ns - 10_000_000_000
-            os.utime(marker, ns=(past, past))
 
         updated_sync = subprocess.run(
             [symposium, "sync"],
