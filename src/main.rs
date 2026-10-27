@@ -4,6 +4,7 @@ use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 
+mod hook;
 mod setup;
 
 // {impl}`requirements.cli.clap`
@@ -31,11 +32,21 @@ enum Command {
     Info {
         selector: String,
     },
+    #[command(hide = true)]
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
 }
 
 #[derive(Subcommand)]
 enum MdbookCommand {
     Supports { renderer: String },
+}
+
+#[derive(Subcommand)]
+enum HookCommand {
+    SessionStart,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -76,5 +87,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;
             Ok(())
         }
+        // {impl}`requirements.integration.symposium_setup_hook`
+        Command::Hook {
+            command: HookCommand::SessionStart,
+        } => hook::session_start(),
     }
 }

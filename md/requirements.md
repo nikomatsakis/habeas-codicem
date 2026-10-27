@@ -137,7 +137,7 @@ The bundled requirements skill MUST direct agents adding or changing user-visibl
 :::
 
 :::{req} install.symposium
-The getting-started documentation MUST show users how to install and initialize Symposium, add `habeas` as a project dev dependency, enable its plugin with `cargo agents use habeas`, and then configure the project with the globally installed `habeas setup` command. It MUST explain how to refresh skills with `cargo agents sync` and how to preserve local edits when moving from skills copied by older Habeas versions.
+The getting-started documentation MUST tell users with a Cargo and mdBook project to install and initialize Symposium, run `cargo add --dev habeas`, and run `cargo agents sync`, reviewing the prompt to enable Habeas's plugin. It MUST explain that the session-start hook advises the agent to run `habeas setup` when configuration is incomplete, how to refresh skills after updating Habeas, and how to preserve local edits when migrating from skills copied by older Habeas versions.
 :::
 
 :::{req} layout.project
@@ -149,11 +149,15 @@ The Habeas Codicem book MUST configure mdBook's Git repository link for `nikomat
 :::
 
 :::{req} integration.symposium
-For a Cargo workspace that depends on `habeas`, enabling its Symposium plugin with `cargo agents use habeas` MUST make the agent skills shipped with the selected Habeas version available to the user's configured agents. After the selected version changes, `cargo agents sync` MUST provide the skills shipped with the new version.
+For a Cargo workspace that depends on `habeas`, interactive `cargo agents sync` MUST let the user enable Habeas's plugin. Once enabled, it MUST make the skills shipped with the selected Habeas version available to configured agents. After the selected version changes, `cargo agents sync` MUST provide the skills shipped with the new version.
 :::
 
 :::{req} integration.symposium_cli
-For a Cargo workspace that depends on `habeas`, `cargo agents use habeas` MUST install the `habeas` CLI into Cargo's global executable directory.
+The enabled Habeas Symposium plugin MUST make the `habeas` CLI available in Cargo's global executable directory before its session-start hook advises an agent to run `habeas setup`.
+:::
+
+:::{req} integration.symposium_setup_hook
+For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project depending on `habeas` MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.
 :::
 
 :::{req} integration.ci

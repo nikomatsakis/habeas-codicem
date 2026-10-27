@@ -17,17 +17,18 @@ Run these commands from a Cargo project that already has `book.toml` and a mdBoo
 
 ```sh
 cargo add --dev habeas
-cargo agents use habeas
-cargo install habeas
-habeas setup
-cargo test --workspace
+cargo agents sync
 ```
 
-The separate `cargo install habeas` step is needed with Symposium 0.5.1, which does not yet install the CLI when enabling the plugin. For development from a checkout, use `cargo install --path .`.
+Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. On Symposium versions that run hooks from dependency crates, its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
+
+Symposium 0.5.1 does not yet run hooks declared inside a dependency crate. Until a supporting release is available, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
 `habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
 
-`cargo agents use habeas` enables Habeas's Symposium plugin and syncs the bundled skills from the selected Habeas crate version. Run `cargo agents sync` after updating the dependency to refresh the skills.
+After setup, run `cargo test --workspace` to validate requirements and evidence.
+
+Run `cargo agents sync` after updating the Habeas dependency to refresh the bundled skills.
 
 If Habeas previously copied skills into `.agents/skills/habeas-*`, review them for local edits before the first Symposium sync. Save any edits under different names or elsewhere, remove those old copies, and then sync so Symposium can manage them.
 
