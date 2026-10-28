@@ -1,6 +1,6 @@
 # Habeas Codicem
 
-Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, cited lines, and `{impl}`, `{cite}`, and `{test}` references.
+Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, cited lines, `{impl}`, `{cite}`, and `{test}` references, and uncited Rust functions.
 
 ## Install
 
@@ -25,6 +25,8 @@ Run `cargo agents sync` in your terminal and choose **Enable** when it offers Ha
 To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
 `habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
+
+Add a `{test}` citation to an appropriate project requirement or named example for the generated test, and cite the rest of your Rust functions before expecting validation to pass.
 
 After setup, run `cargo test --workspace` to validate requirements and evidence.
 

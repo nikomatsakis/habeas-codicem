@@ -8,10 +8,12 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 use mdbook_preprocessor::config::Config;
 use serde_json::Value;
 
+use crate::evidence::{Declaration, inspect_repository};
+use crate::inputs::{InputSelector, SourceRange};
 use crate::markdown::render_evidence_table;
 use crate::{
     Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,
-    escape_html, overlaps_protected, protected_ranges, shield_badge, validate_repository,
+    escape_html, overlaps_protected, protected_ranges, shield_badge,
 };
 
 pub(crate) struct IndexPlan {
@@ -20,8 +22,15 @@ pub(crate) struct IndexPlan {
 }
 
 // {impl}`requirements.index.source_links`
-struct SourceLinks {
+pub(crate) struct SourceLinks {
     blob_prefix: String,
+}
+
+// {impl}`requirements.index.detail_format`
+pub(crate) struct RenderSources<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) definitions: &'a BTreeMap<String, Declaration>,
+    pub(crate) source_links: Option<&'a SourceLinks>,
 }
 
 impl SourceLinks {
@@ -163,14 +172,18 @@ impl LoadedDetailEvidence {
         }
     }
 
+    // {impl}`requirements.index.state`
     pub(crate) fn state(&self) -> EvidenceState {
         self.state
     }
 
+    // {impl}`requirements.index.state`
     pub(crate) fn errors(&self) -> &[String] {
         &self.errors
     }
 
+    // {impl}`requirements.index.detail_format`
+    // {impl}`requirements.cli.info`
     fn borrowed(&self) -> DetailEvidence<'_> {
         DetailEvidence {
             state: self.state,
@@ -267,12 +280,13 @@ impl IndexPlan {
     ) -> io::Result<()> {
         let config = Config::from_disk(root.join("book.toml")).map_err(io::Error::other)?;
         let source_links = SourceLinks::from_config(&config)?;
-        let report = validate_repository(root)?;
+        let inspection = inspect_repository(root)?;
+        let report = &inspection.report;
         let mut rows = Vec::new();
         let mut pages = Vec::new();
         for (name, detail_path) in &self.detail_paths {
             let evidence_path = root.join("evidence").join(format!("{name}.json"));
-            let evidence = LoadedDetailEvidence::load(root, name, &report);
+            let evidence = LoadedDetailEvidence::load(root, name, report);
             let detail_href = chapter_href(&self.chapter_path, detail_path, None);
             let definition = definitions
                 .get(name)
@@ -287,7 +301,11 @@ impl IndexPlan {
                 &self.chapter_path,
                 definition,
                 evidence.borrowed(),
-                source_links.as_ref(),
+                &RenderSources {
+                    root,
+                    definitions: &inspection.definitions,
+                    source_links: source_links.as_ref(),
+                },
             );
             // {impl}`requirements.index.source_links`
             let source_path = if evidence_path.exists() {
@@ -367,7 +385,7 @@ fn render_detail_page(
     index_path: &Path,
     definition: &Definition,
     detail_evidence: DetailEvidence<'_>,
-    source_links: Option<&SourceLinks>,
+    sources: &RenderSources<'_>,
 ) -> String {
     let definition_href = chapter_href(
         detail_path,
@@ -382,7 +400,7 @@ fn render_detail_page(
         &definition.text,
         definition.kind,
         detail_evidence,
-        source_links,
+        sources,
     )
 }
 
@@ -391,14 +409,16 @@ pub(crate) fn render_cli_detail_page(
     name: &str,
     source: &str,
     text: &str,
+    kind: DefinitionKind,
     evidence: &LoadedDetailEvidence,
+    sources: &RenderSources<'_>,
 ) -> String {
     render_detail_sections(
         format!("# `{name}`\n\nDefinition: `{source}`\n\n"),
         text,
-        DefinitionKind::Requirement,
+        kind,
         evidence.borrowed(),
-        None,
+        sources,
     )
 }
 
@@ -410,7 +430,7 @@ fn render_detail_sections(
     definition_text: &str,
     kind: DefinitionKind,
     detail_evidence: DetailEvidence<'_>,
-    source_links: Option<&SourceLinks>,
+    sources: &RenderSources<'_>,
 ) -> String {
     content.push_str(&shield_badge(
         "evidence",
@@ -456,7 +476,7 @@ fn render_detail_sections(
     {
         Some(inputs) if !inputs.is_empty() => {
             for (index, input) in inputs.iter().enumerate() {
-                render_input(&mut content, index + 1, input, source_links);
+                render_input(&mut content, index + 1, input, sources);
             }
         }
         _ => content.push_str("No inputs recorded.\n"),
@@ -472,44 +492,109 @@ fn render_detail_sections(
 
 // {impl}`requirements.index.source_links`
 // {impl}`requirements.index.detail_format`
-fn render_input(
-    content: &mut String,
-    index: usize,
-    input: &Value,
-    source_links: Option<&SourceLinks>,
-) {
-    let file = input.get("file").and_then(Value::as_str);
-    let start = input.get("line_start").and_then(Value::as_u64);
-    let end = input.get("line_end").and_then(Value::as_u64);
+fn render_input(content: &mut String, index: usize, input: &Value, sources: &RenderSources<'_>) {
+    let selector = InputSelector::from_input(input);
     content.push_str(&format!("<h3 id=\"habeas-input-{index}\">Input {index}"));
-    if let (Some(file), Some(start), Some(end)) = (file, start, end) {
-        let url = source_links.and_then(|links| links.input_url(file, start, end));
-        if let Some(url) = url.as_deref() {
-            content.push_str(": <a href=\"");
-            content.push_str(&escape_html(url));
-            content.push_str("\"><code>");
-        } else {
-            content.push_str(": <code>");
-        }
-        content.push_str(&escape_html(&format!("{file}:{start}–{end}")));
+    if let Some(selector) = &selector {
+        let label = match selector {
+            InputSelector::FileRange {
+                file,
+                line_start,
+                line_end,
+            } => {
+                format!("file range {file}:{line_start}–{line_end}")
+            }
+            InputSelector::RustItem {
+                rust_file,
+                rust_item,
+            } => {
+                format!("Rust item {rust_file} {rust_item}")
+            }
+            InputSelector::Requirements { requirements } => {
+                format!("requirements glob {requirements}")
+            }
+        };
+        content.push_str(": <code>");
+        content.push_str(&escape_html(&label));
         content.push_str("</code>");
-        if url.is_some() {
-            content.push_str("</a>");
-        }
     }
     content.push_str("</h3>\n\n");
+    if let Some(selector) = &selector {
+        let ranges = match selector {
+            InputSelector::FileRange {
+                file,
+                line_start,
+                line_end,
+            } if *line_start > 0 && *line_end >= *line_start => Ok(vec![SourceRange {
+                file: file.clone(),
+                line_start: *line_start,
+                line_end: *line_end,
+                name: None,
+            }]),
+            _ => selector
+                .resolve(sources.root, sources.definitions)
+                .map(|resolved| resolved.ranges),
+        };
+        match ranges {
+            Ok(ranges) => {
+                for range in &ranges {
+                    render_source_location(content, range, sources.source_links);
+                }
+                content.push('\n');
+            }
+            Err(error) => {
+                content.push_str(&format!("Unresolved selector: {}\n\n", escape_html(&error)));
+            }
+        }
+    }
 
     if let Some(lines) = input
         .get("text")
         .and_then(Value::as_array)
         .and_then(|lines| lines.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
     {
+        let file = match &selector {
+            Some(InputSelector::FileRange { file, .. }) => Some(file.as_str()),
+            Some(InputSelector::RustItem { rust_file, .. }) => Some(rust_file.as_str()),
+            Some(InputSelector::Requirements { .. }) => Some("requirements.md"),
+            None => None,
+        };
         push_code_block(content, &lines.join("\n"), code_language(file));
     } else {
         let raw = serde_json::to_string_pretty(input).expect("JSON values can be serialized");
         push_code_block(content, &raw, "json");
     }
     content.push('\n');
+}
+
+// {impl}`requirements.index.source_links`
+// {impl}`requirements.index.detail_format`
+fn render_source_location(
+    content: &mut String,
+    range: &SourceRange,
+    source_links: Option<&SourceLinks>,
+) {
+    let location = format!("{}:{}–{}", range.file, range.line_start, range.line_end);
+    let url = source_links.and_then(|links| {
+        links.input_url(&range.file, range.line_start as u64, range.line_end as u64)
+    });
+    content.push_str("- ");
+    if let Some(name) = &range.name {
+        content.push_str("<code>");
+        content.push_str(&escape_html(name));
+        content.push_str("</code>: ");
+    }
+    if let Some(url) = url {
+        content.push_str("<a href=\"");
+        content.push_str(&escape_html(&url));
+        content.push_str("\"><code>");
+        content.push_str(&escape_html(&location));
+        content.push_str("</code></a>\n");
+    } else {
+        content.push_str("<code>");
+        content.push_str(&escape_html(&location));
+        content.push_str("</code>\n");
+    }
 }
 
 // {impl}`requirements.index.detail_format`
@@ -618,8 +703,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DetailEvidence, EvidenceState, IndexPlan, SourceLinks, code_language, evidence_edit_path,
-        marker_ranges, render_detail_page,
+        DetailEvidence, EvidenceState, IndexPlan, RenderSources, SourceLinks, code_language,
+        evidence_edit_path, marker_ranges, render_detail_page,
     };
     use crate::{Definition, DefinitionKind, preprocess_book};
 
@@ -669,7 +754,7 @@ mod tests {
         fs::write(temp.path().join("md/requirements/core.md"), &source).unwrap();
         fs::write(
             temp.path().join("src/main.rs"),
-            format!("// {{impl}}`requirements.core.uncovered`\n"),
+            ["// {", "impl}`requirements.core.uncovered`\n"].concat(),
         )
         .unwrap();
         for (name, body, determination) in [
@@ -860,14 +945,18 @@ mod tests {
                 record: Some(&record),
                 errors: &[],
             },
-            None,
+            &RenderSources {
+                root: Path::new("."),
+                definitions: &BTreeMap::new(),
+                source_links: None,
+            },
         );
         assert!(page.contains("img.shields.io/badge/evidence-Valid-237346"));
         assert!(page.contains("## Requirement\n\n> Ready MUST work.\n> \n> ## Example"));
         assert!(page.contains("## Rationale\n\n**Checked** against the source."));
-        assert!(
-            page.contains("<h3 id=\"habeas-input-1\">Input 1: <code>src/main.rs:2–3</code></h3>")
-        );
+        assert!(page.contains(
+            "<h3 id=\"habeas-input-1\">Input 1: <code>file range src/main.rs:2–3</code></h3>"
+        ));
         assert!(page.contains("```rust,noplayground\nfn main()"));
         assert!(page.contains("````markdown\n```rust\n````"));
         assert!(page.contains("```ini\n[book]\n```"));
@@ -921,10 +1010,14 @@ mod tests {
                 record: Some(&record),
                 errors: &[],
             },
-            Some(&links),
+            &RenderSources {
+                root: Path::new("."),
+                definitions: &BTreeMap::new(),
+                source_links: Some(&links),
+            },
         );
         assert!(page.contains(
-            "<h3 id=\"habeas-input-1\">Input 1: <a href=\"https://github.com/example/project/blob/release/src/evidence.rs#L26-L37\"><code>src/evidence.rs:26–37</code></a></h3>"
+            "<a href=\"https://github.com/example/project/blob/release/src/evidence.rs#L26-L37\"><code>src/evidence.rs:26–37</code></a>"
         ));
 
         let other_config: Config = "[output.html]\ngit-repository-url = \"https://github.com/example/project\"\nedit-url-template = \"https://github.com/other/project/edit/main/{path}\"\n"
@@ -1022,7 +1115,11 @@ mod tests {
                 record: Some("{broken"),
                 errors: &findings.map(str::to_owned),
             },
-            None,
+            &RenderSources {
+                root: Path::new("."),
+                definitions: &BTreeMap::new(),
+                source_links: None,
+            },
         );
         assert!(page.contains("> Ready MUST work."));
         assert!(page.contains("## Validation findings"));
@@ -1042,7 +1139,11 @@ mod tests {
                 record: None,
                 errors: &[],
             },
-            None,
+            &RenderSources {
+                root: Path::new("."),
+                definitions: &BTreeMap::new(),
+                source_links: None,
+            },
         );
         assert!(missing.contains("> Ready MUST work."));
         assert!(missing.contains("No rationale recorded."));

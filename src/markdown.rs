@@ -1,12 +1,12 @@
 // {impl}`requirements.cli.status_table_alignment`
 // {impl}`requirements.cli.shared_status_rendering`
 pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {
-    let requirement_width = rows
+    let definition_width = rows
         .iter()
-        .map(|(requirement, _)| requirement.len())
+        .map(|(definition, _)| definition.len())
         .max()
         .unwrap_or_default()
-        .max("Requirement".len());
+        .max("Definition".len());
     let evidence_width = rows
         .iter()
         .map(|(_, evidence)| evidence.len())
@@ -14,14 +14,14 @@ pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {
         .unwrap_or_default()
         .max("Evidence".len());
     let mut table = String::new();
-    for (requirement, evidence) in [("Requirement", "Evidence"), ("---", "---")] {
+    for (definition, evidence) in [("Definition", "Evidence"), ("---", "---")] {
         table.push_str(&format!(
-            "| {requirement:<requirement_width$} | {evidence:<evidence_width$} |\n"
+            "| {definition:<definition_width$} | {evidence:<evidence_width$} |\n"
         ));
     }
-    for (requirement, evidence) in rows {
+    for (definition, evidence) in rows {
         table.push_str(&format!(
-            "| {requirement:<requirement_width$} | {evidence:<evidence_width$} |\n"
+            "| {definition:<definition_width$} | {evidence:<evidence_width$} |\n"
         ));
     }
     table

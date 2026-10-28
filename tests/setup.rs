@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {test}`requirements.cli.setup`
+// {test}`requirements.integration.symposium_setup_hook`
 fn fixture() -> TempDir {
     let temp = TempDir::new().unwrap();
     fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -25,6 +27,7 @@ fn fixture() -> TempDir {
     temp
 }
 
+// {test}`requirements.cli.setup`
 fn run(project: &Path, args: &[&str]) {
     let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .args(args)
@@ -40,6 +43,7 @@ fn run(project: &Path, args: &[&str]) {
     );
 }
 
+// {test}`requirements.integration.symposium_setup_hook`
 fn session_start(project: &Path, cwd: &Path) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .args(["hook", "session-start"])
