@@ -63,45 +63,61 @@ Tests can target the example with `{test}` followed by its full name, `requireme
 
 ## Experimental GitHub autofix workflow
 
-The [Habeas autofix workflow](.github/workflows/habeas-autofix.yml) uses two
-review stages for an issue labeled `autofix`:
+The [Habeas autofix workflow](.github/workflows/habeas-autofix.yml) keeps the
+whole review cycle for an `autofix` issue in one PR and one branch:
 
-1. A repository owner opens an issue with the label or adds the label to an
-   existing issue. The agent opens a PR containing only proposed mdBook
-   requirements, examples, and pending evidence records. It does not write
-   implementation code yet.
-2. An owner leaves a PR comment or submits a **Comment** or **Request changes**
-   review to refine the proposal. An **Approve** review of the current
-   requirements commit starts a separate implementation PR. The implementation
-   PR includes the approved definitions, code, tests, and completed evidence.
-   Owner feedback on that PR can trigger revisions; merging stays manual.
+1. An owner opens an issue with the label or adds the label to an existing issue.
+   The agent opens a PR with proposed requirements, examples, and pending evidence.
+2. In **📝 Adjust requirements** mode, owner comments and reviews refine the
+   proposal. An **Approve** review of the current head enables coding.
+3. In **🛠 Author code** mode, the agent implements the approved requirements,
+   tests their examples, and completes evidence. Owner feedback triggers revisions.
+   Code commits preserve requirements approval.
+4. If implementation reveals that an obligation needs revision, the agent returns
+   to **📝 Adjust requirements**, explains the reason, and publishes a
+   requirements-only proposal on the same PR. Approval of that new head resumes
+   coding. Repeat as needed; merging stays manual.
 
-Only an account owner (for a personal repository) or an active organization
-owner (for an organization repository) can trigger an agent run. The controller
-passes the issue body and the triggering owner's feedback to the agent. It does
-not pass other people's comments. An owner may explicitly include a
-same-repository issue or review comment by linking its GitHub URL in their
-feedback. The agent job has no GitHub write credential and runs without network
-access; a separate job rechecks the current PR head and review before pushing.
+Every commit belongs to exactly one mode. A run publishes at most one commit;
+if it switches to requirements, it restores its uncommitted code changes before
+proposing the revision and preserves earlier committed work. Requirements
+commits change only `md/` Markdown and matching evidence JSON. Code commits
+cannot change `md/`. Every agent message carries its active mode badge.
+
+Commit messages record intent. Requirements commits explain why the behavior
+needs to change, quote relevant user feedback, and link the originating GitHub
+comments/reviews (or issue body). Agent interpretations and implementation
+findings must be distinguished from user requests. Code commits describe the
+requirements and examples being implemented by full ID and link the exact
+approved requirements revision. The publisher validates quoted sources and
+constructs the commit message from the agent's structured output.
+
+The agent can inspect the issue and PR discussion history, including prior
+proposals, reviews, inline comments, agent summaries, source URLs, and authors.
+The checkout includes Git history for inspecting earlier intent and changes.
+Only an account owner (personal repository) or active organization owner can
+trigger runs or approve requirements. Other contributors' comments are context,
+not instructions or approval. An owner may also link same-repository comments
+outside this issue/PR to include their context.
+
+The agent job has no GitHub write credential and runs without network access.
+A separate publisher rechecks the head, approval, and discussion snapshot,
+rejects mixed-mode patches, and pushes with a lease. Mode and the approved
+requirements SHA are stored in the published commit, so state advances atomically
+with the code. Dismissing the requirements approval blocks further code runs.
 The GitHub App creates PRs so ordinary PR checks run.
 
-This experiment needs a GitHub App installed on the repository with **Contents,
-Issues, and Pull requests: read and write** permissions. For an organization,
-also grant **Members: read**. Set the repository variable
-`HABEAS_APP_CLIENT_ID` to the App client ID and the secrets
-`HABEAS_APP_PRIVATE_KEY` and `OPENAI_API_KEY` to its private key and an OpenAI
-API key. The App's slug becomes the bot identity on the PRs. Add the `autofix`
-label, then create an issue or apply the label as an owner. The workflow file
-must be on the default branch for GitHub's issue and review events to run it.
+This experiment needs a GitHub App installed with **Contents, Issues, and Pull
+requests: read and write** permissions. For an organization, also grant
+**Members: read**. Set `HABEAS_APP_CLIENT_ID` and the secrets
+`HABEAS_APP_PRIVATE_KEY` and `OPENAI_API_KEY`. The App slug becomes the bot's
+identity. Add the `autofix` label and trigger it as an owner. The workflow must
+be on the default branch for issue and review events to run it.
 
-The requirements PR is expected to fail the full `habeas::validate()` test:
-its new evidence records honestly have `determination: false` until the code
-exists. The agent checks book rendering at that stage. The implementation PR
-must pass the regular Cargo and mdBook CI checks. The requirements PR must
-remain open while the implementation PR is under review. If an approved
-requirement needs to change after code work starts, this prototype reports the
-needed revision on the code PR; restarting code work after that review is
-manual.
+Requirements commits may fail the full `habeas::validate()` test because pending
+evidence honestly has `determination: false`. Proposal runs check book rendering;
+code runs must pass the regular Cargo and mdBook checks. The workflow does not
+merge automatically or create a second implementation PR.
 
 ## Developing and publishing the book
 

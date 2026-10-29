@@ -26,8 +26,8 @@ function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
 }
 
-function branch(issue, stage) {
-  return `codex/autofix/issue-${issue}/${stage}`;
+function branch(issue) {
+  return `codex/autofix/issue-${issue}`;
 }
 
 function metadata(body) {
@@ -81,17 +81,19 @@ async function isOwner(api, repo, user) {
   return membership?.state === 'active' && membership?.role === 'admin';
 }
 
-async function managedPR(api, repo, pr, expectedStage, botLogin) {
+async function managedPR(api, repo, pr, botLogin) {
   if (!pr || pr.state !== 'open' || pr.user?.login !== botLogin) return null;
   if (pr.head?.repo?.id !== repo.id || pr.base?.ref !== repo.default_branch) return null;
   const meta = metadata(pr.body);
-  if (!meta || meta.stage !== expectedStage || !Number.isSafeInteger(meta.issue)) return null;
-  if (pr.head.ref !== branch(meta.issue, expectedStage)) return null;
-  if (expectedStage === 'implementation') {
-    sha(meta.requirements_sha);
-    number(meta.requirements_pr);
-  }
-  return meta;
+  if (!meta || meta.version !== 2 || !Number.isSafeInteger(meta.issue) || meta.issue <= 0) return null;
+  if (pr.head.ref !== branch(meta.issue)) return null;
+  // Store mode with the commit, so a push and its state are atomic. The PR body
+  // identifies the managed PR but cannot accidentally retain an old mode.
+  const commit = await api(repoPath(repo, `/git/commits/${sha(pr.head.sha)}`));
+  const state = metadata(commit.message);
+  if (!state || state.issue !== meta.issue || !['requirements', 'implementation'].includes(state.stage)) return null;
+  if (state.stage === 'implementation') sha(state.requirements_sha);
+  return state;
 }
 
 async function treeAtCommit(api, repo, commitSha) {
@@ -128,10 +130,10 @@ async function sameMdTree(api, repo, firstSha, secondSha) {
   return JSON.stringify(first) === JSON.stringify(second);
 }
 
-async function findPR(api, repo, issue, stage) {
-  const head = encodeURIComponent(`${repo.owner.login}:${branch(issue, stage)}`);
+async function findPR(api, repo, issue) {
+  const head = encodeURIComponent(`${repo.owner.login}:${branch(issue)}`);
   const prs = await allPages(api, repoPath(repo, `/pulls?state=all&head=${head}`));
-  return prs.find(pr => pr.head?.ref === branch(issue, stage) && pr.head?.repo?.id === repo.id) ?? null;
+  return prs.find(pr => pr.head?.ref === branch(issue) && pr.head?.repo?.id === repo.id) ?? null;
 }
 
 async function approvedOnHead(api, repo, pr, ownerReviewId = null) {
@@ -190,6 +192,38 @@ async function linkedComments(api, repo, ownerTexts) {
   return result;
 }
 
+async function discussionHistory(api, repo, issue, prNumber, botLogin) {
+  const history = [];
+  async function add(kind, items) {
+    for (const item of items) {
+      history.push({ kind, url: item.html_url, author: item.user?.login,
+        role: await isOwner(api, repo, item.user) ? 'owner' : item.user?.login === botLogin ? 'agent' : 'context',
+        body: item.body ?? '', state: item.state, commit: item.commit_id,
+        path: item.path, line: item.line, originalLine: item.original_line,
+        replyTo: item.in_reply_to_id, createdAt: item.submitted_at ?? item.created_at });
+    }
+  }
+  await add('issue', [issue]);
+  await add('issue-comment', await allPages(api, repoPath(repo, `/issues/${issue.number}/comments`)));
+  if (prNumber) {
+    await add('pr-comment', await allPages(api, repoPath(repo, `/issues/${prNumber}/comments`)));
+    await add('review', await allPages(api, repoPath(repo, `/pulls/${prNumber}/reviews`)));
+    await add('inline-comment', await allPages(api, repoPath(repo, `/pulls/${prNumber}/comments`)));
+  }
+  return history;
+}
+
+async function requirementsStillApproved(api, repo, pr, requirementsSha) {
+  const reviews = await allPages(api, repoPath(repo, `/pulls/${pr.number}/reviews`));
+  // Later requests to fix code do not revoke specification approval. Dismissal
+  // of the original approval does, as does publishing a new requirements commit.
+  for (const review of reviews) {
+    if (review.state === 'APPROVED' && review.commit_id === requirementsSha &&
+        await isOwner(api, repo, review.user)) return true;
+  }
+  return false;
+}
+
 async function planForEvent(api, eventName, event, botLogin) {
   const repo = event.repository;
   requireValue(repo?.full_name, 'Missing repository');
@@ -210,7 +244,7 @@ async function planForEvent(api, eventName, event, botLogin) {
     if (event.action === 'labeled' && event.label?.name !== label) return null;
     const issue = await api(repoPath(repo, `/issues/${issueNumber}`));
     if (issue.state !== 'open' || !issue.labels?.some(item => item.name === label)) return null;
-    if (await findPR(api, repo, issueNumber, 'requirements')) return null;
+    if (await findPR(api, repo, issueNumber)) return null;
     const defaultRef = await api(repoPath(repo, `/git/ref/heads/${repo.default_branch}`));
     const ownerTexts = await isOwner(api, repo, issue.user) ? [issue.body] : [];
     return {
@@ -223,10 +257,10 @@ async function planForEvent(api, eventName, event, botLogin) {
       feedback: null,
       linked: await linkedComments(api, repo, ownerTexts),
       baseSha: sha(defaultRef.object.sha),
-      branch: branch(issueNumber, 'requirements'),
+      branch: branch(issueNumber),
       prNumber: null,
       requirementsSha: null,
-      requirementsPr: null,
+      history: await discussionHistory(api, repo, issue, null, botLogin),
     };
   }
 
@@ -241,7 +275,7 @@ async function planForEvent(api, eventName, event, botLogin) {
     prNumber = number(event.issue.number);
     const comment = await api(repoPath(repo, `/issues/comments/${number(event.comment.id)}`));
     if (comment.user?.id !== sender.id) return null;
-    feedback = { kind: 'conversation', body: comment.body ?? '' };
+    feedback = { kind: 'conversation', url: comment.html_url, body: comment.body ?? '' };
     ownerTexts = [comment.body];
     trigger = `comment:${comment.id}`;
   } else if (eventName === 'pull_request_review' && event.action === 'submitted') {
@@ -253,8 +287,8 @@ async function planForEvent(api, eventName, event, botLogin) {
     if (!['APPROVED', 'COMMENTED', 'CHANGES_REQUESTED'].includes(review.state)) return null;
     const inline = await allPages(api, repoPath(repo, `/pulls/${prNumber}/reviews/${reviewId}/comments`));
     const selected = inline.filter(item => item.user?.id === sender.id)
-      .map(item => ({ path: item.path, line: item.line, body: item.body }));
-    feedback = { kind: 'review', state: review.state, body: review.body ?? '', inline: selected };
+      .map(item => ({ url: item.html_url, path: item.path, line: item.line, body: item.body }));
+    feedback = { kind: 'review', url: review.html_url, state: review.state, body: review.body ?? '', inline: selected };
     ownerTexts = [review.body, ...selected.map(item => item.body)];
     trigger = `review:${review.id}`;
   } else {
@@ -262,54 +296,36 @@ async function planForEvent(api, eventName, event, botLogin) {
   }
 
   const pr = await api(repoPath(repo, `/pulls/${prNumber}`));
-  const reqMeta = await managedPR(api, repo, pr, 'requirements', botLogin);
-  const codeMeta = reqMeta ? null : await managedPR(api, repo, pr, 'implementation', botLogin);
-  const meta = reqMeta ?? codeMeta;
+  const meta = await managedPR(api, repo, pr, botLogin);
   if (!meta) return null;
-  if (!await safePRDiff(api, repo, pr, reqMeta ? 'requirements' : 'implementation')) return null;
+  // The cumulative PR diff includes both modes; each new commit is gated separately.
+  if (!await safePRDiff(api, repo, pr, 'implementation')) return null;
   const issue = await api(repoPath(repo, `/issues/${meta.issue}`));
   if (issue.state !== 'open' || !issue.labels?.some(item => item.name === label)) return null;
 
-  if (reqMeta && approval) {
-    if (event.review.commit_id !== pr.head.sha) return null;
+  let stage = meta.stage;
+  let requirementsSha = meta.requirements_sha ?? null;
+  if (approval) {
+    if (stage !== 'requirements' || event.review.commit_id !== pr.head.sha) return null;
     if (!await approvedOnHead(api, repo, pr, reviewId)) return null;
-    if (await findPR(api, repo, meta.issue, 'implementation')) return null;
-    return {
-      ...common,
-      stage: 'implementation',
-      trigger,
-      issue: meta.issue,
-      issueTitle: issue.title,
-      issueBody: issue.body ?? '',
-      feedback: feedback.body || feedback.inline?.length ? feedback : null,
-      linked: await linkedComments(api, repo, ownerTexts),
-      baseSha: sha(pr.head.sha),
-      branch: branch(meta.issue, 'implementation'),
-      prNumber: null,
-      requirementsSha: sha(pr.head.sha),
-      requirementsPr: pr.number,
-    };
-  }
-  if (approval) return null;
-  if (!feedback.body && (!feedback.inline || feedback.inline.length === 0)) return null;
-
-  let requirementsSha = null;
-  let requirementsPr = null;
-  if (codeMeta) {
-    requirementsSha = codeMeta.requirements_sha;
-    requirementsPr = codeMeta.requirements_pr;
-    const reqPR = await api(repoPath(repo, `/pulls/${requirementsPr}`));
-    const linkedRequirements = await managedPR(api, repo, reqPR, 'requirements', botLogin);
-    if (!linkedRequirements || linkedRequirements.issue !== meta.issue) return null;
-    if (!await safePRDiff(api, repo, reqPR, 'requirements')) return null;
-    if (reqPR.head.sha !== requirementsSha) return null;
-    if (!await approvedOnHead(api, repo, reqPR)) return null;
-    if (!await sameMdTree(api, repo, requirementsSha, pr.head.sha)) return null;
+    stage = 'implementation';
+    requirementsSha = sha(pr.head.sha);
+  } else {
+    if (!feedback.body && (!feedback.inline || feedback.inline.length === 0)) return null;
+    // An approval may have produced only an answer, without a new commit.
+    if (stage === 'requirements' && await approvedOnHead(api, repo, pr)) {
+      stage = 'implementation';
+      requirementsSha = sha(pr.head.sha);
+    }
+    if (stage === 'implementation') {
+      if (!await requirementsStillApproved(api, repo, pr, requirementsSha)) return null;
+      if (!await sameMdTree(api, repo, requirementsSha, pr.head.sha)) return null;
+    }
   }
 
   return {
     ...common,
-    stage: reqMeta ? 'requirements' : 'implementation',
+    stage,
     trigger,
     issue: meta.issue,
     issueTitle: issue.title,
@@ -320,11 +336,12 @@ async function planForEvent(api, eventName, event, botLogin) {
     branch: pr.head.ref,
     prNumber: pr.number,
     requirementsSha,
-    requirementsPr,
+    history: await discussionHistory(api, repo, issue, prNumber, botLogin),
   };
 }
 
 function proposalPathAllowed(path) {
+  if (!path || path.includes('..') || path.includes('\\')) return false;
   return /^md\/.+\.md$/.test(path) || /^evidence\/[^/]+\.json$/.test(path);
 }
 
@@ -345,7 +362,7 @@ function verifyPaths(stage, paths) {
 }
 
 function pathsFromGit() {
-  return git('diff', '--cached', '--name-only', '-z').split('\0').filter(Boolean);
+  return git('diff', '--cached', '--no-renames', '--name-only', '-z').split('\0').filter(Boolean);
 }
 
 function checkModes(stage) {
@@ -358,6 +375,48 @@ function checkModes(stage) {
       throw new Error(`Disallowed file mode for ${match[2]}: ${match[1]}`);
     }
   }
+}
+
+function modeBadge(stage) {
+  return stage === 'requirements' ? '📝 Adjust requirements' : '🛠 Author code';
+}
+
+function publicationResult(plan, result, paths) {
+  if (!['requirements', 'implementation'].includes(result.stage)) throw new Error('Invalid output mode');
+  if (plan.stage === 'requirements' && result.stage !== 'requirements') throw new Error('Requirements need owner approval');
+  verifyPaths(result.stage, paths);
+  if (result.stage !== plan.stage && !paths.some(path => path.startsWith('md/'))) {
+    throw new Error('Returning to requirements must include a proposal');
+  }
+  if (typeof result.intent !== 'string' || !result.intent.trim()) throw new Error('Missing change intent');
+  // Never accept agent-authored state markers in the prose portion of a commit.
+  if (JSON.stringify(result).includes(marker)) throw new Error('Reserved state marker');
+  const lines = [`${modeBadge(result.stage)}: ${result.intent.trim()}`];
+  if (result.stage === 'requirements') {
+    if (!Array.isArray(result.sources) || !result.sources.length) throw new Error('Missing quoted sources');
+    const sources = [...plan.history, ...plan.linked];
+    for (const source of result.sources) {
+      const original = sources.find(item => item.url === source.url && item.role !== 'agent');
+      if (!original || typeof source.quote !== 'string' || !source.quote.trim() || !original.body.includes(source.quote)) {
+        throw new Error('Source must quote the supplied discussion exactly');
+      }
+      lines.push(`Source: ${source.url} (${original.author})\n> ${source.quote}`);
+    }
+  } else {
+    sha(plan.requirementsSha);
+    if (!Array.isArray(result.requirements) || !result.requirements.length) throw new Error('Missing requirements and examples');
+    for (const requirement of result.requirements) {
+      if (!/^[\w.-]+$/.test(requirement.id ?? '') || typeof requirement.description !== 'string' || !requirement.description.trim()) {
+        throw new Error('Each requirement/example needs an ID and description');
+      }
+      lines.push(`${requirement.id}: ${requirement.description}`);
+    }
+    lines.push(`Approved requirements: https://github.com/${plan.repo}/commit/${plan.requirementsSha}`);
+  }
+  const state = { issue: plan.issue, stage: result.stage,
+    ...(result.stage === 'implementation' ? { requirements_sha: plan.requirementsSha } : {}) };
+  lines.push(`<!-- ${marker} ${JSON.stringify(state)} -->`);
+  return { stage: result.stage, commitMessage: lines.join('\n\n') };
 }
 
 async function prepare() {
@@ -375,7 +434,7 @@ async function prepare() {
   const sop = plan.stage === 'requirements'
     ? 'agent-sops/requirements-proposal.sop.md'
     : 'agent-sops/approved-implementation.sop.md';
-  const prompt = `${readFileSync(sop, 'utf8')}\n\n## Provided context_json\n\n\`\`\`json\n${JSON.stringify(plan, null, 2)}\n\`\`\`\n`;
+  const prompt = `${readFileSync('agent-sops/autofix-context.md', 'utf8')}\n\n${readFileSync(sop, 'utf8')}\n\n## Provided context_json\n\n\`\`\`json\n${JSON.stringify(plan, null, 2)}\n\`\`\`\n`;
   writeFileSync(join(dir, 'prompt.md'), prompt);
   writeFileSync(output, `run=true\nbase_sha=${plan.baseSha}\nstage=${plan.stage}\n`, { flag: 'a' });
 }
@@ -389,7 +448,9 @@ async function publish() {
   if (JSON.stringify(current) !== JSON.stringify(planned)) throw new Error('Autofix state changed while the agent ran');
 
   const patch = join(artifact, 'changes.patch');
-  const summary = readFileSync(join(artifact, 'result.md'), 'utf8').trim().slice(0, 60000);
+  const report = readFileSync(join(artifact, 'result.md'), 'utf8').trim().slice(0, 58000);
+  const result = JSON.parse(readFileSync(join(artifact, 'output.json'), 'utf8'));
+  let summary;
   const repo = event.repository;
   const apiRoot = repoPath(repo, '');
   execFileSync('gh', ['auth', 'setup-git'], { stdio: 'inherit', env: process.env });
@@ -399,12 +460,13 @@ async function publish() {
     execFileSync('git', ['apply', '--check', '--index', patch], { stdio: 'inherit' });
     execFileSync('git', ['apply', '--index', patch], { stdio: 'inherit' });
     const paths = pathsFromGit();
-    verifyPaths(planned.stage, paths);
-    checkModes(planned.stage);
+    const publication = publicationResult(planned, result, paths);
+    summary = `**${modeBadge(publication.stage)}**\n\n${report}`;
+    checkModes(publication.stage);
     execFileSync('git', ['diff', '--cached', '--check'], { stdio: 'inherit' });
     if (paths.length === 0) throw new Error('Patch produced no changed files');
     git('-c', `user.name=${process.env.BOT_LOGIN}`, '-c', `user.email=${process.env.BOT_LOGIN}@users.noreply.github.com`,
-      'commit', '-m', `autofix: ${planned.stage} for #${planned.issue}`);
+      'commit', '-m', publication.commitMessage);
     const expected = planned.prNumber ? planned.baseSha : '';
     execFileSync('git', ['push', `--force-with-lease=refs/heads/${planned.branch}:${expected}`,
       'origin', `HEAD:refs/heads/${planned.branch}`], { stdio: 'inherit' });
@@ -414,23 +476,11 @@ async function publish() {
         method: 'POST', body: JSON.stringify({ body: summary }),
       });
     } else {
-      const meta = planned.stage === 'requirements'
-        ? { stage: 'requirements', issue: planned.issue }
-        : {
-          stage: 'implementation',
-          issue: planned.issue,
-          requirements_pr: planned.requirementsPr,
-          requirements_sha: planned.requirementsSha,
-        };
-      const title = planned.stage === 'requirements'
-        ? `Requirements for #${planned.issue}: ${planned.issueTitle}`
-        : `Implement #${planned.issue}: ${planned.issueTitle}`;
+      const meta = { version: 2, issue: planned.issue };
+      const title = `Resolve #${planned.issue}: ${planned.issueTitle}`;
       const body = `<!-- ${marker} ${JSON.stringify(meta)} -->\n\n` +
-        (planned.stage === 'requirements'
-          ? `Proposal for #${planned.issue}. New definitions have pending Habeas evidence until implementation.\n\n` +
-            `Review this PR with **Comment**, **Request changes**, or **Approve**. Approval of its current head starts a separate implementation PR.\n\n`
-          : `Implements #${planned.issue} based on requirements PR #${planned.requirementsPr} at \`${planned.requirementsSha}\`.\n\n`) +
-        (summary || 'Agent summary unavailable.');
+        `Work for #${planned.issue}. Requirements and code are separate commits on this PR.\n\n` +
+        `Approve the current requirements head to enable coding. New requirements need another approval. Merging stays manual.\n\n` + summary;
       await api(`${apiRoot}/pulls`, {
         method: 'POST',
         body: JSON.stringify({
@@ -442,14 +492,11 @@ async function publish() {
         }),
       });
     }
-  } else if (planned.prNumber && summary) {
+  } else if (planned.prNumber) {
+    publicationResult(planned, result, []);
+    summary = `**${modeBadge(planned.stage)}**\n\n${report}`;
     await api(`${apiRoot}/issues/${planned.prNumber}/comments`, {
       method: 'POST', body: JSON.stringify({ body: summary }),
-    });
-  } else if (planned.stage === 'implementation' && planned.requirementsPr && summary) {
-    await api(`${apiRoot}/issues/${planned.requirementsPr}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({ body: `Implementation paused pending requirements review.\n\n${summary}` }),
     });
   } else {
     throw new Error('Initial autofix run produced no changes');
@@ -468,4 +515,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
 }
 
-export { isOwner, ownerLinks, proposalPathAllowed, implementationPathAllowed, verifyPaths, planForEvent, approvedOnHead };
+export { isOwner, ownerLinks, proposalPathAllowed, implementationPathAllowed, verifyPaths, planForEvent, approvedOnHead, publicationResult, modeBadge };
