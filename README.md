@@ -61,6 +61,48 @@ With two managed forwards active, pressing q stops both. {cite}`requirements.for
 
 Tests can target the example with `{test}` followed by its full name, `requirements.forwarding.two_active`. The agent must explain in `evidence/requirements.forwarding.two_active.json` how those tests cover both active forwards and the result of pressing q. See [How it works](md/reference.md#examples).
 
+## Experimental GitHub autofix workflow
+
+The [Habeas autofix workflow](.github/workflows/habeas-autofix.yml) uses two
+review stages for an issue labeled `autofix`:
+
+1. A repository owner opens an issue with the label or adds the label to an
+   existing issue. The agent opens a PR containing only proposed mdBook
+   requirements, examples, and pending evidence records. It does not write
+   implementation code yet.
+2. An owner leaves a PR comment or submits a **Comment** or **Request changes**
+   review to refine the proposal. An **Approve** review of the current
+   requirements commit starts a separate implementation PR. The implementation
+   PR includes the approved definitions, code, tests, and completed evidence.
+   Owner feedback on that PR can trigger revisions; merging stays manual.
+
+Only an account owner (for a personal repository) or an active organization
+owner (for an organization repository) can trigger an agent run. The controller
+passes the issue body and the triggering owner's feedback to the agent. It does
+not pass other people's comments. An owner may explicitly include a
+same-repository issue or review comment by linking its GitHub URL in their
+feedback. The agent job has no GitHub write credential and runs without network
+access; a separate job rechecks the current PR head and review before pushing.
+The GitHub App creates PRs so ordinary PR checks run.
+
+This experiment needs a GitHub App installed on the repository with **Contents,
+Issues, and Pull requests: read and write** permissions. For an organization,
+also grant **Members: read**. Set the repository variable
+`HABEAS_APP_CLIENT_ID` to the App client ID and the secrets
+`HABEAS_APP_PRIVATE_KEY` and `OPENAI_API_KEY` to its private key and an OpenAI
+API key. The App's slug becomes the bot identity on the PRs. Add the `autofix`
+label, then create an issue or apply the label as an owner. The workflow file
+must be on the default branch for GitHub's issue and review events to run it.
+
+The requirements PR is expected to fail the full `habeas::validate()` test:
+its new evidence records honestly have `determination: false` until the code
+exists. The agent checks book rendering at that stage. The implementation PR
+must pass the regular Cargo and mdBook CI checks. The requirements PR must
+remain open while the implementation PR is under review. If an approved
+requirement needs to change after code work starts, this prototype reports the
+needed revision on the code PR; restarting code work after that review is
+manual.
+
 ## Developing and publishing the book
 
 The repository-local `cargo habeas` alias runs `cargo run --release -p habeas --`; only this book invokes its preprocessor with `cargo habeas mdbook`. Consumer books configured by `habeas setup` continue to invoke the installed `habeas mdbook` CLI.
