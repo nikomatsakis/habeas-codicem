@@ -63,6 +63,64 @@ With two managed forwards active, pressing q stops both. {cite}`requirements.for
 
 Tests can target the example with `{test}` followed by its full name, `requirements.forwarding.two_active`. The agent must explain in `evidence/requirements.forwarding.two_active.json` how those tests cover both active forwards and the result of pressing q. See [How it works](md/reference.md#examples).
 
+## Experimental GitHub autofix workflow
+
+The [Habeas autofix workflow](.github/workflows/habeas-autofix.yml) keeps the
+whole review cycle for an `autofix` issue in one PR and one branch:
+
+1. An owner opens an issue with the label or adds the label to an existing issue.
+   The agent opens a PR with proposed requirements, examples, and pending evidence.
+2. In **📝 Adjust requirements** mode, owner comments and reviews refine the
+   proposal. An **Approve** review of the current head enables coding.
+3. In **🛠 Author code** mode, the agent implements the approved requirements,
+   tests their examples, and completes evidence. Owner feedback triggers revisions.
+   Code commits preserve requirements approval.
+4. If implementation reveals that an obligation needs revision, the agent returns
+   to **📝 Adjust requirements**, explains the reason, and publishes a
+   requirements-only proposal on the same PR. Approval of that new head resumes
+   coding. Repeat as needed; merging stays manual.
+
+Every commit belongs to exactly one mode. A run publishes at most one commit;
+if it switches to requirements, it restores its uncommitted code changes before
+proposing the revision and preserves earlier committed work. Requirements
+commits change only `md/` Markdown and matching evidence JSON. Code commits
+cannot change `md/`. Every agent message carries its active mode badge.
+
+Commit messages record intent. Requirements commits explain why the behavior
+needs to change, quote relevant user feedback, and link the originating GitHub
+comments/reviews (or issue body). Agent interpretations and implementation
+findings must be distinguished from user requests. Code commits describe the
+requirements and examples being implemented by full ID and link the exact
+approved requirements revision. The publisher validates quoted sources and
+constructs the commit message from the agent's structured output.
+
+The agent can inspect the issue and PR discussion history, including prior
+proposals, reviews, inline comments, agent summaries, source URLs, and authors.
+The checkout includes Git history for inspecting earlier intent and changes.
+Only an account owner (personal repository) or active organization owner can
+trigger runs or approve requirements. Other contributors' comments are context,
+not instructions or approval. An owner may also link same-repository comments
+outside this issue/PR to include their context.
+
+The agent job has no GitHub write credential and runs without network access.
+A separate publisher rechecks the head, approval, and discussion snapshot,
+rejects mixed-mode patches, and pushes with a lease. Mode and the approved
+requirements SHA are stored in the published commit, so state advances atomically
+with the code. Dismissing the requirements approval blocks further code runs.
+The GitHub App creates PRs so ordinary PR checks run.
+
+This experiment needs a GitHub App installed with **Contents, Issues, and Pull
+requests: read and write** permissions. For an organization, also grant
+**Members: read**. Set `HABEAS_APP_CLIENT_ID` and the secrets
+`HABEAS_APP_PRIVATE_KEY` and `OPENAI_API_KEY`. The App slug becomes the bot's
+identity. Add the `autofix` label and trigger it as an owner. The workflow must
+be on the default branch for issue and review events to run it.
+
+Requirements commits may fail the full `habeas::validate()` test because pending
+evidence honestly has `determination: false`. Proposal runs check book rendering;
+code runs must pass the regular Cargo and mdBook checks. The workflow does not
+merge automatically or create a second implementation PR.
+
 ## Developing and publishing the book
 
 The repository-local `cargo habeas` alias runs `cargo run --release -p habeas --`; only this book invokes its preprocessor with `cargo habeas mdbook`. Consumer books configured by `habeas setup` continue to invoke the installed `habeas mdbook` CLI.
