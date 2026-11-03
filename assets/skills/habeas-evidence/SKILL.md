@@ -11,7 +11,7 @@ For each requirement or example, maintain `evidence/<full-name>.json` with exact
 
 An approved requirement or example may be installed before its implementation exists. Record it with `determination: false` and a rationale describing the pending work; an empty `inputs` array is valid until there are lines to cite. Expect validation to fail during this interval. Once code and tests satisfy the approved definition, inspect them, snapshot their exact lines, and only then change the determination to `true`. Review a substantive change to an approved obligation with the user before changing its requirement text.
 
-Each input has one of three forms:
+Each input has one of four forms (the definition form is described below):
 
 - File range: `file`, 1-based inclusive `line_start` and `line_end`, and `text` containing the exact raw lines.
 - Rust item: repository-relative `rust_file`, syntactic `rust_item` selector, and `text` containing the complete raw lines, including attached comments, doc comments, and attributes.
@@ -38,3 +38,11 @@ Every explicit function or method in first-party Rust sources needs its own requ
 Run `cargo test --workspace` after changing requirements, examples, source references, or evidence. Read the full set of Habeas errors: missing and orphan records, malformed fields, false determinations, stale definition text, changed input lines, unknown references, uncovered reference lines, uncited Rust functions, and stale or missing function attestations.
 
 Do not make a failing check green by inventing input text or changing a determination without examining the cited files.
+
+Named definitions use a fourth input form: `definition` (one full definition name)
+and `text` (the complete raw fenced declaration, including `:phrase:`). They have
+no standalone determination. `habeas add-input` automatically captures definitions
+referenced with `{term}` by the subject text or reviewed inputs, including transitive
+dependencies. Cycles are allowed; retain one input per definition. Changes to a
+phrase or body require reassessment. Requirements globs select requirements and
+examples, while their term dependencies are captured separately.

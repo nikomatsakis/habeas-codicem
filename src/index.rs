@@ -492,6 +492,7 @@ fn render_detail_sections(
 
 // {impl}`requirements.index.source_links`
 // {impl}`requirements.index.detail_format`
+// {impl}`requirements.definitions.inputs`
 fn render_input(content: &mut String, index: usize, input: &Value, sources: &RenderSources<'_>) {
     let selector = InputSelector::from_input(input);
     content.push_str(&format!("<h3 id=\"habeas-input-{index}\">Input {index}"));
@@ -510,6 +511,7 @@ fn render_input(content: &mut String, index: usize, input: &Value, sources: &Ren
             } => {
                 format!("Rust item {rust_file} {rust_item}")
             }
+            InputSelector::Definition { definition } => format!("definition {definition}"),
             InputSelector::Requirements { requirements } => {
                 format!("requirements glob {requirements}")
             }
@@ -556,7 +558,9 @@ fn render_input(content: &mut String, index: usize, input: &Value, sources: &Ren
         let file = match &selector {
             Some(InputSelector::FileRange { file, .. }) => Some(file.as_str()),
             Some(InputSelector::RustItem { rust_file, .. }) => Some(rust_file.as_str()),
-            Some(InputSelector::Requirements { .. }) => Some("requirements.md"),
+            Some(InputSelector::Requirements { .. } | InputSelector::Definition { .. }) => {
+                Some("requirements.md")
+            }
             None => None,
         };
         push_code_block(content, &lines.join("\n"), code_language(file));

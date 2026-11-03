@@ -42,6 +42,7 @@ pub(crate) struct RepositoryInspection {
 }
 
 // {impl}`requirements.integration.report_api`
+// {impl}`requirements.definitions.declaration`
 pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {
     let root = fs::canonicalize(root)?;
     let mut errors = Vec::new();
@@ -72,7 +73,9 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         } else {
             None
         };
-        let expected = name.and_then(|name| definitions.get(name));
+        let expected = name
+            .and_then(|name| definitions.get(name))
+            .filter(|d| d.kind != DefinitionKind::Term);
 
         if let Some(name) = name.filter(|_| expected.is_some()) {
             present.insert(name.to_owned());
@@ -84,7 +87,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
 
     // {impl}`requirements.ci.coverage`
     for (name, definition) in &definitions {
-        if !present.contains(name) {
+        if definition.kind != DefinitionKind::Term && !present.contains(name) {
             errors.push(format!(
                 "evidence/{name}.json: missing for {} at {}",
                 definition.kind.noun(),
@@ -151,6 +154,7 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 // {impl}`requirements.ci.definition_errors`
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.examples.definition`
+// {impl}`requirements.definitions.declaration`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -206,6 +210,11 @@ fn collect_definitions(
                 ));
             }
 
+            if block.kind == DefinitionKind::Term
+                && let Err(error) = crate::terms::declaration(&text)
+            {
+                errors.push(format!("{source}: definition {name}: {error}"));
+            }
             match definitions.entry(name.clone()) {
                 Entry::Vacant(slot) => {
                     let raw_lines = content[block.start..block.end]
@@ -308,6 +317,7 @@ fn files_with_extension(
 
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.examples.evidence`
+// {impl}`requirements.definitions.dependencies`
 fn validate_evidence_file(
     root: &Path,
     path: &Path,
@@ -387,6 +397,13 @@ fn validate_evidence_file(
         ));
     }
 
+    crate::terms::validate_dependencies(
+        definitions,
+        object,
+        expected.map(|d| d.text.as_str()),
+        &label,
+        errors,
+    );
     if let Some(inputs) = array_field(object, "inputs", &label, errors) {
         for (index, input) in inputs.iter().enumerate() {
             validate_input(
@@ -404,6 +421,7 @@ fn validate_evidence_file(
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.ci.rust_item_inputs`
 // {impl}`requirements.ci.requirements_inputs`
+// {impl}`requirements.definitions.inputs`
 fn validate_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -428,6 +446,25 @@ fn validate_input(
             rust_item: rust_item.to_owned(),
         };
         return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);
+    }
+    if object.contains_key("definition") {
+        check_keys(object, &["definition", "text"], label, errors);
+        let definition = string_field(object, "definition", label, errors);
+        let text = text_field(object, label, errors);
+        let (Some(definition), Some(text)) = (definition, text) else {
+            return None;
+        };
+        return validate_resolved_input(
+            root,
+            definitions,
+            &InputSelector::Definition {
+                definition: definition.to_owned(),
+            },
+            &text,
+            None,
+            label,
+            errors,
+        );
     }
     if object.contains_key("requirements") || object.contains_key("matches") {
         check_keys(object, &["requirements", "matches", "text"], label, errors);
@@ -804,6 +841,8 @@ struct InputRange {
 // {impl}`requirements.references.evidence_coverage`
 // {impl}`requirements.references.targets`
 // {impl}`requirements.examples.evidence`
+// {impl}`requirements.definitions.references`
+// {impl}`requirements.definitions.declaration`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -811,7 +850,19 @@ fn validate_references(
 ) {
     let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
     for reference in collect_references(root, errors) {
-        if definitions.contains_key(&reference.name) {
+        let target = definitions.get(&reference.name);
+        if reference.kind == ReferenceKind::Term {
+            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {
+                errors.push(format!(
+                    "{}:{}: term {} has no matching named definition",
+                    display_path(root, &reference.file),
+                    reference.line,
+                    reference.name
+                ));
+            }
+            continue;
+        }
+        if target.is_some_and(|d| d.kind != DefinitionKind::Term) {
             by_definition
                 .entry(reference.name.clone())
                 .or_default()
@@ -828,6 +879,9 @@ fn validate_references(
     }
 
     for (name, definition) in definitions {
+        if definition.kind == DefinitionKind::Term {
+            continue;
+        }
         let evidence_file = root.join("evidence").join(format!("{name}.json"));
         let references = by_definition.remove(name).unwrap_or_default();
         if definition.kind == DefinitionKind::Example
@@ -1036,6 +1090,7 @@ fn validate_rust_attestations(
 // {impl}`requirements.references.rust_function_attestations`
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.determination`
+// {impl}`requirements.definitions.dependencies`
 fn validate_rust_attestation_file(
     root: &Path,
     path: &Path,
@@ -1183,6 +1238,7 @@ fn validate_rust_attestation_file(
         let Some(inputs) = array_field(entry, "inputs", &entry_label, errors) else {
             continue;
         };
+        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);
         let mut self_inputs = 0;
         let mut definition_inputs = 0;
         let mut matched_definitions = BTreeSet::new();

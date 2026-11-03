@@ -212,6 +212,7 @@ pub(crate) fn attached_comment_indices(
 }
 
 // {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.definitions.references`
 fn missing_function_references(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
@@ -254,7 +255,12 @@ fn missing_function_references(
         };
         if reference_roles(&source[comments[comment_index].clone()], false)
             .iter()
-            .any(|role| definitions.contains_key(role.name))
+            .any(|role| {
+                role.kind != crate::ReferenceKind::Term
+                    && definitions
+                        .get(role.name)
+                        .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
+            })
         {
             cited[*function_index] = true;
         }

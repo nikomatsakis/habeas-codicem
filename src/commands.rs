@@ -14,16 +14,15 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
 }
 
 // {impl}`requirements.cli.status`
+// {impl}`requirements.definitions.selection`
 pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     if let Some(glob) = glob {
         definition_glob::validate(glob)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        if !inspection
-            .definitions
-            .keys()
-            .any(|name| definition_glob::matches(glob, name))
-        {
+        if !inspection.definitions.iter().any(|(name, d)| {
+            d.kind != crate::DefinitionKind::Term && definition_glob::matches(glob, name)
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("no definitions match {glob:?}"),
@@ -36,6 +35,9 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
     let mut associated_errors = BTreeSet::new();
 
     for (name, definition) in &inspection.definitions {
+        if definition.kind == crate::DefinitionKind::Term {
+            continue;
+        }
         if glob.is_some_and(|glob| !definition_glob::matches(glob, name)) {
             continue;
         }
@@ -94,12 +96,16 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
 }
 
 // {impl}`requirements.cli.info`
+// {impl}`requirements.definitions.selection`
 pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     definition_glob::validate(selector)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut pages = Vec::new();
     for (name, definition) in &inspection.definitions {
+        if definition.kind == crate::DefinitionKind::Term {
+            continue;
+        }
         if !definition_glob::matches(selector, name) {
             continue;
         }
