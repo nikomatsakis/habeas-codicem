@@ -15,7 +15,7 @@ Every JSON file directly under `evidence/` MUST correspond to a declared require
 :::
 
 :::{req} ci.schema
-A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST be a boolean, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of three forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; or a requirements input with `requirements`, `matches`, and `text`. File paths MUST be repository-relative, line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
+A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST be a boolean, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST be repository-relative, line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
 :::
 
 :::{req} ci.requirement_text
@@ -229,7 +229,7 @@ Requirement and reference names MUST have nonempty dot-separated segments contai
 :::
 
 :::{req} ci.definition_errors
-Validation MUST report a requirement or example with a missing closing fence or an empty body. Full names of `{req}` and `{example}` definitions MUST be unique across both kinds. Habeas MUST report every duplicate full name, including requirement/requirement, example/example, and requirement/example pairs, and identify both the duplicate declaration and the first declaration.
+Validation MUST report a requirement or example with a missing closing fence or an empty body. Full names of `{req}` and `{example}` definitions MUST be unique across requirements, examples, and named definitions. Habeas MUST report every duplicate full name, including collisions involving named definitions, and identify both the duplicate declaration and the first declaration.
 :::
 
 :::{req} ci.input_containment
@@ -323,3 +323,58 @@ A function attestation has a Rust-item input selecting its function and a requir
 :::{example} cli.definition_glob_search
 Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`
 :::
+
+## Named definitions
+
+:::{req} definitions.declaration
+An mdBook chapter MAY declare a named definition using a fenced `{definition}` directive. Definitions MUST use the same chapter-qualified names, identifier rules, fence rules, and nonempty-body rules as requirements and examples. Names MUST be unique across all three kinds.
+
+Each definition MUST declare exactly one nonempty `:phrase:` option before its explanatory body. The phrase MUST be interpreted as plain text. Definitions MUST NOT require their own evidence records or determinations.
+:::
+
+:::{req} definitions.references
+The `{term}` role followed by a backtick-delimited full definition name MUST reference a named definition. In rendered Markdown, the reference MUST display the definition's phrase as an ordinary hyperlink to its anchored declaration, without a badge. The phrase MUST be escaped appropriately for rendering.
+
+Missing targets and targets of another kind MUST be reported. Escaped references and references in Markdown code examples MUST remain literal. A term reference MUST NOT satisfy a requirement citation or a Rust function's requirement-coverage obligation.
+:::
+
+:::{req} definitions.inputs
+Evidence inputs MAY have a definition form containing exactly `definition` and `text`. `definition` MUST identify one named definition; `text` MUST contain its complete raw fenced declaration as source lines, including its phrase option and explanatory body.
+
+Validation MUST reject missing definitions and changed snapshot text, identifying the definition and showing a compact diff when available. Moving an unchanged definition within its chapter MUST NOT invalidate its snapshot. Evidence displays MUST show the definition name, current source location, and recorded text.
+:::
+
+:::{req} definitions.dependencies
+Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs. Rust function attestations MUST include definition inputs for every term referenced by their reviewed inputs, including selected requirements and examples.
+
+Habeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.
+
+Validation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.
+:::
+
+:::{req} definitions.selection
+Existing requirements input globs MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the glob. Sharing a glob's matching name prefix alone MUST NOT make a definition a dependency.
+:::
+
+:::{req} definitions.capture
+When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.
+
+Repeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.
+:::
+
+:::{example} definitions.phrase_rendering
+A definition named `glossary.first_parent_history` declares the phrase "first-parent history". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`
+:::
+
+:::{example} definitions.transitive_cycle
+Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. A function attestation whose requirements input selects R also requires both inputs. Dependency collection terminates. Changing B's phrase or body invalidates both records' snapshots of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`
+:::
+
+:::{example} definitions.glob_dependency
+A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that glob. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the glob. {cite}`requirements.definitions.selection`
+:::
+
+:::{example} definitions.reassessment
+An evidence record has determination true and a current definition input. After the definition changes, validation reports stale evidence without modifying the record. Running `habeas add-input` for that record refreshes its required definition input and leaves determination false pending review. {cite}`requirements.definitions.inputs` {cite}`requirements.definitions.capture`
+:::
+
