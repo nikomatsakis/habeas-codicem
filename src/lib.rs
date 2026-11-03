@@ -13,6 +13,7 @@ mod index;
 mod inputs;
 mod rust_coverage;
 mod rust_items;
+mod terms;
 
 pub use add_input::{InputMode, InputTarget, add_input};
 pub use evidence::{EvidenceReport, validate_repository};
@@ -47,29 +48,35 @@ pub fn validate() {
 pub(crate) enum DefinitionKind {
     Requirement,
     Example,
+    Term,
 }
 
 impl DefinitionKind {
     // {impl}`requirements.ci.errors`
     // {impl}`requirements.examples.evidence`
+    // {impl}`requirements.definitions.declaration`
     pub(crate) fn noun(self) -> &'static str {
         match self {
             Self::Requirement => "requirement",
             Self::Example => "example",
+            Self::Term => "definition",
         }
     }
 
     // {impl}`requirements.references.book_badges`
     // {impl}`requirements.examples.index`
+    // {impl}`requirements.definitions.declaration`
     pub(crate) fn badge(self) -> &'static str {
         match self {
             Self::Requirement => "req",
             Self::Example => "example",
+            Self::Term => "definition",
         }
     }
 
     // {impl}`requirements.references.book_badges`
     // {impl}`requirements.examples.index`
+    // {impl}`requirements.definitions.references`
     pub(crate) fn anchor(self, name: &str) -> String {
         format!("habeas-{}-{name}", self.badge())
     }
@@ -96,25 +103,30 @@ pub(crate) enum ReferenceKind {
     Impl,
     Cite,
     Test,
+    Term,
 }
 
 // {impl}`requirements.references.book_badges`
 impl ReferenceKind {
     // {impl}`requirements.references.book_badges`
+    // {impl}`requirements.definitions.references`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Impl => "impl",
             Self::Cite => "cite",
             Self::Test => "test",
+            Self::Term => "term",
         }
     }
 
     // {impl}`requirements.references.book_badges`
+    // {impl}`requirements.definitions.references`
     fn color(self) -> &'static str {
         match self {
             Self::Impl => "237346",
             Self::Cite => "7151a1",
             Self::Test => "ae5d14",
+            Self::Term => "006ba8",
         }
     }
 }
@@ -128,6 +140,9 @@ pub(crate) struct ReferenceMatch<'a> {
 
 // {impl}`requirements.cli.mdbook`
 // {impl}`requirements.examples.definition`
+// {impl}`requirements.definitions.declaration`
+// {impl}`requirements.definitions.references`
+// {impl}`requirements.definitions.selection`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
     for chapter in book.chapters() {
@@ -152,9 +167,23 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             });
         }
     }
-    let index = index::IndexPlan::find(book, &definitions)?;
+    let evidence_definitions = definitions
+        .iter()
+        .filter(|(_, d)| d.kind != DefinitionKind::Term)
+        .map(|(name, d)| {
+            (
+                name.clone(),
+                Definition {
+                    path: d.path.clone(),
+                    text: d.text.clone(),
+                    kind: d.kind,
+                },
+            )
+        })
+        .collect();
+    let index = index::IndexPlan::find(book, &evidence_definitions)?;
     if let Some(plan) = index.as_ref() {
-        plan.populate(book, root, &definitions)?;
+        plan.populate(book, root, &evidence_definitions)?;
     }
 
     // {impl}`requirements.index.source_links`
@@ -165,6 +194,9 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
                 .as_deref()
                 .is_some_and(|path| index.as_ref().is_some_and(|plan| plan.is_detail_path(path)))
         {
+            if let Some(path) = chapter.path.as_deref() {
+                chapter.content = replace_references(&chapter.content, path, &definitions);
+            }
             return;
         }
         let namespace = chapter
@@ -210,6 +242,8 @@ fn chapter_namespace(path: &Path) -> String {
 // {impl}`requirements.index.navigation`
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.examples.definition`
+// {impl}`requirements.definitions.declaration`
+// {impl}`requirements.definitions.references`
 fn replace_definitions(
     content: &str,
     namespace: &str,
@@ -230,6 +264,23 @@ fn replace_definitions(
         let full_name = full_requirement_name(namespace, &block.name);
         // {impl}`requirements.references.safe_badges`
         let escaped_name = escape_html(&full_name);
+        if block.kind == DefinitionKind::Term {
+            if let Ok((phrase, body)) =
+                terms::declaration(&content[block.body_start..block.body_end])
+            {
+                result.push_str(&format!(
+                    "<strong id=\"{}\">{}</strong>\n\n",
+                    escape_html(&block.kind.anchor(&full_name)),
+                    terms::escaped_phrase(phrase)
+                ));
+                result.push_str(body);
+                result.push('\n');
+            } else {
+                result.push_str(&content[block.start..block.end]);
+            }
+            cursor = block.end;
+            continue;
+        }
         let badge = shield_badge(
             block.kind.badge(),
             &full_name,
@@ -276,6 +327,7 @@ fn replace_definitions(
 }
 
 // {impl}`requirements.references.book_badges`
+// {impl}`requirements.definitions.references`
 fn replace_references(
     content: &str,
     current_path: &Path,
@@ -287,6 +339,26 @@ fn replace_references(
     for reference in reference_roles(content, true) {
         result.push_str(&content[cursor..reference.start]);
         if let Some(target) = definitions.get(reference.name) {
+            if reference.kind == ReferenceKind::Term {
+                if target.kind == DefinitionKind::Term
+                    && let Ok((phrase, _)) = terms::declaration(&target.text)
+                {
+                    let href = chapter_href(
+                        current_path,
+                        &target.path,
+                        Some(&target.kind.anchor(reference.name)),
+                    );
+                    result.push_str(&format!(
+                        "<a href=\"{}\">{}</a>",
+                        escape_html(&href),
+                        terms::escaped_phrase(phrase)
+                    ));
+                } else {
+                    result.push_str(&content[reference.start..reference.end]);
+                }
+                cursor = reference.end;
+                continue;
+            }
             let kind = reference.kind.label();
             let badge = shield_badge(kind, reference.name, reference.kind.color());
             // {impl}`requirements.references.safe_badges`
@@ -390,6 +462,7 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.examples.definition`
+// {impl}`requirements.definitions.declaration`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     let code_ranges = Parser::new(content)
         .into_offset_iter()
@@ -421,6 +494,8 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
             (DefinitionKind::Requirement, rest)
         } else if let Some(rest) = suffix.strip_prefix("{example}") {
             (DefinitionKind::Example, rest)
+        } else if let Some(rest) = suffix.strip_prefix("{definition}") {
+            (DefinitionKind::Term, rest)
         } else {
             index += 1;
             continue;
@@ -479,9 +554,22 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
 // {impl}`requirements.references.targets`
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.references.markdown_literals`
+// {impl}`requirements.definitions.references`
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
     let protected = if markdown {
-        protected_ranges(content)
+        let mut ranges = protected_ranges(content);
+        for block in definition_blocks(content)
+            .into_iter()
+            .filter(|b| b.kind == DefinitionKind::Term)
+        {
+            let body = &content[block.body_start..block.body_end];
+            let option_start = block.body_start + body.len() - body.trim_start().len();
+            let option_end = content[option_start..block.body_end]
+                .find('\n')
+                .map_or(block.body_end, |offset| option_start + offset);
+            ranges.push(option_start..option_end);
+        }
+        ranges
     } else {
         Vec::new()
     };
@@ -498,6 +586,8 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
             (ReferenceKind::Cite, "{cite}`")
         } else if remaining.starts_with("{test}`") {
             (ReferenceKind::Test, "{test}`")
+        } else if remaining.starts_with("{term}`") {
+            (ReferenceKind::Term, "{term}`")
         } else {
             continue;
         };

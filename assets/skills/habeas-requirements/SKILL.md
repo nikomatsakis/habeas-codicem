@@ -46,3 +46,13 @@ Use fully qualified names for implementation, citation, and test references. Pla
 ```
 
 When a requirement or example changes, update its `evidence/<full-name>.json` record. Run the Cargo tests to see all Habeas validation findings.
+
+## Shared vocabulary
+
+Use `:::{definition} name` with one nonempty `:phrase: display text` option before
+its explanatory body to define shared vocabulary. Reference its chapter-qualified
+name with the `{term}` role; the book renders the phrase as a plain link, without
+a badge. Names are unique across requirements, examples, and definitions. A
+named definition has no evidence record of its own and cannot substitute for a
+requirement citation. Dependent evidence snapshots its complete declaration;
+review changes to phrases and bodies because they invalidate that evidence.

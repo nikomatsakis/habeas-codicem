@@ -20,6 +20,9 @@ pub(crate) enum InputSelector {
         rust_file: String,
         rust_item: String,
     },
+    Definition {
+        definition: String,
+    },
     Requirements {
         requirements: String,
     },
@@ -46,6 +49,7 @@ pub(crate) struct ResolvedInput {
 
 impl InputSelector {
     // {impl}`requirements.ci.schema`
+    // {impl}`requirements.definitions.inputs`
     pub(crate) fn from_input(input: &Value) -> Option<Self> {
         let object = input.as_object()?;
         if let Some(file) = object.get("file").and_then(Value::as_str) {
@@ -59,6 +63,10 @@ impl InputSelector {
                 rust_file: rust_file.to_owned(),
                 rust_item: object.get("rust_item")?.as_str()?.to_owned(),
             })
+        } else if let Some(definition) = object.get("definition").and_then(Value::as_str) {
+            Some(Self::Definition {
+                definition: definition.to_owned(),
+            })
         } else {
             Some(Self::Requirements {
                 requirements: object.get("requirements")?.as_str()?.to_owned(),
@@ -67,6 +75,7 @@ impl InputSelector {
     }
 
     // {impl}`requirements.cli.add_input`
+    // {impl}`requirements.definitions.inputs`
     pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {
         match self {
             Self::FileRange {
@@ -87,6 +96,9 @@ impl InputSelector {
                 "rust_item": rust_item,
                 "text": resolved.text,
             }),
+            Self::Definition { definition } => {
+                json!({ "definition": definition, "text": resolved.text })
+            }
             Self::Requirements { requirements } => json!({
                 "requirements": requirements,
                 "matches": resolved.matches,
@@ -98,6 +110,8 @@ impl InputSelector {
     // {impl}`requirements.ci.inputs`
     // {impl}`requirements.ci.rust_item_inputs`
     // {impl}`requirements.ci.requirements_inputs`
+    // {impl}`requirements.definitions.inputs`
+    // {impl}`requirements.definitions.selection`
     pub(crate) fn resolve(
         &self,
         root: &Path,
@@ -159,13 +173,32 @@ impl InputSelector {
                     matches: Vec::new(),
                 })
             }
+            Self::Definition { definition } => {
+                let target = definitions
+                    .get(definition)
+                    .filter(|d| d.kind == crate::DefinitionKind::Term)
+                    .ok_or_else(|| format!("{definition}: no matching named definition"))?;
+                check_project_file(root, &target.file)?;
+                Ok(ResolvedInput {
+                    ranges: vec![SourceRange {
+                        file: target.file.clone(),
+                        line_start: target.line_start,
+                        line_end: target.line_end,
+                        name: Some(definition.clone()),
+                    }],
+                    text: target.raw_lines.clone(),
+                    matches: Vec::new(),
+                })
+            }
             Self::Requirements { requirements } => {
                 definition_glob::validate(requirements)?;
                 let mut ranges = Vec::new();
                 let mut text = Vec::new();
                 let mut matches = Vec::new();
                 for (name, definition) in definitions {
-                    if !definition_glob::matches(requirements, name) {
+                    if definition.kind == crate::DefinitionKind::Term
+                        || !definition_glob::matches(requirements, name)
+                    {
                         continue;
                     }
                     check_project_file(root, &definition.file)?;

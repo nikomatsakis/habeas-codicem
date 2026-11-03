@@ -505,6 +505,7 @@ pub(crate) fn item_lines(source: &str, item: &RustItem) -> Vec<String> {
 pub(crate) type CitationSet = BTreeSet<(String, String)>;
 
 // {impl}`requirements.references.rust_function_attestations`
+// {impl}`requirements.definitions.references`
 pub(crate) fn function_citations(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
@@ -543,7 +544,13 @@ pub(crate) fn function_citations(
             continue;
         };
         for reference in reference_roles(&source[comments[comment_index].clone()], false) {
-            if definitions.contains_key(reference.name) {
+            if reference.kind == crate::ReferenceKind::Term {
+                continue;
+            }
+            if definitions
+                .get(reference.name)
+                .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
+            {
                 citations[*function_index]
                     .insert((reference.kind.label().to_owned(), reference.name.to_owned()));
             }

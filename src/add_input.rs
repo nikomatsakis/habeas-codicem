@@ -132,6 +132,7 @@ fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelec
 }
 
 // {impl}`requirements.cli.add_input`
+// {impl}`requirements.definitions.capture`
 fn add_definition_inputs(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -159,7 +160,13 @@ fn add_definition_inputs(
             "inputs": [],
         }),
     )?;
-    let output = update_inputs(&mut record, inputs)?;
+    let output = update_inputs(
+        &mut record,
+        inputs,
+        root,
+        definitions,
+        Some(&definition.text),
+    )?;
     if output.1 {
         fs::create_dir_all(root.join("evidence"))?;
         fs::write(
@@ -173,6 +180,7 @@ fn add_definition_inputs(
 // {impl}`requirements.cli.add_input`
 // {impl}`requirements.references.rust_function_attestations`
 // {impl}`requirements.cli.function_attestation_guidance`
+// {impl}`requirements.definitions.capture`
 fn add_function_inputs(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -219,7 +227,7 @@ fn add_function_inputs(
         }));
         entries.len() - 1
     });
-    let (output, changed) = update_inputs(&mut entries[index], inputs)?;
+    let (output, changed) = update_inputs(&mut entries[index], inputs, root, definitions, None)?;
     if changed || new_entry {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -243,9 +251,13 @@ fn citation_values(citations: &BTreeSet<(String, String)>) -> Vec<Value> {
 }
 
 // {impl}`requirements.cli.add_input`
+// {impl}`requirements.definitions.capture`
 fn update_inputs(
     record: &mut Value,
     inputs: Vec<(InputSelector, Value, Vec<String>)>,
+    root: &Path,
+    definitions: &BTreeMap<String, Declaration>,
+    subject: Option<&str>,
 ) -> io::Result<(String, bool)> {
     let Some(object) = record.as_object_mut() else {
         return Err(invalid_input("evidence record must be a JSON object"));
@@ -277,6 +289,35 @@ fn update_inputs(
             output.push_str(&format!(" matching {}", matches.join(", ")));
         }
         output.push('\n');
+    }
+    let required =
+        crate::terms::dependencies(definitions, object, subject).map_err(invalid_input)?;
+    let existing = object
+        .get_mut("inputs")
+        .and_then(Value::as_array_mut)
+        .unwrap();
+    for definition in required {
+        let selector = InputSelector::Definition {
+            definition: definition.clone(),
+        };
+        let resolved = selector.resolve(root, definitions).map_err(invalid_input)?;
+        let input = selector.to_input(&resolved);
+        let positions: Vec<_> = existing
+            .iter()
+            .enumerate()
+            .filter_map(|(i, old)| {
+                (old.get("definition").and_then(Value::as_str) == Some(definition.as_str()))
+                    .then_some(i)
+            })
+            .collect();
+        if positions.len() != 1 || existing[positions[0]] != input {
+            existing.retain(|old| {
+                old.get("definition").and_then(Value::as_str) != Some(definition.as_str())
+            });
+            existing.push(input);
+            changed = true;
+            output.push_str(&format!("- captured: definition {definition}\n"));
+        }
     }
     if changed {
         object.insert("determination".to_owned(), Value::Bool(false));

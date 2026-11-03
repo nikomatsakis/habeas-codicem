@@ -107,3 +107,39 @@ habeas setup --path /path/to/habeas-codicem
 ```
 
 Run `habeas setup` in the consuming Cargo and mdBook project. Its book uses the installed `habeas mdbook` CLI; the repository-local `cargo habeas` alias is only for Habeas's own book.
+
+## Named definitions
+
+Use a definition for shared vocabulary. It has a stable chapter-qualified name,
+a short display phrase, and an explanatory body:
+
+```text
+:::{definition} first_parent_history
+:phrase: first-parent history
+
+The sequence obtained by starting at a Git commit and repeatedly
+following its first parent until reaching a root commit.
+:::
+```
+
+In `md/glossary.md`, this declares `glossary.first_parent_history`.
+Write `{term}` followed by that name in backticks to insert an ordinary link
+whose text is “first-parent history”, without a badge. The phrase is plain text.
+Definitions do not have their own evidence records or determinations.
+
+Evidence includes each referenced definition as a separate input:
+
+```json
+{"definition":"glossary.first_parent_history","text":[":::{definition} first_parent_history",":phrase: first-parent history","","The sequence obtained by starting at a Git commit and repeatedly","following its first parent until reaching a root commit.",":::"]}
+```
+
+`habeas add-input` automatically captures definitions referenced by the target's
+requirement or example text and its reviewed inputs. It follows references between
+definitions until no new definitions are found; cycles are allowed, and each
+definition appears once. Existing requirements globs still select only requirements
+and examples. Their referenced definitions are captured regardless of name.
+
+Changing a definition's phrase or body invalidates its snapshots. Refreshing inputs
+leaves the evidence pending reassessment. Validation reports missing or stale
+snapshots without modifying them. A term link does not replace a function's required
+requirement or example citations.
