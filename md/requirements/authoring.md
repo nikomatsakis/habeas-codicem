@@ -6,7 +6,7 @@ harness records the inputs and writes the judgment into the existing evidence
 format. Rig provides the connection to the user's configured model.
 
 :::{req} invocation
-`habeas author <full-name> [--config <name>] [--stdout]` MUST assess one
+`habeas author <full-name> [--config <name>] [--stdout] [-v|--verbose]` MUST assess one
 existing requirement or named example in the current project. It MUST report the
 selected subject, backend, model, evidence destination, and usage-record path on
 completion. The evidence destination MUST identify the evidence-file path by
@@ -16,7 +16,7 @@ for the single-subject command.
 :::
 
 :::{req} batch
-`habeas author --all [--config <name>]` MUST author every current requirement,
+`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement,
 named example, and first-party Rust function whose evidence or attestation is
 missing, stale, invalid, or false. It MUST preserve accepted, current records,
 including accepted FIXME judgments, without invoking a model for those records.
@@ -26,8 +26,9 @@ not a successful empty batch. A batch with no assessments needed MUST succeed
 without resolving model configuration or credentials.
 
 Each subject MUST receive an independent assessment with its own prompt, inputs,
-judgment, and usage record. The command MUST report each success or error and
-retain successful writes when another assessment fails. It MUST return a nonzero
+judgment, and usage record. The command MUST report aggregate completion and each
+authoring error under {cite}`requirements.authoring.reporting`, and retain
+successful writes when another assessment fails. It MUST return a nonzero
 exit status if any assessment fails. False judgments MUST still be written as
 completed assessments; they remain failures under ordinary evidence validation.
 An access-policy denial MUST abort only the affected assessment under
@@ -44,6 +45,77 @@ changing requirements, source citations, implementation, or tests.
 {cite}`requirements.authoring.concurrency`
 {cite}`requirements.authoring.usage_storage`
 {cite}`requirements.authoring.persistence`
+:::
+
+:::{req} progress
+When stderr is an interactive terminal, `habeas author --all` MUST display an
+updating progress bar with elapsed time, percentage, finished and total assessment
+counts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,
+and authoring errors. The total MUST count only subjects selected for assessment;
+current accepted records remain in the unchanged count. A finished assessment
+MUST advance progress whether it writes a judgment or reports an authoring error.
+Progress measures completed work, not satisfaction of requirements.
+
+Inspection MUST also show a progress bar for each phase with a known amount of
+work, including evidence files, reference source files and coverage, Rust
+attestations, and assessment selection. The display MUST label the current phase
+and show its completed and total checks; its percentage measures that phase's
+checks, not estimated time or overall inspection completion. Discovery and other
+phases whose totals are not yet known MUST use an indeterminate activity display.
+Inspection progress MUST NOT change validation results or invoke inference.
+Enabled reports MUST remain readable alongside progress. An
+interrupted batch MUST retain its actual progress without counting unstarted
+assessments as finished. Empty batches and early errors MUST clear the temporary
+display. When stderr is redirected or `TERM=dumb`, the command MUST retain its
+plain line-oriented reports without terminal control sequences. `NO_COLOR` MUST
+disable color without disabling progress on a supported terminal. The existing
+stdout completion summary and exit-status rules MUST remain unchanged.
+{cite}`requirements.authoring.batch`
+{cite}`requirements.authoring.reporting`
+:::
+
+:::{req} reporting
+By default, authoring MUST suppress per-subject `true` judgment lines and show
+each `false` judgment's subject and outcome on stderr, on both terminals and
+redirected output. Existing progress counters and completion summaries MUST remain
+available; FIXME notices and authoring errors MUST remain visible. Single-subject
+authoring MUST retain its subject, backend, model, evidence destination, and
+usage-record metadata.
+
+`-v` and `--verbose` MUST additionally show each false judgment's recorded Markdown
+rationale on stderr; rationales MUST be omitted by default. This applies to
+single-subject and batch authoring, including Rust function attestations. It MUST
+NOT print true rationales or append recorded
+input snapshots. Reporting MUST use the completed assessment's existing result,
+without additional inference. In `--stdout` mode, stdout MUST remain only the
+evidence JSON; verbose rationale and other diagnostics MUST go to stderr.
+Verbosity MUST NOT change persistence, validation, or exit-status rules.
+{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.batch`
+:::
+
+:::{req} provider_backoff
+When a provider reports transient throttling through HTTP 429 or a Bedrock
+`ThrottlingException`, the harness MUST wait and retry the same completion
+request, retaining its prompt, history, tools, and pending inputs. It MUST NOT
+restart the assessment or repeat already completed tool calls. A permanent
+input/context-length error, authentication failure, or invalid request MUST
+remain an error; mentioning tokens in an error message alone MUST NOT trigger
+retries.
+
+The backoff window MUST start at one second and double after each consecutive
+throttled attempt, up to sixty seconds. Each delay MUST be randomly selected
+between half and all of that window to spread parallel retries. An available
+provider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a
+minimum delay even when longer than the window. A successful response MUST reset
+backoff for the next completion request. There MUST be no retry-attempt limit;
+interruption MUST cancel both the wait and further retries.
+
+Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.
+Hidden SDK retries MUST remain disabled so the harness can account for attempts.
+Transient retries MUST NOT be reported as finished judgments or terminal
+assessment errors while recovery is still in progress. Pending inputs MUST be
+recorded as evidence only after the request succeeds.
+{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`
 :::
 
 ## Model tools

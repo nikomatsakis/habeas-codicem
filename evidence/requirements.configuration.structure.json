@@ -1,7 +1,7 @@
 {
   "requirement": "The user configuration file MUST be UTF-8 TOML serializing UserConfig. It MUST\ncontain `version = 1` and MAY contain the documented feature tables. The common\nroot MUST contain only the schema version and those feature tables; feature\nsettings MUST NOT occupy unscoped root keys. A user file containing only\n`version = 1` MUST be valid common configuration.\n\nWorkspace configuration MUST follow {cite}`requirements.configuration.workspace_structure`.\nThe absence of an optional feature section MUST be distinguishable\nfrom that feature's explicit settings and interpreted according to its own\nrequirements.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and the tests cover the main points. I did not run the tests; this is from reading the source.\n\n**User configuration (`src/config.rs`)**\n- `UserConfig` is `{ version: u32, authoring: Option<UserAuthoringConfig> }` with `#[serde(deny_unknown_fields)]`. The root can therefore hold only `version` and the feature table. Unscoped feature keys at the root are rejected.\n- `UserConfig::parse` reads the TOML through `parse_document` and `decode`, then calls `validate`. `validate` requires `version == 1` and validates `[authoring]`.\n- `load_user_config` reads with `fs::read_to_string`, which enforces UTF-8. A missing file gives `Ok(None)`, and a present file gives `Ok(Some(..))`.\n- Because `authoring` is an `Option` that is skipped on serialization when `None`, an absent section is distinguishable from an explicit one. A file containing only `version = 1` parses with `authoring == None`.\n- `to_toml` serializes `UserConfig`.\n\n**Workspace configuration (`WorkspaceConfig`, `validate_workspace_common`)**\n- `validate_workspace_common` requires `version = 1`. It rejects any root key other than `version`, `authoring` and `evidence`.\n- Invalid TOML syntax and invalid field types produce errors through `invalid(path, setting, ..)`. These errors carry the file path and the setting.\n- `[habeas]` in `book.toml` is optional. `ProjectConfig::from_book_toml` returns `None` when the table is absent, and `Some(ProjectConfig {})` when it is present but empty. A `[habeas]` table containing `version` is rejected.\n\n**Tests (`tests/configuration.rs`)**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` covers:\n  - an absent file giving `None` and not being created;\n  - a `version = 1`-only file giving `authoring == None`, with the file left unchanged;\n  - a serialization round trip;\n  - `book.toml` with no `[habeas]`, with an empty `[habeas]`, and with `[habeas]` containing `version` (an error).\n- `invalid_schema_and_feature_values_report_the_configuration_path` covers `version = 2`, `version = '1'`, an empty file, an unknown root key, and several invalid feature values. Each error is checked to contain the file path.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers an invalid TOML diagnostic that names the file and says \"invalid TOML\". It also covers a minimal workspace round trip and the case where the optional `[evidence]` or `[authoring]` table is absent.\n- `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` covers workspace `version = 2`, an unknown root key, invalid element types, and an unknown key inside `[evidence]`. Each error is checked to contain the file path.\n\n**Gaps**\n- Non-UTF-8 input is not tested directly. It follows from `read_to_string`, so the omission is minor.\n- Diagnostics are tested mainly for the file path. The setting appears in the error format (`path: setting: message`) but is not asserted in every case.",
+  "rationale": "**Verdict:** `requirements.configuration.structure` is met. The code implements each clause, and the tests cover the interesting cases. I found no FIXME or TODO markers in `src/config.rs`.\n\n**Implementation (`src/config.rs`)**\n- `UserConfig` has `#[serde(deny_unknown_fields)]`, a required `version: u32`, and `authoring: Option<UserAuthoringConfig>`.\n  - The root therefore holds only the version and feature tables, and unscoped root keys are rejected.\n  - `authoring` is `Option` with `skip_serializing_if`. A missing `[authoring]` table (`None`) is distinct from an explicit one (`Some(..)`), and it round-trips as such.\n- `UserConfig::parse` runs `parse_document` and `decode`, then `validate`.\n  - `validate` rejects any `version` other than 1, and every error names the file and the setting via `invalid(path, setting, ..)`.\n  - Files are read with `fs::read_to_string`, so non-UTF-8 content is an error.\n- A file containing only `version = 1` parses and validates, because `authoring` defaults to `None`.\n- `WorkspaceConfig::parse` and `load_workspace_config` call `validate_workspace_common` first.\n  - It checks `version == 1` and allows only the keys `version`, `authoring` and `evidence`.\n  - Unsupported versions, unknown keys, bad field types and invalid TOML each produce a diagnostic with the file path.\n  - This matches the workspace-structure clause.\n- `ProjectConfig::from_book_toml` returns `Ok(None)` when `book.toml` has no `[habeas]` table. A missing `[habeas]` table is therefore never required, and `ProjectConfig` rejects unknown fields.\n- `resolve_authoring` uses these loaders, and the loaders carry the structure annotations.\n\n**Tests (`tests/configuration.rs`)**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` is annotated `{test}requirements.configuration.structure`. It checks that:\n  - a missing file gives `None` and is not created;\n  - a file containing only `version = 1` loads with `authoring == None`, is not rewritten, and round-trips;\n  - `book.toml` without `[habeas]` gives `None`, an empty `[habeas]` gives `Some`, and `[habeas]` with `version` is an error.\n- `invalid_schema_and_feature_values_report_the_configuration_path` covers `version = 2`, `version = '1'`, an empty file (missing version), an unknown root key, and several invalid feature values. Each error must contain the file path.\n- `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` covers workspace version, unknown keys and type errors. The workspace discovery test covers invalid TOML. `tests/evidence_boundaries.rs` writes a workspace file containing only `version = 1` and validates successfully.\n\n**Minor note:** I did not find a unit test that feeds invalid UTF-8 bytes to the loader. That behaviour follows directly from `read_to_string`, so I don't treat it as a material gap.",
   "inputs": [
     {
       "requirements": "requirements.configuration.structure",
@@ -182,16 +182,16 @@
       "line_start": 211,
       "line_end": 220,
       "text": [
-        "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
-        "No matches MUST return empty arrays; invalid arguments or a failed search MUST",
-        "return an explanatory tool error.",
+        "Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be",
+        "able to allow undiscovered outputs explicitly using `habeas.toml`. The model's",
+        "root directory listing MUST expose available generated-output directories,",
+        "including external ones. Generated inputs MUST use the existing file-range and",
+        "Rust-item formats and receive ordinary freshness checks. Validation MUST NOT",
+        "invoke a build to materialize an input.",
         ":::",
         "",
-        "### Submit the result: `submit_judgment`",
-        "",
-        ":::{req} submission",
-        "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
-        ""
+        "Cargo has one `OUT_DIR` per build-script execution. Discovery uses existing",
+        "`root-output` records beneath the Cargo build directory; this is Cargo's current"
       ]
     },
     {
@@ -326,7 +326,7 @@
       "line_start": 303,
       "line_end": 303,
       "text": [
-        "Mandatory inputs:"
+        "assessment. If the model finishes without invoking it, or invokes it more than"
       ]
     },
     {
@@ -334,7 +334,7 @@
       "line_start": 316,
       "line_end": 316,
       "text": [
-        "input selectors MUST also contribute their current resolutions, subject to the"
+        ":::{req} mandatory_inputs"
       ]
     },
     {
@@ -828,7 +828,7 @@
       "line_start": 393,
       "line_end": 393,
       "text": [
-        "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;"
+        "    Ok(template"
       ]
     },
     {
@@ -836,7 +836,7 @@
       "line_start": 572,
       "line_end": 572,
       "text": [
-        "                submit.parameters[\"properties\"][\"determination\"],"
+        "                }"
       ]
     },
     {
@@ -1672,6 +1672,78 @@
         "        format!(\"{}: {setting}: {message}\", path.display()),",
         "    )",
         "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 221,
+      "line_end": 225,
+      "text": [
+        "    );",
+        "",
+        "    fs::write(temp.path().join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "    fs::write(nested.join(\"habeas.toml\"), \"version = [\\n\").unwrap();",
+        "    let output = habeas(&nested, &[\"status\"]);"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 75,
+      "line_end": 79,
+      "text": [
+        "    assert!(load_user_config(&path).unwrap().is_none());",
+        "    assert!(!path.exists());",
+        "    let original = \"# keep this comment\\nversion = 1\\n\";",
+        "    fs::write(&path, original).unwrap();",
+        "    let config = load_user_config(&path).unwrap().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 94,
+      "line_end": 98,
+      "text": [
+        "        Some(ProjectConfig {})",
+        "    );",
+        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 196,
+      "line_end": 200,
+      "text": [
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 344,
+      "line_end": 348,
+      "text": [
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);"
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 253,
+      "line_end": 257,
+      "text": [
+        "    for contents in [",
+        "        None,",
+        "        Some(\"version = 1\\n\"),",
+        "        Some(",
+        "            \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'fixture-model'\\n\","
       ]
     }
   ]

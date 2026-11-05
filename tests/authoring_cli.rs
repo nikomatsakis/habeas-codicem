@@ -534,6 +534,7 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
 // {test}`requirements.authoring.negative_assessment`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.ci.fixme_with_unacknowledged_gap`
+// {test}`requirements.authoring.reporting`
 #[test]
 fn false_is_a_completed_assessment() {
     let server = Server::start(vec![reply(vec![call(
@@ -567,19 +568,78 @@ fn false_is_a_completed_assessment() {
     assert!(evidence["inputs"].to_string().contains("FIXME(#125)"));
     assert_eq!(fixture.usage()["outcome"], "completed");
     assert_eq!(fixture.usage()["determination"], "false");
+    let diagnostics = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(&format!("{SUBJECT}: false")), "{stderr}");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(&format!("{SUBJECT}: false")),
+        "{diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("without acknowledging"),
+        "{diagnostics}"
+    );
+}
+
+// {test}`requirements.authoring.reporting`
+// {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.persistence`
+#[test]
+fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
+    for (determination, flag) in [(false, "-v"), (false, "--verbose"), (true, "-v")] {
+        let rationale = "REVIEW_RATIONALE_ONLY:\n\n- The captured test misses an interesting boundary.\n- Add an assertion for that boundary.";
+        let server = Server::start(vec![reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination": determination, "rationale": rationale}),
+        )])]);
+        let fixture = Fixture::new(&server.endpoint);
+        let output = fixture.run(&["author", SUBJECT, flag]);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(server.finish().len(), 1);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.contains(&format!("{SUBJECT}: false")),
+            !determination,
+            "{stderr}"
+        );
+        assert_eq!(stderr.contains(rationale), !determination, "{stderr}");
+        assert!(!stdout.contains(rationale), "{stdout}");
+        for text in [&stdout, &stderr] {
+            assert!(!text.contains("SECRET_REQUIREMENT_TEXT"), "{text}");
+            assert!(!text.contains("SECRET_DEFINITION_TEXT"), "{text}");
+            assert!(!text.contains("pub fn ready()"), "{text}");
+            assert!(!text.contains("— true"), "{text}");
+            assert!(!text.contains(&format!("{SUBJECT}: true")), "{text}");
+        }
+        assert!(stdout.contains("Evidence:"), "{stdout}");
+        assert!(stdout.contains("Usage:"), "{stdout}");
+        let evidence: Value =
+            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        assert_eq!(evidence["determination"], determination);
+        assert_eq!(evidence["rationale"], rationale);
+    }
 }
 
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.delivered_inputs`
 // {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.reporting`
 #[test]
 fn stdout_emits_only_evidence_json_without_changing_project_files() {
-    for (determination, kind, existing_evidence) in [
-        (json!(true), "true", true),
-        (json!(false), "false", true),
-        (json!({"FIXME":["#125"]}), "FIXME", true),
-        (json!(true), "true", false),
+    for (determination, kind, existing_evidence, verbose) in [
+        (json!(true), "true", true, false),
+        (json!(false), "false", true, false),
+        (json!({"FIXME":["#125"]}), "FIXME", true, false),
+        (json!(true), "true", false, false),
+        (json!(false), "false", true, true),
+        (json!(true), "true", true, true),
     ] {
         let rationale = "The supplied sources explain this judgment.";
         let server = Server::start(vec![reply(vec![call(
@@ -591,7 +651,11 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
         if !existing_evidence {
             fs::remove_dir_all(fixture.project.join("evidence")).unwrap();
         }
-        let output = fixture.run(&["author-evidence", SUBJECT, "--stdout"]);
+        let mut args = vec!["author-evidence", SUBJECT, "--stdout"];
+        if verbose {
+            args.push("--verbose");
+        }
+        let output = fixture.run(&args);
         assert!(
             output.status.success(),
             "{}",
@@ -624,7 +688,27 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
             assert!(!fixture.project.join("evidence").exists());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(&format!("{SUBJECT}: ollama / {MODEL} — {kind}")));
+        assert!(
+            stderr.contains(&format!("{SUBJECT}: ollama / {MODEL}")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("— true"), "{stderr}");
+        assert!(!stderr.contains(&format!("{SUBJECT}: true")), "{stderr}");
+        assert_eq!(
+            stderr.contains(&format!("{SUBJECT}: false")),
+            kind == "false",
+            "{stderr}"
+        );
+        if kind == "FIXME" {
+            assert!(stderr.contains("— FIXME"), "{stderr}");
+        }
+        assert_eq!(
+            stderr.contains(rationale),
+            verbose && kind == "false",
+            "{stderr}"
+        );
+        assert!(!stderr.contains("SECRET_REQUIREMENT_TEXT"), "{stderr}");
+        assert!(!stderr.contains("SECRET_DEFINITION_TEXT"), "{stderr}");
         assert!(stderr.contains("Evidence: stdout\n"));
         let usage_path = stderr
             .lines()

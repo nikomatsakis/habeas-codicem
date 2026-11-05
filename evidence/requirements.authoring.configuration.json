@@ -1,7 +1,7 @@
 {
   "requirement": "Authoring MUST use the `[authoring]` sections of the shared user configuration\nand the selected workspace's `habeas.toml`.\n{cite}`requirements.configuration.user_location`\n{cite}`requirements.configuration.structure`\n{cite}`requirements.configuration.feature_sections`\nIt MUST support named configurations, workspace defaults, and a user-local\nselection for each project. Credential-source references SHOULD be used;\nexplicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.\n{cite}`requirements.configuration.workspace_location`\n{cite}`requirements.configuration.workspace_structure`",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.**\n\n**Implementation (`src/config.rs`)**\n- `UserConfig` (version plus an optional `[authoring]` table) and `WorkspaceConfig` (version plus optional `[authoring]` and `[evidence]`) both use `deny_unknown_fields`. `parse` and `validate` reject bad versions and bad types, and the errors name the file and the setting.\n- **Named configurations:** `AuthoringConfig` is a map of names to configurations with Bedrock and Ollama backends. Names are validated by `validate_name`.\n- **Workspace defaults:** `WorkspaceAuthoringConfig` has `default` and `configs`.\n- **User-local selection per project:** `UserAuthoringConfig.projects` maps canonical project paths to a configuration name.\n- **Precedence (`resolve_authoring_with_workspace_from`):** explicit name, then the user's project selection, then the workspace default, then the user default. Workspace configs shadow user configs of the same name, and the whole configuration is replaced rather than merged.\n- **Credentials (`BackendConfig::validate`):**\n  - Credential-source references (`aws_profile`, `api_key_env`) are supported.\n  - Explicit credentials are also supported and round-trip through serialization.\n  - Debug output is redacted.\n  - TOML decode errors redact credential values.\n  - The invalid combinations (credentials with `aws_profile`, `api_key` with `api_key_env`) and empty values are rejected.\n  - A workspace file containing credentials is denied to model source reads (`contains_credentials` in `src/authoring/access.rs`).\n- **Locations:**\n  - `user_config_path_from` implements the XDG, `HOME` and `APPDATA` rules and errors when the base directory is unusable.\n  - `workspace_document` searches upward from the project root, or from the current directory when it is inside the project.\n  - It uses the nearest file alone and reports unreadable candidates. It never creates the file.\n- **Documentation:** `md/requirements/authoring.md` discourages literal credentials and uses uppercase placeholders.\n- **Annotations:** `resolve_authoring` and `resolve_authoring_from` carry `{impl}` markers for this requirement.\n\n**Tests**\n- **`tests/authoring_cli.rs`:**\n  - `Fixture::new` carries `{test}` for `requirements.authoring.configuration`.\n  - It writes a user `config.toml` with a named config and default, which the CLI tests then run against.\n  - `authoring_uses_nearest_workspace_configuration_without_a_user_file` checks that the nearest workspace file is used alone, with no user file. The parent file's bad default is ignored, the literal workspace key reaches only the request headers, and it is absent from the body, usage record, stdout and stderr.\n- **`tests/configuration.rs`:**\n  - `explicit_project_and_default_selections_choose_whole_configs` covers explicit, project and default selection, unknown names, and a missing configuration.\n  - `workspace_defaults_and_configs_combine_with_existing_user_selections` covers workspace/user combinations and precedence.\n  - `invalid_schema_and_feature_values_report_the_configuration_path` covers validation diagnostics.\n  - `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers credential round-trip, redaction and the invalid combinations.\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers workspace discovery and that loading leaves the file unchanged.\n  - `locations_use_absolute_xdg_values_and_platform_fallbacks` covers user location.\n  - `absent_and_minimal_configuration_are_distinct_and_read_only` covers a version-only file and absent versus present sections.\n- **`tests/commands.rs`** covers bad workspace files surfacing from the CLI.\n\n**Gaps:** I found no gaps and no FIXME markers. The `{test}` marker for this requirement sits on a fixture helper rather than a `#[test]` function. That is acceptable because it is exercised by the CLI tests and is backed by the dedicated tests above.",
+  "rationale": "**Verdict:** the requirement is implemented and tested. I found no FIXME markers or other acknowledged gaps for this subject.\n\n**Implementation (`src/config.rs`)**\n- **Entry points:** `resolve_authoring` loads the nearest workspace file and the user file, then delegates to `resolve_authoring_with_workspace_from`. `resolve_authoring_from` delegates to the same function with no workspace.\n- **Typed `[authoring]` tables:** `UserConfig` has an `authoring` table and `WorkspaceConfig` has `authoring` and `evidence` tables. Both use `deny_unknown_fields`, `version = 1` is required, and `parse`/`validate` enforce names, models, options and credentials.\n- **Named configurations:** `configs` is a named `BTreeMap`. `UserAuthoringConfig` adds `default` and per-project `projects` selections, and `WorkspaceAuthoringConfig` adds `default`.\n- **Selection order:** `resolve_authoring_with_workspace_from` picks the selection in this order:\n  1. the explicit name,\n  2. the user's per-project selection for the canonical project root,\n  3. the workspace default,\n  4. the user default.\n\n  A workspace record replaces a same-named user record as a whole, and fields are not merged between records. Workspace-only operation works, and the error messages name the file.\n- **User file location (`user_location`):** `user_config_path_from` handles an absolute `XDG_CONFIG_HOME`, falls back to `$HOME/.config`, uses `%APPDATA%` on Windows, and returns an explanatory error when the base directory is missing.\n- **Workspace file location (`workspace_location`):** `workspace_document` searches upward from the current directory if it is inside the project root, otherwise from the root. It uses only the nearest file, reports unreadable candidates instead of skipping to an ancestor, returns `None` when no file exists, and never creates the file.\n- **Workspace structure (`workspace_structure`):** `validate_workspace_common` rejects an unsupported version and unknown keys, and errors name the file and the setting. `ProjectConfig::from_book_toml` treats `[habeas]` in `book.toml` as optional.\n- **Credentials (`authoring.credentials`):**\n  - Explicit Bedrock `credentials` and Ollama `api_key` are supported, and `api_key_env` (the credential-source reference) is preferred.\n  - A Bedrock record combining `credentials` with `aws_profile` is rejected, as is an Ollama record combining `api_key` with `api_key_env`, and empty credential values are rejected.\n  - `SecretString` redacts its `Debug` output, and `decode` strips secrets from TOML diagnostics.\n  - `load_workspace_evidence` sets `contains_credentials`, which `src/authoring/access.rs` uses to exclude the file from model reads.\n- **Documentation:** `md/requirements/authoring.md` lines 740–744 discourage literal credentials and use uppercase placeholders.\n\n**Tests**\n- **`tests/configuration.rs`:**\n  - **Locations:** `locations_use_absolute_xdg_values_and_platform_fallbacks` covers XDG, `HOME`, Windows and the missing-variable error.\n  - **Structure and loading:** `absent_and_minimal_configuration_are_distinct_and_read_only`, `invalid_schema_and_feature_values_report_the_configuration_path` and `backend_configuration_round_trips_without_materializing_defaults` cover the structure and loading rules.\n  - **Selection:** `explicit_project_and_default_selections_choose_whole_configs` and `workspace_defaults_and_configs_combine_with_existing_user_selections` cover the full selection and override matrix, including workspace-only use.\n  - **Workspace discovery:** `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers nearest-file discovery, no merging, the invalid-TOML error naming the file, and a missing file.\n  - **Credentials:** `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers round-trip, redacted diagnostics and Debug output, and the conflict and empty-value rejections. `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` covers the credential-file detection.\n- **`tests/commands.rs`:** covers the nested-versus-outer `habeas.toml` shadowing and a diagnostic that names the file.\n- **`tests/authoring_cli.rs`:** `Fixture::new` carries the `{test}` reference to `requirements.authoring.configuration`. It writes a user-config `[authoring]` table and runs the real CLI end to end. `authoring_uses_nearest_workspace_configuration_without_a_user_file` runs the CLI from a nested directory with no user file and checks that the nearest workspace config is used, the literal key goes only into the request headers, and the key is absent from the request body, usage record, stdout and stderr.\n\n**Minor gap, not acknowledged in source:** there is no explicit test for an unreadable candidate `habeas.toml` (a permissions error). The code path is simple and uses ordinary error propagation, so I don't count this as a failure.",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration",
@@ -277,12 +277,12 @@
       "line_start": 45,
       "line_end": 50,
       "text": [
-        "            model,",
-        "            options: config.options_json()?,",
-        "            bedrock: matches!(config, BackendConfig::Bedrock(_)),",
-        "        })",
-        "    }",
-        "}"
+        "        }",
+        "",
+        "        let millis = self.window.as_millis() as u64;",
+        "        self.window = (self.window * 2).min(Duration::from_secs(60));",
+        "        // Equal jitter keeps parallel assessments from retrying in lockstep,",
+        "        // while ensuring each retry waits at least half the current window."
       ]
     },
     {
@@ -882,7 +882,7 @@
       "line_start": 32,
       "line_end": 32,
       "text": [
-        ""
+        "    MixedJudgments,"
       ]
     },
     {
@@ -890,7 +890,7 @@
       "line_start": 69,
       "line_end": 69,
       "text": [
-        "                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {"
+        "                        let stop = worker_stop.clone();"
       ]
     },
     {
@@ -898,7 +898,7 @@
       "line_start": 76,
       "line_end": 76,
       "text": [
-        "                worker.join().unwrap();"
+        "                    }"
       ]
     },
     {
@@ -906,7 +906,7 @@
       "line_start": 85,
       "line_end": 85,
       "text": [
-        "    }"
+        "            endpoint,"
       ]
     },
     {
@@ -914,7 +914,7 @@
       "line_start": 174,
       "line_end": 174,
       "text": [
-        "        }"
+        "            ));"
       ]
     },
     {
@@ -922,7 +922,7 @@
       "line_start": 198,
       "line_end": 198,
       "text": [
-        "                    \"name\":\"submit_judgment\", \"arguments\":{"
+        "        (Behavior::MixedJudgments, \"requirement requirements.beta\") => json!({\"FIXME\": [\"#123\"]}),"
       ]
     },
     {
@@ -930,7 +930,7 @@
       "line_start": 219,
       "line_end": 219,
       "text": [
-        "}"
+        "            }]},"
       ]
     },
     {
@@ -938,7 +938,7 @@
       "line_start": 233,
       "line_end": 233,
       "text": [
-        "    // {test}`requirements.authoring.concurrency`"
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7"
       ]
     },
     {
@@ -946,7 +946,7 @@
       "line_start": 241,
       "line_end": 241,
       "text": [
-        "            project.join(\"src\"),"
+        "        \"HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}\","
       ]
     },
     {
@@ -954,7 +954,7 @@
       "line_start": 253,
       "line_end": 253,
       "text": [
-        "            project.join(\"md/SUMMARY.md\"),"
+        "    config_root: PathBuf,"
       ]
     },
     {
@@ -962,8 +962,8 @@
       "line_start": 271,
       "line_end": 272,
       "text": [
-        "            state,",
-        "            config,"
+        "            config_root.join(\"habeas\"),",
+        "        ] {"
       ]
     },
     {
@@ -971,8 +971,8 @@
       "line_start": 365,
       "line_end": 366,
       "text": [
-        "        fixture.project.join(\"evidence/requirements.beta.json\"),",
-        "        serde_json::to_vec_pretty(&beta).unwrap(),"
+        "    while True:",
+        "        if time.monotonic() >= deadline:"
       ]
     },
     {
@@ -980,8 +980,8 @@
       "line_start": 381,
       "line_end": 382,
       "text": [
-        "        assert_eq!(",
-        "            requests.peak, 2,"
+        "        if sys.argv[2] == 'interrupt' and not interrupted and re.search(rb'Authoring[^\\r\\n]*\\b[1-5]/6 finished\\b', plain):",
+        "            process.send_signal(signal.SIGINT)"
       ]
     },
     {
@@ -989,8 +989,8 @@
       "line_start": 435,
       "line_end": 436,
       "text": [
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!("
+        "    // {test}`requirements.authoring.batch`",
+        "    fn usage(&self) -> Vec<Value> {"
       ]
     },
     {
@@ -998,8 +998,8 @@
       "line_start": 449,
       "line_end": 450,
       "text": [
-        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));"
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.function_attestations`"
       ]
     },
     {
@@ -1115,8 +1115,8 @@
       "line_start": 583,
       "line_end": 584,
       "text": [
-        "    ] {",
-        "        let rationale = \"The supplied sources explain this judgment.\";"
+        "        !diagnostics.contains(\"without acknowledging\"),",
+        "        \"{diagnostics}\""
       ]
     },
     {
@@ -1124,8 +1124,8 @@
       "line_start": 614,
       "line_end": 615,
       "text": [
-        "            inputs",
-        "                .iter()"
+        "            assert!(!text.contains(\"SECRET_REQUIREMENT_TEXT\"), \"{text}\");",
+        "            assert!(!text.contains(\"SECRET_DEFINITION_TEXT\"), \"{text}\");"
       ]
     },
     {
@@ -1133,8 +1133,8 @@
       "line_start": 787,
       "line_end": 788,
       "text": [
-        "            \"{}\",",
-        "            String::from_utf8_lossy(&output.stderr)"
+        "    .unwrap();",
+        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);"
       ]
     },
     {
@@ -1979,42 +1979,42 @@
       "line_start": 580,
       "line_end": 615,
       "text": [
-        "        (json!(false), \"false\", true),",
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
-        "        (json!(true), \"true\", false),",
-        "    ] {",
-        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        \"{diagnostics}\"",
+        "    );",
+        "    assert!(",
+        "        !diagnostics.contains(\"without acknowledging\"),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "}",
+        "",
+        "// {test}`requirements.authoring.reporting`",
+        "// {test}`requirements.authoring.invocation`",
+        "// {test}`requirements.authoring.persistence`",
+        "#[test]",
+        "fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {",
+        "    for (determination, flag) in [(false, \"-v\"), (false, \"--verbose\"), (true, \"-v\")] {",
+        "        let rationale = \"REVIEW_RATIONALE_ONLY:\\n\\n- The captured test misses an interesting boundary.\\n- Add an assertion for that boundary.\";",
         "        let server = Server::start(vec![reply(vec![call(",
         "            \"submit\",",
         "            \"submit_judgment\",",
-        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "            json!({\"determination\": determination, \"rationale\": rationale}),",
         "        )])]);",
         "        let fixture = Fixture::new(&server.endpoint);",
-        "        if !existing_evidence {",
-        "            fs::remove_dir_all(fixture.project.join(\"evidence\")).unwrap();",
-        "        }",
-        "        let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--stdout\"]);",
-        "        assert!(",
-        "            output.status.success(),",
-        "            \"{}\",",
-        "            String::from_utf8_lossy(&output.stderr)",
-        "        );",
+        "        let output = fixture.run(&[\"author\", SUBJECT, flag]);",
+        "        assert!(output.status.success(), \"{output:?}\");",
         "        assert_eq!(server.finish().len(), 1);",
-        "        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();",
-        "        assert!(output.stdout.ends_with(b\"\\n\"));",
-        "        assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
-        "        assert_eq!(evidence[\"determination\"], determination);",
-        "        assert_eq!(evidence[\"rationale\"], rationale);",
-        "        let inputs = evidence[\"inputs\"].as_array().unwrap();",
-        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == SUBJECT));",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"definition\"] == \"terms.readiness\")",
+        "        let stdout = String::from_utf8_lossy(&output.stdout);",
+        "        let stderr = String::from_utf8_lossy(&output.stderr);",
+        "        assert_eq!(",
+        "            stderr.contains(&format!(\"{SUBJECT}: false\")),",
+        "            !determination,",
+        "            \"{stderr}\"",
         "        );",
-        "        assert!(",
-        "            inputs",
-        "                .iter()"
+        "        assert_eq!(stderr.contains(rationale), !determination, \"{stderr}\");",
+        "        assert!(!stdout.contains(rationale), \"{stdout}\");",
+        "        for text in [&stdout, &stderr] {",
+        "            assert!(!text.contains(\"SECRET_REQUIREMENT_TEXT\"), \"{text}\");",
+        "            assert!(!text.contains(\"SECRET_DEFINITION_TEXT\"), \"{text}\");"
       ]
     },
     {
@@ -2122,7 +2122,7 @@
       "line_start": 55,
       "line_end": 55,
       "text": [
-        "### Request evidence inputs: `habeas`"
+        "current accepted records remain in the unchanged count. A finished assessment"
       ]
     },
     {
@@ -2130,7 +2130,7 @@
       "line_start": 106,
       "line_end": 106,
       "text": [
-        "A failed read MUST add no evidence input. Access-policy denials MUST abort;"
+        "throttled attempt, up to sixty seconds. Each delay MUST be randomly selected"
       ]
     },
     {
@@ -2138,7 +2138,7 @@
       "line_start": 130,
       "line_end": 130,
       "text": [
-        "Habeas MUST permit existing Cargo build-script output directories as an exception"
+        "The harness MUST expose a `habeas` tool accepting exactly one of these request"
       ]
     },
     {
@@ -2146,7 +2146,7 @@
       "line_start": 163,
       "line_end": 163,
       "text": [
-        "    kind: \"file\" | \"directory\","
+        "harness with the selected source text, using the existing evidence schema."
       ]
     },
     {
@@ -2154,7 +2154,7 @@
       "line_start": 189,
       "line_end": 189,
       "text": [
-        "SearchResult {"
+        ""
       ]
     },
     {
@@ -2162,7 +2162,7 @@
       "line_start": 209,
       "line_end": 209,
       "text": [
-        "Required terminology MUST be included under"
+        "Workspace disallow entries MUST override this permission."
       ]
     },
     {
@@ -2170,7 +2170,7 @@
       "line_start": 253,
       "line_end": 253,
       "text": [
-        "be omitted from previous input selections when the default exclusion applies."
+        "### Search file contents: `ripgrep`"
       ]
     },
     {
@@ -2178,7 +2178,7 @@
       "line_start": 304,
       "line_end": 304,
       "text": [
-        "{{mandatory_inputs}}"
+        "once, the harness MUST report an error and leave existing evidence unchanged."
       ]
     },
     {
@@ -2186,7 +2186,7 @@
       "line_start": 310,
       "line_end": 310,
       "text": [
-        ":::{req} function_attestations"
+        ":::"
       ]
     },
     {
@@ -2194,7 +2194,7 @@
       "line_start": 326,
       "line_end": 326,
       "text": [
-        "array. {cite}`requirements.authoring.submission`"
+        "An explicit workspace allow MUST permit those selections; an explicit disallow"
       ]
     },
     {
@@ -2202,7 +2202,7 @@
       "line_start": 375,
       "line_end": 375,
       "text": [
-        "explicit credentials MUST be supported under {cite}`requirements.authoring.credentials`."
+        "Mandatory inputs:"
       ]
     },
     {
@@ -2210,7 +2210,7 @@
       "line_start": 386,
       "line_end": 386,
       "text": [
-        "Habeas MUST define its authoring configuration using these data structures:"
+        "example declarations selected by `*`, and their required terminology as mandatory"
       ]
     },
     {
@@ -2218,7 +2218,7 @@
       "line_start": 401,
       "line_end": 401,
       "text": [
-        "    config: ConfigName,"
+        "```text"
       ]
     },
     {
@@ -2226,7 +2226,7 @@
       "line_start": 414,
       "line_end": 414,
       "text": [
-        "    region: Optional<String>,"
+        "directory listings are not evidence."
       ]
     },
     {
@@ -2234,7 +2234,7 @@
       "line_start": 429,
       "line_end": 429,
       "text": [
-        "    api_key: Optional<SecretString>,"
+        ":::"
       ]
     },
     {
@@ -2242,7 +2242,7 @@
       "line_start": 443,
       "line_end": 443,
       "text": [
-        ""
+        "{cite}`requirements.configuration.structure`"
       ]
     },
     {
@@ -2250,7 +2250,7 @@
       "line_start": 546,
       "line_end": 546,
       "text": [
-        "Authoring documentation MUST follow {cite}`requirements.configuration.documentation`"
+        "usage record. Provider errors, including throttling, MUST be reported through"
       ]
     },
     {
@@ -2258,7 +2258,7 @@
       "line_start": 556,
       "line_end": 556,
       "text": [
-        "selects the user's saved `cloud` configuration and makes a generated source"
+        "Authoring MUST validate its fields under {cite}`requirements.configuration.loading`."
       ]
     },
     {
@@ -2266,7 +2266,7 @@
       "line_start": 569,
       "line_end": 569,
       "text": [
-        ""
+        "fields MUST NOT be merged between records. Workspace-only authoring MUST work"
       ]
     },
     {
@@ -2274,7 +2274,7 @@
       "line_start": 585,
       "line_end": 585,
       "text": [
-        "[authoring.configs.local]"
+        "record combining `api_key` with `api_key_env`."
       ]
     },
     {
@@ -2282,7 +2282,7 @@
       "line_start": 595,
       "line_end": 595,
       "text": [
-        "version = 1"
+        "overrides still apply."
       ]
     },
     {
@@ -2290,7 +2290,7 @@
       "line_start": 606,
       "line_end": 606,
       "text": [
-        ""
+        "format. Rig model references MAY be reused internally without discarding the"
       ]
     },
     {
@@ -3430,11 +3430,11 @@
       "line_start": 525,
       "line_end": 529,
       "text": [
-        "Documentation MUST discourage literal credentials in workspace files and",
-        "recommend AWS profiles or environment-variable references. Examples MUST use",
-        "placeholders and explain that workspace files may be committed or read as source",
-        "when explicitly allowed.",
-        ":::"
+        "`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same",
+        "table. Backend-specific inference options MUST appear in its `options` subtable.",
+        "Within a present user authoring section, `configs` MUST be present but MAY be empty;",
+        "workspace `configs` MAY be omitted, allowing a workspace default to select a",
+        "named user configuration."
       ]
     },
     {
@@ -3442,11 +3442,11 @@
       "line_start": 545,
       "line_end": 549,
       "text": [
-        ":::{req} configuration_documentation",
-        "Authoring documentation MUST follow {cite}`requirements.configuration.documentation`",
-        "and include complete TOML examples for Bedrock and Ollama, with all placeholders",
-        "identified. It MUST show how to choose a default, use a remote Ollama server,",
-        "select a configuration for a project or invocation, and edit or remove selections"
+        "selected concurrency. Each assessment MUST retain its own model conversation and",
+        "usage record. Provider errors, including throttling, MUST be reported through",
+        "the ordinary assessment-failure path.",
+        ":::",
+        ""
       ]
     },
     {
@@ -3454,13 +3454,531 @@
       "line_start": 667,
       "line_end": 673,
       "text": [
+        "version = 1",
         "",
+        "[authoring]",
+        "default = \"cloud\"",
+        "",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 20,
+      "line_end": 24,
+      "text": [
+        "named example, and first-party Rust function whose evidence or attestation is",
+        "missing, stale, invalid, or false. It MUST preserve accepted, current records,",
+        "including accepted FIXME judgments, without invoking a model for those records.",
+        "`--all` MUST be mutually exclusive with a subject name and `--stdout`.",
+        "Failure to discover declarations or parse project sources MUST report an error,"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 50,
+      "line_end": 54,
+      "text": [
+        ":::{req} progress",
+        "When stderr is an interactive terminal, `habeas author --all` MUST display an",
+        "updating progress bar with elapsed time, percentage, finished and total assessment",
+        "counts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,",
+        "and authoring errors. The total MUST count only subjects selected for assessment;"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 95,
+      "line_end": 99,
+      "text": [
+        "",
+        ":::{req} provider_backoff",
+        "When a provider reports transient throttling through HTTP 429 or a Bedrock",
+        "`ThrottlingException`, the harness MUST wait and retry the same completion",
+        "request, retaining its prompt, history, tools, and pending inputs. It MUST NOT"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 242,
+      "line_end": 249,
+      "text": [
+        "and configured external allow paths. The model can list a returned",
+        "directory in another call to explore further. A failed listing MUST return an",
+        "explanatory tool error unless access was denied, which MUST abort under",
+        "{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.",
+        "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+        "In a Git worktree, directories MUST have at least one eligible source",
+        "descendant to be listed unless explicitly allowed or discovered as generated",
+        "output. Explicitly requesting an excluded path MUST return an"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 311,
+      "line_end": 318,
+      "text": [
+        "",
+        "## Initial prompt",
+        "",
+        "### Mandatory inputs",
+        "",
+        ":::{req} mandatory_inputs",
+        "The harness MUST construct each assessment's mandatory input set by combining",
+        "the contributions specified by the requirements applicable to that subject and"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 337,
+      "line_end": 341,
+      "text": [
+        "",
+        ":::{req} initial_prompt",
+        "The initial request MUST provide the four tool definitions above and the",
+        "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+        "or `example`, `{{subject_name}}` with the full subject name, and"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 367,
+      "line_end": 371,
+      "text": [
+        "list their issue references or other identifying content. The usual convention",
+        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+        "Choose false for other gaps or insufficient evidence. Explain your judgment in",
+        "a Markdown rationale with source locations, including any acknowledged gaps.",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 543,
+      "line_end": 549,
+      "text": [
+        "Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker",
+        "thread pool. The number of assessments running at once MUST NOT exceed the",
+        "selected concurrency. Each assessment MUST retain its own model conversation and",
+        "usage record. Provider errors, including throttling, MUST be reported through",
+        "the ordinary assessment-failure path.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 565,
+      "line_end": 569,
+      "text": [
+        "authoring MUST use the user's selection for the canonical project root, then the",
+        "workspace default, then the user's default. Named workspace configurations MUST",
+        "override same-named user configurations as complete records. Backend, model,",
+        "connection settings, and options MUST come from the selected record as a unit;",
+        "fields MUST NOT be merged between records. Workspace-only authoring MUST work"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 687,
+      "line_end": 693,
+      "text": [
+        "",
+        "[authoring]",
+        "default = \"cloud\"",
+        "",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\"",
+        "model = \"MODEL_ID\""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 716,
+      "line_end": 720,
+      "text": [
+        "Run `habeas author --all` to fill in evidence needing attention, or",
+        "`habeas author <full-name>` to assess one requirement or example. Add `--config local`",
+        "to override the saved selection for one run. Set `concurrency` alongside `backend`",
+        "and `model` to override the provider's default number of simultaneous assessments:",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 750,
+      "line_end": 758,
+      "text": [
+        "default = \"cloud\"",
+        "",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\"",
+        "model = \"MODEL_ID\"",
+        "region = \"AWS_REGION\"",
+        "",
+        "[authoring.configs.cloud.credentials]",
+        "access_key_id = \"AWS_ACCESS_KEY_ID\""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 835,
+      "line_end": 843,
+      "text": [
+        ":::{req} deterministic_validation",
+        "Ordinary evidence validation, status inspection, and book rendering MUST continue",
+        "to check evidence using the existing rules without invoking models, contacting",
+        "providers, or requiring authoring configuration or credentials. Missing or stale",
+        "evidence MUST remain a validation failure rather than trigger authoring.",
+        ":::",
+        "",
+        "## Examples",
+        ""
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 798,
+      "line_end": 798,
+      "text": [
+        "// {impl}`requirements.authoring.configuration`"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 823,
+      "line_end": 823,
+      "text": [
+        "// {impl}`requirements.authoring.configuration`"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 21,
+      "line_end": 23,
+      "text": [
+        "missing, stale, invalid, or false. It MUST preserve accepted, current records,",
+        "including accepted FIXME judgments, without invoking a model for those records.",
+        "`--all` MUST be mutually exclusive with a subject name and `--stdout`."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 52,
+      "line_end": 54,
+      "text": [
+        "updating progress bar with elapsed time, percentage, finished and total assessment",
+        "counts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,",
+        "and authoring errors. The total MUST count only subjects selected for assessment;"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 80,
+      "line_end": 82,
+      "text": [
+        "redirected output. Existing progress counters and completion summaries MUST remain",
+        "available; FIXME notices and authoring errors MUST remain visible. Single-subject",
+        "authoring MUST retain its subject, backend, model, evidence destination, and"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 295,
+      "line_end": 300,
+      "text": [
+        "",
+        "Judgment = Boolean | { FIXME: Array<String> }",
+        "```",
+        "",
+        "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
+        "{cite}`requirements.ci.outcomes`."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 364,
+      "line_end": 369,
+      "text": [
+        "",
+        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+        "the remaining gaps are explicitly acknowledged in source comments or tests;",
+        "list their issue references or other identifying content. The usual convention",
+        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+        "Choose false for other gaps or insufficient evidence. Explain your judgment in"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 390,
+      "line_end": 392,
+      "text": [
+        "derive the recorded citations from source and record the inputs it supplies;",
+        "the model MUST supply only the boolean determination and rationale. FIXME MUST",
+        "be rejected for a function attestation."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 420,
+      "line_end": 422,
+      "text": [
+        "requirements inputs cover that set. The determination",
+        "must be boolean; FIXME is not a function-attestation outcome.",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 596,
+      "line_end": 600,
+      "text": [
+        "",
+        "Documentation MUST discourage literal credentials in workspace files and",
+        "recommend AWS profiles or environment-variable references. Examples MUST use",
+        "placeholders and explain that workspace files may be committed or read as source",
+        "when explicitly allowed."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 618,
+      "line_end": 620,
+      "text": [
+        "Authoring documentation MUST follow {cite}`requirements.configuration.documentation`",
+        "and include complete TOML examples for Bedrock and Ollama, with all placeholders",
+        "identified. It MUST show how to choose a default, use a remote Ollama server,"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 740,
+      "line_end": 744,
+      "text": [
         "Literal credentials are supported but not recommended, especially in a",
         "workspace file that might be committed. Prefer the profile and environment",
         "references above. If needed, this complete `habeas.toml` illustrates the fields;",
         "replace every uppercase placeholder with your own value and keep the resulting",
-        "file out of version control. Omit `session_token` for credentials without one.",
-        ""
+        "file out of version control. Omit `session_token` for credentials without one."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 803,
+      "line_end": 805,
+      "text": [
+        "name, start time, backend and model when known, end time when finished, outcome,",
+        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
+        "whether evidence was written. It MUST record the selected output destination in"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 807,
+      "line_end": 809,
+      "text": [
+        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
+        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
+        "Failed, cancelled, or unfinished"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 888,
+      "line_end": 894,
+      "text": [
+        "The cited code implements a requirement except for a boundary case explicitly",
+        "documented in a source comment as `FIXME(#125)`. The model finds no other gaps",
+        "and calls `submit_judgment` once with `determination: {\"FIXME\": [\"#125\"]}` and a",
+        "rationale locating the comment and explaining the boundary case. The harness",
+        "saves that judgment and the source inputs, including the comment. CI accepts",
+        "the FIXME judgment when all other evidence checks pass.",
+        "{cite}`requirements.ci.outcomes`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 437,
+      "line_end": 439,
+      "text": [
+        "    } else {",
+        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 758,
+      "line_end": 760,
+      "text": [
+        "        let state = tempfile::tempdir().unwrap();",
+        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
+        "            let mut sources ="
+      ]
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "line_start": 103,
+      "line_end": 105,
+      "text": [
+        "            self.println(&format!(",
+        "                \"{}: FIXME (usage: {})\",",
+        "                assessment.subject,"
+      ]
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "line_start": 132,
+      "line_end": 134,
+      "text": [
+        "            bar.set_message(format!(",
+        "                \"{active} active · {queued} queued | true {} · false {} · FIXME {} · errors {}\",",
+        "                self.positive, self.negative, self.fixme, self.errors,"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 395,
+      "line_end": 397,
+      "text": [
+        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
+        "        log.record.determination = Some(\"FIXME\".into());",
+        "        log.record.evidence_written = true;"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 402,
+      "line_end": 404,
+      "text": [
+        "        assert_eq!(sent[\"outcome\"], \"completed\");",
+        "        assert_eq!(sent[\"determination\"], \"FIXME\");",
+        "        assert_eq!(sent[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 49,
+      "line_end": 51,
+      "text": [
+        "",
+        "        let mut output = String::from(\"\\n## FIXME judgments\\n\\n\");",
+        "        for (issue, judgments) in &groups {"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 59,
+      "line_end": 61,
+      "text": [
+        "            output.push_str(&format!(",
+        "                \"- {} {} marked FIXME without an issue\\n\",",
+        "                without_issue.len(),"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 74,
+      "line_end": 76,
+      "text": [
+        "            if !without_issue.is_empty() {",
+        "                output.push_str(\"\\n### FIXME without an issue\\n\\n\");",
+        "                render_judgments(&mut output, &without_issue);"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 232,
+      "line_end": 234,
+      "text": [
+        "            Self::DeterminationFalse => \"Determination false\",",
+        "            Self::Fixme => \"FIXME\",",
+        "            Self::Invalid => \"Invalid\","
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 504,
+      "line_end": 506,
+      "text": [
+        "    if !detail_evidence.fixme_entries.is_empty() {",
+        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
+        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 17,
+      "line_end": 23,
+      "text": [
+        "            Value::Bool(false) => Ok(Self::False),",
+        "            Value::Object(object) if object.len() == 1 && object.contains_key(\"FIXME\") => {",
+        "                let entries = object[\"FIXME\"]",
+        "                    .as_array()",
+        "                    .filter(|entries| !entries.is_empty())",
+        "                    .ok_or(\"FIXME must be a nonempty array of nonempty strings\")?;",
+        "                let entries = entries"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 29,
+      "line_end": 31,
+      "text": [
+        "                            .map(str::to_owned)",
+        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")",
+        "                    })"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 35,
+      "line_end": 37,
+      "text": [
+        "            _ => Err(",
+        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\"",
+        "                    .to_owned(),"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 47,
+      "line_end": 49,
+      "text": [
+        "            Self::False => Value::Bool(false),",
+        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 56,
+      "line_end": 58,
+      "text": [
+        "            Self::False => \"false\",",
+        "            Self::Fixme(_) => \"FIXME\",",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 30,
+      "line_end": 32,
+      "text": [
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 190,
+      "line_end": 192,
+      "text": [
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
+        "                summary.push_str(\" — FIXME\");",
+        "            }"
       ]
     }
   ]

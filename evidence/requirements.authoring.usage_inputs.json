@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
   "determination": true,
-  "rationale": "**Verdict:** the code implements `requirements.authoring.usage_inputs`, and the tests cover its main points. There are a few small gaps in test coverage, listed at the end.\n\n**Implementation**\n- **Per-input records.**\n  - `UsageLog::prepared` in `src/authoring/usage.rs` adds an `InputUsage` entry for every input.\n  - Each entry carries the `origin` (`mandatory`, `habeas`, `ripgrep`), the evidence `kind` (`file_range`, `rust_item`, `requirements` or `definition`), `bytes` and `lines`.\n  - `bytes` is the UTF-8 length of the text lines plus the newlines between them. `lines` is the number of text entries.\n  - Counts and sizes by evidence kind can be derived from these records.\n- **Matched declarations.** `components` is the length of the `matches` array for a requirements input, and 1 otherwise.\n- **Mandatory inputs.** `configured_record` calls `usage.prepared(\"mandatory\", …)`.\n- **Additional inputs.** `assess` calls `usage.prepared(<tool name>, &delivery.inputs)` for each successful tool call.\n  - `habeas` deliveries record their inputs, including any definitions they bring in.\n  - `ripgrep` (`search` in `tools.rs`) turns its matches into `file_range` inputs, which are recorded the same way.\n- **Unique versus repeated.** `unique: self.seen.insert(input.to_string())` marks the first read as unique and later identical reads as not unique.\n- **Successful versus failed reads.** `UsageLog::tool(name, failed)` increments `tool_calls` and, on failure, `tool_failures`. `assess` calls it on both outcomes of `tools::dispatch`.\n- **Prepared, submitted and sent.**\n  - Inputs start with `submitted_in_request` and `sent_in_request` both `None`.\n  - `begin_request` sets `submitted_in_request` for every input that doesn't have one yet.\n  - `end_request` sets `sent_in_request` only when the provider returned usage, which means the request succeeded.\n  - A failed request therefore does not mark inputs as sent, and a later retry does.\n- **File discovery.** The `list_files` delivery has `inputs: Vec::new()`, so nothing is passed to `prepared`. `assess` still calls `usage.tool` for it, so it counts as a tool call but adds no source input.\n\n**Tests**\n- `input_metadata_counts_components_and_reads_without_persisting_source` checks:\n  - UTF-8 byte size and line count, using a multibyte string;\n  - `components == 2` for a requirements input;\n  - `unique` true for a first read and false for a repeat, with `origin` set to `habeas`;\n  - `submitted_in_request` and `sent_in_request` moving from null to set across `begin_request` and `end_request`;\n  - no source content in the stored file.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` checks that a failed request (no usage) leaves the input submitted but not sent, and a retry then marks it sent.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` checks that calls, failures and skipped calls are counted separately, and that no inputs are recorded for tool calls alone.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` is an end-to-end test.\n  - It runs `list_files`, `ripgrep`, two identical `habeas` reads and one failing `habeas` read.\n  - It asserts `tool_call_count` is 6 and `tool_failures.habeas` is 1.\n  - It asserts a repeated `habeas` input with `unique == false` and `sent_in_request == 1`.\n  - It asserts a mandatory definition input with bytes greater than 0.\n  - It asserts that no source content appears in the usage record.\n  - It asserts that evidence contains no `.` or `absent.txt` inputs, so directory listings and failed reads are not recorded as inputs.\n\n**Minor gaps, none acknowledged as FIXMEs**\n- Aggregate totals by kind are not stored. They have to be computed from the per-input records.\n- No test asserts that a `ripgrep` call produces usage entries with `origin == \"ripgrep\"`. The code path is shared with `habeas`, so I treat this as minor.\n- `list_files` producing no inputs is verified in the end-to-end test only indirectly, through the absence of a `.` input in evidence, and by the code (`inputs: Vec::new()`).",
+  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and the tests cover the main cases. I did not run the tests; this is from reading the code and assertions.\n\n**Implementation**\n- **Counts and sizes by kind.** `UsageLog::prepared` (`src/authoring/usage.rs`) pushes one `InputUsage` per input. Each entry records:\n  - `kind`: `file_range`, `rust_item`, `requirements` or `definition`.\n  - `bytes`: the UTF-8 byte length of the text lines, plus the newlines between them.\n  - `lines`: the number of text lines.\n  - `origin`: `mandatory`, or the tool that requested the input (`habeas`, `ripgrep`).\n- **Matched declarations.** The `components` field is the length of the `matches` array, so a requirements input records its matched-declaration count. Other kinds record 1.\n- **Mandatory and additional inputs.** `configured_record` and `assess` in `src/authoring/mod.rs` call `usage.prepared(\"mandatory\", …)`. After each tool call, `assess` calls `usage.prepared(<tool name>, &delivery.inputs)`. Both kinds of input are therefore recorded.\n- **Unique versus repeated reads.** `unique` is set by `self.seen.insert(input.to_string())`, so the second delivery of an identical input is marked `unique: false`.\n- **Successful versus failed reads.** `UsageLog::tool(name, failed)` increments `tool_calls` and `tool_failures`. A failed read delivers no inputs, so it is never counted as a prepared input. Failures that are permission denials are also counted before the run aborts.\n- **Prepared versus sent.** Each input carries `submitted_in_request` and `sent_in_request`:\n  - `begin_request` sets `submitted_in_request`.\n  - `end_request` sets `sent_in_request` only when the response carried usage, meaning the request succeeded.\n  - A failed or throttled request therefore leaves `sent_in_request` unset, and a later retry sets it.\n- **File discovery.** `list_files` returns `inputs: Vec::new()` (`tools.rs`), so it adds no usage inputs. `assess` still calls `usage.tool(...)`, so the call counts as a tool call.\n- **No source content.** Only counts and metadata are stored, not source text.\n\n**Tests**\n- `input_metadata_counts_components_and_reads_without_persisting_source` (`usage.rs`) checks:\n  - Multi-byte byte counts and line counts.\n  - Requirements `components` of 2.\n  - `unique` true for the first read and false for the repeat.\n  - Origin recording.\n  - The submitted and sent transitions.\n  - That no source text appears in the log.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` checks that `sent_in_request` stays null after a failed request and is set after the retry.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` (`mod.rs`) runs the full `assess` loop. After 8 failed attempts, inputs have `submitted_in_request` 0 and `sent_in_request` 8.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` checks that tool calls, failures and skips are counted separately and that unknown tool names do not leak into the log.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`) is an end-to-end test that:\n  - Issues `list_files`, `ripgrep`, a repeated `habeas` read and a failing `habeas` read.\n  - Asserts `tool_call_count` 6, `tool_calls.habeas` 3 and `tool_failures.habeas` 1.\n  - Asserts a `habeas` input with `unique: false` and `sent_in_request: 1`.\n  - Asserts a mandatory `definition` input with non-zero bytes.\n  - Asserts that the evidence inputs contain no directory entry (`\".\"`) or the failed `absent.txt`.\n  - Asserts that the usage log contains no source or credential content.\n\n**Minor gaps**\n- No test builds a `rust_item`-kind input in the usage log.\n- No test asserts that the usage `inputs` list is empty after a `list_files`-only run.\n- Both behaviours are straightforward in the code, and the coverage elsewhere is sufficient.",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -83,6 +83,7 @@
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.authoring.provider_backoff`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -92,6 +93,7 @@
         "    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });",
         "    request.tools = tool_definitions(function)?;",
         "    let mut pending = sources.mandatory_inputs().to_vec();",
+        "    let mut backoff = providers::ProviderBackoff::default();",
         "    loop {",
         "        let index = usage.begin_request()?;",
         "        let started = Instant::now();",
@@ -101,7 +103,17 @@
         "            started.elapsed().as_millis(),",
         "            response.as_ref().ok().map(|r| &r.usage),",
         "        )?;",
-        "        let response = response?;",
+        "        let response = match response {",
+        "            Ok(response) => response,",
+        "            Err(error) => {",
+        "                if let Some(delay) = backoff.next_delay(&error) {",
+        "                    tokio::time::sleep(delay).await;",
+        "                    continue;",
+        "                }",
+        "                return Err(error);",
+        "            }",
+        "        };",
+        "        backoff = providers::ProviderBackoff::default();",
         "        sources.record_inputs(&pending);",
         "        pending.clear();",
         "        if let Some(error) = turn_failure(",
@@ -190,6 +202,45 @@
         "        request.chat_history.push(Message::tool_results(results));",
         "    }",
         "}"
+      ]
+    },
+    {
+      "rust_file": "src/authoring/mod.rs",
+      "rust_item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "text": [
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    // {test}`requirements.authoring.usage_requests`",
+        "    // {test}`requirements.authoring.usage_inputs`",
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn throttled_requests_retry_unchanged_and_record_every_attempt() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,",
+        "            status: 429,",
+        "            code: \"ThrottlingException\",",
+        "            requests: RefCell::default(),",
+        "        };",
+        "        let started = tokio::time::Instant::now();",
+        "        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();",
+        "        assert!(started.elapsed() >= Duration::from_millis(500));",
+        "        let requests = provider.requests.borrow();",
+        "        assert_eq!(requests.len(), 9);",
+        "        assert!(requests.iter().all(|request| request == &requests[0]));",
+        "        assert_eq!(record[\"inputs\"], json!(sources.mandatory_inputs()));",
+        "",
+        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();",
+        "        assert_eq!(log[\"request_count\"], 9);",
+        "        for attempt in 0..8 {",
+        "            assert_eq!(log[\"requests\"][attempt][\"outcome\"], \"failed\");",
+        "            assert_eq!(log[\"requests\"][attempt][\"tokens\"][\"complete\"], false);",
+        "        }",
+        "        assert_eq!(log[\"requests\"][8][\"outcome\"], \"completed\");",
+        "        assert_eq!(log[\"tool_calls\"][\"submit_judgment\"], 1);",
+        "        for input in log[\"inputs\"].as_array().unwrap() {",
+        "            assert_eq!(input[\"submitted_in_request\"], 0);",
+        "            assert_eq!(input[\"sent_in_request\"], 8);",
+        "        }",
+        "    }"
       ]
     },
     {
@@ -620,13 +671,13 @@
       "line_start": 299,
       "line_end": 305,
       "text": [
-        "    Ok(AuthoringOutcome {",
-        "        subject: subject.into(),",
-        "        backend: usage.record.backend.clone().expect(\"configured backend\"),",
-        "        model: config.model_ref().model,",
-        "        evidence_path,",
-        "        usage_path: usage.path.clone(),",
-        "        determination,"
+        "            Some(path)",
+        "        }",
+        "        EvidenceOutput::Stdout => {",
+        "            let mut stdout = io::stdout().lock();",
+        "            stdout.write_all(json.as_bytes())?;",
+        "            stdout.flush()?;",
+        "            None"
       ]
     },
     {
@@ -634,13 +685,13 @@
       "line_start": 488,
       "line_end": 494,
       "text": [
-        "                return Err(io::Error::other(",
-        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
-        "                ));",
         "            }",
-        "            let result = submission(",
-        "                &Value::Object(submissions[0].function.arguments.clone()),",
-        "                function,"
+        "        };",
+        "        backoff = providers::ProviderBackoff::default();",
+        "        sources.record_inputs(&pending);",
+        "        pending.clear();",
+        "        if let Some(error) = turn_failure(",
+        "            &response.choice,"
       ]
     },
     {
@@ -648,13 +699,13 @@
       "line_start": 569,
       "line_end": 575,
       "text": [
-        "                .find(|tool| tool.name == \"submit_judgment\")",
-        "                .unwrap();",
-        "            assert_eq!(",
-        "                submit.parameters[\"properties\"][\"determination\"],",
-        "                json!({\"type\": \"boolean\"})",
-        "            );",
-        "            Ok(CompletionResponse::new("
+        "                    }",
+        "                    results",
+        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
+        "                }",
+        "            }",
+        "        }",
+        "        usage.save()?;"
       ]
     },
     {

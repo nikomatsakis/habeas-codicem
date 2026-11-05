@@ -1,7 +1,7 @@
 {
   "requirement": "The initial request MUST provide the four tool definitions above and the\nfollowing prompt. The harness MUST replace `{{subject_kind}}` with `requirement`\nor `example`, `{{subject_name}}` with the full subject name, and\n`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using\nthe existing evidence-input formats. The template MUST otherwise be used as\nwritten. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,\n{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.\n\n```text\nBring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.\n\nSubject: {{subject_kind}} {{subject_name}}\n\nRead the subject and mandatory inputs below. Use habeas to request any additional\nsource information you need. Use list_files to discover files and directories,\nand ripgrep to search file contents.\nThe harness records source inputs for you; directory listings are not evidence.\n\nAssess only the named subject, using cited requirements and definitions as context.\nFor a requirement, check that the cited code implements it as stated and that\ntests cover the interesting points in the design space. If there are no tests,\nassess whether simplicity or impracticality justifies their absence, and explain.\nFor an example, assess whether test setup and assertions cover its scenario and\nexpected outcomes. A true judgment needs at least one {test} reference to the\nexample in the supplied inputs. Explain the coverage.\n\nChoose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when\nthe remaining gaps are explicitly acknowledged in source comments or tests;\nlist their issue references or other identifying content. The usual convention\nis FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.\nChoose false for other gaps or insufficient evidence. Explain your judgment in\na Markdown rationale with source locations, including any acknowledged gaps.\n\nWhen you are ready, call submit_judgment exactly once with determination and\nrationale. That tool call is your final answer.\n\nMandatory inputs:\n{{mandatory_inputs}}\n```",
   "determination": true,
-  "rationale": "**Verdict: true.** The implementation covers each obligation in `requirements.authoring.initial_prompt`, and the tests cover the main cases. A few edge cases are untested, listed at the end.\n\n**Implementation**\n- **Template source.** `initial_prompt` in `src/authoring/mod.rs` (around lines 357–386) reads the approved template from `md/requirements/authoring.md` with `include_str!`. It finds the opening sentence and takes the text up to the closing code fence, so the prompt is \"used as written\" and the doc is the only source of the wording.\n- **Placeholders.** It replaces `{{subject_kind}}` with `sources.subject_kind.noun()`, which gives `requirement` or `example` (`AssessmentKind::noun` in `src/authoring/inputs.rs`; the definition kind's noun comes from `DefinitionKind::noun` in `src/lib.rs`). It replaces `{{subject_name}}` with the full subject name. It replaces `{{mandatory_inputs}}` with `serde_json::to_string_pretty(sources.mandatory_inputs())`, a JSON array of the existing evidence-input values. The mandatory inputs are substituted last, so their content cannot be re-substituted.\n- **Tool definitions.** `assess` builds the request with `tool_definitions`, which is `tools::definitions()` (`habeas`, `list_files`, `ripgrep`) plus `submit_judgment`. That is four tools, and they go in the initial request.\n- **Review guidance.** The review guidance in the template matches `requirements.ci.review_criteria`, `requirements.examples.evidence` and `requirements.ci.outcomes`. It covers the no-test justification, the `{test}` reference needed for a true example judgment, and the true/FIXME/false outcomes.\n\n**Tests**\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`, which cites `initial_prompt`) checks the first request's prompt. It contains \"Bring your expert judgment\", the requirement text, the definition text, the implementation and test function sources, and \"submit_judgment exactly once\". It also checks that stale rationale is not included. It checks the tool list is exactly `habeas`, `list_files`, `ripgrep`, `submit_judgment`.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` repeats the prompt and four-tool checks over the Bedrock path. It also checks the tool schemas.\n- `false_is_a_completed_assessment` checks that the prompt contains the template line \"Choose false for other gaps or insufficient evidence\" and the delivered source content.\n- The batch tests in `tests/authoring_batch.rs` parse the `Subject: ` line from each request's prompt. They assert exact values such as `requirement requirements.alpha` and `example requirements.alpha_case`. This confirms both the `{{subject_kind}}` and `{{subject_name}}` substitutions, for both kinds.\n- A unit test in `src/authoring/mod.rs` (around line 612) checks the function-attestation prompt variant starts with its expected opening.\n\n**Gaps**\n- No test compares the whole rendered prompt to the template or asserts that no `{{` remains.\n- No test checks the JSON-array shape of the mandatory inputs inside the prompt.\n\nBoth are low risk, because the prompt is derived mechanically from the doc and the batch tests exercise the substitutions. I judge the testing sufficient for this requirement, and no FIXME acknowledgments are involved.",
+  "rationale": "**Verdict: true.** The code implements every stated obligation, and the tests cover the main points. One minor gap is noted at the end.\n\n**Implementation**\n- `src/authoring/mod.rs` `initial_prompt` reads the approved template from `md/requirements/authoring.md`. It starts at the requirement/example opening sentence and stops at the closing code fence. That is the single source of truth, so the template is \"used as written\". I compared the template at lines ~348–385 of that file with the prompt in the requirement, and they are identical.\n- It replaces `{{subject_kind}}` with `sources.subject_kind.noun()`, which is `requirement`, `example` or `definition` (`src/authoring/inputs.rs`, `AssessmentKind::noun`). Per `src/lib.rs`, `DefinitionKind::noun` gives `requirement` or `example` for the two subject kinds, and `definition` only for terms.\n- It replaces `{{subject_name}}` with the full subject name.\n- It replaces `{{mandatory_inputs}}` with `serde_json::to_string_pretty(sources.mandatory_inputs())`, a JSON array of the existing evidence-input objects. This substitution runs last, so text inside the inputs cannot be re-expanded as a placeholder.\n- `assess` builds `CompletionRequest::new(initial_prompt(sources)?)` and sets `request.tools = tool_definitions(function)?`. `tool_definitions` returns `tools::definitions()` (`habeas`, `list_files`, `ripgrep`) plus `submit_judgment`. That is the four tool definitions in the initial request.\n- The review guidance is the template text itself, and it follows the review-criteria, example-evidence and outcomes requirements. It covers the no-test justification, the `{test}` reference needed for a true example, and the true/FIXME/false outcomes.\n- `assess` is the only place the initial request is built, so every assessment gets this prompt.\n\n**Tests**\n- `tests/authoring_cli.rs::ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` captures the first request sent to the mock provider. It asserts that the prompt contains:\n  - \"Bring your expert judgment\";\n  - the requirement text;\n  - the definition text;\n  - the cited functions `fn ready()` and `fn ready_test()`;\n  - \"submit_judgment exactly once\".\n\n  It asserts that stale prior rationale is absent. It also asserts that the request's tool set is exactly `habeas`, `list_files`, `ripgrep` and `submit_judgment`.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` repeats the prompt and tool checks over the Bedrock path. It also asserts the full tool schemas: the `habeas` fields, and the `submit_judgment` determination `oneOf` with the FIXME array constraints.\n- `tests/authoring_batch.rs::serve` parses the `Subject: ` line out of the real prompt. It confirms that kind and name substitution works for requirements and examples, e.g. \"requirement requirements.alpha\" and \"example requirements.alpha_case\".\n- `false_is_a_completed_assessment` (`tests/authoring_cli.rs`) asserts that the prompt contains the template sentence \"Choose false for other gaps or insufficient evidence\". It also checks that the mandatory inputs carry the cited source text.\n- `stdout_emits_only_evidence_json_without_changing_project_files` asserts the recorded inputs that the prompt's input set is built from.\n\n**Minor gap, not acknowledged in the sources:** no test compares the whole rendered prompt with the template, or asserts that no `{{…}}` placeholder remains. Coverage is by sampled phrases, the `Subject:` line, and the mandatory-input content. Since the template is read verbatim from the spec and the substitutions are plain `replace` calls, I judge this adequate.",
   "inputs": [
     {
       "requirements": "requirements.authoring.initial_prompt",
@@ -229,6 +229,7 @@
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.authoring.provider_backoff`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -238,6 +239,7 @@
         "    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });",
         "    request.tools = tool_definitions(function)?;",
         "    let mut pending = sources.mandatory_inputs().to_vec();",
+        "    let mut backoff = providers::ProviderBackoff::default();",
         "    loop {",
         "        let index = usage.begin_request()?;",
         "        let started = Instant::now();",
@@ -247,7 +249,17 @@
         "            started.elapsed().as_millis(),",
         "            response.as_ref().ok().map(|r| &r.usage),",
         "        )?;",
-        "        let response = response?;",
+        "        let response = match response {",
+        "            Ok(response) => response,",
+        "            Err(error) => {",
+        "                if let Some(delay) = backoff.next_delay(&error) {",
+        "                    tokio::time::sleep(delay).await;",
+        "                    continue;",
+        "                }",
+        "                return Err(error);",
+        "            }",
+        "        };",
+        "        backoff = providers::ProviderBackoff::default();",
         "        sources.record_inputs(&pending);",
         "        pending.clear();",
         "        if let Some(error) = turn_failure(",
@@ -722,16 +734,16 @@
       "line_start": 483,
       "line_end": 492,
       "text": [
+        "BedrockConfig {",
+        "    model: ModelId,                           // model ID or inference-profile ID/ARN",
+        "    aws_profile: Optional<String>,",
+        "    region: Optional<String>,",
+        "    credentials: Optional<BedrockCredentials>,",
+        "    options: Map<String, OptionValue>,",
+        "}",
         "",
-        "Authoring MUST validate its fields under {cite}`requirements.configuration.loading`.",
-        "The `options` map MUST accept backend-defined inference settings rather than a",
-        "closed Habeas list; the adapter MUST pass them through Rig's provider parameter",
-        "mechanism and report rejection by Rig or the provider. These options MUST NOT",
-        "replace the selected model, the assessment prompt, or tool definitions.",
-        ":::",
-        "",
-        ":::{req} configuration_precedence",
-        "`--config <name>` MUST select a configuration for that invocation. Otherwise,"
+        "BedrockCredentials {",
+        "    access_key_id: SecretString,"
       ]
     },
     {
@@ -739,12 +751,12 @@
       "line_start": 109,
       "line_end": 114,
       "text": [
-        "    behavior: Behavior,",
-        "    stop: Arc<AtomicBool>,",
-        ") {",
-        "    stream",
-        "        .set_read_timeout(Some(Duration::from_secs(10)))",
-        "        .unwrap();"
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.progress`",
+        "// {test}`requirements.authoring.reporting`",
+        "fn serve(",
+        "    mut stream: TcpStream,",
+        "    requests: Arc<(Mutex<Requests>, Condvar)>,"
       ]
     },
     {
@@ -752,11 +764,11 @@
       "line_start": 149,
       "line_end": 153,
       "text": [
-        "            })",
-        "            .unwrap();",
-        "        state = next;",
-        "        state.first_pair_overlapped = state.subjects.len() >= 2;",
-        "    }"
+        "    let first_request = state.subjects.len() == 1;",
+        "    state.active += 1;",
+        "    state.peak = state.peak.max(state.active);",
+        "    arrived.notify_all();",
+        "    if require_overlap && state.subjects.len() == 1 {"
       ]
     },
     {
@@ -841,11 +853,11 @@
       "line_start": 606,
       "line_end": 610,
       "text": [
-        "        let inputs = evidence[\"inputs\"].as_array().unwrap();",
-        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == SUBJECT));",
-        "        assert!(",
-        "            inputs",
-        "                .iter()"
+        "        assert_eq!(",
+        "            stderr.contains(&format!(\"{SUBJECT}: false\")),",
+        "            !determination,",
+        "            \"{stderr}\"",
+        "        );"
       ]
     },
     {
@@ -853,12 +865,12 @@
       "line_start": 704,
       "line_end": 709,
       "text": [
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );"
+        "        }",
+        "        assert_eq!(",
+        "            stderr.contains(rationale),",
+        "            verbose && kind == \"false\",",
+        "            \"{stderr}\"",
+        "        );"
       ]
     },
     {
@@ -950,9 +962,9 @@
       "line_start": 315,
       "line_end": 317,
       "text": [
-        "// {impl}`requirements.authoring.usage_inputs`",
-        "// {impl}`requirements.authoring.provider`",
-        "// {impl}`requirements.authoring.read_denial`"
+        "        usage_path: usage.path.clone(),",
+        "        determination,",
+        "        rationale: evidence[\"rationale\"]"
       ]
     },
     {
@@ -960,9 +972,9 @@
       "line_start": 319,
       "line_end": 321,
       "text": [
-        "    root: &Path,",
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,"
+        "            .expect(\"validated judgment rationale\")",
+        "            .to_owned(),",
+        "    })"
       ]
     },
     {
@@ -970,9 +982,9 @@
       "line_start": 377,
       "line_end": 379,
       "text": [
-        "    };",
-        "    Ok(template",
-        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())"
+        "        AssessmentKind::Definition(_) => {",
+        "            \"Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.\"",
+        "        }"
       ]
     },
     {
@@ -980,9 +992,9 @@
       "line_start": 397,
       "line_end": 399,
       "text": [
-        "    {",
-        "        return Err(io::Error::other(",
-        "            \"submit_judgment requires exactly determination and rationale\","
+        "        .replace(",
+        "            \"{{mandatory_inputs}}\",",
+        "            &serde_json::to_string_pretty(sources.mandatory_inputs())?,"
       ]
     },
     {
@@ -990,9 +1002,9 @@
       "line_start": 408,
       "line_end": 410,
       "text": [
-        "    let rationale = object[\"rationale\"]",
-        "        .as_str()",
-        "        .filter(|s| !s.trim().is_empty())"
+        "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;",
+        "    if object.len() != 2",
+        "        || !object.contains_key(\"determination\")"
       ]
     },
     {
@@ -1000,9 +1012,9 @@
       "line_start": 564,
       "line_end": 566,
       "text": [
-        "        // {test}`requirements.authoring.submission`",
-        "        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {",
-        "            let submit = request"
+        "                }",
+        "                Err(error) => {",
+        "                    usage.tool(call.function.name.as_str(), true);"
       ]
     },
     {
@@ -1010,9 +1022,9 @@
       "line_start": 82,
       "line_end": 84,
       "text": [
-        "read MUST abort under {cite}`requirements.authoring.read_denial`.",
-        "",
-        "File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read"
+        "authoring MUST retain its subject, backend, model, evidence destination, and",
+        "usage-record metadata.",
+        ""
       ]
     },
     {
@@ -1020,9 +1032,9 @@
       "line_start": 87,
       "line_end": 89,
       "text": [
-        "from the cited requirements, including Rust selector syntax, requirement globs,",
-        "and full definition names, with a short request example for each form.",
-        ""
+        "single-subject and batch authoring, including Rust function attestations. It MUST",
+        "NOT print true rationales or append recorded",
+        "input snapshots. Reporting MUST use the completed assessment's existing result,"
       ]
     },
     {
@@ -1030,9 +1042,9 @@
       "line_start": 99,
       "line_end": 101,
       "text": [
-        "    input: EvidenceInput,",
-        "    definitions: Array<DefinitionInput>,",
-        "}"
+        "request, retaining its prompt, history, tools, and pending inputs. It MUST NOT",
+        "restart the assessment or repeat already completed tool calls. A permanent",
+        "input/context-length error, authentication failure, or invalid request MUST"
       ]
     },
     {
@@ -1040,9 +1052,9 @@
       "line_start": 106,
       "line_end": 108,
       "text": [
-        "A failed read MUST add no evidence input. Access-policy denials MUST abort;",
-        "other failed reads MUST return an explanatory tool error.",
-        ":::"
+        "throttled attempt, up to sixty seconds. Each delay MUST be randomly selected",
+        "between half and all of that window to spread parallel retries. An available",
+        "provider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a"
       ]
     },
     {
@@ -1050,9 +1062,9 @@
       "line_start": 119,
       "line_end": 121,
       "text": [
-        "record MUST identify the failure and any failed tool call. In a batch, other",
-        "assessments MUST continue, including queued assessments, and their successful",
-        "writes MUST be retained. The command MUST return a nonzero exit status after"
+        ":::",
+        "",
+        "## Model tools"
       ]
     },
     {
@@ -1060,8 +1072,8 @@
       "line_start": 126,
       "line_end": 128,
       "text": [
-        "recoverable tool-error behavior.",
-        ":::",
+        "",
+        "### Request evidence inputs: `habeas`",
         ""
       ]
     },
@@ -1070,9 +1082,9 @@
       "line_start": 149,
       "line_end": 151,
       "text": [
-        "internal layout, so an explicit allow is the fallback for an undiscovered layout.",
-        "Generated paths are recorded as ordinary file selectors. CI must build the",
-        "matching paths and contents before checking that evidence."
+        "containing literal credentials MUST be excluded from model reads by default,",
+        "including symlink aliases. Generated build outputs MUST follow",
+        "{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST"
       ]
     },
     {
@@ -1080,9 +1092,9 @@
       "line_start": 153,
       "line_end": 155,
       "text": [
-        "### Discover files: `list_files`",
-        "",
-        ":::{req} file_discovery"
+        "permission for otherwise excluded inputs. A denied mandatory input or explicit",
+        "read MUST abort under {cite}`requirements.authoring.read_denial`.",
+        ""
       ]
     },
     {
@@ -1090,11 +1102,11 @@
       "line_start": 192,
       "line_end": 196,
       "text": [
-        "}",
-        "```",
-        "",
-        "The tool MUST search the requested permitted file or directory using",
-        "ripgrep's regular-expression syntax and default case-sensitive search and ignore"
+        "assessments MUST continue, including queued assessments, and their successful",
+        "writes MUST be retained. The command MUST return a nonzero exit status after",
+        "the batch finishes. Discovery and search MAY omit denied candidates without",
+        "aborting, but explicitly requesting a denied file or directory MUST abort the",
+        "affected assessment."
       ]
     },
     {
@@ -1102,12 +1114,12 @@
       "line_start": 199,
       "line_end": 204,
       "text": [
-        "Its model-facing description MUST explain those conventions. `context`",
-        "MUST be nonnegative and specify how many lines before and after each matching",
-        "line to include, defaulting to five on each side. Windows MUST stop at file",
-        "boundaries, and overlapping windows in the same file MUST be merged. Each",
-        "resulting window MUST be returned as a file-range input with its source path,",
-        "inclusive line range, and complete text under {cite}`requirements.ci.inputs`."
+        ":::",
+        "",
+        ":::{req} generated_inputs",
+        "Habeas MUST permit existing Cargo build-script output directories as an exception",
+        "to default Git tracking and containment restrictions. It MUST discover the Cargo",
+        "build directory using metadata and inspect existing build-script output records,"
       ]
     },
     {
@@ -1115,10 +1127,10 @@
       "line_start": 228,
       "line_end": 231,
       "text": [
-        "{cite}`requirements.ci.outcomes`.",
-        "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
-        "assessment result. The model MUST invoke it exactly once over the entire",
-        "assessment. If the model finishes without invoking it, or invokes it more than"
+        "The harness MUST expose a `list_files` tool with this interface:",
+        "",
+        "```text",
+        "list_files({ path: String = \".\" }) -> Array<DirectoryEntry>"
       ]
     },
     {
@@ -1126,11 +1138,11 @@
       "line_start": 246,
       "line_end": 250,
       "text": [
-        "the contributions specified by the requirements applicable to that subject and",
-        "its inputs. A requirement that contributes inputs MUST cite this requirement and",
-        "define which sources it contributes and when. The harness MUST include every",
-        "applicable contribution, deduplicate identical selections, and report",
-        "unresolvable mandatory inputs before inference. The complete set MUST be supplied"
+        "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+        "In a Git worktree, directories MUST have at least one eligible source",
+        "descendant to be listed unless explicitly allowed or discovered as generated",
+        "output. Explicitly requesting an excluded path MUST return an",
+        "authoring error under {cite}`requirements.authoring.read_denial`."
       ]
     },
     {
@@ -1138,13 +1150,13 @@
       "line_start": 252,
       "line_end": 258,
       "text": [
-        "Generated output under project-root `evidence/`, including symlink aliases, MUST",
-        "be omitted from previous input selections when the default exclusion applies.",
-        "An explicit workspace allow MUST permit those selections; an explicit disallow",
-        "MUST abort under {cite}`requirements.authoring.read_denial`.",
-        ":::",
         "",
-        "The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),"
+        "### Search file contents: `ripgrep`",
+        "",
+        ":::{req} text_search",
+        "The harness MUST expose a `ripgrep` tool with this interface:",
+        "",
+        "```text"
       ]
     },
     {
@@ -1152,10 +1164,10 @@
       "line_start": 278,
       "line_end": 281,
       "text": [
-        "Subject: {{subject_kind}} {{subject_name}}",
-        "",
-        "Read the subject and mandatory inputs below. Use habeas to request any additional",
-        "source information you need. Use list_files to discover files and directories,"
+        "Search results MUST exclude files disallowed by",
+        "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+        "path MUST abort under {cite}`requirements.authoring.read_denial`.",
+        "Required terminology MUST be included under"
       ]
     },
     {
@@ -1163,9 +1175,9 @@
       "line_start": 309,
       "line_end": 311,
       "text": [
-        "",
-        ":::{req} function_attestations",
-        "The harness MUST author Rust function attestations using the schema and citation"
+        "judgment MUST emit no evidence JSON to stdout.",
+        ":::",
+        ""
       ]
     },
     {
@@ -1173,9 +1185,9 @@
       "line_start": 348,
       "line_end": 350,
       "text": [
-        "requirements inputs cover that set. The determination",
-        "must be boolean; FIXME is not a function-attestation outcome.",
-        ""
+        "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
+        "",
+        "Subject: {{subject_kind}} {{subject_name}}"
       ]
     },
     {
@@ -1183,9 +1195,9 @@
       "line_start": 435,
       "line_end": 437,
       "text": [
-        "",
-        "SecretString = String                         // serialized normally; redacted in Debug",
-        ""
+        "able to select a backend and model through configuration without changing the",
+        "assessment tools, prompt, or evidence format.",
+        ":::"
       ]
     },
     {
@@ -1193,9 +1205,9 @@
       "line_start": 444,
       "line_end": 446,
       "text": [
-        "`ModelRef` MUST be derived from the selected backend configuration and MUST",
-        "preserve the exact model identifier. It MUST identify the model without replacing",
-        "connection settings such as AWS profile, region, or Ollama endpoint."
+        "{cite}`requirements.configuration.feature_sections`",
+        "It MUST support named configurations, workspace defaults, and a user-local",
+        "selection for each project. Credential-source references SHOULD be used;"
       ]
     },
     {
@@ -1203,9 +1215,9 @@
       "line_start": 450,
       "line_end": 452,
       "text": [
-        "The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace",
-        "table MUST serialize WorkspaceAuthoringConfig. Each",
-        "`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with"
+        ":::",
+        "",
+        "### Serialized configuration data model"
       ]
     },
     {
@@ -1213,9 +1225,9 @@
       "line_start": 461,
       "line_end": 463,
       "text": [
-        ":::",
-        "",
-        ":::{req} concurrency"
+        "UserAuthoringConfig {",
+        "    default: Optional<ConfigName>,",
+        "    configs: Map<ConfigName, AuthoringConfig>,"
       ]
     },
     {
@@ -1223,9 +1235,9 @@
       "line_start": 469,
       "line_end": 471,
       "text": [
-        "MUST be rejected as invalid configuration.",
-        "",
-        "Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker"
+        "    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty",
+        "}",
+        ""
       ]
     },
     {
@@ -1233,9 +1245,9 @@
       "line_start": 492,
       "line_end": 494,
       "text": [
-        "`--config <name>` MUST select a configuration for that invocation. Otherwise,",
-        "authoring MUST use the user's selection for the canonical project root, then the",
-        "workspace default, then the user's default. Named workspace configurations MUST"
+        "    access_key_id: SecretString,",
+        "    secret_access_key: SecretString,",
+        "    session_token: Optional<SecretString>,"
       ]
     },
     {
@@ -1243,8 +1255,8 @@
       "line_start": 505,
       "line_end": 507,
       "text": [
-        "an error before a model request.",
-        ":::",
+        "OptionValue = String | Boolean | Integer | FiniteFloat",
+        "            | Array<OptionValue> | Map<String, OptionValue>",
         ""
       ]
     },
@@ -1253,9 +1265,9 @@
       "line_start": 510,
       "line_end": 512,
       "text": [
-        "`access_key_id`, `secret_access_key`, and optional nonempty `session_token`.",
-        "Ollama configurations MAY supply a nonempty `api_key`. Habeas MUST reject a",
-        "Bedrock record combining explicit credentials with `aws_profile`, and an Ollama"
+        "ModelRef {",
+        "    backend: BackendKind,                     // Bedrock or Ollama",
+        "    model: ModelId,"
       ]
     },
     {
@@ -1319,13 +1331,13 @@
       "line_start": 190,
       "line_end": 196,
       "text": [
-        "    inputs: Array<FileRangeInput>,",
-        "    definitions: Array<DefinitionInput>,",
-        "}",
-        "```",
-        "",
-        "The tool MUST search the requested permitted file or directory using",
-        "ripgrep's regular-expression syntax and default case-sensitive search and ignore"
+        "The aborted assessment MUST NOT write evidence or emit evidence JSON. Its usage",
+        "record MUST identify the failure and any failed tool call. In a batch, other",
+        "assessments MUST continue, including queued assessments, and their successful",
+        "writes MUST be retained. The command MUST return a nonzero exit status after",
+        "the batch finishes. Discovery and search MAY omit denied candidates without",
+        "aborting, but explicitly requesting a denied file or directory MUST abort the",
+        "affected assessment."
       ]
     },
     {
@@ -1333,13 +1345,13 @@
       "line_start": 200,
       "line_end": 206,
       "text": [
-        "MUST be nonnegative and specify how many lines before and after each matching",
-        "line to include, defaulting to five on each side. Windows MUST stop at file",
-        "boundaries, and overlapping windows in the same file MUST be merged. Each",
-        "resulting window MUST be returned as a file-range input with its source path,",
-        "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
-        "Setting `context` to zero MUST return only matching lines.",
-        "Search results MUST exclude files disallowed by"
+        "",
+        ":::{req} generated_inputs",
+        "Habeas MUST permit existing Cargo build-script output directories as an exception",
+        "to default Git tracking and containment restrictions. It MUST discover the Cargo",
+        "build directory using metadata and inspect existing build-script output records,",
+        "without running a build or executing build scripts. It MUST NOT treat its own",
+        "inherited `OUT_DIR` environment variable as the workspace's output directory."
       ]
     },
     {
@@ -1347,13 +1359,13 @@
       "line_start": 253,
       "line_end": 259,
       "text": [
-        "be omitted from previous input selections when the default exclusion applies.",
-        "An explicit workspace allow MUST permit those selections; an explicit disallow",
-        "MUST abort under {cite}`requirements.authoring.read_denial`.",
-        ":::",
+        "### Search file contents: `ripgrep`",
         "",
-        "The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),",
-        "[examples](examples.md#examples-as-authoring-inputs),"
+        ":::{req} text_search",
+        "The harness MUST expose a `ripgrep` tool with this interface:",
+        "",
+        "```text",
+        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 5 }) -> SearchResult"
       ]
     },
     {
@@ -1416,13 +1428,13 @@
       "line_start": 298,
       "line_end": 304,
       "text": [
-        "    usage.save()?;",
-        "    Ok(AuthoringOutcome {",
-        "        subject: subject.into(),",
-        "        backend: usage.record.backend.clone().expect(\"configured backend\"),",
-        "        model: config.model_ref().model,",
-        "        evidence_path,",
-        "        usage_path: usage.path.clone(),"
+        "            fs::write(&path, json)?;",
+        "            Some(path)",
+        "        }",
+        "        EvidenceOutput::Stdout => {",
+        "            let mut stdout = io::stdout().lock();",
+        "            stdout.write_all(json.as_bytes())?;",
+        "            stdout.flush()?;"
       ]
     },
     {
@@ -1430,13 +1442,13 @@
       "line_start": 338,
       "line_end": 344,
       "text": [
-        "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
-        "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
-        "    usage.save()?;",
-        "    let provider = RigProvider::connect(&config.backend)",
-        "        .await",
-        "        .map_err(|error| {",
-        "            io::Error::other(format!("
+        ") -> io::Result<(Judgment, Value)> {",
+        "    let model = config.model_ref();",
+        "    let backend = match model.backend {",
+        "        BackendKind::Bedrock => \"bedrock\",",
+        "        BackendKind::Ollama => \"ollama\",",
+        "    };",
+        "    usage.record.backend = Some(backend.into());"
       ]
     },
     {
@@ -1444,13 +1456,13 @@
       "line_start": 457,
       "line_end": 463,
       "text": [
-        "        let response = provider.complete(request.clone()).await;",
-        "        usage.end_request(",
-        "            index,",
-        "            started.elapsed().as_millis(),",
-        "            response.as_ref().ok().map(|r| &r.usage),",
-        "        )?;",
-        "        let response = response?;"
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "async fn assess(",
+        "    provider: &impl CompletionProvider,",
+        "    sources: &mut AssessmentSources,"
       ]
     },
     {
@@ -1472,13 +1484,13 @@
       "line_start": 112,
       "line_end": 118,
       "text": [
-        "        if let Some(name) = name.filter(|_| expected.is_some()) {",
-        "            present.insert(name.to_owned());",
-        "        } else {",
-        "            errors.push(format!(\"{label}: no matching requirement or example\"));",
-        "        }",
-        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
-        "    }"
+        "    let mut discovery_errors = errors.clone();",
+        "    let evidence_root = root.join(\"evidence\");",
+        "    let evidence_files = if evidence_root.is_dir() {",
+        "        files_with_extension(&root, &evidence_root, \"json\", &mut errors)",
+        "    } else {",
+        "        Vec::new()",
+        "    };"
       ]
     },
     {
@@ -1486,13 +1498,13 @@
       "line_start": 215,
       "line_end": 221,
       "text": [
-        "// {impl}`requirements.definitions.declaration`",
-        "fn collect_definitions(",
-        "    root: &Path,",
-        "    md_root: &Path,",
-        "    errors: &mut Vec<String>,",
-        ") -> BTreeMap<String, Declaration> {",
-        "    let mut definitions = BTreeMap::new();"
+        "// {impl}`requirements.ci.book_source`",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
+        "    let path = root.join(\"book.toml\");",
+        "    let source = match fs::read_to_string(&path) {",
+        "        Ok(content) => match content.parse::<DocumentMut>() {"
       ]
     },
     {
@@ -1500,13 +1512,13 @@
       "line_start": 223,
       "line_end": 229,
       "text": [
-        "    for file in files_with_extension(root, md_root, \"md\", errors) {",
-        "        let relative = file",
-        "            .strip_prefix(md_root)",
-        "            .expect(\"chapter file is inside md directory\");",
-        "        if relative == Path::new(\"SUMMARY.md\") {",
-        "            continue;",
-        "        }"
+        "                let table = match book.get(\"book\") {",
+        "                    Some(item) => match item.as_table_like() {",
+        "                        Some(table) => Some(table),",
+        "                        None => {",
+        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
+        "                            return root.join(\"md\");",
+        "                        }"
       ]
     },
     {
@@ -1514,13 +1526,13 @@
       "line_start": 231,
       "line_end": 237,
       "text": [
-        "        let label = display_path(root, &file);",
-        "        let content = match fs::read_to_string(&file) {",
-        "            Ok(content) => content,",
-        "            Err(error) => {",
-        "                errors.push(format!(\"{label}: cannot read chapter: {error}\"));",
-        "                continue;",
-        "            }"
+        "                    None => None,",
+        "                };",
+        "                match table.and_then(|table| table.get(\"src\")) {",
+        "                    Some(item) => match item.as_str() {",
+        "                        Some(source) => source.to_owned(),",
+        "                        None => {",
+        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());"
       ]
     },
     {
@@ -1528,13 +1540,13 @@
       "line_start": 258,
       "line_end": 264,
       "text": [
-        "                    \"{source}: {} {name} is missing a closing colon fence\",",
-        "                    block.kind.noun()",
-        "                ));",
-        "            }",
-        "            // {impl}`requirements.ci.span`",
-        "            let text = content[block.body_start..block.body_end].trim().to_owned();",
-        "            if text.is_empty() {"
+        "        || !relative",
+        "            .components()",
+        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+        "    {",
+        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
+        "        return root.join(\"md\");",
+        "    }"
       ]
     },
     {
@@ -1542,13 +1554,13 @@
       "line_start": 378,
       "line_end": 384,
       "text": [
-        "// {impl}`requirements.definitions.dependencies`",
-        "fn validate_evidence_file(",
+        "// {impl}`requirements.ci.coverage`",
+        "fn files_with_extension(",
         "    root: &Path,",
-        "    path: &Path,",
-        "    expected: Option<&Declaration>,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,"
+        "    dir: &Path,",
+        "    extension: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Vec<PathBuf> {"
       ]
     },
     {
@@ -1570,13 +1582,13 @@
       "line_start": 111,
       "line_end": 117,
       "text": [
-        ") {",
-        "    stream",
-        "        .set_read_timeout(Some(Duration::from_secs(10)))",
-        "        .unwrap();",
-        "    let mut reader = BufReader::new(&mut stream);",
-        "    let mut length = None;",
-        "    loop {"
+        "// {test}`requirements.authoring.reporting`",
+        "fn serve(",
+        "    mut stream: TcpStream,",
+        "    requests: Arc<(Mutex<Requests>, Condvar)>,",
+        "    require_overlap: bool,",
+        "    behavior: Behavior,",
+        "    stop: Arc<AtomicBool>,"
       ]
     },
     {
@@ -1584,6 +1596,33 @@
       "line_start": 520,
       "line_end": 594,
       "text": [
+        "                &Value::Object(submissions[0].function.arguments.clone()),",
+        "                function,",
+        "            );",
+        "            usage.tool(\"submit_judgment\", result.is_err());",
+        "            let (judgment, rationale) = result?;",
+        "            usage.record.determination = Some(judgment.kind().into());",
+        "            usage.save()?;",
+        "            let evidence = match &sources.subject_kind {",
+        "                AssessmentKind::Definition(kind) => json!({kind.noun(): sources.subject_text,",
+        "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()}),",
+        "                AssessmentKind::RustFunction {",
+        "                    rust_item,",
+        "                    citations,",
+        "                } => json!({",
+        "                    \"rust_item\": rust_item, \"citations\": citations,",
+        "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()",
+        "                }),",
+        "            };",
+        "            return Ok((judgment, evidence));",
+        "        }",
+        "        if calls.is_empty() {",
+        "            return Err(io::Error::other(",
+        "                \"model finished without invoking submit_judgment\",",
+        "            ));",
+        "        }",
+        "        request.chat_history.push(",
+        "            response",
         "                .message()",
         "                .ok_or_else(|| io::Error::other(\"model returned an empty response\"))?,",
         "        );",
@@ -1619,6 +1658,9 @@
         "",
         "#[cfg(test)]",
         "mod tests {",
+        "    use std::cell::RefCell;",
+        "    use std::time::Duration;",
+        "",
         "    use rig_core::completion::{CompletionResponse, FinishReason, Usage};",
         "    use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};",
         "",
@@ -1626,39 +1668,9 @@
         "",
         "    struct JudgmentProvider(Value);",
         "",
-        "    impl CompletionProvider for JudgmentProvider {",
-        "        // {test}`requirements.authoring.function_attestations`",
-        "        // {test}`requirements.authoring.submission`",
-        "        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {",
-        "            let submit = request",
-        "                .tools",
-        "                .iter()",
-        "                .find(|tool| tool.name == \"submit_judgment\")",
-        "                .unwrap();",
-        "            assert_eq!(",
-        "                submit.parameters[\"properties\"][\"determination\"],",
-        "                json!({\"type\": \"boolean\"})",
-        "            );",
-        "            Ok(CompletionResponse::new(",
-        "                vec![AssistantContent::ToolCall(ToolCall::from_wire(",
-        "                    \"judgment\",",
-        "                    ToolFunction::new(",
-        "                        ToolName::new(\"submit_judgment\").unwrap(),",
-        "                        json!({\"determination\": self.0, \"rationale\": \"The supplied source accounts for this citation set.\"}),",
-        "                    ),",
-        "                ))],",
-        "                Usage::default(),",
-        "                Origin::new(\"fixture\", \"fixture\", \"fixture\"),",
-        "                Value::Null,",
-        "            ).with_finish_reason(FinishReason::ToolCalls))",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.function_attestations`",
-        "    // {test}`requirements.authoring.submission`",
-        "    // {test}`requirements.authoring.delivered_inputs`",
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "    struct ThrottledProvider {",
+        "        failures: usize,",
+        "        status: u16,"
       ]
     },
     {
@@ -1666,7 +1678,7 @@
       "line_start": 209,
       "line_end": 209,
       "text": [
-        "Required terminology MUST be included under"
+        "Workspace disallow entries MUST override this permission."
       ]
     },
     {
@@ -1674,7 +1686,7 @@
       "line_start": 263,
       "line_end": 263,
       "text": [
-        ""
+        "    definitions: Array<DefinitionInput>,"
       ]
     },
     {
@@ -1682,7 +1694,7 @@
       "line_start": 325,
       "line_end": 325,
       "text": [
-        "    let backend = match model.backend {"
+        "// {impl}`requirements.authoring.function_attestations`"
       ]
     },
     {
@@ -1690,7 +1702,7 @@
       "line_start": 328,
       "line_end": 328,
       "text": [
-        "    };"
+        "// {impl}`requirements.authoring.usage_storage`"
       ]
     },
     {
@@ -1698,7 +1710,7 @@
       "line_start": 566,
       "line_end": 566,
       "text": [
-        "            let submit = request"
+        "                    usage.tool(call.function.name.as_str(), true);"
       ]
     },
     {
@@ -1714,7 +1726,7 @@
       "line_start": 707,
       "line_end": 707,
       "text": [
-        "        \"{}\","
+        "            verbose && kind == \"false\","
       ]
     },
     {
@@ -1722,11 +1734,11 @@
       "line_start": 112,
       "line_end": 116,
       "text": [
-        "    stream",
-        "        .set_read_timeout(Some(Duration::from_secs(10)))",
-        "        .unwrap();",
-        "    let mut reader = BufReader::new(&mut stream);",
-        "    let mut length = None;"
+        "fn serve(",
+        "    mut stream: TcpStream,",
+        "    requests: Arc<(Mutex<Requests>, Condvar)>,",
+        "    require_overlap: bool,",
+        "    behavior: Behavior,"
       ]
     },
     {
@@ -1748,11 +1760,11 @@
       "line_start": 705,
       "line_end": 709,
       "text": [
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );"
+        "        assert_eq!(",
+        "            stderr.contains(rationale),",
+        "            verbose && kind == \"false\",",
+        "            \"{stderr}\"",
+        "        );"
       ]
     },
     {
@@ -1794,9 +1806,9 @@
       "line_start": 321,
       "line_end": 323,
       "text": [
-        "    config: &ResolvedAuthoringConfig,",
-        "    usage: &mut UsageLog,",
-        ") -> io::Result<(Judgment, Value)> {"
+        "    })",
+        "}",
+        ""
       ]
     },
     {
@@ -1804,11 +1816,11 @@
       "line_start": 326,
       "line_end": 330,
       "text": [
-        "        BackendKind::Bedrock => \"bedrock\",",
-        "        BackendKind::Ollama => \"ollama\",",
-        "    };",
-        "    usage.record.backend = Some(backend.into());",
-        "    usage.record.model = Some(model.model.clone());"
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.usage_inputs`"
       ]
     },
     {
@@ -1816,9 +1828,9 @@
       "line_start": 384,
       "line_end": 386,
       "text": [
-        "            &serde_json::to_string_pretty(sources.mandatory_inputs())?,",
-        "        ))",
-        "}"
+        "    let start = chapter.find(opening).expect(\"approved prompt template\");",
+        "    let template = chapter[start..]",
+        "        .split(\"\\n```\")"
       ]
     },
     {
@@ -1826,9 +1838,9 @@
       "line_start": 404,
       "line_end": 406,
       "text": [
-        "            \"Rust function attestation determination must be boolean\",",
-        "        ));",
-        "    }"
+        "// {impl}`requirements.authoring.function_attestations`",
+        "fn submission(arguments: &Value, function: bool) -> io::Result<(Judgment, String)> {",
+        "    let object = arguments"
       ]
     },
     {
@@ -1836,9 +1848,9 @@
       "line_start": 417,
       "line_end": 419,
       "text": [
-        "// {impl}`requirements.authoring.function_attestations`",
-        "fn tool_definitions(function: bool) -> io::Result<Vec<ToolDefinition>> {",
-        "    let mut definitions = tools::definitions();"
+        "    if function && !object[\"determination\"].is_boolean() {",
+        "        return Err(io::Error::other(",
+        "            \"Rust function attestation determination must be boolean\","
       ]
     },
     {
@@ -1846,9 +1858,9 @@
       "line_start": 574,
       "line_end": 576,
       "text": [
-        "            );",
-        "            Ok(CompletionResponse::new(",
-        "                vec![AssistantContent::ToolCall(ToolCall::from_wire("
+        "        }",
+        "        usage.save()?;",
+        "        request.chat_history.push(Message::tool_results(results));"
       ]
     },
     {
@@ -1882,11 +1894,11 @@
       "text": [
         "        hold_other_requests: bool,",
         "    },",
-        "}",
-        "",
-        "struct Server {",
-        "    endpoint: String,",
-        "    requests: Arc<(Mutex<Requests>, Condvar)>,"
+        "    #[cfg_attr(not(unix), allow(dead_code))]",
+        "    MixedJudgments,",
+        "    #[cfg_attr(not(unix), allow(dead_code))]",
+        "    WaitAfterFirst,",
+        "}"
       ]
     },
     {
@@ -1894,13 +1906,13 @@
       "line_start": 44,
       "line_end": 50,
       "text": [
-        "        Self::start_with(require_overlap, Behavior::Judgments { failing_subject })",
-        "    }",
-        "",
+        "impl Server {",
         "    // {test}`requirements.authoring.batch`",
         "    // {test}`requirements.authoring.concurrency`",
-        "    // {test}`requirements.authoring.read_denial`",
-        "    fn start_with(require_overlap: bool, behavior: Behavior) -> Self {"
+        "    fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {",
+        "        Self::start_with(require_overlap, Behavior::Judgments { failing_subject })",
+        "    }",
+        ""
       ]
     },
     {
@@ -1908,14 +1920,14 @@
       "line_start": 66,
       "line_end": 73,
       "text": [
+        "                match listener.accept() {",
+        "                    Ok((stream, _)) => {",
+        "                        let requests = worker_requests.clone();",
+        "                        let stop = worker_stop.clone();",
+        "                        workers.push(thread::spawn(move || {",
         "                            serve(stream, requests, require_overlap, behavior, stop);",
         "                        }));",
-        "                    }",
-        "                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {",
-        "                        thread::sleep(Duration::from_millis(5));",
-        "                    }",
-        "                    Err(error) => panic!(\"cannot accept mock request: {error}\"),",
-        "                }"
+        "                    }"
       ]
     },
     {
@@ -1923,13 +1935,13 @@
       "line_start": 86,
       "line_end": 92,
       "text": [
-        "",
-        "    // {test}`requirements.authoring.batch`",
-        "    fn subjects(&self) -> Vec<String> {",
-        "        self.requests.0.lock().unwrap().subjects.clone()",
+        "            requests,",
+        "            stop,",
+        "            thread: Some(thread),",
+        "        }",
         "    }",
-        "}",
-        ""
+        "",
+        "    // {test}`requirements.authoring.batch`"
       ]
     },
     {
@@ -1937,6 +1949,13 @@
       "line_start": 109,
       "line_end": 142,
       "text": [
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.progress`",
+        "// {test}`requirements.authoring.reporting`",
+        "fn serve(",
+        "    mut stream: TcpStream,",
+        "    requests: Arc<(Mutex<Requests>, Condvar)>,",
+        "    require_overlap: bool,",
         "    behavior: Behavior,",
         "    stop: Arc<AtomicBool>,",
         ") {",
@@ -1963,14 +1982,7 @@
         "    let prompt = request[\"messages\"][0][\"content\"].as_str().unwrap();",
         "    let subject = prompt",
         "        .lines()",
-        "        .find_map(|line| line.strip_prefix(\"Subject: \"))",
-        "        .expect(\"assessment subject\")",
-        "        .to_owned();",
-        "",
-        "    let (lock, arrived) = &*requests;",
-        "    let mut state = lock.lock().unwrap();",
-        "    state.subjects.push(subject.clone());",
-        "    state.active += 1;"
+        "        .find_map(|line| line.strip_prefix(\"Subject: \"))"
       ]
     },
     {
@@ -1978,13 +1990,13 @@
       "line_start": 144,
       "line_end": 150,
       "text": [
-        "    arrived.notify_all();",
-        "    if require_overlap && state.subjects.len() == 1 {",
-        "        let (next, _) = arrived",
-        "            .wait_timeout_while(state, Duration::from_secs(3), |state| {",
-        "                state.subjects.len() < 2",
-        "            })",
-        "            .unwrap();"
+        "        .to_owned();",
+        "",
+        "    let (lock, arrived) = &*requests;",
+        "    let mut state = lock.lock().unwrap();",
+        "    state.subjects.push(subject.clone());",
+        "    let first_request = state.subjects.len() == 1;",
+        "    state.active += 1;"
       ]
     },
     {
@@ -1992,13 +2004,13 @@
       "line_start": 194,
       "line_end": 200,
       "text": [
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
-        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
-        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{",
-        "                    \"name\":\"submit_judgment\", \"arguments\":{",
-        "                        \"determination\":true,",
-        "                        \"rationale\":format!(\"Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs.\")"
+        "        || (matches!(behavior, Behavior::MixedJudgments)",
+        "            && subject == \"example requirements.alpha_case\");",
+        "    let determination = match (behavior, subject.as_str()) {",
+        "        (Behavior::MixedJudgments, \"requirement requirements.alpha\") => json!(false),",
+        "        (Behavior::MixedJudgments, \"requirement requirements.beta\") => json!({\"FIXME\": [\"#123\"]}),",
+        "        _ => json!(true),",
+        "    };"
       ]
     },
     {
@@ -2006,13 +2018,13 @@
       "line_start": 287,
       "line_end": 293,
       "text": [
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state);"
+        "        fs::write(project.join(\"src/lib.rs\"), \"// IMPL`requirements.alpha`\\npub fn alpha() -> u8 { 1 }\\n\\n// IMPL`requirements.beta`\\npub fn beta() -> u8 { 2 }\\n\\n// TEST`requirements.alpha_case`\\n#[test]\\nfn alpha_case() { assert_eq!(alpha(), 1); }\\n\".replace(\"IMPL\", \"{impl}\").replace(\"TEST\", \"{test}\")).unwrap();",
+        "        let mut config_text = format!(",
+        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = 'fixture-model'\\nendpoint = '{endpoint}'\\n\"",
+        "        );",
+        "        if let Some(concurrency) = concurrency {",
+        "            config_text.push_str(&format!(\"concurrency = {concurrency}\\n\"));",
+        "        }"
       ]
     },
     {
@@ -2020,13 +2032,13 @@
       "line_start": 300,
       "line_end": 306,
       "text": [
-        "        serde_json::from_slice(",
-        "            &fs::read(self.project.join(format!(\"evidence/{name}.json\"))).unwrap(),",
-        "        )",
-        "        .unwrap()",
+        "            state,",
+        "            config,",
+        "            config_text,",
+        "        }",
         "    }",
         "",
-        "    // {test}`requirements.authoring.function_attestations`"
+        "    // {test}`requirements.authoring.batch`"
       ]
     },
     {
@@ -2034,13 +2046,13 @@
       "line_start": 336,
       "line_end": 342,
       "text": [
-        "// {test}`requirements.ci.determination`",
-        "#[test]",
-        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {",
-        "    let server = Server::start(true, None);",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let source = fixture.project.join(\"src/lib.rs\");",
-        "    fs::write("
+        "    #[cfg(unix)]",
+        "    fn run_in_pty_with_args(&self, interrupt: bool, term: &str, args: &[&str]) -> Output {",
+        "        // Keep stdout piped: the bar belongs to stderr and must detect that",
+        "        // terminal independently. Python's stdlib provides a portable Unix PTY.",
+        "        let script = r#\"",
+        "import errno",
+        "import fcntl"
       ]
     },
     {
@@ -2048,16 +2060,16 @@
       "line_start": 350,
       "line_end": 359,
       "text": [
-        "    let output = fixture.run(&[\"author\", \"--all\", \"--config\", \"mock\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let entries = fixture.evidence(\"rust/src/lib.rs\");"
+        "import sys",
+        "import termios",
+        "import time",
+        "",
+        "master, slave = pty.openpty()",
+        "fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 160, 0, 0))",
+        "process = subprocess.Popen(",
+        "    [sys.argv[1], *sys.argv[3:]],",
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,",
+        ")"
       ]
     },
     {
@@ -2065,13 +2077,13 @@
       "line_start": 372,
       "line_end": 378,
       "text": [
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage.len(), 6);",
-        "    assert!(",
-        "        usage",
-        "            .iter()",
-        "            .all(|run| run[\"outcome\"] == \"completed\" && run[\"evidence_written\"] == true)",
-        "    );"
+        "            chunk = os.read(master, 65536)",
+        "        except OSError as error:",
+        "            if error.errno == errno.EIO:",
+        "                break",
+        "            raise",
+        "        if not chunk:",
+        "            break"
       ]
     },
     {
@@ -2079,13 +2091,13 @@
       "line_start": 384,
       "line_end": 390,
       "text": [
-        "        );",
-        "        assert!(",
-        "            requests.first_pair_overlapped,",
-        "            \"a second assessment must start before the first model response\"",
-        "        );",
-        "    }",
-        ""
+        "    stdout, _ = process.communicate(timeout=5)",
+        "finally:",
+        "    os.close(master)",
+        "    if process.poll() is None:",
+        "        process.kill()",
+        "        process.wait()",
+        "sys.stdout.buffer.write(stdout)"
       ]
     },
     {
@@ -2093,13 +2105,13 @@
       "line_start": 439,
       "line_end": 445,
       "text": [
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    assert_eq!(server.requests.0.lock().unwrap().peak, 1);",
-        "}",
-        "",
-        "// {test}`requirements.authoring.batch`"
+        "        } else {",
+        "            \"habeas/authoring/usage\"",
+        "        });",
+        "        fs::read_dir(path)",
+        "            .unwrap()",
+        "            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())",
+        "            .collect()"
       ]
     },
     {
@@ -2147,8 +2159,8 @@
       "line_start": 211,
       "line_end": 212,
       "text": [
-        "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
-        "No matches MUST return empty arrays; invalid arguments or a failed search MUST"
+        "Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be",
+        "able to allow undiscovered outputs explicitly using `habeas.toml`. The model's"
       ]
     },
     {
@@ -2156,7 +2168,7 @@
       "line_start": 219,
       "line_end": 219,
       "text": [
-        "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:"
+        "Cargo has one `OUT_DIR` per build-script execution. Discovery uses existing"
       ]
     },
     {
@@ -2164,7 +2176,7 @@
       "line_start": 221,
       "line_end": 221,
       "text": [
-        "```text"
+        "internal layout, so an explicit allow is the fallback for an undiscovered layout."
       ]
     },
     {
@@ -2172,7 +2184,7 @@
       "line_start": 266,
       "line_end": 266,
       "text": [
-        ":::{req} initial_prompt"
+        ""
       ]
     },
     {
@@ -2180,7 +2192,7 @@
       "line_start": 273,
       "line_end": 273,
       "text": [
-        "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`."
+        "line to include, defaulting to five on each side. Windows MUST stop at file"
       ]
     },
     {
@@ -2188,7 +2200,7 @@
       "line_start": 275,
       "line_end": 275,
       "text": [
-        "```text"
+        "resulting window MUST be returned as a file-range input with its source path,"
       ]
     },
     {
@@ -2196,7 +2208,7 @@
       "line_start": 333,
       "line_end": 333,
       "text": [
-        "        AuthoringSubject::RustFunction {"
+        "async fn configured_record("
       ]
     },
     {
@@ -2204,7 +2216,7 @@
       "line_start": 336,
       "line_end": 336,
       "text": [
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),"
+        "    config: &ResolvedAuthoringConfig,"
       ]
     },
     {
@@ -2212,8 +2224,8 @@
       "line_start": 349,
       "line_end": 350,
       "text": [
-        "        })?;",
-        "    assess(&provider, &mut sources, usage).await"
+        "            rust_file,",
+        "            rust_item,"
       ]
     },
     {
@@ -2221,7 +2233,7 @@
       "line_start": 577,
       "line_end": 577,
       "text": [
-        "                    \"judgment\","
+        "    }"
       ]
     },
     {
@@ -2229,7 +2241,7 @@
       "line_start": 114,
       "line_end": 114,
       "text": [
-        "        .unwrap();"
+        "    requests: Arc<(Mutex<Requests>, Condvar)>,"
       ]
     },
     {
@@ -2352,7 +2364,7 @@
       "line_start": 556,
       "line_end": 556,
       "text": [
-        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));"
+        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));"
       ]
     },
     {
@@ -2360,7 +2372,7 @@
       "line_start": 591,
       "line_end": 591,
       "text": [
-        "        if !existing_evidence {"
+        "#[test]"
       ]
     },
     {
@@ -2368,7 +2380,7 @@
       "line_start": 597,
       "line_end": 597,
       "text": [
-        "            \"{}\","
+        "            \"submit_judgment\","
       ]
     },
     {
@@ -2376,7 +2388,7 @@
       "line_start": 608,
       "line_end": 608,
       "text": [
-        "        assert!("
+        "            !determination,"
       ]
     },
     {
@@ -2384,7 +2396,7 @@
       "line_start": 669,
       "line_end": 669,
       "text": [
-        "            let mut args = vec![\"author-evidence\", SUBJECT];"
+        "        assert_eq!(evidence[\"rationale\"], rationale);"
       ]
     },
     {
@@ -2392,8 +2404,8 @@
       "line_start": 706,
       "line_end": 707,
       "text": [
-        "        output.status.success(),",
-        "        \"{}\","
+        "            stderr.contains(rationale),",
+        "            verbose && kind == \"false\","
       ]
     },
     {
@@ -2401,7 +2413,7 @@
       "line_start": 809,
       "line_end": 809,
       "text": [
-        "                .headers"
+        "// {test}`requirements.authoring.submission`"
       ]
     },
     {
@@ -2417,7 +2429,7 @@
       "line_start": 323,
       "line_end": 323,
       "text": [
-        ") -> io::Result<(Judgment, Value)> {"
+        ""
       ]
     },
     {
@@ -2425,7 +2437,7 @@
       "line_start": 386,
       "line_end": 386,
       "text": [
-        "}"
+        "        .split(\"\\n```\")"
       ]
     },
     {
@@ -2433,7 +2445,7 @@
       "line_start": 406,
       "line_end": 406,
       "text": [
-        "    }"
+        "    let object = arguments"
       ]
     },
     {
@@ -2441,7 +2453,7 @@
       "line_start": 419,
       "line_end": 419,
       "text": [
-        "    let mut definitions = tools::definitions();"
+        "            \"Rust function attestation determination must be boolean\","
       ]
     },
     {
@@ -2449,7 +2461,7 @@
       "line_start": 576,
       "line_end": 576,
       "text": [
-        "                vec![AssistantContent::ToolCall(ToolCall::from_wire("
+        "        request.chat_history.push(Message::tool_results(results));"
       ]
     },
     {
@@ -2457,8 +2469,8 @@
       "line_start": 1579,
       "line_end": 1580,
       "text": [
-        "        let temp = fixture();",
-        "        fs::write("
+        "            let inspected =",
+        "                super::inspect_repository_with_progress(root, |update| updates.push(update))"
       ]
     },
     {
@@ -2466,7 +2478,7 @@
       "line_start": 1736,
       "line_end": 1736,
       "text": [
-        "        let body = \"Body MUST remain.\\n\\n:::{note}\\nNested.\\n:::\\n\\nStill in the requirement.\";"
+        "            json!({"
       ]
     },
     {
@@ -2474,13 +2486,13 @@
       "line_start": 380,
       "line_end": 386,
       "text": [
-        "        let requests = server.requests.0.lock().unwrap();",
-        "        assert_eq!(",
-        "            requests.peak, 2,",
-        "            \"the configured concurrency bounds in-flight requests\"",
-        "        );",
-        "        assert!(",
-        "            requests.first_pair_overlapped,"
+        "        plain = re.sub(rb'\\x1b\\[[0-?]*[ -/]*[@-~]', b'', captured)",
+        "        if sys.argv[2] == 'interrupt' and not interrupted and re.search(rb'Authoring[^\\r\\n]*\\b[1-5]/6 finished\\b', plain):",
+        "            process.send_signal(signal.SIGINT)",
+        "            interrupted = True",
+        "    stdout, _ = process.communicate(timeout=5)",
+        "finally:",
+        "    os.close(master)"
       ]
     },
     {
@@ -2488,6 +2500,172 @@
       "line_start": 205,
       "line_end": 252,
       "text": [
+        "without running a build or executing build scripts. It MUST NOT treat its own",
+        "inherited `OUT_DIR` environment variable as the workspace's output directory.",
+        "Only discovered output directories and their contents MUST receive this default",
+        "permission; unrelated build artifacts MUST remain subject to ordinary rules.",
+        "Workspace disallow entries MUST override this permission.",
+        "",
+        "Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be",
+        "able to allow undiscovered outputs explicitly using `habeas.toml`. The model's",
+        "root directory listing MUST expose available generated-output directories,",
+        "including external ones. Generated inputs MUST use the existing file-range and",
+        "Rust-item formats and receive ordinary freshness checks. Validation MUST NOT",
+        "invoke a build to materialize an input.",
+        ":::",
+        "",
+        "Cargo has one `OUT_DIR` per build-script execution. Discovery uses existing",
+        "`root-output` records beneath the Cargo build directory; this is Cargo's current",
+        "internal layout, so an explicit allow is the fallback for an undiscovered layout.",
+        "Generated paths are recorded as ordinary file selectors. CI must build the",
+        "matching paths and contents before checking that evidence.",
+        "",
+        "### Discover files: `list_files`",
+        "",
+        ":::{req} file_discovery",
+        "The harness MUST expose a `list_files` tool with this interface:",
+        "",
+        "```text",
+        "list_files({ path: String = \".\" }) -> Array<DirectoryEntry>",
+        "",
+        "DirectoryEntry {",
+        "    path: String,",
+        "    kind: \"file\" | \"directory\",",
+        "}",
+        "```",
+        "",
+        "The tool MUST list the immediate children of the requested directory, returning",
+        "project-relative paths where possible and absolute paths for permitted external",
+        "files. Its root listing MUST also expose available generated-output directories",
+        "and configured external allow paths. The model can list a returned",
+        "directory in another call to explore further. A failed listing MUST return an",
+        "explanatory tool error unless access was denied, which MUST abort under",
+        "{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.",
+        "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+        "In a Git worktree, directories MUST have at least one eligible source",
+        "descendant to be listed unless explicitly allowed or discovered as generated",
+        "output. Explicitly requesting an excluded path MUST return an",
+        "authoring error under {cite}`requirements.authoring.read_denial`.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 133,
+      "line_end": 137,
+      "text": [
+        "            length = Some(value.trim().parse::<usize>().unwrap());",
+        "        }",
+        "    }",
+        "    let mut bytes = vec![0; length.expect(\"request content length\")];",
+        "    reader.read_exact(&mut bytes).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 719,
+      "line_end": 723,
+      "text": [
+        "        assert_eq!(usage[\"outcome\"], \"completed\");",
+        "        assert_eq!(usage[\"determination\"], kind);",
+        "        assert_eq!(usage[\"evidence_output\"], \"stdout\");",
+        "        assert_eq!(usage[\"evidence_written\"], true);",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 23,
+      "line_end": 25,
+      "text": [
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.authoring.initial_prompt`",
+        "    pub(crate) fn noun(&self) -> &'static str {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 352,
+      "line_end": 354,
+      "text": [
+        "    }?;",
+        "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
+        "    usage.prepared(\"mandatory\", sources.mandatory_inputs());"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 357,
+      "line_end": 359,
+      "text": [
+        "        .await",
+        "        .map_err(|error| {",
+        "            io::Error::other(format!("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 415,
+      "line_end": 417,
+      "text": [
+        "        ));",
+        "    }",
+        "    if function && !object[\"determination\"].is_boolean() {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 435,
+      "line_end": 437,
+      "text": [
+        "    let determination = if function {",
+        "        json!({\"type\": \"boolean\"})",
+        "    } else {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 449,
+      "line_end": 451,
+      "text": [
+        "",
+        "// {impl}`requirements.authoring.submission`",
+        "// {impl}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 610,
+      "line_end": 612,
+      "text": [
+        "                        .with_provider_code(Some(self.code.into())),",
+        "                ));",
+        "            }"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 260,
+      "line_end": 310,
+      "text": [
+        "",
+        "SearchResult {",
+        "    inputs: Array<FileRangeInput>,",
+        "    definitions: Array<DefinitionInput>,",
+        "}",
+        "```",
+        "",
+        "The tool MUST search the requested permitted file or directory using",
+        "ripgrep's regular-expression syntax and default case-sensitive search and ignore",
+        "rules. Explicitly allowed paths and discovered generated-output directories MUST",
+        "be searched even when ignored or hidden; workspace disallow rules still apply.",
+        "Its model-facing description MUST explain those conventions. `context`",
+        "MUST be nonnegative and specify how many lines before and after each matching",
+        "line to include, defaulting to five on each side. Windows MUST stop at file",
+        "boundaries, and overlapping windows in the same file MUST be merged. Each",
+        "resulting window MUST be returned as a file-range input with its source path,",
+        "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
         "Setting `context` to zero MUST return only matching lines.",
         "Search results MUST exclude files disallowed by",
         "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
@@ -2521,27 +2699,490 @@
         "A valid single submission MUST finish the assessment; there is no submission",
         "repair or resubmission loop. An assessment that fails before accepting a valid",
         "judgment MUST emit no evidence JSON to stdout.",
-        ":::",
+        ":::"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 500,
+      "line_end": 720,
+      "text": [
+        "            let git = Command::new(\"git\")",
+        "                .current_dir(&fixture.project)",
+        "                .args(args)",
+        "                .output()",
+        "                .unwrap();",
+        "            assert!(git.status.success(), \"{git:?}\");",
+        "        }",
+        "        fs::write(fixture.project.join(\"untracked.txt\"), \"hidden source\\n\").unwrap();",
+        "        fs::create_dir(fixture.project.join(\"untracked-directory\")).unwrap();",
+        "        fs::write(",
+        "            fixture.project.join(\"untracked-directory/hidden.txt\"),",
+        "            \"hidden source\\n\",",
+        "        )",
+        "        .unwrap();",
         "",
-        "## Initial prompt",
+        "        let output = fixture.run(&[\"author\", SUBJECT, \"--stdout\"]);",
+        "        assert!(!output.status.success(), \"{tool}: {output:?}\");",
+        "        assert!(output.stdout.is_empty(), \"{tool}: {output:?}\");",
+        "        let diagnostics = String::from_utf8_lossy(&output.stderr);",
+        "        assert!(diagnostics.contains(\"untracked\"), \"{tool}: {diagnostics}\");",
+        "        assert_eq!(",
+        "            fs::read_to_string(&fixture.evidence).unwrap(),",
+        "            fixture.original",
+        "        );",
+        "        assert_eq!(server.finish().len(), 1);",
+        "        let usage = fixture.usage();",
+        "        assert_eq!(usage[\"outcome\"], \"failed\", \"{tool}: {usage}\");",
+        "        assert_eq!(usage[\"request_count\"], 1, \"{tool}: {usage}\");",
+        "        assert_eq!(usage[\"tool_failures\"][tool], 1, \"{tool}: {usage}\");",
+        "        assert_eq!(usage[\"evidence_written\"], false, \"{tool}: {usage}\");",
+        "        assert!(usage[\"determination\"].is_null(), \"{tool}: {usage}\");",
+        "    }",
+        "}",
         "",
-        "### Mandatory inputs",
+        "// {test}`requirements.authoring.negative_assessment`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.ci.fixme_with_unacknowledged_gap`",
+        "// {test}`requirements.authoring.reporting`",
+        "#[test]",
+        "fn false_is_a_completed_assessment() {",
+        "    let server = Server::start(vec![reply(vec![call(",
+        "        \"submit\",",
+        "        \"submit_judgment\",",
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
+        "    )])]);",
+        "    let fixture = Fixture::new(&server.endpoint);",
+        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "    let requests = server.finish();",
+        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
+        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
+        "    assert!(prompt.contains(\"queue[0] = value\"));",
+        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
+        "    assert_eq!(evidence[\"determination\"], false);",
+        "    assert!(!evidence[\"inputs\"].as_array().unwrap().is_empty());",
+        "    assert!(",
+        "        evidence[\"rationale\"]",
+        "            .as_str()",
+        "            .unwrap()",
+        "            .contains(\"without acknowledging\")",
+        "    );",
+        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
+        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");",
+        "    assert_eq!(fixture.usage()[\"determination\"], \"false\");",
+        "    let diagnostics = format!(",
+        "        \"{}{}\",",
+        "        String::from_utf8_lossy(&output.stdout),",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "    let stderr = String::from_utf8_lossy(&output.stderr);",
+        "    assert!(stderr.contains(&format!(\"{SUBJECT}: false\")), \"{stderr}\");",
+        "    assert!(",
+        "        !String::from_utf8_lossy(&output.stdout).contains(&format!(\"{SUBJECT}: false\")),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "    assert!(",
+        "        !diagnostics.contains(\"without acknowledging\"),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "}",
         "",
-        ":::{req} mandatory_inputs",
-        "The harness MUST construct each assessment's mandatory input set by combining",
-        "the contributions specified by the requirements applicable to that subject and",
-        "its inputs. A requirement that contributes inputs MUST cite this requirement and",
-        "define which sources it contributes and when. The harness MUST include every",
-        "applicable contribution, deduplicate identical selections, and report",
-        "unresolvable mandatory inputs before inference. The complete set MUST be supplied",
-        "in the initial model request.",
-        "Generated output under project-root `evidence/`, including symlink aliases, MUST"
+        "// {test}`requirements.authoring.reporting`",
+        "// {test}`requirements.authoring.invocation`",
+        "// {test}`requirements.authoring.persistence`",
+        "#[test]",
+        "fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {",
+        "    for (determination, flag) in [(false, \"-v\"), (false, \"--verbose\"), (true, \"-v\")] {",
+        "        let rationale = \"REVIEW_RATIONALE_ONLY:\\n\\n- The captured test misses an interesting boundary.\\n- Add an assertion for that boundary.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\": determination, \"rationale\": rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        let output = fixture.run(&[\"author\", SUBJECT, flag]);",
+        "        assert!(output.status.success(), \"{output:?}\");",
+        "        assert_eq!(server.finish().len(), 1);",
+        "        let stdout = String::from_utf8_lossy(&output.stdout);",
+        "        let stderr = String::from_utf8_lossy(&output.stderr);",
+        "        assert_eq!(",
+        "            stderr.contains(&format!(\"{SUBJECT}: false\")),",
+        "            !determination,",
+        "            \"{stderr}\"",
+        "        );",
+        "        assert_eq!(stderr.contains(rationale), !determination, \"{stderr}\");",
+        "        assert!(!stdout.contains(rationale), \"{stdout}\");",
+        "        for text in [&stdout, &stderr] {",
+        "            assert!(!text.contains(\"SECRET_REQUIREMENT_TEXT\"), \"{text}\");",
+        "            assert!(!text.contains(\"SECRET_DEFINITION_TEXT\"), \"{text}\");",
+        "            assert!(!text.contains(\"pub fn ready()\"), \"{text}\");",
+        "            assert!(!text.contains(\"— true\"), \"{text}\");",
+        "            assert!(!text.contains(&format!(\"{SUBJECT}: true\")), \"{text}\");",
+        "        }",
+        "        assert!(stdout.contains(\"Evidence:\"), \"{stdout}\");",
+        "        assert!(stdout.contains(\"Usage:\"), \"{stdout}\");",
+        "        let evidence: Value =",
+        "            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
+        "        assert_eq!(evidence[\"determination\"], determination);",
+        "        assert_eq!(evidence[\"rationale\"], rationale);",
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.invocation`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.delivered_inputs`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.reporting`",
+        "#[test]",
+        "fn stdout_emits_only_evidence_json_without_changing_project_files() {",
+        "    for (determination, kind, existing_evidence, verbose) in [",
+        "        (json!(true), \"true\", true, false),",
+        "        (json!(false), \"false\", true, false),",
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true, false),",
+        "        (json!(true), \"true\", false, false),",
+        "        (json!(false), \"false\", true, true),",
+        "        (json!(true), \"true\", true, true),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {",
+        "            fs::remove_dir_all(fixture.project.join(\"evidence\")).unwrap();",
+        "        }",
+        "        let mut args = vec![\"author-evidence\", SUBJECT, \"--stdout\"];",
+        "        if verbose {",
+        "            args.push(\"--verbose\");",
+        "        }",
+        "        let output = fixture.run(&args);",
+        "        assert!(",
+        "            output.status.success(),",
+        "            \"{}\",",
+        "            String::from_utf8_lossy(&output.stderr)",
+        "        );",
+        "        assert_eq!(server.finish().len(), 1);",
+        "        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();",
+        "        assert!(output.stdout.ends_with(b\"\\n\"));",
+        "        assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
+        "        assert_eq!(evidence[\"determination\"], determination);",
+        "        assert_eq!(evidence[\"rationale\"], rationale);",
+        "        let inputs = evidence[\"inputs\"].as_array().unwrap();",
+        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == SUBJECT));",
+        "        assert!(",
+        "            inputs",
+        "                .iter()",
+        "                .any(|input| input[\"definition\"] == \"terms.readiness\")",
+        "        );",
+        "        assert!(",
+        "            inputs",
+        "                .iter()",
+        "                .any(|input| input[\"rust_file\"] == \"src/lib.rs\")",
+        "        );",
+        "        if existing_evidence {",
+        "            assert_eq!(",
+        "                fs::read_to_string(&fixture.evidence).unwrap(),",
+        "                fixture.original",
+        "            );",
+        "        } else {",
+        "            assert!(!fixture.project.join(\"evidence\").exists());",
+        "        }",
+        "        let stderr = String::from_utf8_lossy(&output.stderr);",
+        "        assert!(",
+        "            stderr.contains(&format!(\"{SUBJECT}: ollama / {MODEL}\")),",
+        "            \"{stderr}\"",
+        "        );",
+        "        assert!(!stderr.contains(\"— true\"), \"{stderr}\");",
+        "        assert!(!stderr.contains(&format!(\"{SUBJECT}: true\")), \"{stderr}\");",
+        "        assert_eq!(",
+        "            stderr.contains(&format!(\"{SUBJECT}: false\")),",
+        "            kind == \"false\",",
+        "            \"{stderr}\"",
+        "        );",
+        "        if kind == \"FIXME\" {",
+        "            assert!(stderr.contains(\"— FIXME\"), \"{stderr}\");",
+        "        }",
+        "        assert_eq!(",
+        "            stderr.contains(rationale),",
+        "            verbose && kind == \"false\",",
+        "            \"{stderr}\"",
+        "        );",
+        "        assert!(!stderr.contains(\"SECRET_REQUIREMENT_TEXT\"), \"{stderr}\");",
+        "        assert!(!stderr.contains(\"SECRET_DEFINITION_TEXT\"), \"{stderr}\");",
+        "        assert!(stderr.contains(\"Evidence: stdout\\n\"));",
+        "        let usage_path = stderr",
+        "            .lines()",
+        "            .find_map(|line| line.strip_prefix(\"Usage: \"))",
+        "            .expect(\"stderr reports usage location\");",
+        "        assert!(std::path::Path::new(usage_path).is_file());",
+        "        let usage = fixture.usage();",
+        "        assert_eq!(usage[\"outcome\"], \"completed\");",
+        "        assert_eq!(usage[\"determination\"], kind);"
       ]
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 133,
-      "line_end": 137,
+      "line_start": 132,
+      "line_end": 138,
+      "text": [
+        "        {",
+        "            length = Some(value.trim().parse::<usize>().unwrap());",
+        "        }",
+        "    }",
+        "    let mut bytes = vec![0; length.expect(\"request content length\")];",
+        "    reader.read_exact(&mut bytes).unwrap();",
+        "    let request: Value = serde_json::from_slice(&bytes).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 22,
+      "line_end": 28,
+      "text": [
+        "#[derive(Clone, Copy)]",
+        "enum Behavior {",
+        "    Judgments {",
+        "        failing_subject: Option<&'static str>,",
+        "    },",
+        "    DeniedRead {",
+        "        subject: &'static str,"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 40,
+      "line_end": 47,
+      "text": [
+        "    stop: Arc<AtomicBool>,",
+        "    thread: Option<JoinHandle<()>>,",
+        "}",
+        "",
+        "impl Server {",
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 177,
+      "line_end": 183,
+      "text": [
+        "            thread::sleep(Duration::from_millis(10));",
+        "        }",
+        "    } else if held {",
+        "        // Keep the second assessment in flight until the denied assessment has",
+        "        // failed and a queued assessment takes its slot.",
+        "        let mut state = lock.lock().unwrap();",
+        "        while state.subjects.len() < 3 && !stop.load(Ordering::Relaxed) {"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 353,
+      "line_end": 359,
+      "text": [
+        "",
+        "master, slave = pty.openpty()",
+        "fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 160, 0, 0))",
+        "process = subprocess.Popen(",
+        "    [sys.argv[1], *sys.argv[3:]],",
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,",
+        ")"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 366,
+      "line_end": 372,
+      "text": [
+        "        if time.monotonic() >= deadline:",
+        "            raise RuntimeError('habeas PTY test did not finish within 20 seconds')",
+        "        readable, _, _ = select.select([master], [], [], 0.1)",
+        "        if not readable:",
+        "            continue",
+        "        try:",
+        "            chunk = os.read(master, 65536)"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 402,
+      "line_end": 408,
+      "text": [
+        "            .current_dir(&self.project)",
+        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
+        "            .env(\"APPDATA\", &self.config_root)",
+        "            .env(\"XDG_STATE_HOME\", &self.state)",
+        "            .env(\"LOCALAPPDATA\", &self.state)",
+        "            .env(\"TERM\", term)",
+        "            .env(\"NO_COLOR\", \"1\")"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 416,
+      "line_end": 422,
+      "text": [
+        "    fn evidence(&self, name: &str) -> Value {",
+        "        serde_json::from_slice(",
+        "            &fs::read(self.project.join(format!(\"evidence/{name}.json\"))).unwrap(),",
+        "        )",
+        "        .unwrap()",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 438,
+      "line_end": 444,
+      "text": [
+        "            \"habeas/state/authoring/usage\"",
+        "        } else {",
+        "            \"habeas/authoring/usage\"",
+        "        });",
+        "        fs::read_dir(path)",
+        "            .unwrap()",
+        "            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 446,
+      "line_end": 456,
+      "text": [
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.function_attestations`",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.ci.determination`",
+        "// {test}`requirements.authoring.progress`",
+        "#[test]",
+        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 506,
+      "line_end": 512,
+      "text": [
+        "        );",
+        "    }",
+        "",
+        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
+        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        no_op.status.success(),"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 519,
+      "line_end": 531,
+      "text": [
+        "        no_config.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&no_config.stderr)",
+        "    );",
+        "    #[cfg(unix)]",
+        "    {",
+        "        let no_op_terminal = fixture.run_in_pty(false, \"xterm-256color\");",
+        "        assert!(",
+        "            no_op_terminal.status.success(),",
+        "            \"{}\",",
+        "            String::from_utf8_lossy(&no_op_terminal.stderr)",
+        "        );",
+        "        assert_eq!("
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 569,
+      "line_end": 575,
+      "text": [
+        "        output.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    assert_eq!(server.requests.0.lock().unwrap().peak, 1);",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 586,
+      "line_end": 592,
+      "text": [
+        "    assert!(!output.stderr.contains(&b'\\r'));",
+        "    assert!(!output.status.success());",
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    assert!(",
+        "        !fixture",
+        "            .project",
+        "            .join(\"evidence/requirements.alpha.json\")"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 616,
+      "line_end": 622,
+      "text": [
+        "    assert_eq!(",
+        "        usage",
+        "            .iter()",
+        "            .filter(|run| run[\"outcome\"] == \"completed\")",
+        "            .count(),",
+        "        5",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 627,
+      "line_end": 633,
+      "text": [
+        "    );",
+        "    assert!(diagnostics.contains(\"requirements.alpha\"), \"{diagnostics}\");",
+        "    assert!(",
+        "        diagnostics.contains(\"fixture model rejected\"),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 686,
+      "line_end": 692,
+      "text": [
+        "    assert!(",
+        "        plain.contains(\"requirements.alpha: false (usage:\"),",
+        "        \"{plain}\"",
+        "    );",
+        "    assert!(!plain.contains(\"Fixture judgment for\"), \"{plain}\");",
+        "    assert!(!plain.contains(\"Fixture false rationale\"), \"{plain}\");",
+        "    assert!(plain.contains(\"requirements.beta: FIXME\"), \"{plain}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 140,
+      "line_end": 144,
       "text": [
         "    let subject = prompt",
         "        .lines()",
@@ -2551,92 +3192,51 @@
       ]
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 719,
-      "line_end": 723,
+      "file": "tests/commands.rs",
+      "line_start": 163,
+      "line_end": 167,
       "text": [
-        "// {test}`requirements.authoring.rig_configuration_mapping`",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.initial_prompt`",
-        "// {test}`requirements.authoring.usage_requests`",
-        "// {test}`requirements.authoring.configuration_storage`"
+        "    let source: String = declarations",
+        "        .iter()",
+        "        .map(|(kind, name, text, _)| format!(\":::{{{kind}}} {name}\\n{text}\\n:::\\n\\n\"))",
+        "        .collect();",
+        "    fs::write(temp.path().join(\"md/rules.md\"), &source).unwrap();"
       ]
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 23,
-      "line_end": 25,
+      "file": "tests/live_bedrock.rs",
+      "line_start": 151,
+      "line_end": 155,
       "text": [
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.authoring.initial_prompt`",
-        "    pub(crate) fn noun(&self) -> &'static str {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 352,
-      "line_end": 354,
-      "text": [
-        "",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.function_attestations`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 357,
-      "line_end": 359,
-      "text": [
-        "// {impl}`requirements.examples.evidence`",
-        "fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {",
-        "    // Keep the approved template as the sole source of these instructions."
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 415,
-      "line_end": 417,
-      "text": [
-        "// {impl}`requirements.authoring.submission`",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.function_attestations`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 435,
-      "line_end": 437,
-      "text": [
-        "// {impl}`requirements.authoring.submission`",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.delivered_inputs`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 449,
-      "line_end": 451,
-      "text": [
-        ") -> io::Result<(Judgment, Value)> {",
-        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
-        "    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 610,
-      "line_end": 612,
-      "text": [
-        "                    .unwrap();",
-        "            let prompt = initial_prompt(&sources).unwrap();",
-        "            assert!(prompt.starts_with(\"Bring your expert judgment to the task of assessing a Rust function's citation completeness.\"));"
+        "    fs::write(",
+        "        project.join(\"md/requirements.md\"),",
+        "        format!(\":::{{req}} parity\\n{REQUIREMENT}\\n:::\\n\"),",
+        "    )",
+        "    .unwrap();"
       ]
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 260,
-      "line_end": 310,
+      "line_start": 315,
+      "line_end": 400,
       "text": [
+        "",
+        ":::{req} mandatory_inputs",
+        "The harness MUST construct each assessment's mandatory input set by combining",
+        "the contributions specified by the requirements applicable to that subject and",
+        "its inputs. A requirement that contributes inputs MUST cite this requirement and",
+        "define which sources it contributes and when. The harness MUST include every",
+        "applicable contribution, deduplicate identical selections, and report",
+        "unresolvable mandatory inputs before inference. The complete set MUST be supplied",
+        "in the initial model request.",
+        "Generated output under project-root `evidence/`, including symlink aliases, MUST",
+        "be omitted from previous input selections when the default exclusion applies.",
+        "An explicit workspace allow MUST permit those selections; an explicit disallow",
+        "MUST abort under {cite}`requirements.authoring.read_denial`.",
+        ":::",
+        "",
+        "The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),",
+        "[examples](examples.md#examples-as-authoring-inputs),",
         "[references](references.md#references-as-authoring-inputs),",
         "[terminology](definitions.md#terminology-as-authoring-inputs), and",
         "[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).",
@@ -2687,483 +3287,24 @@
         "",
         "### Rust function attestations",
         "",
-        ":::{req} function_attestations"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 500,
-      "line_end": 720,
-      "text": [
-        "            let git = Command::new(\"git\")",
-        "                .current_dir(&fixture.project)",
-        "                .args(args)",
-        "                .output()",
-        "                .unwrap();",
-        "            assert!(git.status.success(), \"{git:?}\");",
-        "        }",
-        "        fs::write(fixture.project.join(\"untracked.txt\"), \"hidden source\\n\").unwrap();",
-        "        fs::create_dir(fixture.project.join(\"untracked-directory\")).unwrap();",
-        "        fs::write(",
-        "            fixture.project.join(\"untracked-directory/hidden.txt\"),",
-        "            \"hidden source\\n\",",
-        "        )",
-        "        .unwrap();",
+        ":::{req} function_attestations",
+        "The harness MUST author Rust function attestations using the schema and citation",
+        "completeness criteria in {cite}`requirements.references.rust_function_attestations`.",
+        "It MUST supply the complete function, its current citations, all requirement and",
+        "example declarations selected by `*`, and their required terminology as mandatory",
+        "inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation",
+        "input selectors MUST also contribute their current resolutions, subject to the",
+        "generated-output exclusion above. The harness MUST",
+        "derive the recorded citations from source and record the inputs it supplies;",
+        "the model MUST supply only the boolean determination and rationale. FIXME MUST",
+        "be rejected for a function attestation.",
         "",
-        "        let output = fixture.run(&[\"author\", SUBJECT, \"--stdout\"]);",
-        "        assert!(!output.status.success(), \"{tool}: {output:?}\");",
-        "        assert!(output.stdout.is_empty(), \"{tool}: {output:?}\");",
-        "        let diagnostics = String::from_utf8_lossy(&output.stderr);",
-        "        assert!(diagnostics.contains(\"untracked\"), \"{tool}: {diagnostics}\");",
-        "        assert_eq!(",
-        "            fs::read_to_string(&fixture.evidence).unwrap(),",
-        "            fixture.original",
-        "        );",
-        "        assert_eq!(server.finish().len(), 1);",
-        "        let usage = fixture.usage();",
-        "        assert_eq!(usage[\"outcome\"], \"failed\", \"{tool}: {usage}\");",
-        "        assert_eq!(usage[\"request_count\"], 1, \"{tool}: {usage}\");",
-        "        assert_eq!(usage[\"tool_failures\"][tool], 1, \"{tool}: {usage}\");",
-        "        assert_eq!(usage[\"evidence_written\"], false, \"{tool}: {usage}\");",
-        "        assert!(usage[\"determination\"].is_null(), \"{tool}: {usage}\");",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.authoring.negative_assessment`",
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.ci.fixme_with_unacknowledged_gap`",
-        "#[test]",
-        "fn false_is_a_completed_assessment() {",
-        "    let server = Server::start(vec![reply(vec![call(",
-        "        \"submit\",",
-        "        \"submit_judgment\",",
-        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
-        "    )])]);",
-        "    let fixture = Fixture::new(&server.endpoint);",
-        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
-        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
-        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    let requests = server.finish();",
-        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
-        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
-        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
-        "    assert!(prompt.contains(\"queue[0] = value\"));",
-        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
-        "    assert_eq!(evidence[\"determination\"], false);",
-        "    assert!(!evidence[\"inputs\"].as_array().unwrap().is_empty());",
-        "    assert!(",
-        "        evidence[\"rationale\"]",
-        "            .as_str()",
-        "            .unwrap()",
-        "            .contains(\"without acknowledging\")",
-        "    );",
-        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
-        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");",
-        "    assert_eq!(fixture.usage()[\"determination\"], \"false\");",
-        "}",
-        "",
-        "// {test}`requirements.authoring.invocation`",
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.authoring.delivered_inputs`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]",
-        "fn stdout_emits_only_evidence_json_without_changing_project_files() {",
-        "    for (determination, kind, existing_evidence) in [",
-        "        (json!(true), \"true\", true),",
-        "        (json!(false), \"false\", true),",
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
-        "        (json!(true), \"true\", false),",
-        "    ] {",
-        "        let rationale = \"The supplied sources explain this judgment.\";",
-        "        let server = Server::start(vec![reply(vec![call(",
-        "            \"submit\",",
-        "            \"submit_judgment\",",
-        "            json!({\"determination\":determination,\"rationale\":rationale}),",
-        "        )])]);",
-        "        let fixture = Fixture::new(&server.endpoint);",
-        "        if !existing_evidence {",
-        "            fs::remove_dir_all(fixture.project.join(\"evidence\")).unwrap();",
-        "        }",
-        "        let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--stdout\"]);",
-        "        assert!(",
-        "            output.status.success(),",
-        "            \"{}\",",
-        "            String::from_utf8_lossy(&output.stderr)",
-        "        );",
-        "        assert_eq!(server.finish().len(), 1);",
-        "        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();",
-        "        assert!(output.stdout.ends_with(b\"\\n\"));",
-        "        assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
-        "        assert_eq!(evidence[\"determination\"], determination);",
-        "        assert_eq!(evidence[\"rationale\"], rationale);",
-        "        let inputs = evidence[\"inputs\"].as_array().unwrap();",
-        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == SUBJECT));",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"definition\"] == \"terms.readiness\")",
-        "        );",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"rust_file\"] == \"src/lib.rs\")",
-        "        );",
-        "        if existing_evidence {",
-        "            assert_eq!(",
-        "                fs::read_to_string(&fixture.evidence).unwrap(),",
-        "                fixture.original",
-        "            );",
-        "        } else {",
-        "            assert!(!fixture.project.join(\"evidence\").exists());",
-        "        }",
-        "        let stderr = String::from_utf8_lossy(&output.stderr);",
-        "        assert!(stderr.contains(&format!(\"{SUBJECT}: ollama / {MODEL} — {kind}\")));",
-        "        assert!(stderr.contains(\"Evidence: stdout\\n\"));",
-        "        let usage_path = stderr",
-        "            .lines()",
-        "            .find_map(|line| line.strip_prefix(\"Usage: \"))",
-        "            .expect(\"stderr reports usage location\");",
-        "        assert!(std::path::Path::new(usage_path).is_file());",
-        "        let usage = fixture.usage();",
-        "        assert_eq!(usage[\"outcome\"], \"completed\");",
-        "        assert_eq!(usage[\"determination\"], kind);",
-        "        assert_eq!(usage[\"evidence_output\"], \"stdout\");",
-        "        assert_eq!(usage[\"evidence_written\"], true);",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.authoring.submission_count`",
-        "// {test}`requirements.authoring.submission`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]",
-        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {",
-        "    let valid =",
-        "        json!({\"determination\":true,\"rationale\":\"The reviewed sources support the subject.\"});",
-        "    for calls in [",
-        "        vec![],",
-        "        vec![",
-        "            call(\"one\", \"submit_judgment\", valid.clone()),",
-        "            call(\"two\", \"submit_judgment\", valid),",
-        "        ],",
-        "        vec![call(",
-        "            \"bad\",",
-        "            \"submit_judgment\",",
-        "            json!({\"determination\":true,\"rationale\":\"\"}),",
-        "        )],",
-        "        vec![call(",
-        "            \"empty\",",
-        "            \"submit_judgment\",",
-        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
-        "        )],",
-        "    ] {",
-        "        for stdout in [false, true] {",
-        "            let server = Server::start(vec![reply(calls.clone())]);",
-        "            let fixture = Fixture::new(&server.endpoint);",
-        "            let mut args = vec![\"author-evidence\", SUBJECT];",
-        "            if stdout {",
-        "                args.push(\"--stdout\");",
-        "            }",
-        "            let output = fixture.run(&args);",
-        "            assert!(!output.status.success());",
-        "            assert!(output.stdout.is_empty());",
-        "            server.finish();",
-        "            assert_eq!(",
-        "                fs::read_to_string(&fixture.evidence).unwrap(),",
-        "                fixture.original",
-        "            );",
-        "            let usage = fixture.usage();",
-        "            assert_eq!(usage[\"outcome\"], \"failed\");",
-        "            assert_eq!(",
-        "                usage[\"evidence_output\"],",
-        "                if stdout { \"stdout\" } else { \"file\" }",
-        "            );",
-        "            assert_eq!(usage[\"evidence_written\"], false);",
-        "            assert_eq!(usage[\"request_count\"], 1);",
-        "            assert!(usage[\"determination\"].is_null());",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(SUBJECT));",
-        "    assert!(!fixture.state.exists());",
-        "    assert_eq!(",
-        "        fs::read_to_string(&fixture.evidence).unwrap(),",
-        "        fixture.original",
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.authoring.provider`",
-        "// {test}`requirements.authoring.rig_configuration_mapping`",
-        "// {test}`requirements.authoring.configuration_precedence`"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 132,
-      "line_end": 138,
-      "text": [
-        "    let prompt = request[\"messages\"][0][\"content\"].as_str().unwrap();",
-        "    let subject = prompt",
-        "        .lines()",
-        "        .find_map(|line| line.strip_prefix(\"Subject: \"))",
-        "        .expect(\"assessment subject\")",
-        "        .to_owned();",
-        ""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 22,
-      "line_end": 28,
-      "text": [
-        "#[derive(Clone, Copy)]",
-        "enum Behavior {",
-        "    Judgments {",
-        "        failing_subject: Option<&'static str>,",
-        "    },",
-        "    DeniedRead {",
-        "        subject: &'static str,"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 40,
-      "line_end": 47,
-      "text": [
-        "impl Server {",
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {",
-        "        Self::start_with(require_overlap, Behavior::Judgments { failing_subject })",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 177,
-      "line_end": 183,
-      "text": [
-        "    // exceed its configured concurrency, without assuming task launch order.",
-        "    thread::sleep(Duration::from_millis(40));",
-        "    let failed =",
-        "        matches!(behavior, Behavior::Judgments { failing_subject: Some(name) } if subject == name);",
-        "    let response = if failed {",
-        "        json!({\"error\": \"fixture model rejected this subject\"})",
-        "    } else if denied {"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 353,
-      "line_end": 359,
-      "text": [
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let entries = fixture.evidence(\"rust/src/lib.rs\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 366,
-      "line_end": 372,
-      "text": [
-        "        serde_json::to_vec_pretty(&beta).unwrap(),",
-        "    )",
-        "    .unwrap();",
-        "    let example = fixture.evidence(\"requirements.alpha_case\");",
-        "    let beta_function = fixture.function(\"fn[beta]\");",
-        "    let test_function = fixture.function(\"fn[alpha_case]\");",
-        "    let usage = fixture.usage();"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 402,
-      "line_end": 408,
-      "text": [
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&no_config.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    assert_eq!(fixture.usage().len(), 6);",
-        "",
-        "    fs::write(&fixture.config, &fixture.config_text).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 416,
-      "line_end": 422,
-      "text": [
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&updated.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 8);",
-        "    assert_eq!(fixture.usage().len(), 8);",
-        "    assert_eq!(fixture.evidence(\"requirements.beta\"), beta);",
-        "    assert_eq!(fixture.evidence(\"requirements.alpha_case\"), example);"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 438,
-      "line_end": 444,
-      "text": [
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    assert_eq!(server.requests.0.lock().unwrap().peak, 1);",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 446,
-      "line_end": 456,
-      "text": [
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]",
-        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
-        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(!output.status.success());",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    assert!(",
-        "        !fixture",
-        "            .project"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 506,
-      "line_end": 512,
-      "text": [
-        "    let server = Server::start_with(",
-        "        false,",
-        "        Behavior::DeniedRead {",
-        "            subject: \"example requirements.alpha_case\",",
-        "            hold_other_requests: false,",
-        "        },",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 519,
-      "line_end": 531,
-      "text": [
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(!output.status.success(), \"{output:?}\");",
-        "    let subjects = server.subjects();",
-        "    assert_eq!(subjects.len(), 6, \"{subjects:?}\");",
-        "    assert_eq!(",
-        "        &subjects[..2],",
-        "        [",
-        "            \"requirement requirements.alpha\",",
-        "            \"example requirements.alpha_case\"",
-        "        ]",
-        "    );",
-        "    assert_eq!("
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 569,
-      "line_end": 575,
-      "text": [
-        "    assert_eq!(",
-        "        subjects",
-        "            .iter()",
-        "            .filter(|subject| *subject == \"example requirements.alpha_case\")",
-        "            .count(),",
-        "        1",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 586,
-      "line_end": 592,
-      "text": [
-        "    let server = Server::start_with(",
-        "        true,",
-        "        Behavior::DeniedRead {",
-        "            subject: \"requirement requirements.alpha\",",
-        "            hold_other_requests: true,",
-        "        },",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 616,
-      "line_end": 622,
-      "text": [
-        "        thread::sleep(Duration::from_millis(10));",
-        "    };",
-        "    let output = child.wait_with_output().unwrap();",
-        "    let subjects = server.subjects();",
-        "    drop(server);",
-        "    assert!(",
-        "        exited,"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 627,
-      "line_end": 633,
-      "text": [
-        "    assert_eq!(",
-        "        subjects",
-        "            .iter()",
-        "            .filter(|subject| *subject == \"requirement requirements.alpha\")",
-        "            .count(),",
-        "        1",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 686,
-      "line_end": 692,
-      "text": [
-        "    let output = fixture.run(&[\"author\", \"--all\", \"--stdout\"]);",
-        "    assert!(!output.status.success());",
-        "    assert!(String::from_utf8_lossy(&output.stderr).contains(\"--stdout\"));",
-        "    assert!(server.subjects().is_empty());",
-        "    assert!(!fixture.project.join(\"evidence\").exists());",
-        "}",
+        "The same four tools and exactly-once submission rule MUST apply. The initial",
+        "prompt MUST use the following template, replacing `{{subject_name}}` with the",
+        "repository-relative Rust file and selector, `{{citations}}` with the current",
+        "citation objects as JSON, and `{{mandatory_inputs}}` with the mandatory input",
+        "array. {cite}`requirements.authoring.submission`",
+        "{cite}`requirements.authoring.delivered_inputs`",
         ""
       ]
     }

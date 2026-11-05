@@ -1,7 +1,7 @@
 {
   "requirement": "The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace\ntable MUST serialize WorkspaceAuthoringConfig. Each\n`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with\n`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same\ntable. Backend-specific inference options MUST appear in its `options` subtable.\nWithin a present user authoring section, `configs` MUST be present but MAY be empty;\nworkspace `configs` MAY be omitted, allowing a workspace default to select a\nnamed user configuration.\nomitted `projects` and `options` tables MUST deserialize as empty maps.\nSerialization MUST follow the common rules in\n{cite}`requirements.configuration.serialization`.",
   "determination": true,
-  "rationale": "**Verdict:** the code implements the requirement and the tests cover its main points. I found no acknowledged gaps (no FIXMEs).\n\n**Implementation (`src/config.rs`)**\n- `UserConfig.authoring` is an `Option<UserAuthoringConfig>`, and `WorkspaceConfig.authoring` is an `Option<WorkspaceAuthoringConfig>`. Both are omitted when `None`.\n- `AuthoringConfig` flattens `BackendConfig`, which is `#[serde(tag = \"backend\", rename_all = \"lowercase\")]` over `Bedrock` and `Ollama`. The `backend = \"bedrock\"` or `\"ollama\"` tag and the variant's fields therefore share one `[authoring.configs.<name>]` table.\n- Backend inference options sit in an `options` map on each variant. It is skipped when empty and defaults to empty on read, so an omitted `options` table deserializes as an empty map.\n- `UserAuthoringConfig.configs` has no `#[serde(default)]` and no skip. It is therefore required on read, may be empty, and is always written.\n- `projects` defaults to empty and is skipped when empty.\n- `WorkspaceAuthoringConfig.configs` is `default` and skipped when empty, so workspace `configs` may be omitted and a workspace `default` can name a user config.\n- Common serialization rules:\n  - `to_toml` validates and then serializes the saved structs only. The resolved type `ResolvedAuthoringConfig` is separate and is not `Serialize`.\n  - Optional fields use `skip_serializing_if`, so defaults such as the Ollama endpoint and `concurrency` are not materialized.\n  - Credentials appear only in the explicit `SecretString` fields. `SecretString` serializes transparently, and its `Debug` output is redacted.\n  - `api_key_env` is stored as a name only.\n\n**Tests (`tests/configuration.rs`)**\n- `backend_configuration_round_trips_without_materializing_defaults` checks both backends and a nested options table with a float, an integer, a bool, an array and a map.\n  - Omitted `projects` and `options` come back empty.\n  - The Ollama `endpoint` stays `None` and does not appear in the serialized text, and neither does `concurrency`.\n  - The serialized text re-parses to an equal config.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` runs for both backends. Omitted `concurrency` is not materialized, an explicit value round-trips, and invalid values are rejected.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` checks that explicit credentials round-trip through `WorkspaceConfig`, and that the Bedrock and Ollama credential variants are covered. It also checks that `Debug` output and parse errors leak no secrets.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values` checks that the serialized text contains `MODEL_KEY` but not the environment-resolved value.\n- `invalid_schema_and_feature_values_report_the_configuration_path` checks that `[authoring]` without `configs` is rejected, and that `configs = {}` is accepted.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` has a workspace config with `default` and no `configs`. It checks that serialization omits `configs` and that the file round-trips.\n- `absent_and_minimal_configuration_are_distinct_and_read_only` checks that loading does not rewrite the file and that a minimal config round-trips.\n\n**Minor gaps, not enough to fail**\n- No test asserts the literal serialized TOML layout, such as `backend = ...` appearing inside the same table. It follows from the serde attributes and is exercised by the round-trips.\n- An explicit empty workspace `configs = {}` is written back as omitted. The two are semantically the same, and the requirement allows omission.",
+  "rationale": "**Verdict:** the requirement is met. One minor test gap remains; it is not acknowledged in the source.\n\n**Implementation (`src/config.rs`)**\n- `UserConfig` has `authoring: Option<UserAuthoringConfig>`, and `WorkspaceConfig` has `authoring: Option<WorkspaceAuthoringConfig>`. Both are serde-derived and omit the table when `None`.\n- `UserAuthoringConfig.configs` is a required `BTreeMap` with no `#[serde(default)]`. It may be empty (`configs = {}`) but must be present.\n- `WorkspaceAuthoringConfig.configs` has `default` and `skip_serializing_if = \"BTreeMap::is_empty\"`, so it can be omitted. `default` is an optional name, so a workspace default can select a named user configuration.\n- `projects` and every backend's `options` use `default` plus `skip_serializing_if` empty. Omitted tables therefore deserialize as empty maps and are not materialized on output.\n- `AuthoringConfig` flattens `BackendConfig`. `BackendConfig` is tagged `backend` with lowercase `bedrock` and `ollama`, so the variant's fields sit in the same table. Backend-specific `options` is a subtable.\n- Optional fields (`endpoint`, `aws_profile`, `region`, `api_key_env`, `api_key`, `concurrency`) are skipped when `None`. Defaults such as the Ollama endpoint are computed in accessors, not stored.\n- Credentials are the only secret-bearing fields. They are explicit `SecretString` fields that serialize and are redacted in `Debug`. Resolved values do not appear in the structs.\n- `UserConfig::to_toml` and `WorkspaceConfig::to_toml` validate and then serialize. `parse` and loading do not write to disk.\n\n**Tests (`tests/configuration.rs`)**\n- `backend_configuration_round_trips_without_materializing_defaults`:\n  - It parses a bedrock config with nested options and an ollama config, and checks that `projects` and the ollama `options` are empty maps.\n  - It checks that the serialized output has no `endpoint`, no default URL and no `concurrency`.\n  - It checks that `parse(to_toml)` equals the original.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` covers explicit versus omitted `concurrency` for both backends. It checks that an omitted value is not serialized and that an explicit value round-trips.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers round-tripping explicit credentials and `api_key` in the workspace config.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values` checks that `api_key_env` serializes by name only and that the resolved value is never written.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers a workspace config with a default but no `configs`. The serialized output has no `configs` and it round-trips.\n- `invalid_schema_and_feature_values_report_the_configuration_path` checks that `[authoring]` without `configs` is rejected and that `configs = {}` is accepted.\n- `absent_and_minimal_configuration_are_distinct_and_read_only` checks that loading leaves the file unchanged and that a minimal config round-trips.\n\n**Minor gap:** no test directly round-trips a user `[authoring]` section with an empty `configs` map through `to_toml`. The same code paths are covered elsewhere and this is a simple case, so I don't consider it a failure.",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration_serialization",
@@ -381,19 +381,19 @@
       "line_start": 194,
       "line_end": 206,
       "text": [
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
-        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
-        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{",
-        "                    \"name\":\"submit_judgment\", \"arguments\":{",
-        "                        \"determination\":true,",
-        "                        \"rationale\":format!(\"Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs.\")",
-        "                    }",
-        "                }",
-        "            }]},",
-        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
-        "        })",
-        "    };"
+        "        || (matches!(behavior, Behavior::MixedJudgments)",
+        "            && subject == \"example requirements.alpha_case\");",
+        "    let determination = match (behavior, subject.as_str()) {",
+        "        (Behavior::MixedJudgments, \"requirement requirements.alpha\") => json!(false),",
+        "        (Behavior::MixedJudgments, \"requirement requirements.beta\") => json!({\"FIXME\": [\"#123\"]}),",
+        "        _ => json!(true),",
+        "    };",
+        "    let rationale = if matches!(behavior, Behavior::MixedJudgments)",
+        "        && subject == \"requirement requirements.alpha\"",
+        "    {",
+        "        \"Fixture false rationale:\\n\\n- The implementation omits a boundary case.\\n- Add an assertion for that case.\".to_owned()",
+        "    } else {",
+        "        format!("
       ]
     },
     {
@@ -421,19 +421,19 @@
       "line_start": 641,
       "line_end": 653,
       "text": [
-        "",
-        "// {test}`requirements.authoring.submission_count`",
-        "// {test}`requirements.authoring.submission`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]",
-        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {",
-        "    let valid =",
-        "        json!({\"determination\":true,\"rationale\":\"The reviewed sources support the subject.\"});",
-        "    for calls in [",
-        "        vec![],",
-        "        vec![",
-        "            call(\"one\", \"submit_judgment\", valid.clone()),",
-        "            call(\"two\", \"submit_judgment\", valid),"
+        "        (json!(false), \"false\", true, true),",
+        "        (json!(true), \"true\", true, true),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {",
+        "            fs::remove_dir_all(fixture.project.join(\"evidence\")).unwrap();",
+        "        }"
       ]
     },
     {

@@ -1,6 +1,8 @@
 use std::io;
+use std::time::{Duration, SystemTime};
 
 use rig_core::completion::{CompletionRequest, CompletionResponse};
+use rig_core::error::ProviderError;
 use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};
 use rig_core::{DynModel, operation::Completion};
 use serde_json::{Map, Value};
@@ -10,6 +12,61 @@ use crate::config::{BackendConfig, BedrockConfig};
 pub(super) trait CompletionProvider {
     // {impl}`requirements.authoring.provider`
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
+}
+
+pub(super) struct ProviderBackoff {
+    window: Duration,
+}
+
+impl Default for ProviderBackoff {
+    // {impl}`requirements.authoring.provider_backoff`
+    fn default() -> Self {
+        Self {
+            window: Duration::from_secs(1),
+        }
+    }
+}
+
+impl ProviderBackoff {
+    // {impl}`requirements.authoring.provider_backoff`
+    pub(super) fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {
+        // Rig preserves HTTP status and Bedrock's exception code. Do not infer
+        // throttling from "tokens" in a message: a too-large input cannot be
+        // fixed by resending the same request.
+        let provider = error.get_ref()?.downcast_ref::<ProviderError>()?;
+        let report = provider.report();
+        let throttled = match report.http_status {
+            Some(429) => true,
+            Some(status) if status >= 400 => false,
+            _ => report.code.as_deref() == Some("ThrottlingException"),
+        };
+        if !throttled {
+            return None;
+        }
+
+        let millis = self.window.as_millis() as u64;
+        self.window = (self.window * 2).min(Duration::from_secs(60));
+        // Equal jitter keeps parallel assessments from retrying in lockstep,
+        // while ensuring each retry waits at least half the current window.
+        let jittered = Duration::from_millis(fastrand::u64(millis / 2..=millis));
+        Some(jittered.max(retry_after(provider, SystemTime::now()).unwrap_or_default()))
+    }
+}
+
+// {impl}`requirements.authoring.provider_backoff`
+fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
+    let header = error
+        .provider_response_headers()?
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = header.parse() {
+        return Some(Duration::from_secs(seconds));
+    }
+    httpdate::parse_http_date(header)
+        .ok()
+        .map(|deadline| deadline.duration_since(now).unwrap_or_default())
 }
 
 pub(super) struct RigProvider {
@@ -198,6 +255,91 @@ mod tests {
     use rig_core::completion::{FinishReason, Usage};
     use rig_core::message::{Opaque, Origin, Reasoning, Text};
     use serde_json::json;
+
+    // {test}`requirements.authoring.provider_backoff`
+    fn provider_error(status: Option<u16>, code: Option<&str>) -> ProviderError {
+        ProviderError::from_provider_body("Too many tokens")
+            .with_provider_status(status.map(|status| status.try_into().unwrap()))
+            .with_provider_code(code.map(str::to_owned))
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    fn with_retry_after(error: ProviderError, value: &str) -> ProviderError {
+        let mut headers = error
+            .provider_response_headers()
+            .cloned()
+            .unwrap_or_default();
+        headers.insert("retry-after", value.parse().unwrap());
+        error.with_response_headers(Some(headers))
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[test]
+    fn retries_typed_throttling_but_not_permanent_token_errors() {
+        for (status, code) in [
+            (Some(429), None),
+            (Some(429), Some("ThrottlingException")),
+            (None, Some("ThrottlingException")),
+        ] {
+            assert!(
+                ProviderBackoff::default()
+                    .next_delay(&io::Error::other(provider_error(status, code)))
+                    .is_some()
+            );
+        }
+        for (status, code) in [
+            (Some(400), Some("ValidationException")),
+            (Some(403), Some("AccessDeniedException")),
+            (Some(400), Some("ThrottlingException")),
+            (Some(503), Some("ServiceUnavailableException")),
+            (None, None),
+        ] {
+            assert!(
+                ProviderBackoff::default()
+                    .next_delay(&io::Error::other(provider_error(status, code)))
+                    .is_none()
+            );
+        }
+        assert!(
+            ProviderBackoff::default()
+                .next_delay(&io::Error::other("Too many tokens; HTTP 429"))
+                .is_none()
+        );
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[test]
+    fn jittered_backoff_grows_to_a_ceiling_without_limiting_attempts() {
+        let error = io::Error::other(provider_error(Some(429), Some("ThrottlingException")));
+        let mut backoff = ProviderBackoff::default();
+        for attempt in 0..100 {
+            let window = Duration::from_secs(1_u64 << attempt.min(6)).min(Duration::from_secs(60));
+            let delay = backoff.next_delay(&error).unwrap();
+            assert!((window / 2..=window).contains(&delay));
+        }
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[test]
+    fn retry_after_accepts_seconds_and_dates_without_shortening_provider_delay() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let future = httpdate::fmt_http_date(now + Duration::from_secs(90));
+        let past = httpdate::fmt_http_date(now - Duration::from_secs(90));
+        for (header, expected) in [
+            ("90", Some(Duration::from_secs(90))),
+            (future.as_str(), Some(Duration::from_secs(90))),
+            (past.as_str(), Some(Duration::ZERO)),
+            ("invalid", None),
+        ] {
+            let error = with_retry_after(provider_error(Some(429), None), header);
+            assert_eq!(retry_after(&error, now), expected);
+        }
+        let error = io::Error::other(with_retry_after(provider_error(Some(429), None), "90"));
+        assert_eq!(
+            ProviderBackoff::default().next_delay(&error),
+            Some(Duration::from_secs(90))
+        );
+    }
 
     // {test}`requirements.authoring.credentials`
     // {test}`requirements.authoring.rig_configuration_mapping`

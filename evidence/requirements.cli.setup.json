@@ -1,7 +1,7 @@
 {
   "requirement": "Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills.",
   "determination": false,
-  "rationale": "**Verdict:** the implementation looks correct, but one MUST NOT in the requirement has no test and no acknowledged gap, so I judge it not satisfied.\n\n**What the implementation does** (`src/setup.rs` `run`, `write_new_or_same`, `src/main.rs`):\n- `run` adds the dev dependency with `cargo add --dev habeas`, and only when `has_habeas_dev_dependency` is false. It passes `--path` when one is given.\n- It sets `preprocessor.habeas.command = \"habeas mdbook\"` and `renderers = [\"html\"]`. Both are plain assignments, so repeating them creates no duplicates.\n- It appends the stylesheet to `output.html.additional-css` only if it is not already listed.\n- It writes `<src>/habeas.css` and `tests/habeas.rs` with the `habeas::validate()` body.\n- Before changing anything, it checks that existing `habeas.css` and `tests/habeas.rs` files have identical content. If either differs, it returns an error and overwrites nothing. `write_new_or_same` enforces the same rule.\n- `run` never touches agent skills.\n\n**What the tests cover** (`tests/setup.rs`):\n- `setup_is_repeatable` runs setup twice. It checks the dev-dependency, preprocessor command, a single `md/habeas.css` entry, the exact `tests/habeas.rs` content, the CSS file, and that `.agents/skills` does not exist.\n- `setup_preserves_existing_agent_skills` shows an existing skill file is unchanged.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` covers the default source directory.\n- `setup_rejects_invalid_book_configuration` covers invalid book configuration.\n- `tests/cli.rs` rejects the `--install-skills` option.\n\n**The gap:** the requirement says repeating setup \"MUST NOT overwrite a differing test or stylesheet\". No test pre-creates a `tests/habeas.rs` or `habeas.css` with different content. Nothing asserts that setup fails or that the file is left unchanged. The `tests/setup.rs` ripgrep for \"already exists\", \"differing\" and \"different content\" found nothing. `session_start_advises_only_when_setup_is_incomplete` only deletes the CSS and then checks the hook, which does not exercise setup's overwrite protection.\n\nA `FIXME` search of `tests/setup.rs` found no `FIXME` there. Neither the tests nor the sources acknowledge the gap.\n\nThree smaller points also lack tests: repeat setup with a pre-existing `habeas` dev dependency, the `book.toml` not being rewritten when setup aborts, and an existing preprocessor entry with a different command. These matter less than the missing overwrite test.",
+  "rationale": "**Verdict:** the implementation looks correct, but one MUST clause has no test and no FIXME acknowledges the gap.\n\n**Implementation: matches the requirement.**\n- `setup::run` (src/setup.rs ~L92–173) adds the dev dependency with `cargo add --dev habeas`, and only when it is not already present.\n- It sets `[preprocessor.habeas] command = \"habeas mdbook\"` with `renderers = [\"html\"]`.\n- It adds the CSS path to `output.html.additional-css` only if absent.\n- It writes `habeas.css` and `tests/habeas.rs`. `TEST_SOURCE` calls `habeas::validate()`.\n- Before changing anything, it checks whether `habeas.css` or `tests/habeas.rs` already exist with different content, and returns an error if so. `write_new_or_same` repeats that check and only writes new files.\n- Nothing in setup touches agent skills.\n\n**Tests: they cover most of the requirement.**\n- `setup_is_repeatable` (tests/setup.rs L76–104) runs setup twice. It asserts:\n  - the dev dependency is present;\n  - the preprocessor command is set;\n  - the CSS entry appears exactly once;\n  - the existing custom CSS entry is preserved;\n  - `tests/habeas.rs` has the exact expected content;\n  - the CSS file exists;\n  - no `.agents/skills` directory is created.\n- `setup_preserves_existing_agent_skills` shows setup leaves an existing skill file untouched.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` and `setup_rejects_invalid_book_configuration` cover project and book configuration edge cases.\n\n**Gap: no test of the non-overwrite guarantee.**\n- The requirement says repeating setup \"MUST NOT overwrite a differing test or stylesheet\".\n- No test pre-creates `tests/habeas.rs` or `md/habeas.css` with different content. A search of `tests/` for \"different content\" and \"differ\" finds nothing.\n- So the error path in `run` (L116) and `write_new_or_same` (L78) is never exercised. Nothing asserts that the failure occurs or that the differing file is left intact.\n- This is an explicit MUST in a simple, easily testable scenario, so omitting the test cannot be justified by impracticality.\n- No FIXME or other comment in the sources acknowledges the gap.\n\nBecause the gap is unacknowledged, the determination is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.cli.setup",
@@ -73,18 +73,23 @@
         "        // {impl}`requirements.authoring.invocation`",
         "        // {impl}`requirements.authoring.batch`",
         "        // {impl}`requirements.authoring.concurrency`",
+        "        // {impl}`requirements.authoring.reporting`",
         "        Command::Author {",
         "            subject,",
         "            all,",
         "            config,",
         "            stdout,",
+        "            verbose,",
         "        } => {",
         "            let root = setup::project_root()?;",
         "            // Tokio's fixed worker pool is shared by all async assessments.",
         "            let runtime = tokio::runtime::Runtime::new()?;",
         "            if all {",
-        "                let outcome =",
-        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;",
+        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
+        "                    &root,",
+        "                    config.as_deref(),",
+        "                    habeas::authoring::AuthoringOptions { verbose },",
+        "                ))?;",
         "                println!(",
         "                    \"{} authored; {} unchanged; {} failed\",",
         "                    outcome.completed.len(),",
@@ -110,13 +115,19 @@
         "                config.as_deref(),",
         "                output,",
         "            ))?;",
-        "            let summary = format!(",
-        "                \"{}: {} / {} — {}\",",
-        "                outcome.subject,",
-        "                outcome.backend,",
-        "                outcome.model,",
-        "                outcome.determination.kind(),",
+        "            let mut summary = format!(",
+        "                \"{}: {} / {}\",",
+        "                outcome.subject, outcome.backend, outcome.model,",
         "            );",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
+        "                summary.push_str(\" — FIXME\");",
+        "            }",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
+        "                eprintln!(\"{}: false\", outcome.subject);",
+        "                if verbose {",
+        "                    eprintln!(\"{}\", outcome.rationale);",
+        "                }",
+        "            }",
         "            if let Some(path) = outcome.evidence_path {",
         "                println!(",
         "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
@@ -514,8 +525,8 @@
       "line_start": 99,
       "line_end": 100,
       "text": [
-        "    }",
-        "    match cli.command {"
+        "        }",
+        "    ) {"
       ]
     },
     {
@@ -1116,7 +1127,7 @@
       "line_start": 103,
       "line_end": 103,
       "text": [
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;"
+        "    match cli.command {"
       ]
     },
     {
@@ -1453,9 +1464,9 @@
       "line_start": 279,
       "line_end": 281,
       "text": [
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        self.command().args(args).output().unwrap()",
-        "    }"
+        "        .unwrap();",
+        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "        fs::write("
       ]
     },
     {
@@ -1463,9 +1474,9 @@
       "line_start": 295,
       "line_end": 297,
       "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`"
+        "        fs::write(&config, &config_text).unwrap();",
+        "        Self {",
+        "            _temp: temp,"
       ]
     },
     {
@@ -1563,9 +1574,9 @@
       "line_start": 549,
       "line_end": 551,
       "text": [
+        "    assert!(",
         "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)"
+        "        \"{}\","
       ]
     },
     {
@@ -1573,9 +1584,9 @@
       "line_start": 746,
       "line_end": 748,
       "text": [
-        "                \"metrics\":{\"latencyMs\":1}",
-        "            }),",
-        "            json!({"
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
+        "        )],"
       ]
     },
     {
@@ -1583,9 +1594,9 @@
       "line_start": 795,
       "line_end": 797,
       "text": [
-        "        let delivered = result[\"content\"][0][\"text\"].as_str().unwrap();",
-        "        assert!(delivered.contains(\"extra.txt\") && delivered.contains(\"context line 1\"));",
-        "        assert!("
+        "    assert!(!fixture.state.exists());",
+        "    assert_eq!(",
+        "        fs::read_to_string(&fixture.evidence).unwrap(),"
       ]
     },
     {
@@ -1593,9 +1604,9 @@
       "line_start": 814,
       "line_end": 816,
       "text": [
-        "        assert_eq!(",
-        "            body[\"inferenceConfig\"],",
-        "            json!({\"temperature\":0.25,\"maxTokens\":321,\"topP\":0.75,\"stopSequences\":[\"END\"]})"
+        "        let mut read_call = json!({\"toolUseId\":\"bedrock-read\",\"name\":\"habeas\",",
+        "        \"input\":{\"file\":\"extra.txt\",\"line_start\":1,\"line_end\":2}});",
+        "        let mut submit_call = json!({\"toolUseId\":\"bedrock-submit\",\"name\":\"submit_judgment\","
       ]
     },
     {
@@ -1847,7 +1858,7 @@
       "line_start": 542,
       "line_end": 542,
       "text": [
-        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),"
+        "        \"submit_judgment\","
       ]
     },
     {
@@ -1867,9 +1878,9 @@
       "line_start": 345,
       "line_end": 347,
       "text": [
-        "            \"pub fn beta()\",",
-        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\",",
-        "        ),"
+        "import re",
+        "import select",
+        "import signal"
       ]
     },
     {
@@ -1877,9 +1888,9 @@
       "line_start": 361,
       "line_end": 363,
       "text": [
-        "    let mut beta = fixture.evidence(\"requirements.beta\");",
-        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});",
-        "    beta[\"rationale\"] = \"The source explicitly acknowledges the missing beta test.\".into();"
+        "captured = bytearray()",
+        "interrupted = False",
+        "deadline = time.monotonic() + 20"
       ]
     },
     {
@@ -1887,9 +1898,9 @@
       "line_start": 541,
       "line_end": 543,
       "text": [
+        "        \"submit\",",
         "        \"submit_judgment\",",
-        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
-        "    )])]);"
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),"
       ]
     },
     {
@@ -1897,9 +1908,9 @@
       "line_start": 545,
       "line_end": 547,
       "text": [
+        "    let fixture = Fixture::new(&server.endpoint);",
         "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
-        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
-        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);"
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();"
       ]
     },
     {
@@ -1907,9 +1918,9 @@
       "line_start": 555,
       "line_end": 557,
       "text": [
+        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
         "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
-        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
-        "    assert!(prompt.contains(\"queue[0] = value\"));"
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));"
       ]
     },
     {
@@ -1917,9 +1928,9 @@
       "line_start": 566,
       "line_end": 568,
       "text": [
+        "            .contains(\"without acknowledging\")",
         "    );",
-        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
-        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");"
+        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));"
       ]
     },
     {
@@ -1927,9 +1938,9 @@
       "line_start": 580,
       "line_end": 582,
       "text": [
-        "        (json!(false), \"false\", true),",
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
-        "        (json!(true), \"true\", false),"
+        "        \"{diagnostics}\"",
+        "    );",
+        "    assert!("
       ]
     },
     {
@@ -1937,9 +1948,9 @@
       "line_start": 662,
       "line_end": 664,
       "text": [
-        "            \"submit_judgment\",",
-        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
-        "        )],"
+        "            String::from_utf8_lossy(&output.stderr)",
+        "        );",
+        "        assert_eq!(server.finish().len(), 1);"
       ]
     },
     {
@@ -1947,9 +1958,9 @@
       "line_start": 859,
       "line_end": 861,
       "text": [
-        "            .find(|outcome| outcome[\"type\"] == \"object\")",
-        "            .unwrap()[\"properties\"][\"FIXME\"];",
-        "        assert_eq!(fixme[\"type\"], \"array\");"
+        "            command.env_remove(key);",
+        "        }",
+        "        let output = command"
       ]
     },
     {
@@ -1957,9 +1968,9 @@
       "line_start": 908,
       "line_end": 910,
       "text": [
-        "            json!({",
-        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\"",
-        "            }),"
+        "            assert_eq!(schema[\"type\"], \"object\");",
+        "            for unsupported in [\"oneOf\", \"allOf\", \"anyOf\"] {",
+        "                assert!("
       ]
     },
     {
@@ -1967,9 +1978,9 @@
       "line_start": 927,
       "line_end": 929,
       "text": [
-        "    assert_eq!(usage[\"outcome\"], \"failed\");",
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
-        "    assert_eq!(usage[\"evidence_written\"], false);"
+        "            \"definition\",",
+        "        ] {",
+        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"string\");"
       ]
     },
     {
@@ -1990,6 +2001,147 @@
         "        \"example\",",
         "        \"FIXME(#00123)\",",
         "        \"Repeated #123 and rust-lang/rust#000456.\","
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 78,
+      "line_end": 78,
+      "text": [
+        "                \"{} already exists with different content; review it before running setup again\","
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 116,
+      "line_end": 116,
+      "text": [
+        "            return Err(format!(\"{} already exists with different content\", path.display()).into());"
+      ]
+    },
+    {
+      "file": "README.md",
+      "line_start": 27,
+      "line_end": 27,
+      "text": [
+        "`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files."
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 107,
+      "line_end": 107,
+      "text": [
+        "| `tests/habeas.rs:3` `habeas` | `requirements.integration.self_test` |"
+      ]
+    },
+    {
+      "file": "md/getting_started.md",
+      "line_start": 30,
+      "line_end": 30,
+      "text": [
+        "`habeas setup` adds Habeas as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, and creates `tests/habeas.rs`. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence."
+      ]
+    },
+    {
+      "file": "md/getting_started.md",
+      "line_start": 36,
+      "line_end": 36,
+      "text": [
+        "Use the `habeas-bootstrap-requirements` skill to derive an initial set of requirements from an existing codebase and its tests. Setup does not write requirements or evidence for you. Cite a project requirement or named example on the generated `tests/habeas.rs` test and on every other first-party Rust function, including internal helpers."
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 12,
+      "line_end": 12,
+      "text": [
+        "Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills."
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 113,
+      "line_end": 113,
+      "text": [
+        "    let test_path = root.join(\"tests/habeas.rs\");"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 247,
+      "line_end": 247,
+      "text": [
+        "        && fs::read_to_string(root.join(\"tests/habeas.rs\"))"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ocsp.h",
+      "line_start": 274,
+      "line_end": 274,
+      "text": [
+        "// already exists."
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ocsp.h",
+      "line_start": 274,
+      "line_end": 274,
+      "text": [
+        "// already exists."
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ocsp.h",
+      "line_start": 274,
+      "line_end": 274,
+      "text": [
+        "// already exists."
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 79,
+      "line_end": 80,
+      "text": [
+        "#[test]",
+        "fn setup_is_repeatable() {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 107,
+      "line_end": 108,
+      "text": [
+        "#[test]",
+        "fn setup_preserves_existing_agent_skills() {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 123,
+      "line_end": 124,
+      "text": [
+        "#[test]",
+        "fn setup_uses_src_when_book_table_or_source_setting_is_absent() {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 145,
+      "line_end": 146,
+      "text": [
+        "#[test]",
+        "fn setup_rejects_invalid_book_configuration() {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 194,
+      "line_end": 195,
+      "text": [
+        "#[test]",
+        "fn session_start_advises_only_when_setup_is_incomplete() {"
       ]
     }
   ]

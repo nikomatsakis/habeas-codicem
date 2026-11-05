@@ -1,7 +1,7 @@
 {
   "requirement": "During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST cite a requirement. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is implemented and tested. I found no gaps and no FIXME markers.\n\n**Implementation** (`src/rust_coverage.rs`, called from `inspect_repository` in `src/evidence.rs`):\n- **Entry point:** `inspect_repository` calls `validate_rust_functions` during repository validation.\n- **File discovery:** `rust_files` walks the project for `*.rs` files. It skips `.git` and `target` at any depth. At the project root only, it also skips `book`, `evidence` and `vendor`. Those are the generated, evidence and third-party trees, so the walk covers first-party sources. Directory read errors are reported rather than ignored.\n- **Parsing:** `missing_function_references` parses each file with `syn::parse_file`. A parse failure is reported as `file:line: cannot parse Rust source: …`, so the file is never silently skipped. Read failures are reported too.\n- **Function discovery:** `FunctionCollector` is a `syn` visitor. It records free functions, impl methods, trait methods (with or without a body) and foreign functions. It recurses into bodies, so nested functions and test helpers are found. Byte spans come from proc-macro2's `span-locations` feature, enabled in `Cargo.toml`.\n- **Comments and string literals:** a custom scanner (`comments`, `quoted_end`, `char_end`, `raw_string_end`) extracts only real comments. References inside string, raw-string and char literals therefore do not count.\n- **Attachment:** `attached_comment_indices` attaches contiguous preceding comments to a declaration.\n  - It rejects trailing comments that follow code on the same line.\n  - It rejects comments separated by a blank line.\n  - It stops at `//!` and `/*!` inner doc comments.\n  - Attributes and `///` docs are part of the `syn` item span.\n- **Ownership:** a comment inside a body belongs to the smallest enclosing function. A citation in a nested function therefore does not cover its outer function, and a citation on an enclosing module or impl block does not cover its methods.\n- **Citation validity:** a function counts as cited only if some owned comment has an `{impl}`, `{cite}` or `{test}` role naming a defined requirement or example. `{term}` roles and definitions of kind `Term` are rejected. Unknown names do not count. The rule that a named example must cite a requirement is enforced in `collect_definitions` (`src/evidence.rs`, around lines 298–330).\n- **Reporting:** uncited functions are reported as `file:line: function name has no requirement or example citation`.\n\n**Tests:**\n- **Unit tests** in `src/rust_coverage.rs`, each tagged `{test}`:\n  - `finds_uncited_functions_without_using_enclosing_or_string_references` covers:\n    - citations on a module or impl block;\n    - citations in string and raw-string literals;\n    - unknown requirement names;\n    - body block comments;\n    - a distant comment separated by a blank line;\n    - a trailing comment on the previous function;\n    - inner doc comments;\n    - outer doc comments.\n  - `checks_trait_test_helper_and_nested_functions_separately` covers trait methods, nested functions, `#[test]` functions citing a requirement or a named example, and an uncited helper.\n  - `locates_functions_after_unicode_text` checks the reported line number after non-ASCII text.\n  - `reports_all_files_and_parse_failures` covers:\n    - multiple files and nested directories;\n    - the `target` and `evidence` exclusions;\n    - the file:line:name message format;\n    - a parse failure that is reported rather than skipped.\n- **Integration tests** show the behaviour end to end:\n  - `tests/authoring_batch.rs::discovery_errors_fail_before_configuration_or_inference` checks that a parse failure surfaces through the CLI.\n  - `tests/commands.rs::status_preserves_repository_wide_rust_findings_in_every_form` checks that uncited-function findings appear in `status` output.\n\n**Minor observations**, none of which I count as gaps:\n- Foreign (`extern`) functions have no dedicated test, but they are handled by the same `add` path as the other kinds.\n- The `book` and `vendor` exclusions have no dedicated test.\n- Functions generated inside macro bodies are not discovered. This fits the requirement's wording of \"explicitly declared\".\n\nThe helper functions in the sampled test files, such as `Fixture::run` and `Fixture::command` in `tests/authoring_batch.rs`, carry their own citations. That is consistent with the rule being applied to the project's own code.",
+  "rationale": "I judge the requirement satisfied. I reviewed the supplied excerpts and did not run the tests or the self-validation, so this rests on reading the code and the test assertions.\n\n**Implementation (`src/rust_coverage.rs`, wired in at `src/evidence.rs` `inspect_repository_with_progress`)**\n- `rust_files` walks the whole project. It skips only `.git`, `target`, and the root-level `book`, `evidence`, and `vendor` directories. Walk, read, and entry errors are reported rather than ignored.\n- `validate_rust_functions` reads each file and calls `missing_function_references`. That function uses `syn::parse_file` and a `FunctionCollector` visitor. The visitor covers free functions, impl methods, trait methods (including bodiless ones), and foreign functions, and it recurses so nested functions are found too.\n- A parse failure is pushed as `file:line: cannot parse Rust source`, so a file is never silently skipped. An unreadable file is likewise reported.\n- A custom lexer, `comments()`, finds only real comments. It uses `quoted_end`, `char_end`, and `raw_string_end` to skip string, raw-string, and char literals. This excludes references inside string literals.\n- `attached_comment_indices` attaches the contiguous comment block directly before a declaration, including through attributes, because the item span includes them. It stops at inner doc comments, trailing comments on a previous code line, blank-line gaps, and non-comment text. A comment on an enclosing module or impl block therefore does not cover the functions inside it.\n- A comment inside a body belongs to the smallest enclosing function. An inner function's comment does not cover the outer function.\n- A function counts as cited only if some owned comment holds a non-`term` role (`impl`, `cite`, or `test`) whose name resolves to a defined non-term requirement or example. Unknown names do not count.\n- Each uncited function is reported as `file:line: function name has no requirement or example citation`.\n- Evidence inputs are never consulted, so a citation that appears only there cannot count.\n\n**Tests**\n- `finds_uncited_functions_without_using_enclosing_or_string_references` covers:\n  - enclosing mod and impl citations that must not count;\n  - string and raw-string literals, and a char `'/'`;\n  - an unknown requirement name;\n  - a citation inside the body (block comment);\n  - a distant comment separated by a blank line;\n  - a trailing comment on the previous line;\n  - inner doc comments;\n  - an outer doc comment that does count.\n- `checks_trait_test_helper_and_nested_functions_separately` covers trait methods, nested functions, `{test}` on a requirement, `{test}` on a named example, and an uncited test helper.\n- `locates_functions_after_unicode_text` checks byte-offset and line correctness after non-ASCII text.\n- `reports_all_files_and_parse_failures` checks multi-file reporting with file, line, and name. It also checks that a parse failure is reported, and that `target/` and `evidence/` are excluded.\n- `tests/authoring_batch.rs` checks that a parse failure on `src/lib.rs` surfaces from the CLI.\n- `tests/commands.rs` checks that the uncited-function message reaches `habeas status` output.\n\n**Gaps**\n- Functions generated inside macro invocation bodies are not visible to `syn`. This fits the \"explicitly declared\" wording.\n- I found no FIXME markers.\n- The coverage is thorough for the design space of the requirement.",
   "inputs": [
     {
       "requirements": "requirements.references.rust_function_coverage",
@@ -16,19 +16,28 @@
     },
     {
       "rust_file": "src/evidence.rs",
-      "rust_item": "fn[inspect_repository]",
+      "rust_item": "fn[inspect_repository_with_progress]",
       "text": [
         "// {impl}`requirements.integration.report_api`",
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.authoring.progress`",
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
         "// {impl}`requirements.examples.evidence`",
         "// {impl}`requirements.configuration.workspace_location`",
         "// {impl}`requirements.configuration.workspace_structure`",
         "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "pub(crate) fn inspect_repository_with_progress(",
+        "    root: &Path,",
+        "    mut progress: impl FnMut(InspectionProgress),",
+        ") -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
+        "    progress(InspectionProgress {",
+        "        stage: \"discovering requirements\",",
+        "        completed: 0,",
+        "        total: None,",
+        "    });",
         "    let mut errors = Vec::new();",
         "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
         "        errors.push(error.to_string());",
@@ -43,15 +52,26 @@
         "        Vec::new()",
         "    };",
         "    let mut present = BTreeSet::new();",
+        "    let ordinary_files: Vec<_> = evidence_files",
+        "        .iter()",
+        "        .filter(|file| {",
+        "            let relative = file",
+        "                .strip_prefix(&evidence_root)",
+        "                .expect(\"evidence file is inside evidence directory\");",
+        "            !(relative.starts_with(\"rust\") && relative.to_string_lossy().ends_with(\".rs.json\"))",
+        "        })",
+        "        .collect();",
         "",
         "    // {impl}`requirements.ci.orphans`",
-        "    for file in &evidence_files {",
+        "    for (completed, file) in ordinary_files.iter().enumerate() {",
+        "        progress(InspectionProgress {",
+        "            stage: \"evidence files\",",
+        "            completed,",
+        "            total: Some(ordinary_files.len()),",
+        "        });",
         "        let relative = file",
         "            .strip_prefix(&evidence_root)",
         "            .expect(\"evidence file is inside evidence directory\");",
-        "        if relative.starts_with(\"rust\") && relative.to_string_lossy().ends_with(\".rs.json\") {",
-        "            continue;",
-        "        }",
         "        let label = display_path(&root, file);",
         "        let name = if relative.components().count() == 1 {",
         "            relative",
@@ -72,6 +92,11 @@
         "        }",
         "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
         "    }",
+        "    progress(InspectionProgress {",
+        "        stage: \"evidence files\",",
+        "        completed: ordinary_files.len(),",
+        "        total: Some(ordinary_files.len()),",
+        "    });",
         "",
         "    // {impl}`requirements.ci.coverage`",
         "    for (name, definition) in &definitions {",
@@ -84,12 +109,22 @@
         "        }",
         "    }",
         "",
-        "    validate_references(&root, &definitions, &mut errors);",
+        "    validate_references(&root, &definitions, &mut errors, &mut progress);",
         "    // {impl}`requirements.references.rust_function_coverage`",
+        "    progress(InspectionProgress {",
+        "        stage: \"Rust citations\",",
+        "        completed: 0,",
+        "        total: None,",
+        "    });",
         "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);",
         "    // {impl}`requirements.references.rust_function_attestations`",
-        "    let rust_functions =",
-        "        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);",
+        "    let rust_functions = validate_rust_attestations(",
+        "        &root,",
+        "        &definitions,",
+        "        &mut errors,",
+        "        &mut discovery_errors,",
+        "        &mut progress,",
+        "    );",
         "",
         "    let examples = definitions",
         "        .values()",
@@ -851,6 +886,24 @@
       ]
     },
     {
+      "rust_file": "src/evidence.rs",
+      "rust_item": "fn[inspect_repository]",
+      "text": [
+        "// {impl}`requirements.integration.report_api`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    inspect_repository_with_progress(root, |_| {})",
+        "}"
+      ]
+    },
+    {
       "file": "src/add_input.rs",
       "line_start": 238,
       "line_end": 244,
@@ -869,13 +922,13 @@
       "line_start": 298,
       "line_end": 304,
       "text": [
-        "        }",
-        "    }",
-        "",
-        "    for (name, definition) in &definitions {",
-        "        if definition.kind == DefinitionKind::Example",
-        "            && !reference_roles(&definition.text, true)",
-        "                .into_iter()"
+        "                .bytes()",
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()",
+        "                + 1;",
+        "            let source = format!(\"{label}:{line}\");",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            if !valid_name(&name) {"
       ]
     },
     {
@@ -883,13 +936,13 @@
       "line_start": 1586,
       "line_end": 1592,
       "text": [
-        "        let citation = [\"{\", \"cite}`foo.bar.ready`\"].concat();",
-        "        let test = [\"{\", \"test}`foo.bar.ready`\"].concat();",
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
-        "        let source = format!(\"// {implementation}\\n// {citation}\\n\");",
-        "        let notes = format!(\"# Notes\\n\\n{test}\\n\\n`{example}`\\n\\n```text\\n{example}\\n```\\n\");",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();"
+        "                expected.report.evidence_files",
+        "            );",
+        "            assert_eq!(inspected.report.errors, expected.report.errors);",
+        "            assert_eq!(inspected.rust_functions, expected.rust_functions);",
+        "            assert_eq!(inspected.discovery_errors, expected.discovery_errors);",
+        "            assert_eq!(",
+        "                inspected.definitions.keys().collect::<Vec<_>>(),"
       ]
     },
     {
@@ -897,13 +950,13 @@
       "line_start": 1786,
       "line_end": 1792,
       "text": [
-        "            json!({",
-        "                \"requirement\": \"Ready.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"The example cites this rule.\",",
-        "                \"inputs\": [{",
-        "                    \"file\": \"md/rules.md\",",
-        "                    \"line_start\": 8,"
+        "                        \"line_end\": 2,",
+        "                        \"text\": [1]",
+        "                    }",
+        "                ]",
+        "            })",
+        "            .to_string(),",
+        "        )"
       ]
     },
     {
@@ -911,13 +964,13 @@
       "line_start": 1801,
       "line_end": 1807,
       "text": [
-        "        fs::write(",
-        "            &example_path,",
         "            json!({",
-        "                \"example\": \"Given ready, it succeeds. CITE`rules.ready`\".replace(\"CITE\", \"{cite}\"),",
+        "                \"requirement\": \"Ghost.\",",
         "                \"determination\": true,",
-        "                \"rationale\": \"checks_case sets up ready and asserts the result.\",",
-        "                \"inputs\": [{"
+        "                \"rationale\": \"A valid but orphaned file.\",",
+        "                \"inputs\": []",
+        "            })",
+        "            .to_string(),"
       ]
     },
     {
@@ -925,13 +978,13 @@
       "line_start": 1958,
       "line_end": 1964,
       "text": [
-        "        fs::write(",
-        "            temp.path().join(\"evidence/rules.case.json\"),",
-        "            json!({",
-        "                \"example\": \"Given ready. CITE`rules.repeated`\".replace(\"CITE\", \"{cite}\"),",
-        "                \"determination\": true,",
-        "                \"rationale\": \"No test has been cited yet.\",",
-        "                \"inputs\": []"
+        "        assert_eq!(report.requirements, 2);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.ci.span`",
+        "    // {test}`requirements.ci.definition_errors`",
+        "    #[test]"
       ]
     },
     {
@@ -939,13 +992,13 @@
       "line_start": 1972,
       "line_end": 1978,
       "text": [
-        "            \"duplicate example rules.repeated; first declared at md/rules.md:1\",",
-        "            \"duplicate example rules.case; first declared at md/rules.md:13\",",
-        "            \"example rules.empty has no text\",",
-        "            \"example rules.empty must cite at least one requirement\",",
-        "            \"example rules.unclosed is missing a closing colon fence\",",
-        "            \"example rules.case has a true determination but no {test} reference\",",
-        "        ] {"
+        "        fs::write(",
+        "            temp.path().join(\"evidence/requirements.ready.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ready.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The current body was examined.\",",
+        "                \"inputs\": []"
       ]
     },
     {
@@ -1343,67 +1396,67 @@
       "line_start": 270,
       "line_end": 330,
       "text": [
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`",
+        "fn collect_definitions(",
+        "    root: &Path,",
+        "    md_root: &Path,",
+        "    errors: &mut Vec<String>,",
+        ") -> BTreeMap<String, Declaration> {",
+        "    let mut definitions = BTreeMap::new();",
+        "",
+        "    for file in files_with_extension(root, md_root, \"md\", errors) {",
+        "        let relative = file",
+        "            .strip_prefix(md_root)",
+        "            .expect(\"chapter file is inside md directory\");",
+        "        if relative == Path::new(\"SUMMARY.md\") {",
+        "            continue;",
+        "        }",
+        "",
+        "        let label = display_path(root, &file);",
+        "        let content = match fs::read_to_string(&file) {",
+        "            Ok(content) => content,",
+        "            Err(error) => {",
+        "                errors.push(format!(\"{label}: cannot read chapter: {error}\"));",
+        "                continue;",
+        "            }",
+        "        };",
+        "        let namespace = chapter_namespace(relative);",
+        "        for block in definition_blocks(&content) {",
+        "            let line = content[..block.start]",
+        "                .bytes()",
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()",
+        "                + 1;",
+        "            let source = format!(\"{label}:{line}\");",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            if !valid_name(&name) {",
+        "                errors.push(format!(",
+        "                    \"{source}: invalid {} name {name:?}\",",
+        "                    block.kind.noun()",
+        "                ));",
+        "                continue;",
+        "            }",
+        "",
+        "            if !block.closed {",
+        "                errors.push(format!(",
+        "                    \"{source}: {} {name} is missing a closing colon fence\",",
+        "                    block.kind.noun()",
+        "                ));",
+        "            }",
+        "            // {impl}`requirements.ci.span`",
+        "            let text = content[block.body_start..block.body_end].trim().to_owned();",
+        "            if text.is_empty() {",
+        "                errors.push(format!(",
+        "                    \"{source}: {} {name} has no text\",",
+        "                    block.kind.noun()",
+        "                ));",
+        "            }",
         "",
         "            if block.kind == DefinitionKind::Term",
         "                && let Err(error) = crate::terms::declaration(&text)",
         "            {",
-        "                errors.push(format!(\"{source}: definition {name}: {error}\"));",
-        "            }",
-        "            match definitions.entry(name.clone()) {",
-        "                Entry::Vacant(slot) => {",
-        "                    let raw_lines = content[block.start..block.end]",
-        "                        .lines()",
-        "                        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
-        "                        .collect::<Vec<_>>();",
-        "                    slot.insert(Declaration {",
-        "                        kind: block.kind,",
-        "                        text,",
-        "                        source,",
-        "                        file: label.clone(),",
-        "                        line_start: line,",
-        "                        line_end: line + raw_lines.len().saturating_sub(1),",
-        "                        raw_lines,",
-        "                    });",
-        "                }",
-        "                Entry::Occupied(previous) => errors.push(format!(",
-        "                    \"{source}: duplicate {} {name}; first declared at {}\",",
-        "                    block.kind.noun(),",
-        "                    previous.get().source",
-        "                )),",
-        "            }",
-        "        }",
-        "    }",
-        "",
-        "    for (name, definition) in &definitions {",
-        "        if definition.kind == DefinitionKind::Example",
-        "            && !reference_roles(&definition.text, true)",
-        "                .into_iter()",
-        "                .any(|reference| {",
-        "                    reference.kind == ReferenceKind::Cite",
-        "                        && definitions",
-        "                            .get(reference.name)",
-        "                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)",
-        "                })",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{}: example {name} must cite at least one requirement\",",
-        "                definition.source",
-        "            ));",
-        "        }",
-        "    }",
-        "",
-        "    definitions",
-        "}",
-        "",
-        "// {impl}`requirements.ci.coverage`",
-        "fn files_with_extension(",
-        "    root: &Path,",
-        "    dir: &Path,",
-        "    extension: &str,",
-        "    errors: &mut Vec<String>,",
-        ") -> Vec<PathBuf> {",
-        "    let mut stack = vec![dir.to_path_buf()];",
-        "    let mut files = Vec::new();"
+        "                errors.push(format!(\"{source}: definition {name}: {error}\"));"
       ]
     },
     {
@@ -1411,9 +1464,9 @@
       "line_start": 43,
       "line_end": 45,
       "text": [
-        "mdbook-preprocessor = \"=0.5.3\"",
-        "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
-        "pulldown-cmark = \"=0.11.3\""
+        "console = \"0.16.6\"",
+        "fastrand = \"2.5.0\"",
+        "httpdate = \"1.0.3\""
       ]
     },
     {
@@ -1421,9 +1474,9 @@
       "line_start": 49,
       "line_end": 51,
       "text": [
-        "serde = { version = \"1.0.229\", features = [\"derive\"] }",
-        "serde_json = \"1\"",
-        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }"
+        "pulldown-cmark = \"=0.11.3\"",
+        "regex = \"1.13.1\"",
+        "rig-bedrock = \"0.44\""
       ]
     },
     {
@@ -1523,9 +1576,9 @@
       "line_start": 164,
       "line_end": 166,
       "text": [
-        "region = \"us-east-1\"",
-        "",
-        "[authoring.configs.local]"
+        "{cite}`requirements.configuration.workspace_location`",
+        "{cite}`requirements.configuration.evidence_paths`",
+        "{cite}`requirements.authoring.configuration_precedence`"
       ]
     },
     {
@@ -1533,9 +1586,9 @@
       "line_start": 281,
       "line_end": 283,
       "text": [
-        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing",
-        "Bedrock authoring configuration fails the test. A skip returns successfully, so",
-        "Cargo displays `ok` rather than `ignored`. Once credentials load, provider and"
+        "`stopSequences` directly in that options table. Habeas maps them to Converse's",
+        "`inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.",
+        "Use these flat keys without an `inferenceConfig` wrapper. For example:"
       ]
     },
     {
@@ -1543,12 +1596,12 @@
       "line_start": 285,
       "line_end": 290,
       "text": [
-        "requests and retain their usage records in the usual user state directory.",
-        "",
-        "Run just these tests with:",
-        "",
-        "```sh",
-        "cargo test --test live_bedrock"
+        "```toml",
+        "[authoring.configs.cloud.options]",
+        "temperature = 0.25",
+        "maxTokens = 321",
+        "topP = 0.75",
+        "stopSequences = [\"END\"]"
       ]
     },
     {
@@ -1556,9 +1609,9 @@
       "line_start": 294,
       "line_end": 296,
       "text": [
-        "falling back to the first named Bedrock configuration in name order. To select",
-        "one explicitly:",
-        ""
+        "leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`",
+        "go in the same options table; Rig places them in Ollama's native request.",
+        "{cite}`requirements.authoring.configuration_storage`"
       ]
     },
     {
@@ -1566,9 +1619,9 @@
       "line_start": 300,
       "line_end": 302,
       "text": [
-        "",
-        "The test uses a temporary project and stdout evidence output, leaving the",
-        "checkout's evidence unchanged. Any set `CI` environment variable disables live"
+        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
+        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
+        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and"
       ]
     },
     {
@@ -1576,12 +1629,12 @@
       "line_start": 305,
       "line_end": 310,
       "text": [
-        "{cite}`requirements.integration.live_bedrock_test`",
+        "{cite}`requirements.authoring.deterministic_validation`",
         "",
-        "## References",
+        "### Live Bedrock tests",
         "",
-        "Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:",
-        ""
+        "`cargo test` includes a live Bedrock integration test. It skips with a visible",
+        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing"
       ]
     },
     {
@@ -1599,12 +1652,12 @@
       "line_start": 168,
       "line_end": 173,
       "text": [
-        "project-relative paths where possible and absolute paths for permitted external",
-        "files. Its root listing MUST also expose available generated-output directories",
-        "and configured external allow paths. The model can list a returned",
-        "directory in another call to explore further. A failed listing MUST return an",
-        "explanatory tool error unless access was denied, which MUST abort under",
-        "{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs."
+        "",
+        "```text",
+        "HabeasResult {",
+        "    input: EvidenceInput,",
+        "    definitions: Array<DefinitionInput>,",
+        "}"
       ]
     },
     {
@@ -1612,12 +1665,12 @@
       "line_start": 235,
       "line_end": 240,
       "text": [
-        "A valid single submission MUST finish the assessment; there is no submission",
-        "repair or resubmission loop. An assessment that fails before accepting a valid",
-        "judgment MUST emit no evidence JSON to stdout.",
-        ":::",
+        "    kind: \"file\" | \"directory\",",
+        "}",
+        "```",
         "",
-        "## Initial prompt"
+        "The tool MUST list the immediate children of the requested directory, returning",
+        "project-relative paths where possible and absolute paths for permitted external"
       ]
     },
     {
@@ -1625,9 +1678,9 @@
       "line_start": 261,
       "line_end": 263,
       "text": [
-        "[terminology](definitions.md#terminology-as-authoring-inputs), and",
-        "[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).",
-        ""
+        "SearchResult {",
+        "    inputs: Array<FileRangeInput>,",
+        "    definitions: Array<DefinitionInput>,"
       ]
     },
     {
@@ -1635,9 +1688,9 @@
       "line_start": 291,
       "line_end": 293,
       "text": [
-        "example in the supplied inputs. Explain the coverage.",
+        "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
         "",
-        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when"
+        "```text"
       ]
     },
     {
@@ -1645,9 +1698,9 @@
       "line_start": 574,
       "line_end": 576,
       "text": [
-        "default or configuration table to fall back to the user settings.",
-        "",
-        "For Ollama, this is a complete minimal file; replace `MODEL_TAG` with a model"
+        "default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use",
+        "its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its",
+        "named variable MUST supply the credential; a missing or empty value MUST produce"
       ]
     },
     {
@@ -1655,9 +1708,9 @@
       "line_start": 578,
       "line_end": 580,
       "text": [
+        ":::",
         "",
-        "```toml",
-        "version = 1"
+        ":::{req} credentials"
       ]
     },
     {
@@ -1665,13 +1718,13 @@
       "line_start": 659,
       "line_end": 665,
       "text": [
-        "rerunning `habeas author --all` preserves current accepted results and retries",
-        "records that still need attention.",
+        "model = \"MODEL_TAG\"",
+        "```",
         "",
-        "Backend options belong under",
-        "`[authoring.configs.<name>.options]`. For an authenticated Ollama server, put",
-        "`api_key_env = \"OLLAMA_API_KEY\"` in its configuration table and set that variable",
-        "outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an"
+        "For Bedrock, this is a complete minimal file. Replace `MODEL_ID` with an available",
+        "model or inference-profile identifier, `research` with your AWS profile name,",
+        "and `us-east-1` with your region:",
+        ""
       ]
     },
     {
@@ -1908,9 +1961,9 @@
       "line_start": 392,
       "line_end": 394,
       "text": [
-        "        .as_object()",
-        "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;",
-        "    if object.len() != 2"
+        "    };",
+        "    Ok(template",
+        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())"
       ]
     },
     {
@@ -1918,9 +1971,9 @@
       "line_start": 571,
       "line_end": 573,
       "text": [
-        "            assert_eq!(",
-        "                submit.parameters[\"properties\"][\"determination\"],",
-        "                json!({\"type\": \"boolean\"})"
+        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
+        "                }",
+        "            }"
       ]
     },
     {
@@ -2062,9 +2115,9 @@
       "line_start": 279,
       "line_end": 281,
       "text": [
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        self.command().args(args).output().unwrap()",
-        "    }"
+        "        .unwrap();",
+        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "        fs::write("
       ]
     },
     {
@@ -2072,9 +2125,9 @@
       "line_start": 295,
       "line_end": 297,
       "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`"
+        "        fs::write(&config, &config_text).unwrap();",
+        "        Self {",
+        "            _temp: temp,"
       ]
     },
     {
@@ -2172,9 +2225,9 @@
       "line_start": 549,
       "line_end": 551,
       "text": [
+        "    assert!(",
         "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)"
+        "        \"{}\","
       ]
     },
     {
@@ -2182,9 +2235,9 @@
       "line_start": 746,
       "line_end": 748,
       "text": [
-        "                \"metrics\":{\"latencyMs\":1}",
-        "            }),",
-        "            json!({"
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
+        "        )],"
       ]
     },
     {
@@ -2192,9 +2245,9 @@
       "line_start": 795,
       "line_end": 797,
       "text": [
-        "        let delivered = result[\"content\"][0][\"text\"].as_str().unwrap();",
-        "        assert!(delivered.contains(\"extra.txt\") && delivered.contains(\"context line 1\"));",
-        "        assert!("
+        "    assert!(!fixture.state.exists());",
+        "    assert_eq!(",
+        "        fs::read_to_string(&fixture.evidence).unwrap(),"
       ]
     },
     {
@@ -2202,9 +2255,9 @@
       "line_start": 814,
       "line_end": 816,
       "text": [
-        "        assert_eq!(",
-        "            body[\"inferenceConfig\"],",
-        "            json!({\"temperature\":0.25,\"maxTokens\":321,\"topP\":0.75,\"stopSequences\":[\"END\"]})"
+        "        let mut read_call = json!({\"toolUseId\":\"bedrock-read\",\"name\":\"habeas\",",
+        "        \"input\":{\"file\":\"extra.txt\",\"line_start\":1,\"line_end\":2}});",
+        "        let mut submit_call = json!({\"toolUseId\":\"bedrock-submit\",\"name\":\"submit_judgment\","
       ]
     },
     {
@@ -2403,8 +2456,8 @@
       "line_start": 126,
       "line_end": 127,
       "text": [
-        "                definition.source",
-        "            ));"
+        "            !(relative.starts_with(\"rust\") && relative.to_string_lossy().ends_with(\".rs.json\"))",
+        "        })"
       ]
     },
     {
@@ -2605,7 +2658,7 @@
       "line_start": 448,
       "line_end": 448,
       "text": [
-        "fn failed_assessment_keeps_other_results_and_reports_failure() {"
+        ""
       ]
     },
     {
@@ -2614,10 +2667,10 @@
       "line_end": 34,
       "text": [
         "    },",
-        "}",
-        "",
-        "struct Server {",
-        "    endpoint: String,"
+        "    #[cfg_attr(not(unix), allow(dead_code))]",
+        "    MixedJudgments,",
+        "    #[cfg_attr(not(unix), allow(dead_code))]",
+        "    WaitAfterFirst,"
       ]
     },
     {
@@ -2625,11 +2678,11 @@
       "line_start": 67,
       "line_end": 71,
       "text": [
-        "                        }));",
-        "                    }",
-        "                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {",
-        "                        thread::sleep(Duration::from_millis(5));",
-        "                    }"
+        "                    Ok((stream, _)) => {",
+        "                        let requests = worker_requests.clone();",
+        "                        let stop = worker_stop.clone();",
+        "                        workers.push(thread::spawn(move || {",
+        "                            serve(stream, requests, require_overlap, behavior, stop);"
       ]
     },
     {
@@ -2637,11 +2690,11 @@
       "line_start": 74,
       "line_end": 78,
       "text": [
-        "            }",
-        "            for worker in workers {",
-        "                worker.join().unwrap();",
-        "            }",
-        "        });"
+        "                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {",
+        "                        thread::sleep(Duration::from_millis(5));",
+        "                    }",
+        "                    Err(error) => panic!(\"cannot accept mock request: {error}\"),",
+        "                }"
       ]
     },
     {
@@ -2649,11 +2702,11 @@
       "line_start": 83,
       "line_end": 87,
       "text": [
-        "            thread: Some(thread),",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`"
+        "        });",
+        "        Self {",
+        "            endpoint,",
+        "            requests,",
+        "            stop,"
       ]
     },
     {
@@ -2661,11 +2714,11 @@
       "line_start": 172,
       "line_end": 176,
       "text": [
-        "                .unwrap();",
-        "            state = next;",
-        "        }",
-        "    }",
-        "    // Keep requests in flight long enough for an incorrectly unbounded batch to"
+        "                    ..",
+        "                }",
+        "            ));",
+        "    if wait_for_interrupt {",
+        "        while !stop.load(Ordering::Relaxed) {"
       ]
     },
     {
@@ -2673,11 +2726,11 @@
       "line_start": 217,
       "line_end": 221,
       "text": [
-        "    }",
-        "    state.active -= 1;",
-        "}",
-        "",
-        "struct Fixture {"
+        "                    \"name\":\"habeas\", \"arguments\":{\"file\":\"evidence/private.txt\", \"line_start\":1}",
+        "                }",
+        "            }]},",
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
+        "        })"
       ]
     },
     {
@@ -2685,11 +2738,11 @@
       "line_start": 231,
       "line_end": 235,
       "text": [
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.function_attestations`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn new(endpoint: &str, concurrency: Option<usize>) -> Self {",
-        "        let temp = tempfile::tempdir().unwrap();"
+        "                }",
+        "            }]},",
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
+        "        })",
+        "    };"
       ]
     },
     {
@@ -2697,11 +2750,11 @@
       "line_start": 239,
       "line_end": 243,
       "text": [
-        "        for directory in [",
-        "            project.join(\"md\"),",
-        "            project.join(\"src\"),",
-        "            config_root.join(\"habeas\"),",
-        "        ] {"
+        "    let sent = write!(",
+        "        stream,",
+        "        \"HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}\",",
+        "        body.len()",
+        "    );"
       ]
     },
     {
@@ -2709,11 +2762,11 @@
       "line_start": 251,
       "line_end": 255,
       "text": [
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),",
-        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
-        "        )"
+        "    _temp: TempDir,",
+        "    project: PathBuf,",
+        "    config_root: PathBuf,",
+        "    state: PathBuf,",
+        "    config: PathBuf,"
       ]
     },
     {
@@ -2721,10 +2774,10 @@
       "line_start": 270,
       "line_end": 274,
       "text": [
-        "            config_root,",
-        "            state,",
-        "            config,",
-        "            config_text,",
+        "            project.join(\"src\"),",
+        "            config_root.join(\"habeas\"),",
+        "        ] {",
+        "            fs::create_dir_all(directory).unwrap();",
         "        }"
       ]
     },
@@ -2733,11 +2786,11 @@
       "line_start": 364,
       "line_end": 368,
       "text": [
-        "    fs::write(",
-        "        fixture.project.join(\"evidence/requirements.beta.json\"),",
-        "        serde_json::to_vec_pretty(&beta).unwrap(),",
-        "    )",
-        "    .unwrap();"
+        "try:",
+        "    while True:",
+        "        if time.monotonic() >= deadline:",
+        "            raise RuntimeError('habeas PTY test did not finish within 20 seconds')",
+        "        readable, _, _ = select.select([master], [], [], 0.1)"
       ]
     },
     {
@@ -2745,11 +2798,11 @@
       "line_start": 380,
       "line_end": 384,
       "text": [
-        "        let requests = server.requests.0.lock().unwrap();",
-        "        assert_eq!(",
-        "            requests.peak, 2,",
-        "            \"the configured concurrency bounds in-flight requests\"",
-        "        );"
+        "        plain = re.sub(rb'\\x1b\\[[0-?]*[ -/]*[@-~]', b'', captured)",
+        "        if sys.argv[2] == 'interrupt' and not interrupted and re.search(rb'Authoring[^\\r\\n]*\\b[1-5]/6 finished\\b', plain):",
+        "            process.send_signal(signal.SIGINT)",
+        "            interrupted = True",
+        "    stdout, _ = process.communicate(timeout=5)"
       ]
     },
     {
@@ -2757,11 +2810,11 @@
       "line_start": 434,
       "line_end": 438,
       "text": [
-        "    let fixture = Fixture::new(&server.endpoint, None);",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\","
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    // {test}`requirements.authoring.batch`",
+        "    fn usage(&self) -> Vec<Value> {",
+        "        let path = self.state.join(if cfg!(windows) {",
+        "            \"habeas/state/authoring/usage\""
       ]
     },
     {
@@ -2769,11 +2822,11 @@
       "line_start": 448,
       "line_end": 452,
       "text": [
-        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
-        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(!output.status.success());"
+        "",
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.function_attestations`",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.usage_storage`"
       ]
     },
     {
@@ -2820,11 +2873,11 @@
       "line_start": 289,
       "line_end": 293,
       "text": [
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state);"
+        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = 'fixture-model'\\nendpoint = '{endpoint}'\\n\"",
+        "        );",
+        "        if let Some(concurrency) = concurrency {",
+        "            config_text.push_str(&format!(\"concurrency = {concurrency}\\n\"));",
+        "        }"
       ]
     },
     {
@@ -2832,11 +2885,11 @@
       "line_start": 357,
       "line_end": 361,
       "text": [
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let entries = fixture.evidence(\"rust/src/lib.rs\");",
-        "    assert_eq!(entries[\"functions\"].as_array().unwrap().len(), 3);",
-        "    let mut beta = fixture.evidence(\"requirements.beta\");"
+        "    [sys.argv[1], *sys.argv[3:]],",
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,",
+        ")",
+        "os.close(slave)",
+        "captured = bytearray()"
       ]
     },
     {
@@ -3276,32 +3329,32 @@
       "line_end": 300,
       "text": [
         "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        self.command().args(args).output().unwrap()",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    // {test}`requirements.authoring.read_denial`",
-        "    fn command(&self) -> Command {",
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state);",
-        "        command",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.function_attestations`",
-        "    fn evidence(&self, name: &str) -> Value {",
-        "        serde_json::from_slice("
+        "        fs::write(",
+        "            project.join(\"Cargo.toml\"),",
+        "            \"[package]\\nname = 'batch-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "        fs::write(",
+        "            project.join(\"md/SUMMARY.md\"),",
+        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(project.join(\"md/requirements.md\"), \":::{req} alpha\\nalpha MUST return one.\\n:::\\n\\n:::{req} beta\\nbeta MUST return two.\\n:::\\n\\n:::{example} alpha_case\\nCalling alpha returns one. CITE`requirements.alpha`\\n:::\\n\".replace(\"CITE\", \"{cite}\")).unwrap();",
+        "        fs::write(project.join(\"src/lib.rs\"), \"// IMPL`requirements.alpha`\\npub fn alpha() -> u8 { 1 }\\n\\n// IMPL`requirements.beta`\\npub fn beta() -> u8 { 2 }\\n\\n// TEST`requirements.alpha_case`\\n#[test]\\nfn alpha_case() { assert_eq!(alpha(), 1); }\\n\".replace(\"IMPL\", \"{impl}\").replace(\"TEST\", \"{test}\")).unwrap();",
+        "        let mut config_text = format!(",
+        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = 'fixture-model'\\nendpoint = '{endpoint}'\\n\"",
+        "        );",
+        "        if let Some(concurrency) = concurrency {",
+        "            config_text.push_str(&format!(\"concurrency = {concurrency}\\n\"));",
+        "        }",
+        "        let config = config_root.join(\"habeas/config.toml\");",
+        "        fs::write(&config, &config_text).unwrap();",
+        "        Self {",
+        "            _temp: temp,",
+        "            project,",
+        "            config_root,",
+        "            state,"
       ]
     }
   ]

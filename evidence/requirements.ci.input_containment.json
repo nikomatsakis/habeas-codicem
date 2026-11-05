@@ -1,7 +1,7 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and the tests cover the main cases. I found no FIXME or TODO markers for this area.\n\n**Implementation**\n- `read_project_file` and `check_project_file` in `src/inputs.rs` send every file-range, Rust-item and definition input through `resolve_evidence_file`. `validate_input_lines` in `src/evidence.rs` reaches it through `read_project_file`.\n- `resolve_evidence_file` in `src/authoring/access.rs` canonicalizes the root and resolves both the requested location (`requested_location`) and the symlink target.\n- It enforces workspace disallow rules first, using `check_disallow`. That check also covers disallowed ancestors traversed before a symlink redirects the path.\n- It then requires both the requested path and the target to be inside the project root. The exception is an explicit allow rule, or a discovered Cargo generated-output root where both paths fall under that directory. Otherwise it fails with \"resolves outside the repository without an allowed evidence path\". Path comparison uses `Path::starts_with`, so a sibling directory with a shared name prefix is not accepted.\n- Missing files fail in `resolve` with \"cannot open …\". A path that is not a regular file fails with \"is not a project file\". Read failures fail in `read_project_file` with \"cannot read …\". Disallowed paths produce \"disallowed by habeas.toml\". All of these become validation errors.\n- `generated_roots` and `discover_generated_roots` run `cargo metadata --offline --locked --no-deps`. They then read the existing `root-output` records and never invoke a build.\n\n**Tests**\n- `tests/evidence_boundaries.rs`, `file_ranges_report_order_eof_length_and_missing_file_errors`: a missing file is reported.\n- `tests/evidence_boundaries.rs`, `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix`: an in-project symlink is accepted, and an escaping symlink to a same-prefix sibling is rejected. This is checked for both file-range and Rust-item inputs.\n- `tests/evidence_boundaries.rs`, `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`: an external path is rejected without an allow entry, accepted with one, flagged as changed when the file changes, and rejected again when disallowed.\n- `tests/evidence_boundaries.rs`, `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`: a disallowed ancestor cannot be bypassed through a symlink.\n- `tests/evidence_boundaries.rs`, `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`: discovered external Cargo output is accepted, freshness is checked, and disallow overrides the generated-output permission. It also asserts that the target directory is not created, so no build ran.\n- `tests/commands.rs`, `status_applies_workspace_disallow_to_existing_evidence`: the CLI status command reports an input as invalid when it is disallowed.\n- Unit tests in `src/authoring/access.rs`: allow and disallow precedence, alias targets, and symlink-before-`..` resolution. A further unit test in `src/authoring/tools.rs` covers symlink-before-`..` resolution in search.\n\n**Minor gap:** I found no test for the unreadable-file case, such as a permission error. That path is a single `map_err` on `read_to_string`, so I don't treat it as a gap.",
+  "rationale": "**Verdict:** the code implements `requirements.ci.input_containment`, and the tests cover the main points in its design space.\n\n**Implementation**\n- `resolve_evidence_file` in `src/authoring/access.rs` is the single gate for evidence files.\n  - It canonicalizes the root and resolves both the requested location and the symlink target. It does this through `resolve` and `requested_location`, which resolve parent symlinks before any `..`.\n  - It applies workspace `disallow` rules to the requested path, its traversed ancestors and the target, via `check_disallow`. Disallow therefore wins and a disallowed target cannot be reached through an alias.\n  - If the requested path or the target is outside the root, it requires an explicit allow rule or a discovered Cargo generated-output root. Otherwise it fails with \"resolves outside the repository without an allowed evidence path\".\n  - It requires the target to be a file.\n- `generated_roots` and `discover_generated_roots` find generated outputs with `cargo metadata --offline --locked --no-deps` and the existing `root-output` records. Nothing is built, metadata failure returns an empty list, and only discovered `out` directories are permitted.\n- `src/inputs.rs` routes every access through the gate:\n  - `check_project_file` calls `resolve_evidence_file`.\n  - `read_project_file` calls `check_project_file`.\n  - File-range, Rust-item and definition inputs all use these two. Definition and requirements inputs call `check_project_file` on their source files.\n  - `validate_input_lines` in `src/evidence.rs` reports the resulting errors, so validation is independent of Git index membership.\n- The other callers (`add_input`, the authoring tools and `authoring/inputs.rs`) use the same helpers.\n- Missing files report \"cannot open …\". Unreadable files report \"cannot read …\". Excluded files report \"disallowed …\" or \"resolves outside the repository\".\n\n**Tests**\n- `tests/evidence_boundaries.rs`:\n  - `file_ranges_report_order_eof_length_and_missing_file_errors` covers a missing file.\n  - `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` covers a symlink inside the root, which is accepted. It also covers a symlink to a sibling directory with the same name prefix, which is rejected, for both file-range and Rust-item inputs.\n  - `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` covers an external path that is rejected by default, allowed by config, stale after a change, and disallowed.\n  - `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources` covers disallowed ancestors reached through symlinks.\n  - `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` covers discovered external Cargo output. It checks that freshness is enforced, that disallow overrides the discovery permission, and that no build ran (`!target.exists()`).\n- `tests/commands.rs::status_applies_workspace_disallow_to_existing_evidence` covers the CLI status path.\n- The unit tests in `src/authoring/access.rs` and `src/authoring/tools.rs` cover allow and disallow precedence, alias targets, symlink and `..` ordering, and the search tool using the validated target.\n- `src/evidence.rs::collects_missing_orphan_format_false_and_changed_line_errors` is also tagged for this requirement.\n\n**Gaps**\n- There is no dedicated test for an unreadable (permission-denied) file. The read error path is a one-line `map_err`, so I don't consider the gap significant.\n- No FIXME gaps are acknowledged.",
   "inputs": [
     {
       "requirements": "requirements.ci.input_containment",
@@ -1132,11 +1132,11 @@
       "line_start": 715,
       "line_end": 719,
       "text": [
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let (_, content) = match crate::inputs::read_project_file(root, file) {",
-        "        Ok(source) => source,",
-        "        Err(error) => {"
+        "// {impl}`requirements.ci.requirements_inputs`",
+        "fn validate_resolved_input(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    selector: &InputSelector,"
       ]
     },
     {
@@ -1490,9 +1490,9 @@
       "line_start": 422,
       "line_end": 424,
       "text": [
-        "    } else {",
-        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
-        "    };"
+        "    let judgment = Judgment::from_value(&object[\"determination\"]).map_err(io::Error::other)?;",
+        "    let rationale = object[\"rationale\"]",
+        "        .as_str()"
       ]
     },
     {
@@ -1500,9 +1500,9 @@
       "line_start": 606,
       "line_end": 608,
       "text": [
-        "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
-        "            let mut sources ="
+        "            if self.requests.borrow().len() <= self.failures {",
+        "                return Err(io::Error::other(",
+        "                    rig_core::error::ProviderError::from_provider_body(\"Too many tokens\")"
       ]
     },
     {

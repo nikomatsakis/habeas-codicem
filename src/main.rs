@@ -47,6 +47,9 @@ enum Command {
         /// Write evidence JSON to stdout instead of updating its file.
         #[arg(long)]
         stdout: bool,
+        /// Show the stored rationale for false judgments.
+        #[arg(short, long)]
+        verbose: bool,
     },
     #[command(hide = true)]
     Hook {
@@ -138,18 +141,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         // {impl}`requirements.authoring.invocation`
         // {impl}`requirements.authoring.batch`
         // {impl}`requirements.authoring.concurrency`
+        // {impl}`requirements.authoring.reporting`
         Command::Author {
             subject,
             all,
             config,
             stdout,
+            verbose,
         } => {
             let root = setup::project_root()?;
             // Tokio's fixed worker pool is shared by all async assessments.
             let runtime = tokio::runtime::Runtime::new()?;
             if all {
-                let outcome =
-                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;
+                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(
+                    &root,
+                    config.as_deref(),
+                    habeas::authoring::AuthoringOptions { verbose },
+                ))?;
                 println!(
                     "{} authored; {} unchanged; {} failed",
                     outcome.completed.len(),
@@ -175,13 +183,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 config.as_deref(),
                 output,
             ))?;
-            let summary = format!(
-                "{}: {} / {} — {}",
-                outcome.subject,
-                outcome.backend,
-                outcome.model,
-                outcome.determination.kind(),
+            let mut summary = format!(
+                "{}: {} / {}",
+                outcome.subject, outcome.backend, outcome.model,
             );
+            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {
+                summary.push_str(" — FIXME");
+            }
+            if matches!(outcome.determination, habeas::judgment::Judgment::False) {
+                eprintln!("{}: false", outcome.subject);
+                if verbose {
+                    eprintln!("{}", outcome.rationale);
+                }
+            }
             if let Some(path) = outcome.evidence_path {
                 println!(
                     "{summary}\nEvidence: {}\nUsage: {}",

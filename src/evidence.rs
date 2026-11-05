@@ -44,6 +44,14 @@ pub(crate) struct RepositoryInspection {
     pub(crate) discovery_errors: Vec<String>,
 }
 
+/// Progress within one inspection phase; discovery has no known total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InspectionProgress {
+    pub(crate) stage: &'static str,
+    pub(crate) completed: usize,
+    pub(crate) total: Option<usize>,
+}
+
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.ci.definition_errors`
@@ -72,7 +80,29 @@ pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Decla
 // {impl}`requirements.configuration.workspace_structure`
 // {impl}`requirements.configuration.loading`
 pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {
+    inspect_repository_with_progress(root, |_| {})
+}
+
+// {impl}`requirements.integration.report_api`
+// {impl}`requirements.definitions.declaration`
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.progress`
+// {impl}`requirements.ci.errors`
+// {impl}`requirements.ci.diagnostics`
+// {impl}`requirements.examples.evidence`
+// {impl}`requirements.configuration.workspace_location`
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.loading`
+pub(crate) fn inspect_repository_with_progress(
+    root: &Path,
+    mut progress: impl FnMut(InspectionProgress),
+) -> io::Result<RepositoryInspection> {
     let root = fs::canonicalize(root)?;
+    progress(InspectionProgress {
+        stage: "discovering requirements",
+        completed: 0,
+        total: None,
+    });
     let mut errors = Vec::new();
     if let Err(error) = crate::config::load_workspace_evidence(&root) {
         errors.push(error.to_string());
@@ -87,15 +117,26 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         Vec::new()
     };
     let mut present = BTreeSet::new();
+    let ordinary_files: Vec<_> = evidence_files
+        .iter()
+        .filter(|file| {
+            let relative = file
+                .strip_prefix(&evidence_root)
+                .expect("evidence file is inside evidence directory");
+            !(relative.starts_with("rust") && relative.to_string_lossy().ends_with(".rs.json"))
+        })
+        .collect();
 
     // {impl}`requirements.ci.orphans`
-    for file in &evidence_files {
+    for (completed, file) in ordinary_files.iter().enumerate() {
+        progress(InspectionProgress {
+            stage: "evidence files",
+            completed,
+            total: Some(ordinary_files.len()),
+        });
         let relative = file
             .strip_prefix(&evidence_root)
             .expect("evidence file is inside evidence directory");
-        if relative.starts_with("rust") && relative.to_string_lossy().ends_with(".rs.json") {
-            continue;
-        }
         let label = display_path(&root, file);
         let name = if relative.components().count() == 1 {
             relative
@@ -116,6 +157,11 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         }
         validate_evidence_file(&root, file, expected, &definitions, &mut errors);
     }
+    progress(InspectionProgress {
+        stage: "evidence files",
+        completed: ordinary_files.len(),
+        total: Some(ordinary_files.len()),
+    });
 
     // {impl}`requirements.ci.coverage`
     for (name, definition) in &definitions {
@@ -128,12 +174,22 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
         }
     }
 
-    validate_references(&root, &definitions, &mut errors);
+    validate_references(&root, &definitions, &mut errors, &mut progress);
     // {impl}`requirements.references.rust_function_coverage`
+    progress(InspectionProgress {
+        stage: "Rust citations",
+        completed: 0,
+        total: None,
+    });
     crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);
     // {impl}`requirements.references.rust_function_attestations`
-    let rust_functions =
-        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);
+    let rust_functions = validate_rust_attestations(
+        &root,
+        &definitions,
+        &mut errors,
+        &mut discovery_errors,
+        &mut progress,
+    );
 
     let examples = definitions
         .values()
@@ -897,13 +953,15 @@ struct InputRange {
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.authoring.progress`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
+    progress: &mut impl FnMut(InspectionProgress),
 ) {
     let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
-    for reference in collect_references(root, errors) {
+    for reference in collect_references_with_progress(root, errors, progress) {
         let target = definitions.get(&reference.name);
         if reference.kind == ReferenceKind::Term {
             if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {
@@ -932,12 +990,18 @@ fn validate_references(
         }
     }
 
-    for (name, definition) in definitions {
-        if definition.kind == DefinitionKind::Term {
-            continue;
-        }
+    let subjects: Vec<_> = definitions
+        .iter()
+        .filter(|(_, definition)| definition.kind != DefinitionKind::Term)
+        .collect();
+    for (completed, (name, definition)) in subjects.iter().enumerate() {
+        progress(InspectionProgress {
+            stage: "reference coverage",
+            completed,
+            total: Some(subjects.len()),
+        });
         let evidence_file = root.join("evidence").join(format!("{name}.json"));
-        let references = by_definition.remove(name).unwrap_or_default();
+        let references = by_definition.remove(*name).unwrap_or_default();
         if definition.kind == DefinitionKind::Example
             && !references
                 .iter()
@@ -971,10 +1035,30 @@ fn validate_references(
             }
         }
     }
+    progress(InspectionProgress {
+        stage: "reference coverage",
+        completed: subjects.len(),
+        total: Some(subjects.len()),
+    });
 }
 
 // {impl}`requirements.references.targets`
 pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
+    collect_references_with_progress(root, errors, &mut |_| {})
+}
+
+// {impl}`requirements.references.targets`
+// {impl}`requirements.authoring.progress`
+fn collect_references_with_progress(
+    root: &Path,
+    errors: &mut Vec<String>,
+    progress: &mut impl FnMut(InspectionProgress),
+) -> Vec<SourceReference> {
+    progress(InspectionProgress {
+        stage: "discovering source references",
+        completed: 0,
+        total: None,
+    });
     let mut stack = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(directory) = stack.pop() {
@@ -1027,14 +1111,19 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
     files.sort();
 
     let mut references = Vec::new();
-    for file in files {
-        let content = match fs::read_to_string(&file) {
+    for (completed, file) in files.iter().enumerate() {
+        progress(InspectionProgress {
+            stage: "reference source files",
+            completed,
+            total: Some(files.len()),
+        });
+        let content = match fs::read_to_string(file) {
             Ok(content) => content,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
             Err(error) => {
                 errors.push(format!(
                     "{}: cannot read reference source: {error}",
-                    display_path(root, &file)
+                    display_path(root, file)
                 ));
                 continue;
             }
@@ -1057,6 +1146,11 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
             });
         }
     }
+    progress(InspectionProgress {
+        stage: "reference source files",
+        completed: files.len(),
+        total: Some(files.len()),
+    });
     references
 }
 
@@ -1096,20 +1190,32 @@ fn evidence_input_ranges(
 // {impl}`requirements.references.rust_function_attestations`
 // {impl}`requirements.ci.orphans`
 // {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.progress`
 fn validate_rust_attestations(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
     discovery_errors: &mut Vec<String>,
+    progress: &mut impl FnMut(InspectionProgress),
 ) -> Vec<(String, String, bool)> {
     let mut inspected = Vec::new();
     let mut expected_files = BTreeSet::new();
     let initial_errors = errors.len();
+    progress(InspectionProgress {
+        stage: "discovering Rust sources",
+        completed: 0,
+        total: None,
+    });
     let files = crate::rust_coverage::rust_files(root, errors);
     discovery_errors.extend(errors[initial_errors..].iter().cloned());
-    for file in files {
-        let rust_file = display_path(root, &file);
-        let source = match fs::read_to_string(&file) {
+    for (completed, file) in files.iter().enumerate() {
+        progress(InspectionProgress {
+            stage: "Rust attestation files",
+            completed,
+            total: Some(files.len()),
+        });
+        let rust_file = display_path(root, file);
+        let source = match fs::read_to_string(file) {
             Ok(source) => source,
             Err(error) => {
                 let error = format!("{rust_file}: cannot read Rust source: {error}");
@@ -1147,16 +1253,43 @@ fn validate_rust_attestations(
             )
         }));
     }
+    progress(InspectionProgress {
+        stage: "Rust attestation files",
+        completed: files.len(),
+        total: Some(files.len()),
+    });
     let evidence_root = root.join("evidence/rust");
+    progress(InspectionProgress {
+        stage: "Rust sidecar coverage",
+        completed: 0,
+        total: None,
+    });
     if evidence_root.is_dir() {
-        for file in files_with_extension(root, &evidence_root, "json", errors) {
-            if !expected_files.contains(&file) {
+        let files = files_with_extension(root, &evidence_root, "json", errors);
+        for (completed, file) in files.iter().enumerate() {
+            progress(InspectionProgress {
+                stage: "Rust sidecar coverage",
+                completed,
+                total: Some(files.len()),
+            });
+            if !expected_files.contains(file) {
                 errors.push(format!(
                     "{}: orphaned Rust attestation file",
-                    display_path(root, &file)
+                    display_path(root, file)
                 ));
             }
         }
+        progress(InspectionProgress {
+            stage: "Rust sidecar coverage",
+            completed: files.len(),
+            total: Some(files.len()),
+        });
+    } else {
+        progress(InspectionProgress {
+            stage: "Rust sidecar coverage",
+            completed: 0,
+            total: Some(0),
+        });
     }
     inspected
 }
@@ -1401,6 +1534,135 @@ mod tests {
         )
         .unwrap();
         temp
+    }
+
+    // {test}`requirements.authoring.progress`
+    // {test}`requirements.integration.report_api`
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn inspection_progress_preserves_validation_and_finishes_each_phase() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\nThe check MUST pass.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("evidence/requirements.ready.json"),
+            json!({
+                "requirement": "The check MUST pass.",
+                "determination": true,
+                "rationale": "The inspected file has the expected lines.",
+                "inputs": [{
+                    "file": "src/main.rs",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "text": ["// first line", "// second line"]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        for invalid in [false, true] {
+            if invalid {
+                fs::write(root.join("evidence/broken.json"), "{").unwrap();
+                fs::write(root.join("src/broken.rs"), "fn {").unwrap();
+                fs::write(root.join("src/lib.rs"), "fn retained() {}\n").unwrap();
+                fs::write(root.join("src/binary.dat"), [0xff]).unwrap();
+                fs::create_dir_all(root.join("evidence/rust/src")).unwrap();
+                fs::write(root.join("evidence/rust/src/ghost.rs.json"), "{}").unwrap();
+            }
+            let expected = super::inspect_repository(root).unwrap();
+            let mut updates = Vec::new();
+            let inspected =
+                super::inspect_repository_with_progress(root, |update| updates.push(update))
+                    .unwrap();
+            assert_eq!(inspected.report.requirements, expected.report.requirements);
+            assert_eq!(inspected.report.examples, expected.report.examples);
+            assert_eq!(
+                inspected.report.evidence_files,
+                expected.report.evidence_files
+            );
+            assert_eq!(inspected.report.errors, expected.report.errors);
+            assert_eq!(inspected.rust_functions, expected.rust_functions);
+            assert_eq!(inspected.discovery_errors, expected.discovery_errors);
+            assert_eq!(
+                inspected.definitions.keys().collect::<Vec<_>>(),
+                expected.definitions.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(inspected.report.requirements, 1);
+            assert_eq!(inspected.report.examples, 0);
+            if invalid {
+                let errors = inspected.report.errors.join("\n");
+                for error in [
+                    "invalid JSON",
+                    "cannot parse Rust source",
+                    "orphaned Rust attestation file",
+                ] {
+                    assert!(errors.contains(error), "missing {error:?}: {errors}");
+                }
+                assert_eq!(
+                    inspected.rust_functions,
+                    [("src/lib.rs".into(), "fn[retained]".into(), false)]
+                );
+            } else {
+                assert!(inspected.report.errors.is_empty());
+            }
+            assert!(updates.iter().any(|update| update.total.is_none()));
+            assert!(updates.iter().all(|update| {
+                update
+                    .total
+                    .map_or(update.completed == 0, |total| update.completed <= total)
+            }));
+            let expected_counts = [
+                ("evidence files", if invalid { 2 } else { 1 }),
+                ("reference source files", if invalid { 6 } else { 3 }),
+                ("reference coverage", 1),
+                ("Rust attestation files", if invalid { 3 } else { 1 }),
+                ("Rust sidecar coverage", if invalid { 1 } else { 0 }),
+            ];
+            for (stage, total) in expected_counts {
+                let completed: Vec<_> = updates
+                    .iter()
+                    .filter(|update| update.stage == stage && update.total.is_some())
+                    .map(|update| {
+                        assert_eq!(update.total, Some(total), "{stage}");
+                        update.completed
+                    })
+                    .collect();
+                assert_eq!(completed, (0..=total).collect::<Vec<_>>(), "{stage}");
+            }
+        }
+    }
+
+    // {test}`requirements.authoring.progress`
+    #[test]
+    fn inspection_progress_reports_empty_phases_as_complete() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir(temp.path().join("md")).unwrap();
+        fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        let mut updates = Vec::new();
+        let inspected =
+            super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))
+                .unwrap();
+        assert!(inspected.report.errors.is_empty());
+        for stage in [
+            "evidence files",
+            "reference coverage",
+            "Rust attestation files",
+            "Rust sidecar coverage",
+        ] {
+            assert!(
+                updates.contains(&super::InspectionProgress {
+                    stage,
+                    completed: 0,
+                    total: Some(0),
+                }),
+                "{stage}: {updates:?}"
+            );
+        }
     }
 
     // {test}`requirements.ci.book_source`

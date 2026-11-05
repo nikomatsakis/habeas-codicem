@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `list_files` tool with this interface:\n\n```text\nlist_files({ path: String = \".\" }) -> Array<DirectoryEntry>\n\nDirectoryEntry {\n    path: String,\n    kind: \"file\" | \"directory\",\n}\n```\n\nThe tool MUST list the immediate children of the requested directory, returning\nproject-relative paths where possible and absolute paths for permitted external\nfiles. Its root listing MUST also expose available generated-output directories\nand configured external allow paths. The model can list a returned\ndirectory in another call to explore further. A failed listing MUST return an\nexplanatory tool error unless access was denied, which MUST abort under\n{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.\nListings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.\nIn a Git worktree, directories MUST have at least one eligible source\ndescendant to be listed unless explicitly allowed or discovered as generated\noutput. Explicitly requesting an excluded path MUST return an\nauthoring error under {cite}`requirements.authoring.read_denial`.",
   "determination": true,
-  "rationale": "I judge that `list_files` meets `requirements.authoring.file_discovery`. I did not run the tests. My judgment comes from reading the cited code and tests.\n\n**Interface and result shape** (`src/authoring/tools.rs`)\n- `definitions()` declares `list_files` with an optional `path` that defaults to `\".\"` and `additionalProperties:false`. The description tells the model that listings are not evidence, that root listings expose allowed and generated paths, and that denied requests abort.\n- `dispatch` routes `list_files` to `list_files()`. `check_keys` rejects unknown arguments, and `optional_path` supplies the `\".\"` default.\n- `list_files()` returns an array of `{path, kind}` objects with `kind` either `\"file\"` or `\"directory\"`. Entries are sorted and de-duplicated.\n\n**Immediate children and path form**\n- `fs::read_dir` on the resolved directory yields only the immediate children.\n- `relative_path` strips the project root, so in-project paths come back project-relative. Permitted external paths stay absolute because `strip_prefix` fails and the original path is kept.\n\n**Root listing**\n- When the directory is the project root, `list_files()` also adds `access.extra_roots()`. These are the configured `allow` paths plus discovered Cargo build-script output directories. Each one is added only if `access.path()` accepts it.\n- The test `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` covers a git-ignored allowed directory and an external allowed directory. The test `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` covers generated output.\n\n**Errors**\n- Read failures are mapped to `io::Error` messages such as \"cannot list …\", or \"cannot open …\" from `resolve`. An empty path gives \"path must not be empty\".\n- Denials are `PermissionDenied`. The dispatch loop in `src/authoring/mod.rs` (lines 532–548) aborts on `PermissionDenied` and returns every other error to the model as a recoverable tool error.\n- The tests assert `PermissionDenied` for disallowed paths. They assert an error for `../` and for an outside symlink.\n\n**Not evidence**\n- `list_files()` returns `inputs: Vec::new()`. The test `reading_records_only_delivered_sources_and_their_terms` asserts `listing.inputs.is_empty()`.\n\n**Omitting excluded files**\n- Every child is filtered through `SourceAccess::path`, and children that error are skipped. That function enforces:\n  - `evidence/` exclusion, including symlink aliases, via `generated_evidence_path` and canonicalization;\n  - credential-bearing configuration;\n  - containment in the project root;\n  - Git-index tracking of both the alias and its target;\n  - the `disallow` rules from `habeas.toml`.\n- Tests:\n  - `generated_evidence_is_excluded_from_reads_search_and_discovery` covers `evidence/` and its symlink aliases, and checks that a nested `src/evidence` is still discoverable.\n  - `outside_symlinks_are_excluded_from_reads_search_and_discovery` covers symlinks that point outside the project.\n  - `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` covers an untracked file, an untracked directory, and an exact root listing.\n  - `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` covers symlink alias and target tracking.\n\n**Directories need an eligible source descendant**\n- `has_source_under` requires at least one eligible descendant. Descendants come from the extra roots (allowed or generated) or from tracked files that pass `self.file`. Otherwise it returns a denied error that points to `git add`.\n- Allowed and generated directories are exempt through the earlier `generated`/`allowed` branches in `path()`.\n- The tests assert that `untracked-dir` is hidden and that listing it errors.\n\n**Explicit request for an excluded path**\n- Explicit requests for `evidence`, `old-output`, `outside`, `untracked-dir`, `generated/private` and a disallowed target-output directory each return an error. The tests check the \"generated evidence\" or \"disallowed\" message, or `PermissionDenied`.\n\n**Minor gaps, not enough to fail**\n- There is no dedicated test for listing a nonexistent directory or a regular file. Both fall through the same `resolve` and `read_dir` error mapping, which is simple.\n- There is no test that lists the children of an external directory. Those children use the same `relative_path` and `access.path` logic, which the external-file read test exercises.\n- None of these gaps is marked with a FIXME.\n\nThe implementation matches each clause of the requirement, and the tests cover the main parts of the design space.",
+  "rationale": "**Verdict: the requirement is met.** The implementation covers each clause, and the tests cover the main cases. I found no acknowledged gaps (no FIXME markers), and two minor cases are untested.\n\n**Interface (`src/authoring/tools.rs`)**\n- `definitions()` declares `list_files` with an optional `path` that defaults to `.`. Its description matches the requirement's wording on eligible sources, root listings, exclusions and denial.\n- `dispatch` routes `list_files` to `list_files()`. `check_keys` rejects unknown arguments, and `optional_path` supplies the `.` default.\n- `list_files()` returns an array of `{path, kind}` with kind `file` or `directory`. It lists only immediate children via `fs::read_dir`, and `ToolDelivery.inputs` is always empty, so listings never become evidence inputs.\n- Paths come from `relative_path`, which strips the project root. External allowed paths stay absolute.\n\n**Filtering and access policy (`src/authoring/access.rs`)**\n- Every child is passed through `SourceAccess::path`, and entries that fail are skipped silently. The policy covers:\n  - `evidence/`, including symlink aliases;\n  - credential-bearing config;\n  - disallow rules;\n  - paths outside the project;\n  - untracked files, where both the alias and its target must be tracked.\n- `has_source_under` requires a directory to have at least one eligible source descendant in a Git worktree. Explicitly allowed roots and generated-output directories are exempt.\n- At the root, `extra_roots()` (allow paths plus generated-output directories) is appended to the listing, then sorted and de-duplicated.\n\n**Failure and denial handling**\n- Ordinary failures return an explanatory `io::Error`: \"path must not be empty\", \"cannot open …\", and \"cannot list …\". `mod.rs` (lines 561–573) sends these back to the model as recoverable tool results.\n- A `PermissionDenied` error aborts the assessment, which is the `read_denial` behaviour. `SourceAccess::path` returns `denied(...)` for explicit requests to excluded paths.\n\n**Tests (`tools.rs` test module)**\n- `reading_records_only_delivered_sources_and_their_terms` checks the exact listing result `[{path:\"src/lib.rs\",kind:\"file\"}]` and that `inputs` is empty.\n- `generated_evidence_is_excluded_from_reads_search_and_discovery` checks that `evidence/` and its symlink aliases are absent from the root listing. Listing `evidence` or `old-output` returns a \"generated evidence\" error.\n- `outside_symlinks_are_excluded_from_reads_search_and_discovery` checks that outside symlinks are omitted and that listing `outside` fails.\n- `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` checks the exact root listing, which omits untracked files and the untracked directory. Listing `untracked-dir` fails.\n- `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` checks the alias/target tracking rule in listings.\n- `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` checks that the root listing exposes an allowed ignored directory and an absolute external path. Listing a disallowed descendant returns `PermissionDenied`.\n- `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` checks that the generated-output directory appears in the root listing, and that a `disallow` rule hides it and makes `list_files` return `PermissionDenied`.\n- `search_merges_context_windows_and_respects_ignore_rules` checks that `list_files(\"../\")` errors.\n\n**Minor gaps**\n- Listing a nonexistent path or a regular file is not tested directly. The code path is simple (`resolve` and `read_dir` errors wrapped with explanatory text), so I don't treat this as a blocking gap.\n- Nothing asserts that a recoverable listing failure stays recoverable end to end. That behaviour is visible in the `mod.rs` code, which I read rather than ran.",
   "inputs": [
     {
       "requirements": "requirements.authoring.file_discovery",
@@ -1100,19 +1100,19 @@
       "line_start": 494,
       "line_end": 506,
       "text": [
-        "workspace default, then the user's default. Named workspace configurations MUST",
-        "override same-named user configurations as complete records. Backend, model,",
-        "connection settings, and options MUST come from the selected record as a unit;",
-        "fields MUST NOT be merged between records. Workspace-only authoring MUST work",
-        "without a user configuration file. Missing configuration or an unknown selection",
-        "MUST identify the relevant configuration file and point to documented examples.",
+        "    session_token: Optional<SecretString>,",
+        "}",
         "",
-        "An explicit Bedrock AWS profile or region MUST override the corresponding SDK",
-        "default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use",
-        "its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its",
-        "named variable MUST supply the credential; a missing or empty value MUST produce",
-        "an error before a model request.",
-        ":::"
+        "OllamaConfig {",
+        "    model: ModelId,                           // exact identifier, including tag",
+        "    endpoint: Optional<String>,               // default: http://localhost:11434",
+        "    api_key_env: Optional<EnvironmentVariableName>,",
+        "    api_key: Optional<SecretString>,",
+        "    options: Map<String, OptionValue>,",
+        "}",
+        "",
+        "OptionValue = String | Boolean | Integer | FiniteFloat",
+        "            | Array<OptionValue> | Map<String, OptionValue>"
       ]
     },
     {
@@ -1120,11 +1120,11 @@
       "line_start": 233,
       "line_end": 237,
       "text": [
-        "            json!({\"temperature\":\"hot\"}),",
-        "            json!({\"maxTokens\":-1}),",
-        "            json!({\"maxTokens\":2147483648_u64}),",
-        "            json!({\"topP\":true}),",
-        "            json!({\"stopSequences\":\"stop\"}),"
+        "                .ok_or_else(|| option_type(\"topP\", \"a number\"))?,",
+        "        );",
+        "    }",
+        "    if let Some(value) = options.remove(\"stopSequences\") {",
+        "        request.options.stop = serde_json::from_value(value)"
       ]
     },
     {
@@ -1266,23 +1266,23 @@
       "line_start": 476,
       "line_end": 492,
       "text": [
-        "            .filter(|call| call.function.name.as_str() == \"submit_judgment\")",
-        "            .collect();",
-        "        if !submissions.is_empty() {",
-        "            for call in &calls {",
-        "                if call.function.name.as_str() != \"submit_judgment\" {",
-        "                    usage.skipped_tool(call.function.name.as_str());",
+        "            index,",
+        "            started.elapsed().as_millis(),",
+        "            response.as_ref().ok().map(|r| &r.usage),",
+        "        )?;",
+        "        let response = match response {",
+        "            Ok(response) => response,",
+        "            Err(error) => {",
+        "                if let Some(delay) = backoff.next_delay(&error) {",
+        "                    tokio::time::sleep(delay).await;",
+        "                    continue;",
         "                }",
+        "                return Err(error);",
         "            }",
-        "            if submissions.len() != 1 {",
-        "                for _ in &submissions {",
-        "                    usage.tool(\"submit_judgment\", true);",
-        "                }",
-        "                return Err(io::Error::other(",
-        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
-        "                ));",
-        "            }",
-        "            let result = submission("
+        "        };",
+        "        backoff = providers::ProviderBackoff::default();",
+        "        sources.record_inputs(&pending);",
+        "        pending.clear();"
       ]
     },
     {
@@ -1442,6 +1442,33 @@
       "line_start": 490,
       "line_end": 530,
       "text": [
+        "        backoff = providers::ProviderBackoff::default();",
+        "        sources.record_inputs(&pending);",
+        "        pending.clear();",
+        "        if let Some(error) = turn_failure(",
+        "            &response.choice,",
+        "            Some(&response.stop()),",
+        "            response.finish_reason().as_ref(),",
+        "        ) {",
+        "            return Err(io::Error::other(error));",
+        "        }",
+        "        let calls: Vec<_> = response.tool_calls().cloned().collect();",
+        "        let submissions: Vec<_> = calls",
+        "            .iter()",
+        "            .filter(|call| call.function.name.as_str() == \"submit_judgment\")",
+        "            .collect();",
+        "        if !submissions.is_empty() {",
+        "            for call in &calls {",
+        "                if call.function.name.as_str() != \"submit_judgment\" {",
+        "                    usage.skipped_tool(call.function.name.as_str());",
+        "                }",
+        "            }",
+        "            if submissions.len() != 1 {",
+        "                for _ in &submissions {",
+        "                    usage.tool(\"submit_judgment\", true);",
+        "                }",
+        "                return Err(io::Error::other(",
+        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
         "                ));",
         "            }",
         "            let result = submission(",
@@ -1455,34 +1482,7 @@
         "            let evidence = match &sources.subject_kind {",
         "                AssessmentKind::Definition(kind) => json!({kind.noun(): sources.subject_text,",
         "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()}),",
-        "                AssessmentKind::RustFunction {",
-        "                    rust_item,",
-        "                    citations,",
-        "                } => json!({",
-        "                    \"rust_item\": rust_item, \"citations\": citations,",
-        "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()",
-        "                }),",
-        "            };",
-        "            return Ok((judgment, evidence));",
-        "        }",
-        "        if calls.is_empty() {",
-        "            return Err(io::Error::other(",
-        "                \"model finished without invoking submit_judgment\",",
-        "            ));",
-        "        }",
-        "        request.chat_history.push(",
-        "            response",
-        "                .message()",
-        "                .ok_or_else(|| io::Error::other(\"model returned an empty response\"))?,",
-        "        );",
-        "        let mut results = Vec::new();",
-        "        for call in calls {",
-        "            match tools::dispatch(",
-        "                sources,",
-        "                call.function.name.as_str(),",
-        "                &Value::Object(call.function.arguments.clone()),",
-        "            ) {",
-        "                Ok(delivery) => {"
+        "                AssessmentKind::RustFunction {"
       ]
     },
     {
@@ -1490,11 +1490,11 @@
       "line_start": 127,
       "line_end": 131,
       "text": [
-        "// {impl}`requirements.authoring.usage_storage`",
-        "// {impl}`requirements.configuration.state_location`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,"
+        "    subject: &str,",
+        "    selection: Option<&str>,",
+        ") -> io::Result<AuthoringOutcome> {",
+        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
+        "}"
       ]
     },
     {
@@ -1502,11 +1502,11 @@
       "line_start": 179,
       "line_end": 183,
       "text": [
-        "        io::Error::new(",
-        "            error.kind(),",
-        "            format!(\"{error}; usage: {}\", usage.path.display()),",
-        "        )",
-        "    })"
+        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
+        "                usage.path.display(),",
+        "                usage.record.evidence_written",
+        "            ),",
+        "        )"
       ]
     },
     {
@@ -1514,11 +1514,11 @@
       "line_start": 327,
       "line_end": 331,
       "text": [
-        "        BackendKind::Ollama => \"ollama\",",
-        "    };",
-        "    usage.record.backend = Some(backend.into());",
-        "    usage.record.model = Some(model.model.clone());",
-        "    let mut sources = match subject {"
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.usage_inputs`",
+        "// {impl}`requirements.authoring.provider`"
       ]
     },
     {
@@ -1579,13 +1579,13 @@
       "line_start": 1451,
       "line_end": 1457,
       "text": [
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!(",
-        "                errors.iter().any(|error| error.contains(expected)),",
-        "                \"{configuration:?}: {errors:?}\"",
-        "            );",
+        "                rationale.unwrap_or(\"\")",
+        "            ));",
         "        }",
-        "    }"
+        "        let Some(inputs) = array_field(entry, \"inputs\", &entry_label, errors) else {",
+        "            continue;",
+        "        };",
+        "        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);"
       ]
     },
     {
@@ -1593,11 +1593,11 @@
       "line_start": 1530,
       "line_end": 1534,
       "text": [
-        "        )",
-        "        .unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
         "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.three.json\"),",
-        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),"
+        "            temp.path().join(\"src/main.rs\"),",
+        "            \"// first line\\n// second line\\n\",",
+        "        )"
       ]
     },
     {
@@ -1734,23 +1734,23 @@
       "line_start": 532,
       "line_end": 548,
       "text": [
-        "                    usage.prepared(call.function.name.as_str(), &delivery.inputs);",
-        "                    pending.extend(delivery.inputs);",
-        "                    results.push(",
-        "                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),",
-        "                    );",
-        "                }",
-        "                Err(error) => {",
-        "                    usage.tool(call.function.name.as_str(), true);",
-        "                    if error.kind() == io::ErrorKind::PermissionDenied {",
-        "                        return Err(error);",
-        "                    }",
-        "                    results",
-        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
-        "                }",
-        "            }",
+        "                    citations,",
+        "                } => json!({",
+        "                    \"rust_item\": rust_item, \"citations\": citations,",
+        "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()",
+        "                }),",
+        "            };",
+        "            return Ok((judgment, evidence));",
         "        }",
-        "        usage.save()?;"
+        "        if calls.is_empty() {",
+        "            return Err(io::Error::other(",
+        "                \"model finished without invoking submit_judgment\",",
+        "            ));",
+        "        }",
+        "        request.chat_history.push(",
+        "            response",
+        "                .message()",
+        "                .ok_or_else(|| io::Error::other(\"model returned an empty response\"))?,"
       ]
     },
     {
@@ -1808,11 +1808,11 @@
       "line_start": 274,
       "line_end": 278,
       "text": [
-        "            AssistantContent::ToolCall(ToolCall::from_wire(",
-        "                \"client-2\",",
-        "                ToolFunction::new(ToolName::new(\"list_files\").unwrap(), json!({})),",
-        "            )),",
-        "        ];"
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    #[test]",
+        "    fn retries_typed_throttling_but_not_permanent_token_errors() {"
       ]
     },
     {
@@ -2127,9 +2127,9 @@
       "line_start": 422,
       "line_end": 424,
       "text": [
-        "    } else {",
-        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
-        "    };"
+        "    let judgment = Judgment::from_value(&object[\"determination\"]).map_err(io::Error::other)?;",
+        "    let rationale = object[\"rationale\"]",
+        "        .as_str()"
       ]
     },
     {
@@ -2137,9 +2137,9 @@
       "line_start": 606,
       "line_end": 608,
       "text": [
-        "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
-        "            let mut sources ="
+        "            if self.requests.borrow().len() <= self.failures {",
+        "                return Err(io::Error::other(",
+        "                    rig_core::error::ProviderError::from_provider_body(\"Too many tokens\")"
       ]
     },
     {
@@ -2160,6 +2160,26 @@
         "        assert_eq!(sent[\"outcome\"], \"completed\");",
         "        assert_eq!(sent[\"determination\"], \"FIXME\");",
         "        assert_eq!(sent[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 561,
+      "line_end": 573,
+      "text": [
+        "                    results.push(",
+        "                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),",
+        "                    );",
+        "                }",
+        "                Err(error) => {",
+        "                    usage.tool(call.function.name.as_str(), true);",
+        "                    if error.kind() == io::ErrorKind::PermissionDenied {",
+        "                        return Err(error);",
+        "                    }",
+        "                    results",
+        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
+        "                }",
+        "            }"
       ]
     }
   ]

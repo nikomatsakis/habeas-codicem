@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.\nIts supported feature tables are `[authoring]` and `[evidence]`; either MAY be\nabsent. Unknown common keys, unsupported versions, invalid field types, and\ninvalid TOML MUST produce a diagnostic identifying the file and setting.\nFeatures MUST define their own data structures and loading rules under\n{cite}`requirements.configuration.feature_sections`. A file containing only\n`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table\ninside `book.toml`.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is met. The one gap is minor: tests rarely assert the setting name in diagnostics.\n\n**Implementation (`src/config.rs`)**\n- `WorkspaceConfig` has `version`, an optional `authoring` table and an optional `evidence` table. It uses `#[serde(deny_unknown_fields)]`, and each feature table defines its own struct (`WorkspaceAuthoringConfig`, `EvidenceConfig`). That matches the requirement that features define their own structures.\n- `WorkspaceConfig::parse` and `load_workspace_config` run the same checks in order:\n  1. `parse_document` rejects invalid TOML, with line and column.\n  2. `validate_workspace_common` requires `version == 1` and rejects any root key other than `version`, `authoring` and `evidence`.\n  3. `decode` reports invalid field types.\n  4. `validate` checks the version again, the names, and the evidence paths.\n- Every error goes through `invalid(path, setting, msg)`, which produces `<file>: <setting>: <message>`. The diagnostic therefore names the file and the setting. For type errors, the message is the toml error text, which normally names the key.\n- A file containing only `version = 1` is valid, because both feature tables are optional (`Option`, `#[serde(default)]`).\n- `load_workspace_evidence` reads only the `evidence` table, so unused authoring settings are not validated. `main` and `inspect_repository` call it.\n- Settings live in `habeas.toml`. A test asserts that `ProjectConfig::from_book_toml(\"[habeas]…\")` is an error, so a `[habeas]` table in `book.toml` is not accepted as configuration. The requirement forbids requiring one, and nothing in the cited code requires it.\n- `to_toml` validates before it serializes, and a round-trip test checks the result.\n\n**Tests**\n- `tests/configuration.rs`, `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it`:\n  - nearest-file discovery, with no merging;\n  - an absent `authoring` or `evidence` table is handled;\n  - the file is not rewritten;\n  - a `to_toml` / `parse` round trip;\n  - invalid TOML produces an error naming the path and \"invalid TOML\".\n- `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials`:\n  - `version = 2`, an unknown root key, an empty path, a non-string path entry, and an unknown key in `[evidence]` each produce an error containing the file path;\n  - a wrongly typed `authoring.default = 123` fails the full load but not the evidence-only load.\n- `workspace_defaults_and_configs_combine_with_existing_user_selections` covers the `[authoring]` table.\n- `tests/evidence_boundaries.rs`, `validation_checks_workspace_common_config_without_loading_unused_authoring_settings`: wrong version, unknown key and bad TOML are all reported with `habeas.toml` named. A file with only `version = 1` is valid in several fixtures there.\n- `tests/commands.rs`, `status_loads_nearest_workspace_file_without_validating_authoring`: the status error names the file and `version`. A `version = [` file produces an error with the full path.\n- `tests/authoring_cli.rs` exercises an end-to-end workspace-only configuration with no user file.\n\n**Gap (minor):** most diagnostic assertions check the file path. Only the `version` case also asserts the setting name. The implementation does include the setting everywhere, so I judge this acceptable. There is no `FIXME` marker in the sources.",
+  "rationale": "**Judgment:** the sources satisfy `requirements.configuration.workspace_structure`. One small weakness remains in the tests, described at the end.\n\n**Implementation (`src/config.rs`)**\n- `WorkspaceConfig` is a serde struct with `#[serde(deny_unknown_fields)]`, a `version: u32` field, and optional `authoring` and `evidence` tables. Both tables carry `skip_serializing_if = \"Option::is_none\"`, so either may be absent and a file containing only `version = 1` is valid.\n- `validate_workspace_common` rejects any version other than integer 1. It also rejects any root key other than `version`, `authoring` or `evidence`. Its diagnostics go through `invalid(path, setting, message)`, which formats `path: setting: message`, so both the file and the setting are named.\n- `parse_document` reports invalid TOML with the file path and a line and column. File read errors are prefixed with the path.\n- `WorkspaceConfig::parse` runs `validate_workspace_common`, then typed decoding, then `validate`. The decode step catches invalid field types and unknown nested fields, and it redacts credentials from error messages.\n- `to_toml` validates and then serializes with `toml::to_string_pretty`.\n- `EvidenceConfig::validate` checks that `allow` and `disallow` entries are nonempty and free of NUL, and its diagnostics name `evidence.{field}[{index}]`.\n- `load_workspace_evidence` and `load_workspace_config` both go through `workspace_document`, which calls `validate_workspace_common`. As a result, the evidence-only path (`load_workspace_evidence`) still checks the common structure. It does not validate unused authoring settings, which keeps the features' loading rules separate.\n- No code requires a `[habeas]` table in `book.toml`. Workspace settings come only from `habeas.toml`.\n\n**Tests**\n- `tests/configuration.rs::workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers:\n  - a file with comments, an `[authoring]` table without configs, and an `[evidence]` table;\n  - a round trip through `to_toml` and `parse`;\n  - invalid TOML producing a diagnostic with the file path and \"invalid TOML\".\n- `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` covers:\n  - `version = 2`;\n  - an unknown root key;\n  - an empty path entry;\n  - a wrongly typed `disallow` entry;\n  - an unknown key inside `[evidence]`.\n\n  Each case asserts that the error contains the file path. The same test checks that a credential value never appears in the error.\n- `workspace_defaults_and_configs_combine_with_existing_user_selections` covers workspace authoring resolution, and the unknown-configuration diagnostic names the file.\n- `tests/commands.rs::status_loads_nearest_workspace_file_without_validating_authoring` and `tests/evidence_boundaries.rs::validation_checks_workspace_common_config_without_loading_unused_authoring_settings` cover:\n  - `version = 2`, an unknown key and invalid TOML, with diagnostics naming `habeas.toml`;\n  - a file where only the unused authoring settings are invalid.\n- Many fixtures write a file containing only `version = 1`, which is valid.\n- `tests/authoring_cli.rs` covers an end-to-end workspace-only configuration without a user file.\n- `tests/configuration.rs` also asserts that `ProjectConfig::from_book_toml` rejects a `[habeas]` table in `book.toml`.\n\n**Remaining weakness**\n- Most negative tests assert only that the file path appears in the error. The setting name is not asserted in every case. The code does supply it for version and unknown-key errors. For nested type errors it relies on the TOML error text.\n- This is minor and no source comment acknowledges it as a gap. It does not change the verdict.",
   "inputs": [
     {
       "requirements": "requirements.configuration.workspace_structure",
@@ -327,7 +327,34 @@
         "// {impl}`requirements.configuration.workspace_structure`",
         "// {impl}`requirements.configuration.loading`",
         "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    inspect_repository_with_progress(root, |_| {})",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/evidence.rs",
+      "rust_item": "fn[inspect_repository_with_progress]",
+      "text": [
+        "// {impl}`requirements.integration.report_api`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.authoring.progress`",
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository_with_progress(",
+        "    root: &Path,",
+        "    mut progress: impl FnMut(InspectionProgress),",
+        ") -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
+        "    progress(InspectionProgress {",
+        "        stage: \"discovering requirements\",",
+        "        completed: 0,",
+        "        total: None,",
+        "    });",
         "    let mut errors = Vec::new();",
         "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
         "        errors.push(error.to_string());",
@@ -342,15 +369,26 @@
         "        Vec::new()",
         "    };",
         "    let mut present = BTreeSet::new();",
+        "    let ordinary_files: Vec<_> = evidence_files",
+        "        .iter()",
+        "        .filter(|file| {",
+        "            let relative = file",
+        "                .strip_prefix(&evidence_root)",
+        "                .expect(\"evidence file is inside evidence directory\");",
+        "            !(relative.starts_with(\"rust\") && relative.to_string_lossy().ends_with(\".rs.json\"))",
+        "        })",
+        "        .collect();",
         "",
         "    // {impl}`requirements.ci.orphans`",
-        "    for file in &evidence_files {",
+        "    for (completed, file) in ordinary_files.iter().enumerate() {",
+        "        progress(InspectionProgress {",
+        "            stage: \"evidence files\",",
+        "            completed,",
+        "            total: Some(ordinary_files.len()),",
+        "        });",
         "        let relative = file",
         "            .strip_prefix(&evidence_root)",
         "            .expect(\"evidence file is inside evidence directory\");",
-        "        if relative.starts_with(\"rust\") && relative.to_string_lossy().ends_with(\".rs.json\") {",
-        "            continue;",
-        "        }",
         "        let label = display_path(&root, file);",
         "        let name = if relative.components().count() == 1 {",
         "            relative",
@@ -371,6 +409,11 @@
         "        }",
         "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
         "    }",
+        "    progress(InspectionProgress {",
+        "        stage: \"evidence files\",",
+        "        completed: ordinary_files.len(),",
+        "        total: Some(ordinary_files.len()),",
+        "    });",
         "",
         "    // {impl}`requirements.ci.coverage`",
         "    for (name, definition) in &definitions {",
@@ -383,12 +426,22 @@
         "        }",
         "    }",
         "",
-        "    validate_references(&root, &definitions, &mut errors);",
+        "    validate_references(&root, &definitions, &mut errors, &mut progress);",
         "    // {impl}`requirements.references.rust_function_coverage`",
+        "    progress(InspectionProgress {",
+        "        stage: \"Rust citations\",",
+        "        completed: 0,",
+        "        total: None,",
+        "    });",
         "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);",
         "    // {impl}`requirements.references.rust_function_attestations`",
-        "    let rust_functions =",
-        "        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);",
+        "    let rust_functions = validate_rust_attestations(",
+        "        &root,",
+        "        &definitions,",
+        "        &mut errors,",
+        "        &mut discovery_errors,",
+        "        &mut progress,",
+        "    );",
         "",
         "    let examples = definitions",
         "        .values()",
@@ -471,18 +524,23 @@
         "        // {impl}`requirements.authoring.invocation`",
         "        // {impl}`requirements.authoring.batch`",
         "        // {impl}`requirements.authoring.concurrency`",
+        "        // {impl}`requirements.authoring.reporting`",
         "        Command::Author {",
         "            subject,",
         "            all,",
         "            config,",
         "            stdout,",
+        "            verbose,",
         "        } => {",
         "            let root = setup::project_root()?;",
         "            // Tokio's fixed worker pool is shared by all async assessments.",
         "            let runtime = tokio::runtime::Runtime::new()?;",
         "            if all {",
-        "                let outcome =",
-        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;",
+        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
+        "                    &root,",
+        "                    config.as_deref(),",
+        "                    habeas::authoring::AuthoringOptions { verbose },",
+        "                ))?;",
         "                println!(",
         "                    \"{} authored; {} unchanged; {} failed\",",
         "                    outcome.completed.len(),",
@@ -508,13 +566,19 @@
         "                config.as_deref(),",
         "                output,",
         "            ))?;",
-        "            let summary = format!(",
-        "                \"{}: {} / {} — {}\",",
-        "                outcome.subject,",
-        "                outcome.backend,",
-        "                outcome.model,",
-        "                outcome.determination.kind(),",
+        "            let mut summary = format!(",
+        "                \"{}: {} / {}\",",
+        "                outcome.subject, outcome.backend, outcome.model,",
         "            );",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
+        "                summary.push_str(\" — FIXME\");",
+        "            }",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
+        "                eprintln!(\"{}: false\", outcome.subject);",
+        "                if verbose {",
+        "                    eprintln!(\"{}\", outcome.rationale);",
+        "                }",
+        "            }",
         "            if let Some(path) = outcome.evidence_path {",
         "                println!(",
         "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
@@ -1333,6 +1397,707 @@
         "    if let Some(name) = preferred {",
         "        let selected = config::resolve_authoring_from(&path, user.as_ref(), &root, Some(name))?;",
         "        if matches!(selected.backend, BackendConfig::Bedrock(_)) {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 700,
+      "line_end": 720,
+      "text": [
+        "                let table = parse_document(&text, &path)?;",
+        "                validate_workspace_common(&table, &path)?;",
+        "                return Ok(Some((path, table)));",
+        "            }",
+        "            Err(error) if error.kind() == io::ErrorKind::NotFound => {}",
+        "            Err(error) => {",
+        "                return Err(io::Error::new(",
+        "                    error.kind(),",
+        "                    format!(\"{}: {error}\", path.display()),",
+        "                ));",
+        "            }",
+        "        }",
+        "    }",
+        "    Ok(None)",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()> {",
+        "    if table.get(\"version\").and_then(toml::Value::as_integer) != Some(1) {",
+        "        return Err(invalid(path, \"version\", \"expected version = 1\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 198,
+      "line_end": 198,
+      "text": [
+        "        (Behavior::MixedJudgments, \"requirement requirements.beta\") => json!({\"FIXME\": [\"#123\"]}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 464,
+      "line_end": 464,
+      "text": [
+        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 480,
+      "line_end": 480,
+      "text": [
+        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 677,
+      "line_end": 677,
+      "text": [
+        "        \"true 3\", \"false 1\", \"FIXME 1\", \"errors 1\", \"0 active\", \"0 queued\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 692,
+      "line_end": 692,
+      "text": [
+        "    assert!(plain.contains(\"requirements.beta: FIXME\"), \"{plain}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 701,
+      "line_end": 701,
+      "text": [
+        "        json!({\"FIXME\": [\"#123\"]})"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 734,
+      "line_end": 734,
+      "text": [
+        "            diagnostics.contains(\"requirements.beta: FIXME\"),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 149,
+      "line_end": 149,
+      "text": [
+        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 274,
+      "line_end": 274,
+      "text": [
+        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 341,
+      "line_end": 341,
+      "text": [
+        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 376,
+      "line_end": 376,
+      "text": [
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 422,
+      "line_end": 422,
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 543,
+      "line_end": 543,
+      "text": [
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 547,
+      "line_end": 547,
+      "text": [
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 557,
+      "line_end": 557,
+      "text": [
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 568,
+      "line_end": 568,
+      "text": [
+        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 639,
+      "line_end": 639,
+      "text": [
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true, false),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 702,
+      "line_end": 703,
+      "text": [
+        "        if kind == \"FIXME\" {",
+        "            assert!(stderr.contains(\"— FIXME\"), \"{stderr}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 747,
+      "line_end": 747,
+      "text": [
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 944,
+      "line_end": 944,
+      "text": [
+        "            .unwrap()[\"properties\"][\"FIXME\"];"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 993,
+      "line_end": 993,
+      "text": [
+        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\""
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 1012,
+      "line_end": 1012,
+      "text": [
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 139,
+      "line_end": 139,
+      "text": [
+        "                \"FIXME(#00123)\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 151,
+      "line_end": 151,
+      "text": [
+        "        (\"example\", \"case\", &example, vec![\"FIXME(#45)\"]),"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 184,
+      "line_end": 184,
+      "text": [
+        "                \"determination\": {\"FIXME\": references},"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 198,
+      "line_end": 198,
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 298,
+      "line_end": 298,
+      "text": [
+        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 323,
+      "line_end": 323,
+      "text": [
+        "        \"FIXME(#00123)\","
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 322,
+      "line_end": 322,
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 373,
+      "line_end": 373,
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 416,
+      "line_end": 416,
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 274,
+      "line_end": 274,
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 35,
+      "line_end": 35,
+      "text": [
+        "    let source = \"// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).\";"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 59,
+      "line_end": 59,
+      "text": [
+        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 91,
+      "line_end": 92,
+      "text": [
+        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
+        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 98,
+      "line_end": 98,
+      "text": [
+        "        json!(\"FIXME\"),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 101,
+      "line_end": 106,
+      "text": [
+        "        json!({ \"FIXME\": [] }),",
+        "        json!({ \"FIXME\": [\"\"] }),",
+        "        json!({ \"FIXME\": [\"   \"] }),",
+        "        json!({ \"FIXME\": [\"#125\", 125] }),",
+        "        json!({ \"FIXME\": \"#125\" }),",
+        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 151,
+      "line_end": 152,
+      "text": [
+        "            \"// FIXME(#125): capacity-zero insertion does not return Full yet.\",",
+        "            json!({ \"FIXME\": [\"#125\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 155,
+      "line_end": 156,
+      "text": [
+        "            \"// FIXME: cancellation races are not tested on Windows.\",",
+        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 182,
+      "line_end": 182,
+      "text": [
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 265,
+      "line_end": 265,
+      "text": [
+        "            \"determination\": {\"FIXME\": [\"#125\"]},"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 300,
+      "line_end": 300,
+      "text": [
+        "        assert!(status.contains(\"FIXME\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 310,
+      "line_end": 310,
+      "text": [
+        "    assert!(info.contains(\"## FIXME references\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 328,
+      "line_end": 328,
+      "text": [
+        "    assert!(index.content.contains(\"FIXME\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 337,
+      "line_end": 338,
+      "text": [
+        "    assert!(detail.content.contains(\"evidence-FIXME\"));",
+        "    assert!(detail.content.contains(\"## FIXME references\"));"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 764,
+      "line_end": 830,
+      "text": [
+        "        invalid(path, setting, message)",
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.credentials`",
+        "fn credential_values(value: &toml::Value, secret: bool, output: &mut Vec<String>) {",
+        "    match value {",
+        "        toml::Value::String(value) if secret => output.push(value.clone()),",
+        "        toml::Value::Integer(_)",
+        "        | toml::Value::Float(_)",
+        "        | toml::Value::Boolean(_)",
+        "        | toml::Value::Datetime(_)",
+        "            if secret =>",
+        "        {",
+        "            output.push(value.to_string())",
+        "        }",
+        "        toml::Value::Table(table) => {",
+        "            for (key, value) in table {",
+        "                credential_values(",
+        "                    value,",
+        "                    secret || matches!(key.as_str(), \"credentials\" | \"api_key\"),",
+        "                    output,",
+        "                );",
+        "            }",
+        "        }",
+        "        toml::Value::Array(values) => {",
+        "            for value in values {",
+        "                credential_values(value, secret, output);",
+        "            }",
+        "        }",
+        "        _ => {}",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.configuration.structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring(",
+        "    root: &Path,",
+        "    explicit: Option<&str>,",
+        ") -> io::Result<ResolvedAuthoringConfig> {",
+        "    let workspace = load_workspace_config(root)?;",
+        "    let path = user_config_path()?;",
+        "    let config = load_user_config(&path)?;",
+        "    resolve_authoring_with_workspace_from(",
+        "        &path,",
+        "        config.as_ref(),",
+        "        workspace.as_ref(),",
+        "        root,",
+        "        explicit,",
+        "    )",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "// {impl}`requirements.configuration.serialization`",
+        "// {impl}`requirements.authoring.concurrency`",
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring_from(",
+        "    path: &Path,",
+        "    user: Option<&UserConfig>,",
+        "    root: &Path,",
+        "    explicit: Option<&str>,",
+        ") -> io::Result<ResolvedAuthoringConfig> {"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 415,
+      "line_end": 425,
+      "text": [
+        "",
+        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn workspace_defaults_and_configs_combine_with_existing_user_selections() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let root = temp.path().canonicalize().unwrap();",
+        "    let user_path = root.join(\"user.toml\");",
+        "    let mut user = UserConfig::parse(\"version = 1\\n[authoring]\\ndefault = 'user'\\n[authoring.configs.user]\\nbackend = 'bedrock'\\nmodel = 'user-model'\\naws_profile = 'user-profile'\\n[authoring.configs.shared]\\nbackend = 'bedrock'\\nmodel = 'old-model'\\nregion = 'us-west-2'\\nconcurrency = 7\\n\", &user_path).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 143,
+      "line_end": 147,
+      "text": [
+        "    let serialized = config.to_toml().unwrap();",
+        "    assert!(!serialized.contains(\"endpoint\"));",
+        "    assert!(!serialized.contains(\"http://localhost\"));",
+        "    assert!(!serialized.contains(\"concurrency\"));",
+        "    assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 175,
+      "line_end": 177,
+      "text": [
+        "        assert_eq!(resolved.effective_concurrency(), expected);",
+        "        assert!(!defaults.to_toml().unwrap().contains(\"concurrency\"));",
+        ""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 183,
+      "line_end": 185,
+      "text": [
+        "        let serialized = configured.to_toml().unwrap();",
+        "        assert!(serialized.contains(\"concurrency = 7\"));",
+        "        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 191,
+      "line_end": 194,
+      "text": [
+        "                .to_string();",
+        "            assert!(error.contains(&path.display().to_string()), \"{error}\");",
+        "            assert!(error.contains(\"concurrency\"), \"{error}\");",
+        "        }"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 255,
+      "line_end": 259,
+      "text": [
+        "        .to_string();",
+        "    assert!(error.contains(\"DEFAULT\"));",
+        "    assert!(error.contains(\"config.toml\"));",
+        "    assert!(error.contains(\"editing-the-file\"));",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 262,
+      "line_end": 264,
+      "text": [
+        "            .to_string()",
+        "            .contains(\"no authoring configuration\")",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 287,
+      "line_end": 289,
+      "text": [
+        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
+        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 316,
+      "line_end": 319,
+      "text": [
+        "    let serialized = config.to_toml().unwrap();",
+        "    assert!(serialized.contains(\"MODEL_KEY\"));",
+        "    assert!(!serialized.contains(\"private-value\"));",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 357,
+      "line_end": 359,
+      "text": [
+        "    let serialized = closest.config.to_toml().unwrap();",
+        "    assert!(!serialized.contains(\"configs\"));",
+        "    assert_eq!("
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 365,
+      "line_end": 368,
+      "text": [
+        "    let error = load_workspace_config(&nested).unwrap_err().to_string();",
+        "    assert!(error.contains(path.to_str().unwrap()), \"{error}\");",
+        "    assert!(error.contains(\"invalid TOML\"), \"{error}\");",
+        "    fs::remove_file(path).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 390,
+      "line_end": 392,
+      "text": [
+        "    let error = load_workspace_config(temp.path()).unwrap_err().to_string();",
+        "    assert!(!error.contains(\"DO_NOT_PRINT_THIS_CREDENTIAL\"), \"{error}\");",
+        ""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 411,
+      "line_end": 413,
+      "text": [
+        "            .to_string();",
+        "        assert!(error.contains(path.to_str().unwrap()), \"{error}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 517,
+      "line_end": 519,
+      "text": [
+        "    assert!(",
+        "        error.contains(path.to_str().unwrap()) && error.contains(\"missing\"),",
+        "        \"{error}\""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 538,
+      "line_end": 540,
+      "text": [
+        "    ] {",
+        "        assert!(!debug.contains(secret), \"{debug}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 563,
+      "line_end": 567,
+      "text": [
+        "            let error = error.to_string();",
+        "            assert!(error.contains(\"habeas.toml\"), \"{error}\");",
+        "            assert!(!error.contains(\"PRIVATE_\"), \"{error}\");",
+        "            assert!(!error.contains(\"123456789\"), \"{error}\");",
+        "        }"
+      ]
+    },
+    {
+      "file": "Cargo.toml",
+      "line_start": 58,
+      "line_end": 59,
+      "text": [
+        "toml = \"1.2.0\"",
+        "toml_edit = \"0.25.17\""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 540,
+      "line_end": 575,
+      "text": [
+        "    }",
+        "    assert_eq!(",
+        "        WorkspaceConfig::parse(&config.to_toml().unwrap(), path).unwrap(),",
+        "        config",
+        "    );",
+        "    let BackendConfig::Ollama(local) = &config.authoring.as_ref().unwrap().configs[\"local\"].backend",
+        "    else {",
+        "        panic!(\"wrong backend\");",
+        "    };",
+        "    assert_eq!(",
+        "        local.api_key_from(|_| None).unwrap().as_deref(),",
+        "        Some(\"PRIVATE_OLLAMA_KEY\")",
+        "    );",
+        "    for invalid_source in [",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = ['PRIVATE_OLLAMA_KEY']\\n\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 'PRIVATE_OLLAMA_KEY' unexpected\\n\",",
+        "        \"version = 1\\n[authoring.configs.cloud]\\nbackend = 'bedrock'\\nmodel = 'm'\\ncredentials = 'PRIVATE_SECRET_KEY'\\n\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 123456789\\n\",",
+        "    ] {",
+        "        for error in [",
+        "            WorkspaceConfig::parse(invalid_source, path).unwrap_err(),",
+        "            UserConfig::parse(invalid_source, path).unwrap_err(),",
+        "        ] {",
+        "            let error = error.to_string();",
+        "            assert!(error.contains(\"habeas.toml\"), \"{error}\");",
+        "            assert!(!error.contains(\"PRIVATE_\"), \"{error}\");",
+        "            assert!(!error.contains(\"123456789\"), \"{error}\");",
+        "        }",
+        "    }",
+        "    for invalid_source in [",
+        "        source.replace(",
+        "            \"model = 'm'\\n[authoring.configs.cloud.credentials]\",",
+        "            \"model = 'm'\\naws_profile = 'p'\\n[authoring.configs.cloud.credentials]\",",
+        "        ),",
+        "        source.replace(",
+        "            \"api_key = 'PRIVATE_OLLAMA_KEY'\","
       ]
     }
   ]

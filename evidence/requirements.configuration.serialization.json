@@ -1,7 +1,7 @@
 {
   "requirement": "Saved configuration MUST remain distinct from resolved runtime configuration.\nSerializing and deserializing a valid configuration MUST preserve its semantic\nvalues, including explicit versus omitted settings. Optional fields MAY be\nomitted on serialization; defaults and environment-derived values MUST NOT be\nmaterialized into omitted fields. TOML comments and formatting need not\nround-trip.\n\nLoading configuration or running a configured feature MUST NOT rewrite the user\nor project configuration as a side effect. Resolved credentials and live runtime\nobjects MUST NOT enter the serialized data structures. Explicitly supplied\ncredential values are permitted only in the fields documented by the authoring\nfeature; credentials resolved from a profile or environment MUST NOT be written\nback to configuration.",
   "determination": true,
-  "rationale": "**Determination: true.** The implementation meets each clause of `requirements.configuration.serialization`, and the tests cover the main points in the design space. I found no acknowledged gaps (no FIXME) and no unacknowledged ones.\n\n**Saved versus resolved configuration**\n- Saved types in `src/config.rs` derive `Serialize` and `Deserialize`: `UserConfig`, `WorkspaceConfig`, `AuthoringConfig`, `BackendConfig`, `BedrockConfig` and `OllamaConfig`.\n- `ResolvedAuthoringConfig` derives only `Clone` and `Debug`. Its doc comment says it holds \"saved values … without resolved secrets\", so it cannot be serialized.\n- Environment-derived credentials are resolved on demand by `OllamaConfig::api_key` and `api_key_from`. These return a `String` and never store the value in the config struct.\n\n**Round trip and omitted fields**\n- Optional fields use `#[serde(default, skip_serializing_if = ...)]` throughout. Examples are `endpoint`, `concurrency`, `aws_profile`, `region`, `api_key`, `api_key_env`, `credentials`, empty `options`, empty `projects`, and workspace `configs`. Defaults such as the Ollama endpoint and the effective concurrency are computed by accessor methods and never written back.\n- `UserAuthoringConfig.configs` has no skip attribute, so it is always emitted, as the authoring requirement asks.\n- Both `to_toml` methods (`UserConfig` at `src/config.rs:223`, `WorkspaceConfig` at `src/config.rs:257`) validate the config and then serialize it with `toml::to_string_pretty`.\n\n**No rewriting and no secrets from the environment**\n- A search of `src` found no code that writes configuration files. `load_user_config` and `load_workspace_config` only read.\n- `SecretString` serializes transparently, so explicitly supplied values round-trip in the documented fields (`credentials` and `api_key`). Its `Debug` output is redacted.\n\n**Tests in `tests/configuration.rs`**\n- `absent_and_minimal_configuration_are_distinct_and_read_only`: an absent file loads as `None` and creates nothing. A minimal file's contents and comment are unchanged after loading. The minimal config round-trips through `to_toml`.\n- `backend_configuration_round_trips_without_materializing_defaults`: a complex config with nested and typed options round-trips. The serialized output contains no `endpoint`, no `http://localhost` and no `concurrency`, so defaults are not materialized.\n- `authoring_concurrency_defaults_overrides_and_invalid_values`: explicit versus omitted `concurrency` is preserved for both backends and round-trips.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values`: the serialized output contains `api_key_env` (`MODEL_KEY`) but not the resolved secret value.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it`: the workspace file is unchanged after loading. Omitted `configs` stay omitted after serialization and round-trip equal.\n- `workspace_defaults_and_configs_combine_with_existing_user_selections`: workspace and user configs are combined for resolution, and its serialization citation matches the requirement.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`: explicit credentials round-trip and are redacted in `Debug` output and error messages.\n\n**Minor limitation**\n- No dedicated test asserts byte-for-byte file immutability across a full authoring run. The code has no config-writing path, so this is adequately covered by inspection plus the read-only load tests.",
+  "rationale": "**Verdict: the requirement is met.** The implementation matches each clause, and the tests cover the main points. I found no acknowledged gaps (no FIXMEs) and no unacknowledged ones.\n\n**Saved versus resolved configuration**\n- Saved types (`UserConfig`, `WorkspaceConfig`, `AuthoringConfig`, `BedrockConfig`, `OllamaConfig`) derive `Serialize`/`Deserialize` in `src/config.rs`.\n- `ResolvedAuthoringConfig` derives only `Clone` and `Debug`. It cannot be serialized, and its doc comment says it holds saved values \"without resolved secrets\".\n- `OllamaConfig::api_key`/`api_key_from` return a plain `String` that the provider code uses directly (`src/authoring/providers.rs:95-96`). The key is never stored back into the config structs.\n- Bedrock profile credentials are never read into any config struct.\n\n**Round-trip and explicit versus omitted**\n- Optional fields (`endpoint`, `concurrency`, `region`, `aws_profile`, `api_key_env`, `api_key`, `credentials`, `options`, `projects`, `default`, `evidence`) use `skip_serializing_if`.\n- Defaults such as the Ollama endpoint and the effective concurrency are computed by accessors and never written into fields.\n- `UserAuthoringConfig::configs` has no skip, so it is always emitted. Workspace `configs` is skipped when empty, which matches the authoring serialization requirement.\n- `UserConfig::to_toml` and `WorkspaceConfig::to_toml` validate the config before calling `toml::to_string_pretty`.\n\n**No rewriting**\n- A search of `src` found no code path that writes user or workspace config files. The only `fs::write` calls are in setup, evidence and tests. `load_user_config` only reads.\n\n**Credentials**\n- Literal credentials exist only in the documented fields: Bedrock `credentials` and Ollama `api_key`.\n- `SecretString` serializes transparently but redacts itself in `Debug`.\n- Validation rejects empty credential values and conflicting combinations.\n- `decode` scrubs credential values from error messages.\n\n**Tests (`tests/configuration.rs`)**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` checks that an absent file is not created, that loading leaves the file byte-for-byte unchanged, and that the config round-trips.\n- `backend_configuration_round_trips_without_materializing_defaults` checks that the default endpoint and concurrency are not serialized, that the Bedrock `options` subtable round-trips, and that `projects` defaults to empty.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` checks that omitted concurrency stays omitted, explicit `concurrency = 7` is preserved on round-trip, and invalid values are rejected.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values` checks that the environment-resolved key \"private-value\" is absent from the serialized TOML while the variable name is kept.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` checks that explicit credentials round-trip and do not appear in `Debug` or error output.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` checks that the workspace file is unchanged after load and that omitted `configs` stays omitted on round-trip.\n- `workspace_defaults_and_configs_combine_with_existing_user_selections` also cites the requirement.\n\n**Minor limit**\n- No test runs the whole authoring CLI and then asserts the config file is unchanged. This is not a meaningful gap, because the only write paths in the source tree are unrelated to config.",
   "inputs": [
     {
       "requirements": "requirements.configuration.serialization",
@@ -574,16 +574,16 @@
       "line_start": 275,
       "line_end": 284,
       "text": [
-        "```text",
-        "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
-        "",
-        "Subject: {{subject_kind}} {{subject_name}}",
-        "",
-        "Read the subject and mandatory inputs below. Use habeas to request any additional",
-        "source information you need. Use list_files to discover files and directories,",
-        "and ripgrep to search file contents.",
-        "The harness records source inputs for you; directory listings are not evidence.",
-        ""
+        "resulting window MUST be returned as a file-range input with its source path,",
+        "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
+        "Setting `context` to zero MUST return only matching lines.",
+        "Search results MUST exclude files disallowed by",
+        "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+        "path MUST abort under {cite}`requirements.authoring.read_denial`.",
+        "Required terminology MUST be included under",
+        "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
+        "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
+        "No matches MUST return empty arrays; invalid arguments or a failed search MUST"
       ]
     },
     {
@@ -655,11 +655,11 @@
       "line_start": 148,
       "line_end": 152,
       "text": [
-        "    if error.kind() != io::ErrorKind::Interrupted {",
-        "        return;",
-        "    }",
-        "    cancel.send_if_modified(|current| {",
-        "        if current.is_none() {"
+        "                return Err(pending.failed(io::Error::new(io::ErrorKind::Interrupted, reason)));",
+        "            }",
+        "            // This collector is the sole writer: functions in the same source",
+        "            // file can finish concurrently without replacing each other's entries.",
+        "            match write_record(&root, &pending) {"
       ]
     },
     {
@@ -667,11 +667,11 @@
       "line_start": 175,
       "line_end": 179,
       "text": [
-        "            let mut entries = match fs::read_to_string(&path) {",
-        "                Ok(text) => {",
-        "                    let mut record: Value = serde_json::from_str(&text)?;",
-        "                    record",
-        "                        .get_mut(\"functions\")"
+        "        }",
+        "    }",
+        "    progress.finish(cancellation.borrow().is_some(), subjects.len());",
+        "    Ok(outcome)",
+        "}"
       ]
     },
     {
@@ -891,11 +891,11 @@
       "line_start": 16,
       "line_end": 20,
       "text": [
+        "use std::time::Instant;",
         "",
         "use rig_core::completion::{CompletionRequest, ToolDefinition};",
         "use rig_core::message::{Message, ToolResultContent, turn_failure};",
-        "use serde_json::{Value, json};",
-        "use tokio::sync::watch;"
+        "use serde_json::{Value, json};"
       ]
     },
     {
@@ -903,16 +903,16 @@
       "line_start": 246,
       "line_end": 255,
       "text": [
-        "                io::Error::new(",
-        "                    error.kind(),",
-        "                    format!(",
-        "                        \"{error}; cannot record usage at {}: {usage_error}\",",
-        "                        usage.path.display()",
-        "                    ),",
-        "                )",
-        "            })?;",
-        "            Err(io::Error::new(",
-        "                error.kind(),"
+        "                outcome,",
+        "                usage,",
+        "            })",
+        "        }",
+        "        Err(error) => {",
+        "            let outcome = if error.kind() == io::ErrorKind::Interrupted {",
+        "                \"cancelled\"",
+        "            } else {",
+        "                \"failed\"",
+        "            };"
       ]
     },
     {
@@ -920,11 +920,11 @@
       "line_start": 336,
       "line_end": 340,
       "text": [
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),",
-        "    }?;",
-        "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
-        "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
-        "    usage.save()?;"
+        "    config: &ResolvedAuthoringConfig,",
+        "    usage: &mut UsageLog,",
+        ") -> io::Result<(Judgment, Value)> {",
+        "    let model = config.model_ref();",
+        "    let backend = match model.backend {"
       ]
     },
     {
@@ -932,11 +932,11 @@
       "line_start": 344,
       "line_end": 348,
       "text": [
-        "            io::Error::other(format!(",
-        "                \"{}: authoring.configs.{}: {error}\",",
-        "                config.config_path.display(),",
-        "                config.name",
-        "            ))"
+        "    usage.record.backend = Some(backend.into());",
+        "    usage.record.model = Some(model.model.clone());",
+        "    let mut sources = match subject {",
+        "        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),",
+        "        AuthoringSubject::RustFunction {"
       ]
     },
     {
@@ -944,11 +944,11 @@
       "line_start": 391,
       "line_end": 395,
       "text": [
-        "    let object = arguments",
-        "        .as_object()",
-        "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;",
-        "    if object.len() != 2",
-        "        || !object.contains_key(\"determination\")"
+        "        AssessmentKind::RustFunction { citations, .. } => serde_json::to_string_pretty(citations)?,",
+        "    };",
+        "    Ok(template",
+        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())",
+        "        .replace(\"{{subject_name}}\", &sources.subject_name)"
       ]
     },
     {
@@ -956,11 +956,11 @@
       "line_start": 550,
       "line_end": 554,
       "text": [
-        "    }",
-        "}",
-        "",
-        "#[cfg(test)]",
-        "mod tests {"
+        "        let mut results = Vec::new();",
+        "        for call in calls {",
+        "            match tools::dispatch(",
+        "                sources,",
+        "                call.function.name.as_str(),"
       ]
     },
     {
@@ -968,11 +968,11 @@
       "line_start": 4,
       "line_end": 8,
       "text": [
+        "use rig_core::completion::{CompletionRequest, CompletionResponse};",
+        "use rig_core::error::ProviderError;",
         "use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};",
         "use rig_core::{DynModel, operation::Completion};",
-        "use serde_json::{Map, Value};",
-        "",
-        "use crate::config::{BackendConfig, BedrockConfig};"
+        "use serde_json::{Map, Value};"
       ]
     },
     {
@@ -980,10 +980,10 @@
       "line_start": 15,
       "line_end": 19,
       "text": [
-        "pub(super) struct RigProvider {",
-        "    model: DynModel<Completion>,",
-        "    options: serde_json::Value,",
-        "    bedrock: bool,",
+        "}",
+        "",
+        "pub(super) struct ProviderBackoff {",
+        "    window: Duration,",
         "}"
       ]
     },
@@ -992,11 +992,11 @@
       "line_start": 157,
       "line_end": 161,
       "text": [
-        "                .ok_or_else(|| option_type(\"temperature\", \"a number\"))?,",
-        "        );",
+        "        Ok(response)",
         "    }",
-        "    if let Some(value) = options.remove(\"maxTokens\") {",
-        "        let tokens = value"
+        "}",
+        "",
+        "// {impl}`requirements.authoring.provider`"
       ]
     },
     {
@@ -1004,11 +1004,11 @@
       "line_start": 176,
       "line_end": 180,
       "text": [
-        "                .ok_or_else(|| option_type(\"topP\", \"a number\"))?,",
-        "        );",
-        "    }",
-        "    if let Some(value) = options.remove(\"stopSequences\") {",
-        "        request.options.stop = serde_json::from_value(value)"
+        "        let id = call",
+        "            .get(\"toolUseId\")",
+        "            .and_then(Value::as_str)",
+        "            .filter(|id| !id.is_empty())",
+        "            .ok_or_else(|| io::Error::other(\"Bedrock client tool call has no toolUseId\"))?;"
       ]
     },
     {
@@ -1398,11 +1398,11 @@
       "line_start": 365,
       "line_end": 369,
       "text": [
-        "            if kind.is_dir() {",
-        "                stack.push(path);",
-        "            } else if kind.is_file() && path.extension().is_some_and(|value| value == extension) {",
-        "                files.push(path);",
-        "            }"
+        "                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)",
+        "                })",
+        "        {",
+        "            errors.push(format!(",
+        "                \"{}: example {name} must cite at least one requirement\","
       ]
     },
     {
@@ -1411,10 +1411,10 @@
       "line_end": 384,
       "text": [
         "    root: &Path,",
-        "    path: &Path,",
-        "    expected: Option<&Declaration>,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,"
+        "    dir: &Path,",
+        "    extension: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Vec<PathBuf> {"
       ]
     },
     {
@@ -1422,11 +1422,11 @@
       "line_start": 481,
       "line_end": 485,
       "text": [
-        "                definitions,",
-        "                input,",
-        "                &format!(\"{label}: inputs[{index}]\"),",
-        "                errors,",
-        "            );"
+        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
+        "        }",
+        "        if let Some(expected) = expected",
+        "            && text != expected.text",
+        "        {"
       ]
     },
     {
@@ -1434,11 +1434,11 @@
       "line_start": 568,
       "line_end": 572,
       "text": [
-        "            root,",
-        "            definitions,",
-        "            &selector,",
-        "            &text,",
-        "            Some(&matches),"
+        "            return None;",
+        "        };",
+        "        let selector = InputSelector::RustItem {",
+        "            rust_file: rust_file.to_owned(),",
+        "            rust_item: rust_item.to_owned(),"
       ]
     },
     {
@@ -1446,11 +1446,11 @@
       "line_start": 652,
       "line_end": 656,
       "text": [
-        "                None",
-        "            })",
-        "        })",
-        "        .collect()",
-        "}"
+        "",
+        "    let file = string_field(object, \"file\", label, errors).and_then(|file| {",
+        "        if file.is_empty() {",
+        "            errors.push(format!(\"{label}: file must be a nonempty path\"));",
+        "            None"
       ]
     },
     {
@@ -1458,11 +1458,11 @@
       "line_start": 699,
       "line_end": 703,
       "text": [
-        "            compact_diff(&old, &new)",
-        "        ));",
+        "    if values.is_empty() {",
+        "        errors.push(format!(\"{label}: text must be a nonempty array\"));",
         "    }",
-        "    Some(resolved)",
-        "}"
+        "    values",
+        "        .iter()"
       ]
     },
     {
@@ -1470,11 +1470,11 @@
       "line_start": 902,
       "line_end": 906,
       "text": [
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();",
-        "    for reference in collect_references(root, errors) {"
+        "        },",
+        "        None => {",
+        "            errors.push(format!(\"{label}: missing field {key:?}\"));",
+        "            None",
+        "        }"
       ]
     },
     {
@@ -1482,11 +1482,11 @@
       "line_start": 949,
       "line_end": 953,
       "text": [
-        "                == Some(true)",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{}: example {name} has a true determination but no {{test}} reference\",",
-        "                display_path(root, &evidence_file)"
+        "}",
+        "",
+        "// {impl}`requirements.references.evidence_coverage`",
+        "// {impl}`requirements.references.targets`",
+        "// {impl}`requirements.examples.evidence`"
       ]
     },
     {
@@ -1494,11 +1494,11 @@
       "line_start": 1073,
       "line_end": 1077,
       "text": [
-        "    else {",
-        "        return Vec::new();",
-        "    };",
-        "    inputs",
-        "        .iter()"
+        "            }",
+        "        };",
+        "        for entry in entries {",
+        "            let entry = match entry {",
+        "                Ok(entry) => entry,"
       ]
     },
     {
@@ -1506,11 +1506,11 @@
       "line_start": 1101,
       "line_end": 1105,
       "text": [
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        "    discovery_errors: &mut Vec<String>,",
-        ") -> Vec<(String, String, bool)> {",
-        "    let mut inspected = Vec::new();"
+        "                        Some(\".git\" | \"target\" | \"book\" | \"evidence\")",
+        "                    );",
+        "                if !excluded {",
+        "                    stack.push(path);",
+        "                }"
       ]
     },
     {
@@ -1518,11 +1518,11 @@
       "line_start": 1171,
       "line_end": 1175,
       "text": [
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn validate_rust_attestation_file(",
-        "    root: &Path,",
-        "    path: &Path,",
-        "    rust_file: &str,"
+        "        .iter()",
+        "        .filter_map(InputSelector::from_input)",
+        "        .filter_map(|selector| selector.resolve(root, definitions).ok())",
+        "        .flat_map(|resolved| {",
+        "            resolved"
       ]
     },
     {
@@ -1530,11 +1530,11 @@
       "line_start": 1202,
       "line_end": 1206,
       "text": [
-        "    };",
-        "    let value: Value = match serde_json::from_str(&source) {",
-        "        Ok(value) => value,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: invalid JSON: {error}; {purpose}\"));"
+        "    let mut expected_files = BTreeSet::new();",
+        "    let initial_errors = errors.len();",
+        "    progress(InspectionProgress {",
+        "        stage: \"discovering Rust sources\",",
+        "        completed: 0,"
       ]
     },
     {
@@ -1542,11 +1542,11 @@
       "line_start": 1385,
       "line_end": 1389,
       "text": [
-        "",
-        "    use serde_json::json;",
-        "    use tempfile::TempDir;",
-        "",
-        "    use super::validate_repository;"
+        "        };",
+        "        let current = expected.get(selector);",
+        "        let location = current.map_or_else(",
+        "            || format!(\"{rust_file} {selector}\"),",
+        "            |(function, _)| {"
       ]
     },
     {
@@ -1554,18 +1554,170 @@
       "line_start": 1396,
       "line_end": 1401,
       "text": [
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
-        "            \"// first line\\n// second line\\n\",",
-        "        )"
+        "        let entry_label = format!(\"{entry_label} ({location}; {purpose})\");",
+        "        if !present.insert(selector.to_owned()) {",
+        "            valid.remove(selector);",
+        "            errors.push(format!(",
+        "                \"{entry_label}: duplicate Rust function attestation\"",
+        "            ));"
       ]
     },
     {
       "file": "src/evidence.rs",
       "line_start": 1417,
       "line_end": 1421,
+      "text": [
+        "                    let name = string_field(value, \"name\", &citation_label, errors);",
+        "                    if let (Some(role), Some(name)) = (role, name) {",
+        "                        if !matches!(role, \"impl\" | \"cite\" | \"test\") {",
+        "                            errors",
+        "                                .push(format!(\"{citation_label}: invalid citation role {role:?}\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1448,
+      "line_end": 1452,
+      "text": [
+        "        if determination == Some(false) {",
+        "            errors.push(format!(",
+        "                \"{entry_label}: determination is false: {}\",",
+        "                rationale.unwrap_or(\"\")",
+        "            ));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1464,
+      "line_end": 1475,
+      "text": [
+        "            let resolved = validate_input(root, definitions, input, &input_label, errors);",
+        "            match input_selector {",
+        "                Some(InputSelector::RustItem {",
+        "                    rust_file: selected_file,",
+        "                    rust_item,",
+        "                }) if selected_file == rust_file && rust_item == selector => {",
+        "                    self_inputs += 1;",
+        "                }",
+        "                Some(InputSelector::Requirements { .. }) => {",
+        "                    definition_inputs += 1;",
+        "                    if let Some(resolved) = resolved {",
+        "                        matched_definitions.extend(resolved.matches);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1502,
+      "line_end": 1511,
+      "text": [
+        "        }",
+        "    }",
+        "    for (selector, (function, _)) in expected {",
+        "        if !present.contains(selector) {",
+        "            errors.push(format!(",
+        "                \"{label}: {rust_file}:{} {selector}: missing Rust function attestation\",",
+        "                function.declaration_line",
+        "            ));",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1531,
+      "line_end": 1540,
+      "text": [
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            \"// first line\\n// second line\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        temp",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.progress`",
+        "    // {test}`requirements.integration.report_api`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1547,
+      "line_end": 1551,
+      "text": [
+        "            root.join(\"md/requirements.md\"),",
+        "            \":::{req} ready\\nThe check MUST pass.\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1579,
+      "line_end": 1583,
+      "text": [
+        "            let inspected =",
+        "                super::inspect_repository_with_progress(root, |update| updates.push(update))",
+        "                    .unwrap();",
+        "            assert_eq!(inspected.report.requirements, expected.report.requirements);",
+        "            assert_eq!(inspected.report.examples, expected.report.examples);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1590,
+      "line_end": 1596,
+      "text": [
+        "            assert_eq!(inspected.discovery_errors, expected.discovery_errors);",
+        "            assert_eq!(",
+        "                inspected.definitions.keys().collect::<Vec<_>>(),",
+        "                expected.definitions.keys().collect::<Vec<_>>()",
+        "            );",
+        "            assert_eq!(inspected.report.requirements, 1);",
+        "            assert_eq!(inspected.report.examples, 0);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1625,
+      "line_end": 1629,
+      "text": [
+        "            ];",
+        "            for (stage, total) in expected_counts {",
+        "                let completed: Vec<_> = updates",
+        "                    .iter()",
+        "                    .filter(|update| update.stage == stage && update.total.is_some())"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1633,
+      "line_end": 1638,
+      "text": [
+        "                    })",
+        "                    .collect();",
+        "                assert_eq!(completed, (0..=total).collect::<Vec<_>>(), \"{stage}\");",
+        "            }",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1671,
+      "line_end": 1675,
+      "text": [
+        "        let temp = TempDir::new().unwrap();",
+        "        let root = temp.path();",
+        "        let path = root.join(\"book.toml\");",
+        "        for (configuration, expected) in [",
+        "            (\"\", \"src\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1679,
+      "line_end": 1683,
       "text": [
         "        ] {",
         "            fs::write(&path, configuration).unwrap();",
@@ -1576,171 +1728,19 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1448,
-      "line_end": 1452,
-      "text": [
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1464,
-      "line_end": 1475,
-      "text": [
-        "    #[test]",
-        "    fn validates_full_names_requirement_text_and_input_lines() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
-        "            json!({",
-        "                \"requirement\": \"The check MUST pass.\\n\\n```text\\n{req}`example`\\n```\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1502,
-      "line_end": 1511,
-      "text": [
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.one.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Old text.\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1531,
-      "line_end": 1540,
-      "text": [
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.three.json\"),",
-        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/ghost.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ghost.\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1547,
-      "line_end": 1551,
-      "text": [
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1579,
-      "line_end": 1583,
-      "text": [
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1590,
-      "line_end": 1596,
-      "text": [
-        "        let notes = format!(\"# Notes\\n\\n{test}\\n\\n`{example}`\\n\\n```text\\n{example}\\n```\\n\");",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ready.\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1625,
-      "line_end": 1629,
-      "text": [
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1633,
-      "line_end": 1638,
-      "text": [
-        "        let source = format!(\"// {known}\\n// {known}\\n// {unknown}\\n\");",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ready.\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1671,
-      "line_end": 1675,
-      "text": [
-        "        let temp = fixture();",
-        "        let first = \"First MUST work.\\n\\n```text\\n# Example heading\\n:::\\n```\\n\\n## New section\\n\\nSetext section\\n--------------\";",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            format!("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1679,
-      "line_end": 1683,
-      "text": [
-        "        .unwrap();",
-        "        for (name, requirement) in [(\"first\", first), (\"second\", \"Second MUST work.\")] {",
-        "            fs::write(",
-        "                temp.path()",
-        "                    .join(format!(\"evidence/requirements.{name}.json\")),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
       "line_start": 1703,
       "line_end": 1712,
       "text": [
-        "    fn reports_a_missing_closing_colon_fence() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \":::{req} ready\\nReady.\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.ready.json\"),",
-        "            json!({"
+        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '../outside'\", \"book.src must be a directory\"),",
+        "            (",
+        "                \"[book]\\nsrc = 'md/../outside'\",",
+        "                \"book.src must be a directory\",",
+        "            ),",
+        "        ] {",
+        "            fs::write(&path, configuration).unwrap();",
+        "            let mut errors = Vec::new();"
       ]
     },
     {
@@ -1748,15 +1748,15 @@
       "line_start": 1733,
       "line_end": 1741,
       "text": [
-        "    // {test}`requirements.ci.fence_lengths`",
-        "    #[test]",
-        "    fn validates_four_or_more_colon_fences_and_longer_closers() {",
-        "        let body = \"Body MUST remain.\\n\\n:::{note}\\nNested.\\n:::\\n\\nStill in the requirement.\";",
-        "        for (opening, closing) in [(\"::::\", \"::::\"), (\"::::\", \":::::\"), (\":::::::\", \"::::::::\")] {",
-        "            let temp = fixture();",
-        "            fs::write(",
-        "                temp.path().join(\"md/requirements.md\"),",
-        "                format!("
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
+        "            json!({",
+        "                \"requirement\": \"The check MUST pass.\\n\\n```text\\n{req}`example`\\n```\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The inspected file has the expected lines.\",",
+        "                \"inputs\": [{",
+        "                    \"file\": \"src/main.rs\","
       ]
     },
     {
@@ -1764,11 +1764,11 @@
       "line_start": 1744,
       "line_end": 1748,
       "text": [
-        "            )",
-        "            .unwrap();",
-        "            fs::write(",
-        "                temp.path().join(\"evidence/requirements.ready.json\"),",
-        "                json!({"
+        "                    \"text\": [\"// first line\", \"// second line\"]",
+        "                }]",
+        "            })",
+        "            .to_string(),",
+        "        )"
       ]
     },
     {
@@ -1776,15 +1776,15 @@
       "line_start": 1778,
       "line_end": 1786,
       "text": [
-        "        let chapter = \"# Rules\\n\\n:::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it succeeds. CITE`rules.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();",
-        "        let test_source = \"// TEST`rules.case`\\n#[test]\\nfn checks_case() { assert!(true); }\\n\"",
-        "            .replace(\"TEST\", \"{test}\");",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/rules.ready.json\"),",
-        "            json!({"
+        "                        \"file\": \"src/main.rs\",",
+        "                        \"line_start\": 1,",
+        "                        \"line_end\": 1,",
+        "                        \"text\": [\"changed line\"]",
+        "                    },",
+        "                    {",
+        "                        \"file\": \"\",",
+        "                        \"line_start\": 0,",
+        "                        \"line_end\": 2,"
       ]
     },
     {
@@ -1792,11 +1792,11 @@
       "line_start": 1799,
       "line_end": 1803,
       "text": [
-        "        .unwrap();",
-        "        let example_path = temp.path().join(\"evidence/rules.case.json\");",
         "        fs::write(",
-        "            &example_path,",
-        "            json!({"
+        "            temp.path().join(\"evidence/ghost.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ghost.\",",
+        "                \"determination\": true,"
       ]
     },
     {
@@ -1804,11 +1804,11 @@
       "line_start": 1817,
       "line_end": 1821,
       "text": [
-        "        let rust_evidence = temp.path().join(\"evidence/rust/src/main.rs.json\");",
-        "        fs::create_dir_all(rust_evidence.parent().unwrap()).unwrap();",
-        "        fs::write(",
-        "            &rust_evidence,",
-        "            json!({"
+        "            \"missing for requirement\",",
+        "            \"requirement text changed\",",
+        "            \"- Old text.\",",
+        "            \"+ First.\",",
+        "            \"determination is false\","
       ]
     },
     {
@@ -1816,20 +1816,20 @@
       "line_start": 1859,
       "line_end": 1872,
       "text": [
-        "",
-        "        let rust_original = fs::read_to_string(&rust_evidence).unwrap();",
-        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
-        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);",
-        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"citation set changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"citations must not be empty\"), \"{errors}\");",
-        "        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
-        "        let copy = duplicate[\"functions\"][0].clone();",
-        "        duplicate[\"functions\"].as_array_mut().unwrap().push(copy);",
-        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!("
+        "                \"determination\": true,",
+        "                \"rationale\": \"The source and notes were examined.\",",
+        "                \"inputs\": [",
+        "                    {",
+        "                        \"file\": \"src/main.rs\",",
+        "                        \"line_start\": 1,",
+        "                        \"line_end\": 2,",
+        "                        \"text\": source.lines().collect::<Vec<_>>()",
+        "                    },",
+        "                    {",
+        "                        \"file\": \"md/notes.md\",",
+        "                        \"line_start\": 3,",
+        "                        \"line_end\": 3,",
+        "                        \"text\": [test]"
       ]
     },
     {
@@ -1837,13 +1837,13 @@
       "line_start": 1880,
       "line_end": 1886,
       "text": [
-        "            \"{errors}\"",
-        "        );",
-        "        fs::write(&rust_evidence, rust_original).unwrap();",
-        "        let orphan = temp.path().join(\"evidence/rust/src/removed.rs.json\");",
-        "        fs::write(&orphan, \"{}\").unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!("
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.references.targets`",
+        "    #[test]",
+        "    fn reports_unknown_references_and_uncovered_lines() {"
       ]
     },
     {
@@ -1851,18 +1851,18 @@
       "line_start": 1891,
       "line_end": 1902,
       "text": [
-        "",
-        "        let old = fs::read_to_string(&example_path).unwrap();",
-        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        uncovered[\"inputs\"] = json!([]);",
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
-        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
-        "        fs::write(&example_path, &old).unwrap();",
+        "        )",
+        "        .unwrap();",
+        "        let known = [\"{\", \"test}`foo.bar.ready`\"].concat();",
+        "        let unknown = [\"{\", \"impl}`missing.requirement`\"].concat();",
+        "        let source = format!(\"// {known}\\n// {known}\\n// {unknown}\\n\");",
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
         "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
-        "            test_source.replace(\"assert!(true)\", \"assert!(false)\"),"
+        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ready.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"Only the first line was examined.\","
       ]
     },
     {
@@ -1870,12 +1870,12 @@
       "line_start": 1908,
       "line_end": 1913,
       "text": [
-        "            \"{errors}\"",
-        "        );",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"md/rules.md\"),",
-        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),"
+        "                }]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        ""
       ]
     },
     {
@@ -1883,18 +1883,18 @@
       "line_start": 1920,
       "line_end": 1931,
       "text": [
+        "            )),",
+        "            \"{errors}\"",
         "        );",
+        "        assert!(",
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\"",
+        "        );",
+        "    }",
         "",
-        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        evidence[\"example\"] = \"Outdated.\".into();",
-        "        fs::write(&example_path, evidence.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
-        "",
-        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        let example_text = wrong_field",
-        "            .as_object_mut()"
+        "    // {test}`requirements.ci.span`",
+        "    // {test}`requirements.ci.fence_lengths`",
+        "    #[test]"
       ]
     },
     {
@@ -1902,11 +1902,11 @@
       "line_start": 1934,
       "line_end": 1938,
       "text": [
-        "            .unwrap();",
-        "        wrong_field[\"requirement\"] = example_text;",
-        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");"
+        "        let first = \"First MUST work.\\n\\n```text\\n# Example heading\\n:::\\n```\\n\\n## New section\\n\\nSetext section\\n--------------\";",
+        "        fs::write(",
+        "            temp.path().join(\"md/requirements.md\"),",
+        "            format!(",
+        "                \"# Requirements\\n\\n:::{{req}} first\\n{first}\\n:::\\n\\nOutside the requirement.\\n\\n:::{{req}} second\\nSecond MUST work.\\n:::\\n\""
       ]
     },
     {
@@ -1914,12 +1914,12 @@
       "line_start": 1955,
       "line_end": 1960,
       "text": [
-        "        let chapter = \":::{req} repeated\\nReady.\\n:::\\n\\n:::{req} repeated\\nAgain.\\n:::\\n\\n:::{example} repeated\\nGiven ready. CITE`rules.repeated`\\n:::\\n\\n:::{example} case\\nGiven ready. CITE`rules.repeated`\\n:::\\n\\n:::{example} case\\nAgain. CITE`rules.repeated`\\n:::\\n\\n:::{example} empty\\n \\n:::\\n\\n:::{example} unclosed\\nNo close.\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/rules.case.json\"),",
-        "            json!({"
+        "        }",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 2);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
       ]
     },
     {
@@ -2112,11 +2112,11 @@
       "line_start": 88,
       "line_end": 92,
       "text": [
+        "",
+        "fn main() -> Result<(), Box<dyn Error>> {",
+        "    // {impl}`requirements.cli.clap`",
         "    let cli = Cli::parse();",
-        "    // {impl}`requirements.configuration.workspace_location`",
-        "    // {impl}`requirements.configuration.workspace_structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    if !matches!("
+        "    // {impl}`requirements.configuration.workspace_location`"
       ]
     },
     {
@@ -2220,16 +2220,16 @@
       "line_start": 368,
       "line_end": 378,
       "text": [
-        "Authoring MUST use the `[authoring]` sections of the shared user configuration",
-        "and the selected workspace's `habeas.toml`.",
-        "{cite}`requirements.configuration.user_location`",
-        "{cite}`requirements.configuration.structure`",
-        "{cite}`requirements.configuration.feature_sections`",
-        "It MUST support named configurations, workspace defaults, and a user-local",
-        "selection for each project. Credential-source references SHOULD be used;",
-        "explicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.",
-        "{cite}`requirements.configuration.workspace_location`",
-        "{cite}`requirements.configuration.workspace_structure`",
+        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+        "Choose false for other gaps or insufficient evidence. Explain your judgment in",
+        "a Markdown rationale with source locations, including any acknowledged gaps.",
+        "",
+        "When you are ready, call submit_judgment exactly once with determination and",
+        "rationale. That tool call is your final answer.",
+        "",
+        "Mandatory inputs:",
+        "{{mandatory_inputs}}",
+        "```",
         ":::"
       ]
     },
@@ -2623,7 +2623,7 @@
       "line_start": 178,
       "line_end": 178,
       "text": [
-        "                    record"
+        "    Ok(outcome)"
       ]
     },
     {
@@ -2754,7 +2754,7 @@
       "line_start": 256,
       "line_end": 256,
       "text": [
-        "                format!(\"{error}; usage: {}\", usage.path.display()),"
+        "            usage.finish(outcome).map_err(|usage_error| {"
       ]
     },
     {
@@ -2762,7 +2762,7 @@
       "line_start": 562,
       "line_end": 562,
       "text": [
-        "    impl CompletionProvider for JudgmentProvider {"
+        "                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),"
       ]
     },
     {
@@ -2837,8 +2837,8 @@
       "line_start": 1407,
       "line_end": 1408,
       "text": [
-        "    #[test]",
-        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {"
+        "            array_field(entry, \"citations\", &entry_label, errors).map(|values| {",
+        "                let mut citations = BTreeSet::new();"
       ]
     },
     {
@@ -2846,7 +2846,7 @@
       "line_start": 1428,
       "line_end": 1428,
       "text": [
-        "        super::book_source_dir(root, &mut errors);"
+        "                        }"
       ]
     },
     {
@@ -2854,7 +2854,7 @@
       "line_start": 1459,
       "line_end": 1459,
       "text": [
-        "    // {test}`requirements.integration.report_api`"
+        "        let mut definition_inputs = 0;"
       ]
     },
     {
@@ -2862,7 +2862,7 @@
       "line_start": 1477,
       "line_end": 1477,
       "text": [
-        "                \"rationale\": \"The inspected file has the expected lines.\","
+        "                }"
       ]
     },
     {
@@ -2870,7 +2870,7 @@
       "line_start": 1482,
       "line_end": 1482,
       "text": [
-        "                    \"text\": [\"// first line\", \"// second line\"]"
+        "            errors.push(format!("
       ]
     },
     {
@@ -2878,7 +2878,7 @@
       "line_start": 1513,
       "line_end": 1513,
       "text": [
-        "                \"rationale\": \"Work remains.\","
+        "}"
       ]
     },
     {
@@ -2886,7 +2886,7 @@
       "line_start": 1518,
       "line_end": 1518,
       "text": [
-        "                        \"line_end\": 1,"
+        ""
       ]
     },
     {
@@ -2894,7 +2894,7 @@
       "line_start": 1542,
       "line_end": 1542,
       "text": [
-        "                \"rationale\": \"A valid but orphaned file.\","
+        "    #[test]"
       ]
     },
     {
@@ -2902,7 +2902,7 @@
       "line_start": 1547,
       "line_end": 1547,
       "text": [
-        "        .unwrap();"
+        "            root.join(\"md/requirements.md\"),"
       ]
     },
     {
@@ -2910,7 +2910,7 @@
       "line_start": 1558,
       "line_end": 1558,
       "text": [
-        "            \"+ First.\","
+        "                    \"file\": \"src/main.rs\","
       ]
     },
     {
@@ -2918,7 +2918,7 @@
       "line_start": 1590,
       "line_end": 1590,
       "text": [
-        "        let notes = format!(\"# Notes\\n\\n{test}\\n\\n`{example}`\\n\\n```text\\n{example}\\n```\\n\");"
+        "            assert_eq!(inspected.discovery_errors, expected.discovery_errors);"
       ]
     },
     {
@@ -2926,9 +2926,9 @@
       "line_start": 1601,
       "line_end": 1603,
       "text": [
-        "                        \"file\": \"src/main.rs\",",
-        "                        \"line_start\": 1,",
-        "                        \"line_end\": 2,"
+        "                    \"cannot parse Rust source\",",
+        "                    \"orphaned Rust attestation file\",",
+        "                ] {"
       ]
     },
     {
@@ -2936,7 +2936,7 @@
       "line_start": 1636,
       "line_end": 1636,
       "text": [
-        "            temp.path().join(\"evidence/foo.bar.ready.json\"),"
+        "            }"
       ]
     },
     {
@@ -2944,8 +2944,8 @@
       "line_start": 1644,
       "line_end": 1645,
       "text": [
-        "                    \"line_end\": 1,",
-        "                    \"text\": [source.lines().next().unwrap()]"
+        "        fs::create_dir(temp.path().join(\"md\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();"
       ]
     },
     {
@@ -2953,7 +2953,7 @@
       "line_start": 1683,
       "line_end": 1683,
       "text": [
-        "                    .join(format!(\"evidence/requirements.{name}.json\")),"
+        "                super::book_source_dir(root, &mut errors),"
       ]
     },
     {
@@ -2961,7 +2961,7 @@
       "line_start": 1691,
       "line_end": 1691,
       "text": [
-        "            )"
+        "        assert!("
       ]
     },
     {
@@ -2969,7 +2969,7 @@
       "line_start": 1715,
       "line_end": 1715,
       "text": [
-        "                \"rationale\": \"The current body was examined.\","
+        "                errors.iter().any(|error| error.contains(expected)),"
       ]
     },
     {
@@ -2977,7 +2977,7 @@
       "line_start": 1720,
       "line_end": 1720,
       "text": [
-        "        .unwrap();"
+        ""
       ]
     },
     {
@@ -2985,7 +2985,7 @@
       "line_start": 1749,
       "line_end": 1749,
       "text": [
-        "                    \"requirement\": body,"
+        "        .unwrap();"
       ]
     },
     {
@@ -2993,7 +2993,7 @@
       "line_start": 1756,
       "line_end": 1756,
       "text": [
-        "            .unwrap();"
+        ""
       ]
     },
     {
@@ -3001,7 +3001,7 @@
       "line_start": 1790,
       "line_end": 1790,
       "text": [
-        "                \"inputs\": [{"
+        "            })"
       ]
     },
     {
@@ -3009,8 +3009,8 @@
       "line_start": 1793,
       "line_end": 1794,
       "text": [
-        "                    \"line_end\": 8,",
-        "                    \"text\": [chapter.lines().nth(7).unwrap()]"
+        "        .unwrap();",
+        "        fs::write("
       ]
     },
     {
@@ -3018,7 +3018,7 @@
       "line_start": 1811,
       "line_end": 1811,
       "text": [
-        "                    \"text\": test_source.lines().collect::<Vec<_>>()"
+        ""
       ]
     },
     {
@@ -3026,7 +3026,7 @@
       "line_start": 1829,
       "line_end": 1829,
       "text": [
-        "                        {"
+        "            \"line_start must be a positive integer\","
       ]
     },
     {
@@ -3034,7 +3034,7 @@
       "line_start": 1873,
       "line_end": 1873,
       "text": [
-        "            errors.contains(\"duplicate Rust function attestation\"),"
+        "                    }"
       ]
     },
     {
@@ -3042,7 +3042,7 @@
       "line_start": 1880,
       "line_end": 1880,
       "text": [
-        "            \"{errors}\""
+        "        let report = validate_repository(temp.path()).unwrap();"
       ]
     },
     {
@@ -3050,7 +3050,7 @@
       "line_start": 1892,
       "line_end": 1892,
       "text": [
-        "        let old = fs::read_to_string(&example_path).unwrap();"
+        "        .unwrap();"
       ]
     },
     {
@@ -3058,7 +3058,7 @@
       "line_start": 1894,
       "line_end": 1894,
       "text": [
-        "        uncovered[\"inputs\"] = json!([]);"
+        "        let unknown = [\"{\", \"impl}`missing.requirement`\"].concat();"
       ]
     },
     {
@@ -3066,7 +3066,7 @@
       "line_start": 1905,
       "line_end": 1905,
       "text": [
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
+        "                    \"line_start\": 1,"
       ]
     },
     {
@@ -3074,8 +3074,8 @@
       "line_start": 1909,
       "line_end": 1910,
       "text": [
-        "        );",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();"
+        "            })",
+        "            .to_string(),"
       ]
     },
     {
@@ -3083,8 +3083,8 @@
       "line_start": 1920,
       "line_end": 1921,
       "text": [
-        "        );",
-        ""
+        "            )),",
+        "            \"{errors}\""
       ]
     },
     {
@@ -3092,7 +3092,7 @@
       "line_start": 1934,
       "line_end": 1934,
       "text": [
-        "            .unwrap();"
+        "        let first = \"First MUST work.\\n\\n```text\\n# Example heading\\n:::\\n```\\n\\n## New section\\n\\nSetext section\\n--------------\";"
       ]
     },
     {
@@ -3100,7 +3100,7 @@
       "line_start": 1946,
       "line_end": 1946,
       "text": [
-        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");"
+        "                json!({"
       ]
     },
     {
@@ -3108,8 +3108,8 @@
       "line_start": 1967,
       "line_end": 1968,
       "text": [
-        "        )",
-        "        .unwrap();"
+        "        fs::write(",
+        "            temp.path().join(\"md/requirements.md\"),"
       ]
     },
     {
@@ -3566,7 +3566,7 @@
       "line_start": 257,
       "line_end": 257,
       "text": [
-        "            ))"
+        "                io::Error::new("
       ]
     },
     {
@@ -3574,7 +3574,7 @@
       "line_start": 563,
       "line_end": 563,
       "text": [
-        "        // {test}`requirements.authoring.function_attestations`"
+        "                    );"
       ]
     },
     {
@@ -3715,7 +3715,7 @@
       "line_start": 63,
       "line_end": 63,
       "text": [
-        "        return Ok(outcome);"
+        "                evidence.state(),"
       ]
     },
     {
@@ -3723,7 +3723,7 @@
       "line_start": 21,
       "line_end": 21,
       "text": [
-        ""
+        "use tokio::sync::watch;"
       ]
     },
     {
@@ -3731,7 +3731,7 @@
       "line_start": 126,
       "line_end": 126,
       "text": [
-        "// {impl}`requirements.authoring.invocation`"
+        "    root: &Path,"
       ]
     },
     {
@@ -3739,7 +3739,7 @@
       "line_start": 178,
       "line_end": 178,
       "text": [
-        "    result.map_err(|error| {"
+        "            format!("
       ]
     },
     {
@@ -3747,7 +3747,7 @@
       "line_start": 244,
       "line_end": 244,
       "text": [
-        "            };"
+        "                subject: subject.clone(),"
       ]
     },
     {
@@ -3755,7 +3755,7 @@
       "line_start": 8,
       "line_end": 8,
       "text": [
-        "use crate::config::{BackendConfig, BedrockConfig};"
+        "use serde_json::{Map, Value};"
       ]
     },
     {
@@ -3763,8 +3763,8 @@
       "line_start": 31,
       "line_end": 32,
       "text": [
-        "                rig_bedrock::client::BedrockRuntime::from(sdk)",
-        "                    .completion(&config.model)"
+        "    // {impl}`requirements.authoring.provider_backoff`",
+        "    pub(super) fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {"
       ]
     },
     {
@@ -3772,7 +3772,7 @@
       "line_start": 37,
       "line_end": 37,
       "text": [
-        "                    .with_base_url(config.endpoint());"
+        "        let report = provider.report();"
       ]
     },
     {
@@ -4403,7 +4403,7 @@
       "line_start": 287,
       "line_end": 287,
       "text": [
-        "            fs::write(&path, json)?;"
+        "        root,"
       ]
     },
     {
@@ -4411,7 +4411,7 @@
       "line_start": 598,
       "line_end": 598,
       "text": [
-        "        fs::write("
+        ""
       ]
     },
     {
@@ -4604,8 +4604,8 @@
       "line_start": 1397,
       "line_end": 1398,
       "text": [
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write("
+        "        if !present.insert(selector.to_owned()) {",
+        "            valid.remove(selector);"
       ]
     },
     {
@@ -4613,7 +4613,7 @@
       "line_start": 1418,
       "line_end": 1418,
       "text": [
-        "            fs::write(&path, configuration).unwrap();"
+        "                    if let (Some(role), Some(name)) = (role, name) {"
       ]
     },
     {
@@ -4621,7 +4621,7 @@
       "line_start": 1449,
       "line_end": 1449,
       "text": [
-        "            fs::write(&path, configuration).unwrap();"
+        "            errors.push(format!("
       ]
     },
     {
@@ -4629,7 +4629,7 @@
       "line_start": 1467,
       "line_end": 1467,
       "text": [
-        "        fs::write("
+        "                    rust_file: selected_file,"
       ]
     },
     {
@@ -4637,7 +4637,7 @@
       "line_start": 1472,
       "line_end": 1472,
       "text": [
-        "        fs::write("
+        "                Some(InputSelector::Requirements { .. }) => {"
       ]
     },
     {
@@ -4645,7 +4645,7 @@
       "line_start": 1503,
       "line_end": 1503,
       "text": [
-        "        fs::write("
+        "    }"
       ]
     },
     {
@@ -4653,7 +4653,7 @@
       "line_start": 1508,
       "line_end": 1508,
       "text": [
-        "        fs::write("
+        "                function.declaration_line"
       ]
     },
     {
@@ -4661,7 +4661,7 @@
       "line_start": 1532,
       "line_end": 1532,
       "text": [
-        "        fs::write("
+        "            temp.path().join(\"src/main.rs\"),"
       ]
     },
     {
@@ -4669,7 +4669,7 @@
       "line_start": 1537,
       "line_end": 1537,
       "text": [
-        "        fs::write("
+        "    }"
       ]
     },
     {
@@ -4677,7 +4677,7 @@
       "line_start": 1548,
       "line_end": 1548,
       "text": [
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();"
+        "            \":::{req} ready\\nThe check MUST pass.\\n:::\\n\","
       ]
     },
     {
@@ -4685,7 +4685,7 @@
       "line_start": 1580,
       "line_end": 1580,
       "text": [
-        "        fs::write("
+        "                super::inspect_repository_with_progress(root, |update| updates.push(update))"
       ]
     },
     {
@@ -4693,9 +4693,9 @@
       "line_start": 1591,
       "line_end": 1593,
       "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();",
-        "        fs::write("
+        "            assert_eq!(",
+        "                inspected.definitions.keys().collect::<Vec<_>>(),",
+        "                expected.definitions.keys().collect::<Vec<_>>()"
       ]
     },
     {
@@ -4703,7 +4703,7 @@
       "line_start": 1626,
       "line_end": 1626,
       "text": [
-        "        fs::write("
+        "            for (stage, total) in expected_counts {"
       ]
     },
     {
@@ -4711,8 +4711,8 @@
       "line_start": 1634,
       "line_end": 1635,
       "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write("
+        "                    .collect();",
+        "                assert_eq!(completed, (0..=total).collect::<Vec<_>>(), \"{stage}\");"
       ]
     },
     {
@@ -4720,7 +4720,7 @@
       "line_start": 1673,
       "line_end": 1673,
       "text": [
-        "        fs::write("
+        "        let path = root.join(\"book.toml\");"
       ]
     },
     {
@@ -4728,7 +4728,7 @@
       "line_start": 1681,
       "line_end": 1681,
       "text": [
-        "            fs::write("
+        "            let mut errors = Vec::new();"
       ]
     },
     {
@@ -4736,7 +4736,7 @@
       "line_start": 1705,
       "line_end": 1705,
       "text": [
-        "        fs::write("
+        "            (\"[book]\\nsrc = '../outside'\", \"book.src must be a directory\"),"
       ]
     },
     {
@@ -4744,7 +4744,7 @@
       "line_start": 1710,
       "line_end": 1710,
       "text": [
-        "        fs::write("
+        "        ] {"
       ]
     },
     {
@@ -4752,7 +4752,7 @@
       "line_start": 1739,
       "line_end": 1739,
       "text": [
-        "            fs::write("
+        "                \"rationale\": \"The inspected file has the expected lines.\","
       ]
     },
     {
@@ -4760,7 +4760,7 @@
       "line_start": 1746,
       "line_end": 1746,
       "text": [
-        "            fs::write("
+        "            })"
       ]
     },
     {
@@ -4768,7 +4768,7 @@
       "line_start": 1780,
       "line_end": 1780,
       "text": [
-        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();"
+        "                        \"line_end\": 1,"
       ]
     },
     {
@@ -4776,8 +4776,8 @@
       "line_start": 1783,
       "line_end": 1784,
       "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
-        "        fs::write("
+        "                    {",
+        "                        \"file\": \"\","
       ]
     },
     {
@@ -4785,7 +4785,7 @@
       "line_start": 1801,
       "line_end": 1801,
       "text": [
-        "        fs::write("
+        "            json!({"
       ]
     },
     {
@@ -4793,7 +4793,7 @@
       "line_start": 1819,
       "line_end": 1819,
       "text": [
-        "        fs::write("
+        "            \"- Old text.\","
       ]
     },
     {
@@ -4801,7 +4801,7 @@
       "line_start": 1863,
       "line_end": 1863,
       "text": [
-        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();"
+        "                        \"file\": \"src/main.rs\","
       ]
     },
     {
@@ -4809,7 +4809,7 @@
       "line_start": 1870,
       "line_end": 1870,
       "text": [
-        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();"
+        "                        \"line_start\": 3,"
       ]
     },
     {
@@ -4817,7 +4817,7 @@
       "line_start": 1882,
       "line_end": 1882,
       "text": [
-        "        fs::write(&rust_evidence, rust_original).unwrap();"
+        "    }"
       ]
     },
     {
@@ -4825,7 +4825,7 @@
       "line_start": 1884,
       "line_end": 1884,
       "text": [
-        "        fs::write(&orphan, \"{}\").unwrap();"
+        "    // {test}`requirements.references.targets`"
       ]
     },
     {
@@ -4833,7 +4833,7 @@
       "line_start": 1895,
       "line_end": 1895,
       "text": [
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();"
+        "        let source = format!(\"// {known}\\n// {known}\\n// {unknown}\\n\");"
       ]
     },
     {
@@ -4841,8 +4841,8 @@
       "line_start": 1899,
       "line_end": 1900,
       "text": [
-        "        fs::write(&example_path, &old).unwrap();",
-        "        fs::write("
+        "            json!({",
+        "                \"requirement\": \"Ready.\","
       ]
     },
     {
@@ -4850,8 +4850,8 @@
       "line_start": 1910,
       "line_end": 1911,
       "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
-        "        fs::write("
+        "            .to_string(),",
+        "        )"
       ]
     },
     {
@@ -4859,7 +4859,7 @@
       "line_start": 1924,
       "line_end": 1924,
       "text": [
-        "        fs::write(&example_path, evidence.to_string()).unwrap();"
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),"
       ]
     },
     {
@@ -4867,7 +4867,7 @@
       "line_start": 1936,
       "line_end": 1936,
       "text": [
-        "        fs::write(&example_path, wrong_field.to_string()).unwrap();"
+        "            temp.path().join(\"md/requirements.md\"),"
       ]
     },
     {
@@ -4875,8 +4875,8 @@
       "line_start": 1957,
       "line_end": 1958,
       "text": [
-        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
-        "        fs::write("
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 2);"
       ]
     },
     {
@@ -4908,17 +4908,17 @@
       "line_start": 337,
       "line_end": 347,
       "text": [
-        "#[test]",
-        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {",
-        "    let server = Server::start(true, None);",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let source = fixture.project.join(\"src/lib.rs\");",
-        "    fs::write(",
-        "        &source,",
-        "        fs::read_to_string(&source).unwrap().replace(",
-        "            \"pub fn beta()\",",
-        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\",",
-        "        ),"
+        "    fn run_in_pty_with_args(&self, interrupt: bool, term: &str, args: &[&str]) -> Output {",
+        "        // Keep stdout piped: the bar belongs to stderr and must detect that",
+        "        // terminal independently. Python's stdlib provides a portable Unix PTY.",
+        "        let script = r#\"",
+        "import errno",
+        "import fcntl",
+        "import os",
+        "import pty",
+        "import re",
+        "import select",
+        "import signal"
       ]
     },
     {
@@ -4926,17 +4926,17 @@
       "line_start": 353,
       "line_end": 363,
       "text": [
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let entries = fixture.evidence(\"rust/src/lib.rs\");",
-        "    assert_eq!(entries[\"functions\"].as_array().unwrap().len(), 3);",
-        "    let mut beta = fixture.evidence(\"requirements.beta\");",
-        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});",
-        "    beta[\"rationale\"] = \"The source explicitly acknowledges the missing beta test.\".into();"
+        "",
+        "master, slave = pty.openpty()",
+        "fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 160, 0, 0))",
+        "process = subprocess.Popen(",
+        "    [sys.argv[1], *sys.argv[3:]],",
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,",
+        ")",
+        "os.close(slave)",
+        "captured = bytearray()",
+        "interrupted = False",
+        "deadline = time.monotonic() + 20"
       ]
     },
     {
@@ -5016,6 +5016,7 @@
       "line_start": 537,
       "line_end": 572,
       "text": [
+        "// {test}`requirements.authoring.reporting`",
         "#[test]",
         "fn false_is_a_completed_assessment() {",
         "    let server = Server::start(vec![reply(vec![call(",
@@ -5049,9 +5050,8 @@
         "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
         "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");",
         "    assert_eq!(fixture.usage()[\"determination\"], \"false\");",
-        "}",
-        "",
-        "// {test}`requirements.authoring.invocation`"
+        "    let diagnostics = format!(",
+        "        \"{}{}\","
       ]
     },
     {
@@ -5059,17 +5059,17 @@
       "line_start": 576,
       "line_end": 586,
       "text": [
-        "#[test]",
-        "fn stdout_emits_only_evidence_json_without_changing_project_files() {",
-        "    for (determination, kind, existing_evidence) in [",
-        "        (json!(true), \"true\", true),",
-        "        (json!(false), \"false\", true),",
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
-        "        (json!(true), \"true\", false),",
-        "    ] {",
-        "        let rationale = \"The supplied sources explain this judgment.\";",
-        "        let server = Server::start(vec![reply(vec![call(",
-        "            \"submit\","
+        "    let stderr = String::from_utf8_lossy(&output.stderr);",
+        "    assert!(stderr.contains(&format!(\"{SUBJECT}: false\")), \"{stderr}\");",
+        "    assert!(",
+        "        !String::from_utf8_lossy(&output.stdout).contains(&format!(\"{SUBJECT}: false\")),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "    assert!(",
+        "        !diagnostics.contains(\"without acknowledging\"),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "}"
       ]
     },
     {
@@ -5077,17 +5077,17 @@
       "line_start": 658,
       "line_end": 668,
       "text": [
-        "            json!({\"determination\":true,\"rationale\":\"\"}),",
-        "        )],",
-        "        vec![call(",
-        "            \"empty\",",
-        "            \"submit_judgment\",",
-        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
-        "        )],",
-        "    ] {",
-        "        for stdout in [false, true] {",
-        "            let server = Server::start(vec![reply(calls.clone())]);",
-        "            let fixture = Fixture::new(&server.endpoint);"
+        "        let output = fixture.run(&args);",
+        "        assert!(",
+        "            output.status.success(),",
+        "            \"{}\",",
+        "            String::from_utf8_lossy(&output.stderr)",
+        "        );",
+        "        assert_eq!(server.finish().len(), 1);",
+        "        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();",
+        "        assert!(output.stdout.ends_with(b\"\\n\"));",
+        "        assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
+        "        assert_eq!(evidence[\"determination\"], determination);"
       ]
     },
     {
@@ -5095,17 +5095,17 @@
       "line_start": 855,
       "line_end": 865,
       "text": [
-        "        let outcomes = judgment_schema[\"oneOf\"].as_array().unwrap();",
-        "        assert!(outcomes.iter().any(|outcome| outcome[\"type\"] == \"boolean\"));",
-        "        let fixme = &outcomes",
-        "            .iter()",
-        "            .find(|outcome| outcome[\"type\"] == \"object\")",
-        "            .unwrap()[\"properties\"][\"FIXME\"];",
-        "        assert_eq!(fixme[\"type\"], \"array\");",
-        "        assert_eq!(fixme[\"minItems\"], 1);",
-        "        assert_eq!(fixme[\"items\"][\"type\"], \"string\");",
-        "        assert_eq!(fixme[\"items\"][\"minLength\"], 1);",
-        "        let mut tools = tool_specs"
+        "            \"AWS_ENDPOINT_URL\",",
+        "            \"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS\",",
+        "            \"AWS_BEARER_TOKEN_BEDROCK\",",
+        "        ] {",
+        "            command.env_remove(key);",
+        "        }",
+        "        let output = command",
+        "            .env(\"AWS_CONFIG_FILE\", aws_config)",
+        "            .env(\"AWS_SHARED_CREDENTIALS_FILE\", credentials)",
+        "            .env(\"AWS_ENDPOINT_URL_BEDROCK_RUNTIME\", &server.endpoint)",
+        "            .env(\"AWS_EC2_METADATA_DISABLED\", \"true\")"
       ]
     },
     {
@@ -5113,17 +5113,17 @@
       "line_start": 904,
       "line_end": 914,
       "text": [
-        "    let server = Server::start_with(",
-        "        vec![reply(vec![call(",
-        "            \"submit\",",
-        "            \"submit_judgment\",",
-        "            json!({",
-        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\"",
-        "            }),",
-        "        )])],",
-        "        move || {",
-        "            fs::remove_file(&evidence_path).unwrap();",
-        "            fs::create_dir(&evidence_path).unwrap();"
+        "        assert!(prompt.contains(\"Bring your expert judgment\") && prompt.contains(REQUIREMENT));",
+        "        let tool_specs = body[\"toolConfig\"][\"tools\"].as_array().unwrap();",
+        "        for tool in tool_specs {",
+        "            let schema = &tool[\"toolSpec\"][\"inputSchema\"][\"json\"];",
+        "            assert_eq!(schema[\"type\"], \"object\");",
+        "            for unsupported in [\"oneOf\", \"allOf\", \"anyOf\"] {",
+        "                assert!(",
+        "                    schema.get(unsupported).is_none(),",
+        "                    \"Bedrock rejects {unsupported} at the root of {}'s input schema\",",
+        "                    tool[\"toolSpec\"][\"name\"]",
+        "                );"
       ]
     },
     {
@@ -5131,16 +5131,16 @@
       "line_start": 923,
       "line_end": 932,
       "text": [
-        "    assert!(!output.status.success());",
-        "    assert_eq!(server.finish().len(), 1);",
-        "    assert!(fixture.evidence.is_dir());",
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage[\"outcome\"], \"failed\");",
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
-        "    assert_eq!(usage[\"evidence_written\"], false);",
-        "    assert_eq!(usage[\"request_count\"], 1);",
-        "    assert_eq!(usage[\"requests\"][0][\"outcome\"], \"completed\");",
-        "}"
+        "            \"file\",",
+        "            \"rust_file\",",
+        "            \"rust_item\",",
+        "            \"requirements\",",
+        "            \"definition\",",
+        "        ] {",
+        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"string\");",
+        "        }",
+        "        for field in [\"line_start\", \"line_end\"] {",
+        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"integer\");"
       ]
     },
     {
@@ -5494,9 +5494,9 @@
       "line_start": 25,
       "line_end": 27,
       "text": [
-        "    // {impl}`requirements.authoring.usage_requests`",
-        "    // {impl}`requirements.authoring.credentials`",
-        "    pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {"
+        "            window: Duration::from_secs(1),",
+        "        }",
+        "    }"
       ]
     },
     {
@@ -5504,10 +5504,10 @@
       "line_start": 37,
       "line_end": 40,
       "text": [
-        "                    .with_base_url(config.endpoint());",
-        "                if let Some(key) = config.api_key()? {",
-        "                    provider = provider.with_api_key(key);",
-        "                }"
+        "        let report = provider.report();",
+        "        let throttled = match report.http_status {",
+        "            Some(429) => true,",
+        "            Some(status) if status >= 400 => false,"
       ]
     },
     {
@@ -5515,9 +5515,9 @@
       "line_start": 53,
       "line_end": 55,
       "text": [
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.credentials`",
-        "// {impl}`requirements.authoring.usage_requests`"
+        "    }",
+        "}",
+        ""
       ]
     },
     {
@@ -5526,15 +5526,15 @@
       "line_end": 75,
       "text": [
         "    }",
-        "    if let Some(credentials) = &config.credentials {",
-        "        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(",
-        "            credentials.access_key_id.expose_secret(),",
-        "            credentials.secret_access_key.expose_secret(),",
-        "            credentials",
-        "                .session_token",
-        "                .as_ref()",
-        "                .map(|value| value.expose_secret().to_owned()),",
-        "            None,"
+        "    httpdate::parse_http_date(header)",
+        "        .ok()",
+        "        .map(|deadline| deadline.duration_since(now).unwrap_or_default())",
+        "}",
+        "",
+        "pub(super) struct RigProvider {",
+        "    model: DynModel<Completion>,",
+        "    options: serde_json::Value,",
+        "    bedrock: bool,"
       ]
     },
     {
@@ -5542,9 +5542,9 @@
       "line_start": 201,
       "line_end": 203,
       "text": [
-        "",
-        "    // {test}`requirements.authoring.credentials`",
-        "    // {test}`requirements.authoring.rig_configuration_mapping`"
+        "    request: &mut CompletionRequest,",
+        "    options: &mut Map<String, Value>,",
+        ") -> io::Result<()> {"
       ]
     },
     {
@@ -5552,20 +5552,20 @@
       "line_start": 205,
       "line_end": 218,
       "text": [
-        "    #[tokio::test]",
-        "    async fn explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain() {",
-        "        let config: BedrockConfig = toml::from_str(\"model = 'test'\\nregion = 'us-west-2'\\n[credentials]\\naccess_key_id = 'TEST_ACCESS'\\nsecret_access_key = 'test-secret'\\nsession_token = 'test-session'\\n\").unwrap();",
-        "        let sdk = bedrock_sdk_config(&config).await;",
-        "        let credentials = sdk",
-        "            .credentials_provider()",
-        "            .unwrap()",
-        "            .provide_credentials()",
-        "            .await",
-        "            .unwrap();",
-        "        assert_eq!(credentials.access_key_id(), \"TEST_ACCESS\");",
-        "        assert_eq!(credentials.secret_access_key(), \"test-secret\");",
-        "        assert_eq!(credentials.session_token(), Some(\"test-session\"));",
-        "        assert_eq!(sdk.region().unwrap().as_ref(), \"us-west-2\");"
+        "        return Err(io::Error::new(",
+        "            io::ErrorKind::InvalidInput,",
+        "            \"Bedrock options.inferenceConfig is not a nested wrapper; put temperature, maxTokens, topP, and stopSequences directly in the options table\",",
+        "        ));",
+        "    }",
+        "    if let Some(value) = options.remove(\"temperature\") {",
+        "        request.temperature = Some(",
+        "            value",
+        "                .as_f64()",
+        "                .ok_or_else(|| option_type(\"temperature\", \"a number\"))?,",
+        "        );",
+        "    }",
+        "    if let Some(value) = options.remove(\"maxTokens\") {",
+        "        let tokens = value"
       ]
     },
     {
@@ -5969,7 +5969,7 @@
       "line_start": 756,
       "line_end": 756,
       "text": [
-        "        let credentials = fixture.temp.path().join(\"aws-credentials\");"
+        "            }"
       ]
     },
     {
@@ -5977,7 +5977,7 @@
       "line_start": 758,
       "line_end": 758,
       "text": [
-        "        fs::write(&credentials, \"[default]\\naws_access_key_id = WRONG_DEFAULT_ACCESS_KEY\\naws_secret_access_key = wrong-default-secret\\n[habeas-test]\\naws_access_key_id = FAKE_PROFILE_ACCESS_KEY\\naws_secret_access_key = fake-profile-secret-for-local-test-only\\n\").unwrap();"
+        "            assert!(!output.status.success());"
       ]
     },
     {
@@ -5985,7 +5985,7 @@
       "line_start": 779,
       "line_end": 779,
       "text": [
-        "            .env(\"AWS_SHARED_CREDENTIALS_FILE\", credentials)"
+        "// {test}`requirements.configuration.loading`"
       ]
     },
     {
@@ -6282,9 +6282,9 @@
       "line_start": 1417,
       "line_end": 1419,
       "text": [
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();"
+        "                    let name = string_field(value, \"name\", &citation_label, errors);",
+        "                    if let (Some(role), Some(name)) = (role, name) {",
+        "                        if !matches!(role, \"impl\" | \"cite\" | \"test\") {"
       ]
     },
     {
@@ -6292,9 +6292,1041 @@
       "line_start": 1448,
       "line_end": 1450,
       "text": [
+        "        if determination == Some(false) {",
+        "            errors.push(format!(",
+        "                \"{entry_label}: determination is false: {}\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 66,
+      "line_end": 68,
+      "text": [
+        "            return Err(denied(format!(",
+        "                \"{} is disallowed by habeas.toml rule {}; update the workspace evidence policy before retrying\",",
+        "                requested.display(),"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 123,
+      "line_end": 125,
+      "text": [
+        "            return Err(denied(format!(",
+        "                \"{}: generated evidence is output, not assessment source; an explicit habeas.toml allow rule is required\",",
+        "                relative.display()"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 137,
+      "line_end": 139,
+      "text": [
+        "            return Err(denied(format!(",
+        "                \"{} resolves outside the project; add an explicit habeas.toml allow rule before retrying\",",
+        "                relative.display()"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 146,
+      "line_end": 148,
+      "text": [
+        "                    return Err(denied(format!(",
+        "                        \"{} contains no eligible sources; use git add to stage sources or update habeas.toml before retrying\",",
+        "                        relative.display()"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 154,
+      "line_end": 156,
+      "text": [
+        "                        return Err(denied(format!(",
+        "                            \"{} is not tracked by Git; use git add to stage it or add an explicit habeas.toml allow rule before retrying\",",
+        "                            path.strip_prefix(root).unwrap_or(path).display()"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 537,
+      "line_end": 539,
+      "text": [
+        "        let external_toml = toml::Value::String(external.path().display().to_string());",
+        "        fs::write(root.path().join(\"habeas.toml\"), format!(",
+        "            \"version = 1\\n[evidence]\\nallow = ['generated', 'evidence', {external_toml}]\\ndisallow = ['generated/private']\\n\""
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 576,
+      "line_end": 581,
+      "text": [
+        "        let config = \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'fixture'\\napi_key = 'TEST_KEY'\\n\";",
+        "        fs::write(root.path().join(\"habeas.toml\"), config).unwrap();",
+        "        let access = SourceAccess::load(root.path()).unwrap();",
+        "        let error = access",
+        "            .file(root.path(), Path::new(\"habeas.toml\"))",
+        "            .unwrap_err();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 584,
+      "line_end": 587,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            format!(\"{config}\\n[evidence]\\nallow = ['habeas.toml']\\n\"),",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 591,
+      "line_end": 593,
+      "text": [
+        "                .unwrap()",
+        "                .file(root.path(), Path::new(\"habeas.toml\"))",
+        "                .is_ok()"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 610,
+      "line_end": 612,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\nallow = ['public']\\ndisallow = ['private']\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 679,
+      "line_end": 681,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\nallow = ['alias/../private']\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 702,
+      "line_end": 704,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\nallow = ['.']\\ndisallow = ['alias/../private']\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 723,
+      "line_end": 725,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\nallow = ['actual/private']\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 889,
+      "line_end": 891,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\nallow = ['evidence']\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 903,
+      "line_end": 905,
+      "text": [
+        "            fs::write(",
+        "                root.path().join(\"habeas.toml\"),",
+        "                format!(\"version = 1\\n[evidence]\\nallow = ['evidence']\\ndisallow = ['{denied}']\\n\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 41,
+      "line_end": 43,
+      "text": [
+        "        json!({",
+        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 832,
+      "line_end": 834,
+      "text": [
+        "        let external_toml = toml::Value::String(external.path().display().to_string());",
+        "        fs::write(root.path().join(\"habeas.toml\"), format!(",
+        "            \"version = 1\\n[evidence]\\nallow = ['generated', {external_toml}]\\ndisallow = ['generated/private']\\n\""
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 950,
+      "line_end": 952,
+      "text": [
+        "        fs::write(",
+        "            root.path().join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\ndisallow = ['target/debug/build/fixture-hash/out']\\n\","
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 571,
+      "line_end": 573,
+      "text": [
+        "    };",
+        "    Ok(base.join(\"habeas/config.toml\"))",
+        "}"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 693,
+      "line_end": 695,
+      "text": [
+        "    for directory in start.ancestors() {",
+        "        let path = directory.join(\"habeas.toml\");",
+        "        match fs::symlink_metadata(&path) {"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 513,
+      "line_end": 515,
+      "text": [
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&no_op.stderr)",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 656,
+      "line_end": 658,
+      "text": [
+        "    let counted_progress = regex::Regex::new(r\"\\b[0-9]+/[1-9][0-9]*\\b\").unwrap();",
+        "    assert!(",
+        "        plain.split(['\\r', '\\n']).any(|line| {"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 686,
+      "line_end": 688,
+      "text": [
+        "    assert!(",
+        "        plain.contains(\"requirements.alpha: false (usage:\"),",
+        "        \"{plain}\""
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 917,
+      "line_end": 919,
+      "text": [
+        "        let habeas_schema = &tool_specs",
+        "            .iter()",
+        "            .find(|tool| tool[\"toolSpec\"][\"name\"] == \"habeas\")"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 814,
+      "line_end": 816,
+      "text": [
+        "    assert!(output.status.success(), \"{output:?}\");",
+        "    assert!(String::from_utf8_lossy(&output.stdout).contains(\"unchanged\"));",
+        "    assert_eq!(fs::read(&requirement_path).unwrap(), first);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 164,
+      "line_end": 176,
+      "text": [
+        "        let original = json!({\"requirement\":REQUIREMENT,\"determination\":false,",
+        "            \"rationale\":\"OLD_RATIONALE_MUST_NOT_REACH_MODEL\", \"inputs\":[]})",
+        "        .to_string();",
+        "        let evidence = project.join(format!(\"evidence/{SUBJECT}.json\"));",
+        "        fs::write(&evidence, &original).unwrap();",
+        "        fs::write(config.join(\"habeas/config.toml\"), format!(",
+        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = '{MODEL}'\\nendpoint = '{endpoint}'\\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\\n[authoring.configs.mock.options]\\ntemperature = 0.25\\nnum_ctx = 4096\\nthink = false\\n\")).unwrap();",
+        "        Self {",
+        "            temp,",
+        "            project,",
+        "            config,",
+        "            state,",
+        "            evidence,"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 193,
+      "line_end": 205,
+      "text": [
+        "            .current_dir(&self.project)",
+        "            .env(\"XDG_CONFIG_HOME\", &self.config)",
+        "            .env(\"XDG_STATE_HOME\", &self.state)",
+        "            .env(\"APPDATA\", &self.config)",
+        "            .env(\"LOCALAPPDATA\", &self.state)",
+        "            .env(\"HOME\", self.temp.path())",
+        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);",
+        "        command",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    fn usage(&self) -> Value {",
+        "        let directory = if cfg!(windows) {"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 443,
+      "line_end": 455,
+      "text": [
+        "    let nested = fixture.project.join(\"src/nested\");",
+        "    fs::create_dir(&nested).unwrap();",
+        "    let workspace = nested.join(\"habeas.toml\");",
+        "    fs::write(",
+        "        &workspace,",
+        "        format!(",
+        "            \"version = 1\\n[authoring]\\ndefault = 'workspace'\\n[authoring.configs.workspace]\\nbackend = 'ollama'\\nmodel = 'workspace-model'\\nendpoint = '{}'\\napi_key = 'WORKSPACE_LITERAL_KEY'\\n\",",
+        "            server.endpoint",
+        "        ),",
+        "    )",
+        "    .unwrap();",
+        "    let output = fixture",
+        "        .command()"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 458,
+      "line_end": 484,
+      "text": [
+        "        .output()",
+        "        .unwrap();",
+        "    assert!(output.status.success(), \"{output:?}\");",
+        "    let requests = server.finish();",
+        "    assert_eq!(requests.len(), 1);",
+        "    assert_eq!(requests[0].body[\"model\"], \"workspace-model\");",
+        "    assert!(requests[0].headers.contains(\"WORKSPACE_LITERAL_KEY\"));",
+        "    assert!(",
+        "        !requests[0]",
+        "            .body",
+        "            .to_string()",
+        "            .contains(\"WORKSPACE_LITERAL_KEY\")",
+        "    );",
+        "    let usage = fixture.usage();",
+        "    assert_eq!(usage[\"model\"], \"workspace-model\");",
+        "    for text in [",
+        "        usage.to_string(),",
+        "        String::from_utf8_lossy(&output.stdout).into_owned(),",
+        "        String::from_utf8_lossy(&output.stderr).into_owned(),",
+        "    ] {",
+        "        assert!(!text.contains(\"WORKSPACE_LITERAL_KEY\"), \"{text}\");",
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.source_tools`",
+        "// {test}`requirements.authoring.persistence`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 400,
+      "line_end": 442,
+      "text": [
+        "                && input[\"kind\"] == \"definition\"",
+        "                && input[\"bytes\"].as_u64().unwrap() > 0)",
+        "    );",
+        "    let serialized = usage.to_string();",
+        "    for secret in [",
+        "        \"SECRET_REQUIREMENT_TEXT\",",
+        "        \"SECRET_DEFINITION_TEXT\",",
+        "        \"SECRET_SOURCE_PAYLOAD\",",
+        "        \"SECRET_RATIONALE\",",
+        "        AUTH,",
+        "        \"#125\",",
+        "    ] {",
+        "        assert!(",
+        "            !serialized.contains(secret),",
+        "            \"usage contains source or credential content: {secret}\"",
+        "        );",
+        "    }",
+        "    let stdout = String::from_utf8_lossy(&output.stdout);",
+        "    assert!(stdout.contains(MODEL) && stdout.contains(\"Evidence:\") && stdout.contains(\"Usage:\"));",
+        "}",
+        "",
+        "// {test}`requirements.configuration.workspace_location`",
+        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.credentials`",
+        "// {test}`requirements.authoring.provider`",
+        "// {test}`requirements.authoring.rig_configuration_mapping`",
+        "// {test}`requirements.authoring.invocation`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {",
+        "    let server = Server::start(vec![reply(vec![call(",
+        "        \"submit\",",
+        "        \"submit_judgment\",",
+        "        json!({\"determination\":true,\"rationale\":\"The supplied sources support the subject.\"}),",
+        "    )])]);",
+        "    let fixture = Fixture::new(&server.endpoint);",
+        "    fs::remove_file(fixture.config.join(\"habeas/config.toml\")).unwrap();",
+        "    fs::write(",
+        "        fixture.project.join(\"habeas.toml\"),",
+        "        \"version = 1\\n[authoring]\\ndefault = 'missing-parent-choice'\\n\",",
+        "    )",
+        "    .unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 909,
+      "line_end": 929,
+      "text": [
+        "            for unsupported in [\"oneOf\", \"allOf\", \"anyOf\"] {",
+        "                assert!(",
+        "                    schema.get(unsupported).is_none(),",
+        "                    \"Bedrock rejects {unsupported} at the root of {}'s input schema\",",
+        "                    tool[\"toolSpec\"][\"name\"]",
+        "                );",
+        "            }",
+        "        }",
+        "        let habeas_schema = &tool_specs",
+        "            .iter()",
+        "            .find(|tool| tool[\"toolSpec\"][\"name\"] == \"habeas\")",
+        "            .unwrap()[\"toolSpec\"][\"inputSchema\"][\"json\"];",
+        "        assert_eq!(habeas_schema[\"additionalProperties\"], false);",
+        "        for field in [",
+        "            \"file\",",
+        "            \"rust_file\",",
+        "            \"rust_item\",",
+        "            \"requirements\",",
+        "            \"definition\",",
         "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();"
+        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"string\");"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 174,
+      "line_end": 174,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 241,
+      "line_end": 241,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 468,
+      "line_end": 469,
+      "text": [
+        "        fs::write(root.join(\"inside.txt\"), \"inside\\n\").unwrap();",
+        "        fs::write(parent.path().join(\"outside.txt\"), \"outside\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 483,
+      "line_end": 483,
+      "text": [
+        "        fs::write(root.path().join(\"source.txt\"), \"source\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 486,
+      "line_end": 486,
+      "text": [
+        "        fs::write(root.path().join(\".git/index\"), \"invalid index\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 501,
+      "line_end": 501,
+      "text": [
+        "        fs::write(root.join(\"source.txt\"), \"source\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 514,
+      "line_end": 514,
+      "text": [
+        "        fs::write(root.path().join(\".git/config\"), \"[invalid config\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 532,
+      "line_end": 535,
+      "text": [
+        "        fs::write(root.path().join(\"generated/ok.txt\"), \"generated\\n\").unwrap();",
+        "        fs::write(root.path().join(\"generated/private/secret.txt\"), \"secret\\n\").unwrap();",
+        "        fs::write(root.path().join(\"evidence/old.txt\"), \"old judgment\\n\").unwrap();",
+        "        fs::write(external.path().join(\"outside.txt\"), \"outside\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 538,
+      "line_end": 538,
+      "text": [
+        "        fs::write(root.path().join(\"habeas.toml\"), format!("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 577,
+      "line_end": 577,
+      "text": [
+        "        fs::write(root.path().join(\"habeas.toml\"), config).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 584,
+      "line_end": 584,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 608,
+      "line_end": 608,
+      "text": [
+        "        fs::write(root.path().join(\"public/file.txt\"), \"public source\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 642,
+      "line_end": 642,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 651,
+      "line_end": 651,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 659,
+      "line_end": 659,
+      "text": [
+        "        fs::write(fake.join(\"root-output\"), unrelated.path().to_str().unwrap()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 674,
+      "line_end": 675,
+      "text": [
+        "        fs::write(root.path().join(\"actual/private/file.txt\"), \"actual\\n\").unwrap();",
+        "        fs::write(root.path().join(\"private/file.txt\"), \"wrong subtree\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 679,
+      "line_end": 679,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 702,
+      "line_end": 702,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 723,
+      "line_end": 723,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 760,
+      "line_end": 761,
+      "text": [
+        "        fs::write(root.path().join(\"tracked.txt\"), \"ordinary source\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 766,
+      "line_end": 766,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 298,
+      "line_end": 298,
+      "text": [
+        "            fs::write(&path, json)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 625,
+      "line_end": 625,
+      "text": [
+        "        fs::write(project.path().join(\"src/lib.rs\"), \"pub fn ready() {}\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 750,
+      "line_end": 750,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 95,
+      "line_end": 96,
+      "text": [
+        "                if let Some(key) = config.api_key()? {",
+        "                    provider = provider.with_api_key(key);"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 895,
+      "line_end": 896,
+      "text": [
+        "        fs::write(root.path().join(\"src/lib.rs\"), \"pub fn ready() {}\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 901,
+      "line_end": 901,
+      "text": [
+        "        fs::write(root.path().join(\".gitignore\"), \"target/\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 916,
+      "line_end": 917,
+      "text": [
+        "        fs::write(out.join(\"generated.rs\"), \"pub fn generated_needle() {}\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 950,
+      "line_end": 950,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 999,
+      "line_end": 1000,
+      "text": [
+        "        fs::write(root.path().join(\"actual/needle.txt\"), \"actual needle\\n\").unwrap();",
+        "        fs::write(root.path().join(\"needle.txt\"), \"wrong needle\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 512,
+      "line_end": 513,
+      "text": [
+        "    pub fn api_key(&self) -> io::Result<Option<String>> {",
+        "        self.api_key_from(|name| std::env::var_os(name))"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 519,
+      "line_end": 519,
+      "text": [
+        "    pub fn api_key_from("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 620,
+      "line_end": 620,
+      "text": [
+        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 809,
+      "line_end": 809,
+      "text": [
+        "    let config = load_user_config(&path)?;"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1530,
+      "line_end": 1531,
+      "text": [
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1546,
+      "line_end": 1546,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1551,
+      "line_end": 1551,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1570,
+      "line_end": 1573,
+      "text": [
+        "                fs::write(root.join(\"evidence/broken.json\"), \"{\").unwrap();",
+        "                fs::write(root.join(\"src/broken.rs\"), \"fn {\").unwrap();",
+        "                fs::write(root.join(\"src/lib.rs\"), \"fn retained() {}\\n\").unwrap();",
+        "                fs::write(root.join(\"src/binary.dat\"), [0xff]).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1575,
+      "line_end": 1575,
+      "text": [
+        "                fs::write(root.join(\"evidence/rust/src/ghost.rs.json\"), \"{}\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1645,
+      "line_end": 1645,
+      "text": [
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1680,
+      "line_end": 1680,
+      "text": [
+        "            fs::write(&path, configuration).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1711,
+      "line_end": 1711,
+      "text": [
+        "            fs::write(&path, configuration).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1729,
+      "line_end": 1729,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1734,
+      "line_end": 1734,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1765,
+      "line_end": 1765,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1770,
+      "line_end": 1770,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1794,
+      "line_end": 1794,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1799,
+      "line_end": 1799,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1810,
+      "line_end": 1810,
+      "text": [
+        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1842,
+      "line_end": 1842,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1853,
+      "line_end": 1855,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
+        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1888,
+      "line_end": 1888,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1896,
+      "line_end": 1897,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1935,
+      "line_end": 1935,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1943,
+      "line_end": 1943,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1967,
+      "line_end": 1967,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1972,
+      "line_end": 1972,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2001,
+      "line_end": 2001,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2008,
+      "line_end": 2008,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2042,
+      "line_end": 2042,
+      "text": [
+        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2045,
+      "line_end": 2046,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2063,
+      "line_end": 2063,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2081,
+      "line_end": 2081,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2125,
+      "line_end": 2125,
+      "text": [
+        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2132,
+      "line_end": 2132,
+      "text": [
+        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2144,
+      "line_end": 2144,
+      "text": [
+        "        fs::write(&rust_evidence, rust_original).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2146,
+      "line_end": 2146,
+      "text": [
+        "        fs::write(&orphan, \"{}\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2157,
+      "line_end": 2157,
+      "text": [
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2161,
+      "line_end": 2162,
+      "text": [
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2172,
+      "line_end": 2173,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2186,
+      "line_end": 2186,
+      "text": [
+        "        fs::write(&example_path, evidence.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2198,
+      "line_end": 2198,
+      "text": [
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2219,
+      "line_end": 2220,
+      "text": [
+        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
+        "        fs::write("
       ]
     }
   ]

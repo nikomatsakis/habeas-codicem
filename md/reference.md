@@ -91,6 +91,35 @@ another assessment fails; the command reports failures and exits unsuccessfully.
 A completed false judgment is saved and remains a validation failure.
 {cite}`requirements.authoring.batch` {cite}`requirements.authoring.function_attestations`
 
+In a terminal, inspection shows a progress bar for each phase once its amount of
+work is known, with a phase label and completed/total checks. Discovery uses a
+spinner until a total is available. During authoring, the bar shows elapsed time, finished/total,
+active and queued assessments, and separate `true`, `false`, `FIXME`, and error
+counts. Progress measures work finished; a false judgment still fails validation.
+The bar appears on stderr, leaving the stdout summary unchanged. Redirected
+stderr keeps the plain reports; `TERM=dumb` also uses plain output. `NO_COLOR`
+keeps the progress display without color. {cite}`requirements.authoring.progress`
+
+Completed `true` assessments do not print individual completion lines. Each
+`false` judgment prints its subject and outcome on stderr so it can be followed
+up. FIXME notices, authoring errors, and the aggregate summary remain visible.
+Add `-v` or `--verbose` to include each false judgment's stored rationale,
+without input snapshots or additional inference:
+
+```sh
+habeas author --all --config cloud -v
+habeas author requirements.ci.inputs --verbose
+```
+
+This also works with `--stdout`: stdout remains evidence JSON and the verbose
+rationale goes to stderr. {cite}`requirements.authoring.reporting`
+
+Transient provider token/request throttling is retried automatically with
+exponential backoff and jitter, honoring `Retry-After` when the provider exposes
+it. Every attempt is counted in usage. Retries have no attempt limit; Ctrl-C
+interrupts waiting. Requests that exceed a model's input/context limit still fail
+because waiting cannot make that request fit. {cite}`requirements.authoring.provider_backoff`
+
 `habeas author <full-name>` assesses one requirement or example, records the
 source inputs delivered to the model, and writes its judgment to the usual
 evidence file. `author-evidence` remains an alias. Install `rg` (ripgrep) on your PATH for the model's search tool.

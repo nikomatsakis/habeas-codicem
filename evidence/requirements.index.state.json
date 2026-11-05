@@ -1,7 +1,7 @@
 {
   "requirement": "The requirements index MUST show each requirement's evidence state as Valid, Missing, Determination false, FIXME, or Invalid. Valid MUST mean its determination is true and its record passes the same evidence and reference coverage checks as `habeas::validate()`. A false or FIXME determination MUST have its distinct state when the record passes all other checks. The FIXME state MUST pass validation while retaining its distinct label. Malformed or stale evidence MUST remain Invalid regardless of its determination. Each detail page MUST show any validation findings.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.**\n\n**Implementation (`src/index.rs`)**\n- `EvidenceState::label` gives exactly the five required labels: Valid, Missing, Determination false, FIXME and Invalid. `color` maps each to a badge colour.\n- `LoadedDetailEvidence::load` takes only the errors that `inspect_repository` already produced for `evidence/{name}.json:`. Those are the same checks `validate_repository` runs, so Valid uses the same evidence and reference coverage checks as `habeas::validate()`.\n- `load` assigns the state as follows:\n  - **Missing:** the evidence file does not exist.\n  - **No errors:** True gives Valid, False gives Determination false, FIXME gives FIXME. A determination that cannot be parsed gives Invalid.\n  - **Errors, all of them \"determination is false\":** Determination false.\n  - **Any other errors:** Invalid. A stale, malformed or uncovered record therefore stays Invalid whatever its determination, including FIXME and false.\n- FIXME passes validation: it produces no error, so it reaches the `Fixme` arm and keeps its own label.\n- `render_detail_page` writes a \"Validation findings\" section whenever `errors` is non-empty (`src/index.rs` ~486–489). `populate` puts each state's label into the index table.\n\n**Tests**\n- `index_shows_evidence_states_and_links_generated_chapters` (`src/index.rs`) checks the index row label for:\n  - Valid (`ready`);\n  - Determination false (`pending`);\n  - Invalid because the requirement text changed (`changed`);\n  - Missing (`absent`);\n  - Invalid because no input covers the reference (`uncovered`).\n  It also checks that the detail page for `changed` shows the \"requirement text changed\" finding, and that the `ready` page carries the Valid badge.\n- `tests/outcomes.rs` covers the FIXME cases:\n  - `valid_fixme_remains_visible_in_status_info_and_book` shows FIXME in the index and on the detail page.\n  - `malformed_fixme_is_invalid_and_reports_the_required_shape` shows a malformed FIXME is Invalid.\n  - `fixme_does_not_hide_stale_inputs_or_uncovered_references` shows a stale input makes a FIXME Invalid, and that an uncovered reference is reported by validation.\n- `tests/commands.rs` and `src/evidence.rs` tests exercise the \"determination is false\" finding and its combination with other findings.\n\n**Minor gap**\n- There is no index-level test for a false determination that also has another error, which the code reports as Invalid. The logic is a single `all(...)` check, and the same combination is exercised at the validation level, so I don't count this against the requirement.",
+  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and the tests cover every state label.\n\n**Implementation**\n- `LoadedDetailEvidence::load` (src/index.rs ~L140-195) builds the state from the same `EvidenceReport` that `habeas::validate_repository` produces. It keeps the errors whose prefix is `evidence/<name>.json:`. Evidence and reference coverage checks, such as \"no input covers\", \"requirement text changed\" and \"input text changed\", live in src/evidence.rs and feed this report. The index therefore uses the validator's checks instead of its own.\n- State selection:\n  - No evidence file gives `Missing`.\n  - No errors, with the determination parsed from the record, gives `Valid` for true, `DeterminationFalse` for false, and `Fixme` for a FIXME object.\n  - No errors but an unparsable determination gives `Invalid`.\n  - Errors that are all \"determination is false\" give `DeterminationFalse`. This is the only error validation raises for a false determination (src/evidence.rs L516), so a false record that passes every other check keeps its distinct state.\n  - Any other error gives `Invalid`. This covers stale or malformed evidence, whatever the determination.\n- FIXME handling:\n  - `Judgment::from_value` (src/judgment.rs) rejects an empty or malformed FIXME array, so that record is `Invalid`.\n  - Validation raises no error for a valid FIXME, so it passes validation and keeps the `FIXME` label.\n- `EvidenceState::label` returns the five required labels: Valid, Missing, Determination false, FIXME, Invalid.\n- `IndexPlan::populate` writes the state label into each index row.\n- `render_detail_page` (src/index.rs L486-489) adds a \"Validation findings\" section whenever `errors` is non-empty, so every detail page shows its findings.\n\n**Tests**\n- `index_shows_evidence_states_and_links_generated_chapters` (src/index.rs) builds five fixtures and checks the exact state in each index row:\n  - ready gives Valid.\n  - pending, with a false determination, gives Determination false.\n  - changed, with stale requirement text, gives Invalid.\n  - absent, with no evidence file, gives Missing.\n  - uncovered, with a reference no input covers, gives Invalid.\n  - It also checks that the changed detail page shows \"requirement text changed\", which covers the findings-on-detail-page clause.\n- `valid_fixme_remains_visible_in_status_info_and_book` (tests/outcomes.rs) checks that a valid FIXME shows `FIXME` in the index row and the `evidence-FIXME` badge on the detail page. It also checks that no \"Validation findings\" section appears, which shows FIXME passes validation.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` and `malformed_fixme_is_invalid_and_reports_the_required_shape` (tests/outcomes.rs) check that a FIXME with stale input, or with a malformed shape, is Invalid and its findings are displayed. The state is asserted through `status_markdown`, which uses the same `LoadedDetailEvidence` and shared rendering rather than the book index.\n- tests/commands.rs checks that stale and false cases surface their findings.\n\n**Minor gaps, not enough to fail the requirement:** a false determination combined with another error is covered only by the logic. No test asserts that case separately, and the stale-FIXME test asserts the state through the status output rather than the index table.",
   "inputs": [
     {
       "requirements": "requirements.index.state",
@@ -866,19 +866,19 @@
       "line_start": 451,
       "line_end": 463,
       "text": [
-        "            None",
+        "        Ok(value) => value,",
+        "        Err(error) => {",
+        "            errors.push(format!(\"{label}: invalid JSON: {error}\"));",
+        "            return;",
         "        }",
         "    };",
-        "    let rationale = string_field(object, \"rationale\", &label, errors);",
-        "    if let Some(rationale) = rationale",
-        "        && rationale.trim().is_empty()",
-        "    {",
-        "        errors.push(format!(\"{label}: rationale must not be empty\"));",
-        "    }",
-        "    // {impl}`requirements.ci.determination`",
-        "    if determination == Some(Judgment::False) {",
-        "        errors.push(format!(",
-        "            \"{label}: determination is false{}\","
+        "    let Some(object) = value.as_object() else {",
+        "        errors.push(format!(\"{label}: expected a JSON object\"));",
+        "        return;",
+        "    };",
+        "    let kind = expected",
+        "        .map(|definition| definition.kind)",
+        "        .unwrap_or_else(|| {"
       ]
     },
     {
@@ -886,19 +886,19 @@
       "line_start": 1321,
       "line_end": 1333,
       "text": [
-        "        let Some(inputs) = array_field(entry, \"inputs\", &entry_label, errors) else {",
-        "            continue;",
-        "        };",
-        "        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);",
-        "        let mut self_inputs = 0;",
-        "        let mut definition_inputs = 0;",
-        "        let mut matched_definitions = BTreeSet::new();",
-        "        for (input_index, input) in inputs.iter().enumerate() {",
-        "            let input_label = format!(\"{entry_label}: inputs[{input_index}]\");",
-        "            let input_selector = InputSelector::from_input(input);",
-        "            let resolved = validate_input(root, definitions, input, &input_label, errors);",
-        "            match input_selector {",
-        "                Some(InputSelector::RustItem {"
+        "            for (function, _) in functions {",
+        "                errors.push(format!(",
+        "                    \"{label}: {rust_file}:{} {}: missing Rust function attestation file; {purpose}\",",
+        "                    function.declaration_line, function.selector",
+        "                ));",
+        "            }",
+        "            return valid;",
+        "        }",
+        "        Err(error) => {",
+        "            errors.push(format!(",
+        "                \"{label}: cannot read Rust attestation: {error}; {purpose}\"",
+        "            ));",
+        "            return valid;"
       ]
     },
     {
@@ -906,19 +906,19 @@
       "line_start": 1563,
       "line_end": 1575,
       "text": [
-        "            \"requirement must be a string\",",
-        "            \"missing field \\\"determination\\\"\",",
-        "            \"inputs must be an array\",",
-        "            \"file must be a nonempty path\",",
-        "            \"line_start must be a positive integer\",",
-        "            \"text[0] must be a string\",",
-        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
-        "            \"requirement requirements.empty has no text\",",
-        "        ] {",
-        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
-        "        }",
-        "    }",
-        ""
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        for invalid in [false, true] {",
+        "            if invalid {",
+        "                fs::write(root.join(\"evidence/broken.json\"), \"{\").unwrap();",
+        "                fs::write(root.join(\"src/broken.rs\"), \"fn {\").unwrap();",
+        "                fs::write(root.join(\"src/lib.rs\"), \"fn retained() {}\\n\").unwrap();",
+        "                fs::write(root.join(\"src/binary.dat\"), [0xff]).unwrap();",
+        "                fs::create_dir_all(root.join(\"evidence/rust/src\")).unwrap();",
+        "                fs::write(root.join(\"evidence/rust/src/ghost.rs.json\"), \"{}\").unwrap();"
       ]
     },
     {
@@ -946,11 +946,11 @@
       "line_start": 461,
       "line_end": 465,
       "text": [
-        "    if determination == Some(Judgment::False) {",
-        "        errors.push(format!(",
-        "            \"{label}: determination is false{}\",",
-        "            rationale",
-        "                .filter(|text| !text.trim().is_empty())"
+        "    let kind = expected",
+        "        .map(|definition| definition.kind)",
+        "        .unwrap_or_else(|| {",
+        "            if object.contains_key(\"example\") {",
+        "                DefinitionKind::Example"
       ]
     },
     {
@@ -958,11 +958,11 @@
       "line_start": 1315,
       "line_end": 1319,
       "text": [
-        "        if determination == Some(false) {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: determination is false: {}\",",
-        "                rationale.unwrap_or(\"\")",
-        "            ));"
+        "    let label = display_path(root, path);",
+        "    let purpose =",
+        "        \"review each function and confirm it cites every applicable requirement or named example\";",
+        "    let source = match fs::read_to_string(path) {",
+        "        Ok(source) => source,"
       ]
     },
     {
@@ -970,11 +970,11 @@
       "line_start": 1557,
       "line_end": 1561,
       "text": [
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\","
+        "                \"inputs\": [{",
+        "                    \"file\": \"src/main.rs\",",
+        "                    \"line_start\": 1,",
+        "                    \"line_end\": 2,",
+        "                    \"text\": [\"// first line\", \"// second line\"]"
       ]
     },
     {
@@ -1011,6 +1011,363 @@
         "            .any(|error| error.contains(\"determination is false\"))",
         "    );",
         "}"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 61,
+      "line_end": 67,
+      "text": [
+        "            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);",
+        "            if matches!(",
+        "                evidence.state(),",
+        "                EvidenceState::Valid | EvidenceState::Fixme",
+        "            ) {",
+        "                unchanged += 1;",
+        "            } else {"
+      ]
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "line_start": 97,
+      "line_end": 105,
+      "text": [
+        "        match &assessment.determination {",
+        "            Judgment::True => self.positive += 1,",
+        "            Judgment::False => self.negative += 1,",
+        "            Judgment::Fixme(_) => self.fixme += 1,",
+        "        }",
+        "        if matches!(assessment.determination, Judgment::Fixme(_)) {",
+        "            self.println(&format!(",
+        "                \"{}: FIXME (usage: {})\",",
+        "                assessment.subject,"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 5,
+      "line_end": 11,
+      "text": [
+        "use crate::definition_glob;",
+        "use crate::escape_html;",
+        "use crate::evidence::inspect_repository;",
+        "use crate::fixme::FixmeSummary;",
+        "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};",
+        "use crate::markdown::render_evidence_table;",
+        ""
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 49,
+      "line_end": 55,
+      "text": [
+        "    let mut output = String::from(\"# Definitions status\\n\\n\");",
+        "    let mut rows = Vec::new();",
+        "    let mut findings = String::new();",
+        "    let mut fixmes = FixmeSummary::default();",
+        "    let mut associated_errors = BTreeSet::new();",
+        "",
+        "    for (name, definition) in &inspection.definitions {"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 67,
+      "line_end": 73,
+      "text": [
+        "        if !all && evidence.state() == EvidenceState::Valid {",
+        "            continue;",
+        "        }",
+        "        if !all && !verbose && evidence.state() == EvidenceState::Fixme {",
+        "            continue;",
+        "        }",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 516,
+      "line_end": 522,
+      "text": [
+        "    // {impl}`requirements.ci.determination`",
+        "    if determination == Some(Judgment::False) {",
+        "        errors.push(format!(",
+        "            \"{label}: determination is false{}\",",
+        "            rationale",
+        "                .filter(|text| !text.trim().is_empty())",
+        "                .map_or(String::new(), |text| format!(\": {}\", text.trim()))"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1025,
+      "line_end": 1031,
+      "text": [
+        "                    && reference.line <= input.line_end",
+        "            }) {",
+        "                errors.push(format!(",
+        "                    \"{}: no input covers {{{}}}`{}` at {}:{}\",",
+        "                    display_path(root, &evidence_file),",
+        "                    reference.kind.label(),",
+        "                    name,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1447,
+      "line_end": 1453,
+      "text": [
+        "        }",
+        "        if determination == Some(false) {",
+        "            errors.push(format!(",
+        "                \"{entry_label}: determination is false: {}\",",
+        "                rationale.unwrap_or(\"\")",
+        "            ));",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1818,
+      "line_end": 1824,
+      "text": [
+        "            \"requirement text changed\",",
+        "            \"- Old text.\",",
+        "            \"+ First.\",",
+        "            \"determination is false\",",
+        "            \"input text changed\",",
+        "            \"- changed line\",",
+        "            \"+ // first line\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1921,
+      "line_end": 1927,
+      "text": [
+        "            \"{errors}\"",
+        "        );",
+        "        assert!(",
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\"",
+        "        );",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2156,
+      "line_end": 2162,
+      "text": [
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 6,
+      "line_end": 26,
+      "text": [
+        "use crate::escape_html;",
+        "",
+        "#[derive(Default)]",
+        "pub(crate) struct FixmeSummary {",
+        "    judgments: Vec<FixmeJudgment>,",
+        "}",
+        "",
+        "struct FixmeJudgment {",
+        "    name: String,",
+        "    kind: &'static str,",
+        "    entries: Vec<String>,",
+        "}",
+        "",
+        "impl FixmeSummary {",
+        "    // {impl}`requirements.cli.fixme_summary`",
+        "    pub(crate) fn add(&mut self, name: &str, kind: &'static str, entries: &[String]) {",
+        "        if !entries.is_empty() {",
+        "            self.judgments.push(FixmeJudgment {",
+        "                name: name.to_owned(),",
+        "                kind,",
+        "                entries: entries.to_vec(),"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 33,
+      "line_end": 39,
+      "text": [
+        "        if self.judgments.is_empty() {",
+        "            return String::new();",
+        "        }",
+        "        let mut groups: BTreeMap<String, Vec<&FixmeJudgment>> = BTreeMap::new();",
+        "        let mut without_issue = Vec::new();",
+        "        for judgment in &self.judgments {",
+        "            let issues = issue_references(&judgment.entries);"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 86,
+      "line_end": 92,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.cli.fixme_summary`",
+        "fn render_judgments(output: &mut String, judgments: &[&FixmeJudgment]) {",
+        "    for judgment in judgments {",
+        "        output.push_str(&format!(\"- `{}` ({})\\n\\n\", judgment.name, judgment.kind));",
+        "        output.push_str(\"<pre><code>\");"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 119,
+      "line_end": 125,
+      "text": [
+        "    Valid,",
+        "    Missing,",
+        "    DeterminationFalse,",
+        "    Fixme,",
+        "    Invalid,",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 176,
+      "line_end": 187,
+      "text": [
+        "            match judgment {",
+        "                Some(crate::judgment::Judgment::True) => EvidenceState::Valid,",
+        "                Some(crate::judgment::Judgment::False) => EvidenceState::DeterminationFalse,",
+        "                Some(crate::judgment::Judgment::Fixme(_)) => EvidenceState::Fixme,",
+        "                None => EvidenceState::Invalid,",
+        "            }",
+        "        } else if errors",
+        "            .iter()",
+        "            .all(|error| error.starts_with(&format!(\"{prefix} determination is false\")))",
+        "        {",
+        "            EvidenceState::DeterminationFalse",
+        "        } else {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 230,
+      "line_end": 236,
+      "text": [
+        "            Self::Valid => \"Valid\",",
+        "            Self::Missing => \"Missing\",",
+        "            Self::DeterminationFalse => \"Determination false\",",
+        "            Self::Fixme => \"FIXME\",",
+        "            Self::Invalid => \"Invalid\",",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 241,
+      "line_end": 247,
+      "text": [
+        "            Self::Valid => \"237346\",",
+        "            Self::Missing => \"5f6670\",",
+        "            Self::DeterminationFalse => \"ae5d14\",",
+        "            Self::Fixme => \"ae5d14\",",
+        "            Self::Invalid => \"ad3028\",",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 5,
+      "line_end": 11,
+      "text": [
+        "pub enum Judgment {",
+        "    True,",
+        "    False,",
+        "    Fixme(Vec<String>),",
+        "}",
+        "",
+        "impl Judgment {"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 30,
+      "line_end": 36,
+      "text": [
+        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")",
+        "                    })",
+        "                    .collect::<Result<Vec<_>, _>>()?;",
+        "                Ok(Self::Fixme(entries))",
+        "            }",
+        "            _ => Err(",
+        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\""
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 45,
+      "line_end": 51,
+      "text": [
+        "        match self {",
+        "            Self::True => Value::Bool(true),",
+        "            Self::False => Value::Bool(false),",
+        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
+        "        }",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 54,
+      "line_end": 60,
+      "text": [
+        "        match self {",
+        "            Self::True => \"true\",",
+        "            Self::False => \"false\",",
+        "            Self::Fixme(_) => \"FIXME\",",
+        "        }",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 62,
+      "line_end": 68,
+      "text": [
+        "    // {impl}`requirements.cli.status`",
+        "    pub fn fixme_entries(&self) -> &[String] {",
+        "        match self {",
+        "            Self::Fixme(entries) => entries,",
+        "            Self::True | Self::False => &[],",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 187,
+      "line_end": 193,
+      "text": [
+        "                \"{}: {} / {}\",",
+        "                outcome.subject, outcome.backend, outcome.model,",
+        "            );",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
+        "                summary.push_str(\" — FIXME\");",
+        "            }",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {"
       ]
     }
   ]

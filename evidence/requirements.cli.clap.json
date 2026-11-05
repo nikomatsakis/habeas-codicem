@@ -1,7 +1,7 @@
 {
   "requirement": "The `habeas` CLI MUST use `clap` to define and parse its commands and options.",
   "determination": true,
-  "rationale": "**The requirement is met.** The `habeas` CLI defines and parses its commands and options with `clap`.\n\n**Implementation**\n- `Cargo.toml` depends on `clap = { version = \"4.6.7\", features = [\"derive\"] }`.\n- `src/main.rs:1` imports `clap::{ArgGroup, Parser, Subcommand}`.\n- `struct Cli` derives `Parser` with `#[command(name = \"habeas\")]` and a `#[command(subcommand)]` field. It is annotated `{impl}` for this requirement.\n- `enum Command` derives `Subcommand`. It declares every command (`Mdbook`, `Setup`, `Status`, `Info`, `Author`, `Hook`, `AddInput`) and their options through clap attributes. This includes `ArgGroup` constraints, `conflicts_with`, `alias`, `hide`, and `num_args`. `MdbookCommand` and `HookCommand` are nested subcommands.\n- `main()` calls `Cli::parse()` (`src/main.rs:86-88`), also annotated `{impl}`.\n- A search of the source for `env::args` found nothing. No hand-rolled argument parsing bypasses clap.\n\n**Tests**\n- No test carries a `{test}` tag for `requirements.cli.clap` itself. I accept that, because the requirement is structural and the derive-based code verifies it directly.\n- `tests/cli.rs` exercises clap's behaviour through the real binary. An unknown command, `agents`, `setup --wrong`, `setup --install-skills`, and `setup --path . --install-skills` all exit non-zero and print clap's `Usage: habeas` message on stderr.\n- `mdbook supports html` and `mdbook supports epub` exercise the nested subcommand parsing.\n- `tests/authoring_cli.rs` and `tests/commands.rs` run the CLI through `author`, `status` and related subcommands. These show the clap-defined interface works end to end.\n\n**Gaps:** none found, and there are no FIXMEs.",
+  "rationale": "**Implementation**\n\n- `Cargo.toml` depends on `clap = { version = \"4.6.7\", features = [\"derive\"] }`.\n- `src/main.rs` imports `clap::{ArgGroup, Parser, Subcommand}`.\n- `struct Cli` is annotated `// {impl}`requirements.cli.clap``. It uses `#[derive(Parser)]` and `#[command(name = \"habeas\")]`, with a `#[command(subcommand)]` field.\n- `enum Command`, `MdbookCommand` and `HookCommand` use `#[derive(Subcommand)]`. Options are declared with `#[arg(...)]`. `ArgGroup`s enforce required and mutually exclusive targets for `author` and `add-input`.\n- `main()` is also annotated `{impl}` and calls `Cli::parse()`.\n- A search of `src` found no `std::env::args` or `args_os` use, so there is no hand-rolled argument parsing alongside clap.\n\n**Tests**\n\n- No test is tagged `{test}`requirements.cli.clap``. That is acceptable. The requirement is structural (\"MUST use clap\"), and a test would only restate the derive.\n- Several integration tests exercise clap's behavior through the real binary.\n  - `tests/cli.rs` checks that an unknown command, an unknown option, and `setup --install-skills` fail with a clap-style `Usage: habeas` message.\n  - It also checks that `mdbook supports` parses its renderer argument.\n  - `tests/authoring_cli.rs` and `tests/commands.rs` run `author` with `--stdout` and the `status` command through the same parser.\n\nThe requirement is met.",
   "inputs": [
     {
       "requirements": "requirements.cli.clap",
@@ -86,18 +86,23 @@
         "        // {impl}`requirements.authoring.invocation`",
         "        // {impl}`requirements.authoring.batch`",
         "        // {impl}`requirements.authoring.concurrency`",
+        "        // {impl}`requirements.authoring.reporting`",
         "        Command::Author {",
         "            subject,",
         "            all,",
         "            config,",
         "            stdout,",
+        "            verbose,",
         "        } => {",
         "            let root = setup::project_root()?;",
         "            // Tokio's fixed worker pool is shared by all async assessments.",
         "            let runtime = tokio::runtime::Runtime::new()?;",
         "            if all {",
-        "                let outcome =",
-        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;",
+        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
+        "                    &root,",
+        "                    config.as_deref(),",
+        "                    habeas::authoring::AuthoringOptions { verbose },",
+        "                ))?;",
         "                println!(",
         "                    \"{} authored; {} unchanged; {} failed\",",
         "                    outcome.completed.len(),",
@@ -123,13 +128,19 @@
         "                config.as_deref(),",
         "                output,",
         "            ))?;",
-        "            let summary = format!(",
-        "                \"{}: {} / {} — {}\",",
-        "                outcome.subject,",
-        "                outcome.backend,",
-        "                outcome.model,",
-        "                outcome.determination.kind(),",
+        "            let mut summary = format!(",
+        "                \"{}: {} / {}\",",
+        "                outcome.subject, outcome.backend, outcome.model,",
         "            );",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
+        "                summary.push_str(\" — FIXME\");",
+        "            }",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
+        "                eprintln!(\"{}: false\", outcome.subject);",
+        "                if verbose {",
+        "                    eprintln!(\"{}\", outcome.rationale);",
+        "                }",
+        "            }",
         "            if let Some(path) = outcome.evidence_path {",
         "                println!(",
         "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
@@ -232,6 +243,10 @@
         "aws-config = \"=1.8.13\"",
         "aws-sdk-bedrockruntime = \"1.153\"",
         "clap = { version = \"4.6.7\", features = [\"derive\"] }",
+        "console = \"0.16.6\"",
+        "fastrand = \"2.5.0\"",
+        "httpdate = \"1.0.3\"",
+        "indicatif = \"0.18.4\"",
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
         "pulldown-cmark = \"=0.11.3\"",
@@ -241,11 +256,7 @@
         "serde = { version = \"1.0.229\", features = [\"derive\"] }",
         "serde_json = \"1\"",
         "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
-        "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\"] }",
-        "toml = \"1.2.0\"",
-        "toml_edit = \"0.25.17\"",
-        ""
+        "tempfile = \"3.27.0\""
       ]
     },
     {
@@ -333,6 +344,9 @@
         "        /// Write evidence JSON to stdout instead of updating its file.",
         "        #[arg(long)]",
         "        stdout: bool,",
+        "        /// Show the stored rationale for false judgments.",
+        "        #[arg(short, long)]",
+        "        verbose: bool,",
         "    },",
         "    #[command(hide = true)]",
         "    Hook {",
@@ -394,9 +408,9 @@
       "line_start": 50,
       "line_end": 52,
       "text": [
-        "    },",
-        "    #[command(hide = true)]",
-        "    Hook {"
+        "        /// Show the stored rationale for false judgments.",
+        "        #[arg(short, long)]",
+        "        verbose: bool,"
       ]
     },
     {
@@ -404,9 +418,9 @@
       "line_start": 73,
       "line_end": 75,
       "text": [
-        "    },",
-        "}",
-        ""
+        "        rust_item: Option<String>,",
+        "        #[arg(long)]",
+        "        requirements: Option<String>,"
       ]
     },
     {
@@ -414,9 +428,9 @@
       "line_start": 78,
       "line_end": 80,
       "text": [
-        "    Supports { renderer: String },",
-        "}",
-        ""
+        "",
+        "#[derive(Subcommand)]",
+        "enum MdbookCommand {"
       ]
     },
     {
@@ -424,9 +438,9 @@
       "line_start": 83,
       "line_end": 85,
       "text": [
-        "    SessionStart,",
-        "}",
-        ""
+        "",
+        "#[derive(Subcommand)]",
+        "enum HookCommand {"
       ]
     },
     {
@@ -434,9 +448,9 @@
       "line_start": 94,
       "line_end": 96,
       "text": [
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { .. })",
-        "        }"
+        "    // {impl}`requirements.configuration.loading`",
+        "    if !matches!(",
+        "        cli.command,"
       ]
     },
     {
@@ -444,9 +458,9 @@
       "line_start": 156,
       "line_end": 158,
       "text": [
-        "                    outcome.unchanged,",
-        "                    outcome.failures.len()",
-        "                );"
+        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
+        "                    &root,",
+        "                    config.as_deref(),"
       ]
     },
     {
@@ -454,9 +468,9 @@
       "line_start": 183,
       "line_end": 185,
       "text": [
-        "                outcome.determination.kind(),",
-        "            );",
-        "            if let Some(path) = outcome.evidence_path {"
+        "                config.as_deref(),",
+        "                output,",
+        "            ))?;"
       ]
     },
     {
@@ -464,9 +478,9 @@
       "line_start": 200,
       "line_end": 202,
       "text": [
-        "        Command::Hook {",
-        "            command: HookCommand::SessionStart,",
-        "        } => hook::session_start(),"
+        "                println!(",
+        "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
+        "                    path.display(),"
       ]
     },
     {
@@ -474,9 +488,9 @@
       "line_start": 211,
       "line_end": 213,
       "text": [
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            let target = if let Some(name) = for_requirement {"
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.integration.symposium_setup_hook`"
       ]
     },
     {
@@ -628,9 +642,9 @@
       "line_start": 86,
       "line_end": 88,
       "text": [
-        "fn main() -> Result<(), Box<dyn Error>> {",
-        "    // {impl}`requirements.cli.clap`",
-        "    let cli = Cli::parse();"
+        "    SessionStart,",
+        "}",
+        ""
       ]
     },
     {
@@ -650,11 +664,39 @@
       "line_start": 85,
       "line_end": 89,
       "text": [
+        "enum HookCommand {",
+        "    SessionStart,",
+        "}",
+        "",
+        "fn main() -> Result<(), Box<dyn Error>> {"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 7,
+      "line_end": 13,
+      "text": [
+        "mod hook;",
+        "mod setup;",
+        "",
+        "// {impl}`requirements.cli.clap`",
+        "#[derive(Parser)]",
+        "#[command(name = \"habeas\")]",
+        "struct Cli {"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 87,
+      "line_end": 93,
+      "text": [
+        "}",
         "",
         "fn main() -> Result<(), Box<dyn Error>> {",
         "    // {impl}`requirements.cli.clap`",
         "    let cli = Cli::parse();",
-        "    // {impl}`requirements.configuration.workspace_location`"
+        "    // {impl}`requirements.configuration.workspace_location`",
+        "    // {impl}`requirements.configuration.workspace_structure`"
       ]
     }
   ]

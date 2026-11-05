@@ -6,10 +6,13 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use super::{AuthoringOutcome, AuthoringSubject, PendingAssessment, prepare_assessment};
+use super::progress::BatchProgress;
+use super::{
+    AuthoringOptions, AuthoringOutcome, AuthoringSubject, PendingAssessment, prepare_assessment,
+};
 use crate::DefinitionKind;
 use crate::config;
-use crate::evidence::inspect_repository;
+use crate::evidence::{InspectionProgress, inspect_repository_with_progress};
 use crate::index::{EvidenceState, LoadedDetailEvidence};
 
 pub struct BatchOutcome {
@@ -22,27 +25,55 @@ pub struct BatchOutcome {
 // {impl}`requirements.authoring.concurrency`
 // {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.progress`
 pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {
+    author_all_with_options(root, selection, AuthoringOptions::default()).await
+}
+
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.authoring.configuration_precedence`
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.progress`
+// {impl}`requirements.authoring.reporting`
+pub async fn author_all_with_options(
+    root: &Path,
+    selection: Option<&str>,
+    options: AuthoringOptions,
+) -> io::Result<BatchOutcome> {
     let root = fs::canonicalize(root)?;
-    let inspection = inspect_repository(&root)?;
+    let mut progress = BatchProgress::new(options.verbose);
+    let inspection = inspect_repository_with_progress(&root, |update| progress.inspect(update))?;
     if !inspection.discovery_errors.is_empty() {
         return Err(io::Error::other(inspection.discovery_errors.join("\n")));
     }
     let mut subjects = Vec::new();
     let mut unchanged = 0;
+    let total = inspection.definitions.len() + inspection.rust_functions.len();
+    let mut checked = 0;
+    progress.inspect(InspectionProgress {
+        stage: "selecting assessments",
+        completed: checked,
+        total: Some(total),
+    });
     for (name, definition) in &inspection.definitions {
-        if definition.kind == DefinitionKind::Term {
-            continue;
+        if definition.kind != DefinitionKind::Term {
+            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);
+            if matches!(
+                evidence.state(),
+                EvidenceState::Valid | EvidenceState::Fixme
+            ) {
+                unchanged += 1;
+            } else {
+                subjects.push(AuthoringSubject::Definition(name.clone()));
+            }
         }
-        let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);
-        if matches!(
-            evidence.state(),
-            EvidenceState::Valid | EvidenceState::Fixme
-        ) {
-            unchanged += 1;
-        } else {
-            subjects.push(AuthoringSubject::Definition(name.clone()));
-        }
+        checked += 1;
+        progress.inspect(InspectionProgress {
+            stage: "selecting assessments",
+            completed: checked,
+            total: Some(total),
+        });
     }
     for (rust_file, rust_item, valid) in inspection.rust_functions {
         if valid {
@@ -53,6 +84,12 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
                 rust_item,
             });
         }
+        checked += 1;
+        progress.inspect(InspectionProgress {
+            stage: "selecting assessments",
+            completed: checked,
+            total: Some(total),
+        });
     }
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
@@ -64,10 +101,11 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
     }
     let config = config::resolve_authoring(&root, selection)?;
     let concurrency = config.effective_concurrency();
-    eprintln!(
+    progress.println(&format!(
         "Authoring {} assessments with concurrency {concurrency}; {unchanged} current records unchanged",
         subjects.len()
-    );
+    ));
+    progress.start(subjects.len());
     let mut subjects = subjects.into_iter();
     let mut tasks = JoinSet::new();
     let (cancel, cancellation) = watch::channel(None::<&'static str>);
@@ -88,13 +126,14 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
                 (subject.label(), result)
             });
         }
+        progress.refresh(tasks.len(), subjects.len());
         let Some(result) = tasks.join_next().await else {
             break;
         };
         let (label, result) = match result {
             Ok(result) => result,
             Err(error) => {
-                eprintln!("authoring task: {error}");
+                progress.failed("authoring task", &error);
                 outcome
                     .failures
                     .push(("authoring task".into(), error.to_string()));
@@ -117,29 +156,25 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
         });
         match result {
             Ok(assessment) => {
-                eprintln!(
-                    "{}: {} (usage: {})",
-                    assessment.subject,
-                    assessment.determination.kind(),
-                    assessment.usage_path.display()
-                );
+                progress.completed(&assessment);
                 outcome.completed.push(assessment);
             }
             Err(error) => {
                 cancel_on_error(&cancel, &error);
-                eprintln!("{label}: {error}");
+                progress.failed(&label, &error);
                 outcome.failures.push((label, error.to_string()));
             }
         }
     }
     if let Some(reason) = *cancellation.borrow() {
-        let remaining = subjects.count();
+        let remaining = subjects.len();
         if remaining > 0 {
             let message = format!("{reason}; {remaining} assessments not started");
-            eprintln!("batch: {message}");
+            progress.println(&format!("batch: {message}"));
             outcome.failures.push(("batch".into(), message));
         }
     }
+    progress.finish(cancellation.borrow().is_some(), subjects.len());
     Ok(outcome)
 }
 

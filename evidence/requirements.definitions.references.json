@@ -1,11 +1,30 @@
 {
+  "requirement": "The `{term}` role followed by a backtick-delimited full definition name MUST reference a named definition. In rendered Markdown, the reference MUST display the definition's phrase as an ordinary hyperlink to its anchored declaration, without a badge. The phrase MUST be escaped appropriately for rendering.\n\nMissing targets and targets of another kind MUST be reported. Escaped references and references in Markdown code examples MUST remain literal. A term reference MUST NOT satisfy a requirement citation or a Rust function's requirement-coverage obligation.",
+  "determination": true,
+  "rationale": "The code implements each clause of the requirement, and tests cover the main cases. I did not find a test where an `{impl}`, `{cite}` or `{test}` role points at a term definition.\n\n**Rendering**\n- `reference_roles` in `src/lib.rs` recognises `{term}` as `ReferenceKind::Term`.\n- `replace_references` turns a term reference to a `Term` definition into a plain `<a href=\"…#habeas-definition-…\">` link. The link text comes from `terms::escaped_phrase`, which escapes Markdown and HTML characters. There is no badge and no identifier shown.\n- If the target is missing or of another kind, the text stays literal.\n- `replace_definitions` emits the anchored `<strong id=…>` declaration using `DefinitionKind::anchor`.\n- `preprocess_book` runs both steps for every chapter.\n\n**Missing targets and targets of another kind**\n- In `validate_references` in `src/evidence.rs`, a term reference whose target is absent or not a `Term` produces \"term X has no matching named definition\".\n- Non-term roles pointing at a term definition or at nothing produce \"has no matching requirement or example\".\n\n**Literal references**\n- `reference_roles` skips escaped roles through `is_escaped`.\n- It also skips code blocks, inline code and HTML through `protected_ranges`. It additionally protects the `:phrase:` option line of term declarations.\n\n**Term references do not count as citations**\n- `missing_function_references` in `src/rust_coverage.rs` and `function_citations` in `src/rust_items.rs` both ignore `Term` roles and require a non-`Term` target.\n- `validate_references` sends term references down a separate path, so they never satisfy a requirement citation.\n- `referenced_terms` in `src/terms.rs` collects only term references for dependency tracking.\n\n**Tests in `tests/definitions.rs`**\n- `phrases_are_plain_links_and_markdown_literals_are_preserved` checks that:\n  - the rendered link goes to `../glossary.html#habeas-definition-glossary.a`;\n  - the phrase is escaped (`&#42;alpha&#42; &amp; &lt;beta&gt;`);\n  - there is no shields.io badge;\n  - inline-code, fenced and backslash-escaped references stay literal, since exactly one link is produced.\n- `invalid_declarations_and_reference_targets_are_reported` checks that a term reference to a requirement (`rules.ready`) and to a nonexistent name (`missing.name`) are both reported.\n- `definition_schema_deletion_and_literal_references_are_checked` checks that deleting the glossary reports \"no matching named definition\". It also checks that literal, escaped and code-block term references to a missing name produce no errors.\n- `function_attestations_capture_terms_without_counting_them_as_citations` checks that a function with only a `{term}` comment is reported as having \"no requirement or example citation\".\n\nThe `phrase_rendering` example is covered by a `{test}` reference on `phrases_are_plain_links_and_markdown_literals_are_preserved`.",
   "inputs": [
     {
-      "file": "md/requirements/definitions.md",
-      "line_start": 40,
-      "line_end": 40,
+      "requirements": "requirements.definitions.references",
+      "matches": [
+        "requirements.definitions.references"
+      ],
       "text": [
-        "A definition named `glossary.first_parent_history` declares the phrase \"first-parent history\". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`"
+        ":::{req} references",
+        "The `{term}` role followed by a backtick-delimited full definition name MUST reference a named definition. In rendered Markdown, the reference MUST display the definition's phrase as an ordinary hyperlink to its anchored declaration, without a badge. The phrase MUST be escaped appropriately for rendering.",
+        "",
+        "Missing targets and targets of another kind MUST be reported. Escaped references and references in Markdown code examples MUST remain literal. A term reference MUST NOT satisfy a requirement citation or a Rust function's requirement-coverage obligation.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.definitions.phrase_rendering",
+      "matches": [
+        "requirements.definitions.phrase_rendering"
+      ],
+      "text": [
+        ":::{example} phrase_rendering",
+        "A definition named `glossary.first_parent_history` declares the phrase \"first-parent history\". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`",
+        ":::"
       ]
     },
     {
@@ -17,13 +36,15 @@
         "// {impl}`requirements.examples.evidence`",
         "// {impl}`requirements.definitions.references`",
         "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.authoring.progress`",
         "fn validate_references(",
         "    root: &Path,",
         "    definitions: &BTreeMap<String, Declaration>,",
         "    errors: &mut Vec<String>,",
+        "    progress: &mut impl FnMut(InspectionProgress),",
         ") {",
         "    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();",
-        "    for reference in collect_references(root, errors) {",
+        "    for reference in collect_references_with_progress(root, errors, progress) {",
         "        let target = definitions.get(&reference.name);",
         "        if reference.kind == ReferenceKind::Term {",
         "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {",
@@ -52,12 +73,18 @@
         "        }",
         "    }",
         "",
-        "    for (name, definition) in definitions {",
-        "        if definition.kind == DefinitionKind::Term {",
-        "            continue;",
-        "        }",
+        "    let subjects: Vec<_> = definitions",
+        "        .iter()",
+        "        .filter(|(_, definition)| definition.kind != DefinitionKind::Term)",
+        "        .collect();",
+        "    for (completed, (name, definition)) in subjects.iter().enumerate() {",
+        "        progress(InspectionProgress {",
+        "            stage: \"reference coverage\",",
+        "            completed,",
+        "            total: Some(subjects.len()),",
+        "        });",
         "        let evidence_file = root.join(\"evidence\").join(format!(\"{name}.json\"));",
-        "        let references = by_definition.remove(name).unwrap_or_default();",
+        "        let references = by_definition.remove(*name).unwrap_or_default();",
         "        if definition.kind == DefinitionKind::Example",
         "            && !references",
         "                .iter()",
@@ -91,6 +118,11 @@
         "            }",
         "        }",
         "    }",
+        "    progress(InspectionProgress {",
+        "        stage: \"reference coverage\",",
+        "        completed: subjects.len(),",
+        "        total: Some(subjects.len()),",
+        "    });",
         "}"
       ]
     },
@@ -849,18 +881,117 @@
       ]
     },
     {
-      "requirements": "requirements.definitions.phrase_rendering",
-      "matches": [
-        "requirements.definitions.phrase_rendering"
-      ],
+      "file": "md/requirements/definitions.md",
+      "line_start": 40,
+      "line_end": 40,
       "text": [
-        ":::{example} phrase_rendering",
-        "A definition named `glossary.first_parent_history` declares the phrase \"first-parent history\". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`",
-        ":::"
+        "A definition named `glossary.first_parent_history` declares the phrase \"first-parent history\". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 981,
+      "line_end": 987,
+      "text": [
+        "                .push(reference);",
+        "        } else {",
+        "            errors.push(format!(",
+        "                \"{}:{}: {{{}}}`{}` has no matching requirement or example\",",
+        "                display_path(root, &reference.file),",
+        "                reference.line,",
+        "                reference.kind.label(),"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 593,
+      "line_end": 676,
+      "text": [
+        "        } else if remaining.starts_with(\"{term}`\") {",
+        "            (ReferenceKind::Term, \"{term}`\")",
+        "        } else {",
+        "            continue;",
+        "        };",
+        "        let name_start = start + prefix.len();",
+        "        let Some(name_end_offset) = content[name_start..].find('`') else {",
+        "            continue;",
+        "        };",
+        "        let name_end = name_start + name_end_offset;",
+        "        let name = &content[name_start..name_end];",
+        "        if valid_name(name) {",
+        "            references.push(ReferenceMatch {",
+        "                start,",
+        "                end: name_end + 1,",
+        "                name,",
+        "                kind,",
+        "            });",
+        "        }",
+        "    }",
+        "",
+        "    references",
+        "}",
+        "",
+        "// {impl}`requirements.references.markdown_literals`",
+        "fn protected_ranges(content: &str) -> Vec<Range<usize>> {",
+        "    let mut ranges = Vec::new();",
+        "",
+        "    for (event, range) in Parser::new(content).into_offset_iter() {",
+        "        match event {",
+        "            Event::Start(Tag::CodeBlock(_)) => ranges.push(range),",
+        "            Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => ranges.push(range),",
+        "            _ => {}",
+        "        }",
+        "    }",
+        "",
+        "    ranges",
+        "}",
+        "",
+        "// {impl}`requirements.references.markdown_literals`",
+        "fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {",
+        "    ranges",
+        "        .iter()",
+        "        .any(|range| range.start <= position && position < range.end)",
+        "}",
+        "",
+        "// {impl}`requirements.references.markdown_literals`",
+        "fn is_escaped(content: &str, position: usize) -> bool {",
+        "    content[..position]",
+        "        .bytes()",
+        "        .rev()",
+        "        .take_while(|byte| *byte == b'\\\\')",
+        "        .count()",
+        "        % 2",
+        "        == 1",
+        "}",
+        "",
+        "// {impl}`requirements.ci.identifiers`",
+        "fn valid_name(name: &str) -> bool {",
+        "    !name.is_empty()",
+        "        && name.split('.').all(|part| {",
+        "            !part.is_empty()",
+        "                && part",
+        "                    .bytes()",
+        "                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))",
+        "        })",
+        "}",
+        "",
+        "// {impl}`requirements.references.safe_badges`",
+        "fn escape_html(value: &str) -> String {",
+        "    let mut escaped = String::with_capacity(value.len());",
+        "    for character in value.chars() {",
+        "        match character {",
+        "            '&' => escaped.push_str(\"&amp;\"),",
+        "            '<' => escaped.push_str(\"&lt;\"),",
+        "            '>' => escaped.push_str(\"&gt;\"),",
+        "            '\"' => escaped.push_str(\"&quot;\"),",
+        "            '\\'' => escaped.push_str(\"&#39;\"),",
+        "            _ => escaped.push(character),",
+        "        }",
+        "    }",
+        "    escaped",
+        "}",
+        ""
       ]
     }
-  ],
-  "requirement": "The `{term}` role followed by a backtick-delimited full definition name MUST reference a named definition. In rendered Markdown, the reference MUST display the definition's phrase as an ordinary hyperlink to its anchored declaration, without a badge. The phrase MUST be escaped appropriately for rendering.\n\nMissing targets and targets of another kind MUST be reported. Escaped references and references in Markdown code examples MUST remain literal. A term reference MUST NOT satisfy a requirement citation or a Rust function's requirement-coverage obligation.",
-  "determination": true,
-  "rationale": "The term role resolves only named definitions and renders an escaped phrase in a plain anchored link. Term references cannot count as Rust requirement citations. phrases_are_plain_links_and_markdown_literals_are_preserved checks linking, escaping and literals; function_attestations_capture_terms_without_counting_them_as_citations checks citation separation."
+  ]
 }

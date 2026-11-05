@@ -1,8 +1,89 @@
 {
   "example": "The model reads additional sources and calls `submit_judgment` once with\n`determination: false` and a rationale explaining the discrepancy. The harness\nsaves that judgment with all source inputs it supplied. The authoring operation\ncompletes; ordinary evidence validation reports the false determination.\n{cite}`requirements.authoring.submission`\n{cite}`requirements.authoring.delivered_inputs`\n{cite}`requirements.authoring.persistence`",
   "determination": true,
-  "rationale": "The local false-assessment test supplies a negative submission for a source discrepancy and verifies successful authoring completion, persisted false/rationale/source inputs, and completed usage metadata. Deterministic outcome tests independently verify false judgments fail CI.",
+  "rationale": "**Verdict:** `tests/authoring_cli.rs::false_is_a_completed_assessment` is annotated `{test}` for `requirements.authoring.negative_assessment`. Its setup and assertions cover the example's outcomes, with one scenario detail covered elsewhere. I did not open the harness implementation, only the tests.\n\n**Setup**\n- A mock model server returns a single `submit_judgment` call with `determination: false`.\n- The rationale describes a real discrepancy. The code acknowledges the zero-capacity gap as `FIXME(#125)`, but `push` also overwrites a full positive-capacity queue, and the code does not acknowledge that.\n- The fixture project has a requirement and a `src/lib.rs` that contradicts it.\n\n**Assertions**\n- **Operation completes:** the `author-evidence` command exits successfully. `fixture.usage()[\"outcome\"]` is `\"completed\"` and its `determination` is `\"false\"`.\n- **Inputs delivered:** the prompt sent to the model contains the source text, including `FIXME(#125)` and `queue[0] = value`.\n- **Judgment saved with inputs:** the saved evidence file has `determination == false`, a rationale containing \"without acknowledging\", and a non-empty `inputs` array that includes the `FIXME(#125)` source text.\n- **Reporting:** stderr contains `<SUBJECT>: false`, while stdout does not. The rationale is not echoed in the diagnostics.\n\n**Parts covered elsewhere**\n- The example says the model \"reads additional sources\". This test submits directly with no read call. The additional-read behaviour has its own test, tagged `requirements.authoring.additional_read` at `tests/authoring_cli.rs` around line 233. The negative-outcome path does not depend on whether a read happens first.\n- \"Ordinary evidence validation reports the false determination\" is not asserted in this test. Other tests cover it: `tests/commands.rs:392` and `tests/outcomes.rs:139` check for \"determination is false\".\n\nNo FIXME or other acknowledged gaps apply to this example.",
   "inputs": [
+    {
+      "requirements": "requirements.authoring.negative_assessment",
+      "matches": [
+        "requirements.authoring.negative_assessment"
+      ],
+      "text": [
+        ":::{example} negative_assessment",
+        "The model reads additional sources and calls `submit_judgment` once with",
+        "`determination: false` and a rationale explaining the discrepancy. The harness",
+        "saves that judgment with all source inputs it supplied. The authoring operation",
+        "completes; ordinary evidence validation reports the false determination.",
+        "{cite}`requirements.authoring.submission`",
+        "{cite}`requirements.authoring.delivered_inputs`",
+        "{cite}`requirements.authoring.persistence`",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.submission",
+      "matches": [
+        "requirements.authoring.submission"
+      ],
+      "text": [
+        ":::{req} submission",
+        "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
+        "",
+        "```text",
+        "submit_judgment({ determination: Judgment, rationale: String })",
+        "",
+        "Judgment = Boolean | { FIXME: Array<String> }",
+        "```",
+        "",
+        "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
+        "{cite}`requirements.ci.outcomes`.",
+        "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
+        "assessment result. The model MUST invoke it exactly once over the entire",
+        "assessment. If the model finishes without invoking it, or invokes it more than",
+        "once, the harness MUST report an error and leave existing evidence unchanged.",
+        "The harness MUST check the complete model response for multiple submissions",
+        "before accepting one. Invalid submission arguments MUST also fail the assessment.",
+        "A valid single submission MUST finish the assessment; there is no submission",
+        "repair or resubmission loop. An assessment that fails before accepting a valid",
+        "judgment MUST emit no evidence JSON to stdout.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.delivered_inputs",
+      "matches": [
+        "requirements.authoring.delivered_inputs"
+      ],
+      "text": [
+        ":::{req} delivered_inputs",
+        "The harness MUST record the source text it supplies to the model, including",
+        "mandatory inputs and additional reads, using the existing evidence input formats",
+        "defined by {cite}`requirements.ci.inputs`,",
+        "{cite}`requirements.ci.rust_item_inputs`,",
+        "{cite}`requirements.ci.requirements_inputs`, and",
+        "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
+        "itself so ordinary evidence validation can check them later.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.persistence",
+      "matches": [
+        "requirements.authoring.persistence"
+      ],
+      "text": [
+        ":::{req} persistence",
+        "After one valid judgment, the harness MUST write the subject text, submitted",
+        "determination and rationale, and recorded inputs using the existing evidence",
+        "schema. {cite}`requirements.ci.schema`",
+        "By default, it MUST write the subject's evidence file. With `--stdout`, it MUST",
+        "emit a single evidence JSON object followed by a newline to stdout and MUST NOT",
+        "create or change evidence files or directories. All three outcomes MUST be",
+        "written to the selected destination as completed assessments; their validation",
+        "status MUST follow {cite}`requirements.ci.determination`.",
+        ":::"
+      ]
+    },
     {
       "rust_file": "tests/authoring_cli.rs",
       "rust_item": "fn[false_is_a_completed_assessment]",
@@ -10,6 +91,7 @@
         "// {test}`requirements.authoring.negative_assessment`",
         "// {test}`requirements.authoring.persistence`",
         "// {test}`requirements.ci.fixme_with_unacknowledged_gap`",
+        "// {test}`requirements.authoring.reporting`",
         "#[test]",
         "fn false_is_a_completed_assessment() {",
         "    let server = Server::start(vec![reply(vec![call(",
@@ -43,7 +125,156 @@
         "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
         "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");",
         "    assert_eq!(fixture.usage()[\"determination\"], \"false\");",
+        "    let diagnostics = format!(",
+        "        \"{}{}\",",
+        "        String::from_utf8_lossy(&output.stdout),",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "    let stderr = String::from_utf8_lossy(&output.stderr);",
+        "    assert!(stderr.contains(&format!(\"{SUBJECT}: false\")), \"{stderr}\");",
+        "    assert!(",
+        "        !String::from_utf8_lossy(&output.stdout).contains(&format!(\"{SUBJECT}: false\")),",
+        "        \"{diagnostics}\"",
+        "    );",
+        "    assert!(",
+        "        !diagnostics.contains(\"without acknowledging\"),",
+        "        \"{diagnostics}\"",
+        "    );",
         "}"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 875,
+      "line_end": 879,
+      "text": [
+        ":::",
+        "",
+        ":::{example} negative_assessment",
+        "The model reads additional sources and calls `submit_judgment` once with",
+        "`determination: false` and a rationale explaining the discrepancy. The harness"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 532,
+      "line_end": 536,
+      "text": [
+        "}",
+        "",
+        "// {test}`requirements.authoring.negative_assessment`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.ci.fixme_with_unacknowledged_gap`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 212,
+      "line_end": 234,
+      "text": [
+        "            .collect::<Result<Vec<_>, _>>()",
+        "            .unwrap();",
+        "        assert_eq!(files.len(), 1);",
+        "        serde_json::from_slice(&fs::read(files[0].path()).unwrap()).unwrap()",
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.submission`",
+        "fn call(id: &str, name: &str, arguments: Value) -> Value {",
+        "    json!({\"id\":id,\"type\":\"function\",\"function\":{\"name\":name,\"arguments\":arguments}})",
+        "}",
+        "",
+        "// {test}`requirements.authoring.provider`",
+        "// {test}`requirements.authoring.usage_requests`",
+        "fn reply(calls: Vec<Value>) -> Value {",
+        "    json!({\"model\":MODEL,\"created_at\":\"2026-01-01T00:00:00Z\",",
+        "        \"message\":{\"role\":\"assistant\",\"content\":\"review complete\",\"tool_calls\":calls},",
+        "        \"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":11,\"eval_count\":7})",
+        "}",
+        "",
+        "// {test}`requirements.authoring.complete_initial_bundle`",
+        "// {test}`requirements.authoring.additional_read`",
+        "// {test}`requirements.authoring.acknowledged_gap`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 164,
+      "line_end": 164,
+      "text": [
+        "        let original = json!({\"requirement\":REQUIREMENT,\"determination\":false,"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 233,
+      "line_end": 233,
+      "text": [
+        "// {test}`requirements.authoring.additional_read`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 543,
+      "line_end": 543,
+      "text": [
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 560,
+      "line_end": 560,
+      "text": [
+        "    assert_eq!(evidence[\"determination\"], false);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 570,
+      "line_end": 570,
+      "text": [
+        "    assert_eq!(fixture.usage()[\"determination\"], \"false\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 593,
+      "line_end": 593,
+      "text": [
+        "    for (determination, flag) in [(false, \"-v\"), (false, \"--verbose\"), (true, \"-v\")] {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 392,
+      "line_end": 392,
+      "text": [
+        "    assert!(text.contains(\"determination is false\"), \"{text}\");"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 893,
+      "line_end": 893,
+      "text": [
+        "    assert_eq!(attestation[\"functions\"][0][\"determination\"], false);"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 93,
+      "line_end": 93,
+      "text": [
+        "    assert_eq!(refreshed[\"determination\"], false);"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 139,
+      "line_end": 139,
+      "text": [
+        "            .any(|error| error.contains(\"determination is false\"))"
       ]
     }
   ]

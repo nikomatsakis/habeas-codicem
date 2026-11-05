@@ -3,11 +3,12 @@
 pub(crate) mod access;
 mod batch;
 mod inputs;
+mod progress;
 mod providers;
 mod tools;
 mod usage;
 
-pub use batch::{BatchOutcome, author_all};
+pub use batch::{BatchOutcome, author_all, author_all_with_options};
 
 use std::fs;
 use std::io::{self, Write};
@@ -32,6 +33,12 @@ pub struct AuthoringOutcome {
     pub evidence_path: Option<PathBuf>,
     pub usage_path: PathBuf,
     pub determination: Judgment,
+    pub rationale: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AuthoringOptions {
+    pub verbose: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +235,10 @@ pub(crate) async fn prepare_assessment(
                 evidence_path: None,
                 usage_path: usage.path.clone(),
                 determination,
+                rationale: record["rationale"]
+                    .as_str()
+                    .expect("validated judgment rationale")
+                    .to_owned(),
             };
             Ok(PendingAssessment {
                 subject: subject.clone(),
@@ -303,6 +314,10 @@ async fn configured_assessment(
         evidence_path,
         usage_path: usage.path.clone(),
         determination,
+        rationale: evidence["rationale"]
+            .as_str()
+            .expect("validated judgment rationale")
+            .to_owned(),
     })
 }
 
@@ -442,6 +457,7 @@ fn tool_definitions(function: bool) -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.provider_backoff`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -451,6 +467,7 @@ async fn assess(
     let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });
     request.tools = tool_definitions(function)?;
     let mut pending = sources.mandatory_inputs().to_vec();
+    let mut backoff = providers::ProviderBackoff::default();
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
@@ -460,7 +477,17 @@ async fn assess(
             started.elapsed().as_millis(),
             response.as_ref().ok().map(|r| &r.usage),
         )?;
-        let response = response?;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(delay) = backoff.next_delay(&error) {
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Err(error);
+            }
+        };
+        backoff = providers::ProviderBackoff::default();
         sources.record_inputs(&pending);
         pending.clear();
         if let Some(error) = turn_failure(
@@ -552,12 +579,137 @@ async fn assess(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::time::Duration;
+
     use rig_core::completion::{CompletionResponse, FinishReason, Usage};
     use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};
 
     use super::*;
 
     struct JudgmentProvider(Value);
+
+    struct ThrottledProvider {
+        failures: usize,
+        status: u16,
+        code: &'static str,
+        requests: RefCell<Vec<Value>>,
+    }
+
+    impl CompletionProvider for ThrottledProvider {
+        // {test}`requirements.authoring.provider_backoff`
+        // {test}`requirements.authoring.usage_requests`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            self.requests
+                .borrow_mut()
+                .push(serde_json::to_value(&request).unwrap());
+            if self.requests.borrow().len() <= self.failures {
+                return Err(io::Error::other(
+                    rig_core::error::ProviderError::from_provider_body("Too many tokens")
+                        .with_provider_status(Some(self.status.try_into().unwrap()))
+                        .with_provider_code(Some(self.code.into())),
+                ));
+            }
+            JudgmentProvider(json!(true)).complete(request).await
+        }
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    fn retry_fixture() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        AssessmentSources,
+        UsageLog,
+    ) {
+        let project = inputs::tests::project();
+        fs::write(project.path().join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
+        let sources =
+            AssessmentSources::prepare_function(project.path(), "src/lib.rs", "fn[ready]").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        usage.prepared("mandatory", sources.mandatory_inputs());
+        (project, state, sources, usage)
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    // {test}`requirements.authoring.usage_requests`
+    // {test}`requirements.authoring.usage_inputs`
+    #[tokio::test(start_paused = true)]
+    async fn throttled_requests_retry_unchanged_and_record_every_attempt() {
+        let (_project, _state, mut sources, mut usage) = retry_fixture();
+        let provider = ThrottledProvider {
+            failures: 8,
+            status: 429,
+            code: "ThrottlingException",
+            requests: RefCell::default(),
+        };
+        let started = tokio::time::Instant::now();
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        let requests = provider.requests.borrow();
+        assert_eq!(requests.len(), 9);
+        assert!(requests.iter().all(|request| request == &requests[0]));
+        assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
+
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["request_count"], 9);
+        for attempt in 0..8 {
+            assert_eq!(log["requests"][attempt]["outcome"], "failed");
+            assert_eq!(log["requests"][attempt]["tokens"]["complete"], false);
+        }
+        assert_eq!(log["requests"][8]["outcome"], "completed");
+        assert_eq!(log["tool_calls"]["submit_judgment"], 1);
+        for input in log["inputs"].as_array().unwrap() {
+            assert_eq!(input["submitted_in_request"], 0);
+            assert_eq!(input["sent_in_request"], 8);
+        }
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[tokio::test(start_paused = true)]
+    async fn permanent_provider_failure_returns_without_waiting_or_retrying() {
+        let (_project, _state, mut sources, mut usage) = retry_fixture();
+        let provider = ThrottledProvider {
+            failures: 8,
+            status: 400,
+            code: "ValidationException",
+            requests: RefCell::default(),
+        };
+        let started = tokio::time::Instant::now();
+        let error = assess(&provider, &mut sources, &mut usage)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Too many tokens"));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(provider.requests.borrow().len(), 1);
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_during_backoff_prevents_another_request() {
+        let (_project, _state, mut sources, mut usage) = retry_fixture();
+        let provider = ThrottledProvider {
+            failures: 8,
+            status: 429,
+            code: "ThrottlingException",
+            requests: RefCell::default(),
+        };
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                assess(&provider, &mut sources, &mut usage),
+            )
+            .await
+            .is_err()
+        );
+        tokio::time::advance(Duration::from_secs(120)).await;
+        assert_eq!(provider.requests.borrow().len(), 1);
+        assert!(sources.recorded_inputs().is_empty());
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["request_count"], 1);
+        assert_eq!(log["requests"][0]["outcome"], "failed");
+    }
 
     impl CompletionProvider for JudgmentProvider {
         // {test}`requirements.authoring.function_attestations`

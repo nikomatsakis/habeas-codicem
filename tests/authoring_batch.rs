@@ -28,6 +28,10 @@ enum Behavior {
         subject: &'static str,
         hold_other_requests: bool,
     },
+    #[cfg_attr(not(unix), allow(dead_code))]
+    MixedJudgments,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    WaitAfterFirst,
 }
 
 struct Server {
@@ -47,6 +51,7 @@ impl Server {
     // {test}`requirements.authoring.batch`
     // {test}`requirements.authoring.concurrency`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.progress`
     fn start_with(require_overlap: bool, behavior: Behavior) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -102,6 +107,8 @@ impl Drop for Server {
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.authoring.function_attestations`
 // {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.reporting`
 fn serve(
     mut stream: TcpStream,
     requests: Arc<(Mutex<Requests>, Condvar)>,
@@ -139,6 +146,7 @@ fn serve(
     let (lock, arrived) = &*requests;
     let mut state = lock.lock().unwrap();
     state.subjects.push(subject.clone());
+    let first_request = state.subjects.len() == 1;
     state.active += 1;
     state.peak = state.peak.max(state.active);
     arrived.notify_all();
@@ -154,15 +162,21 @@ fn serve(
     drop(state);
     let denied =
         matches!(behavior, Behavior::DeniedRead { subject: denied, .. } if subject == denied);
-    let held = !denied
-        && matches!(
-            behavior,
-            Behavior::DeniedRead {
-                hold_other_requests: true,
-                ..
-            }
-        );
-    if held {
+    let wait_for_interrupt = matches!(behavior, Behavior::WaitAfterFirst) && !first_request;
+    let held = wait_for_interrupt
+        || (!denied
+            && matches!(
+                behavior,
+                Behavior::DeniedRead {
+                    hold_other_requests: true,
+                    ..
+                }
+            ));
+    if wait_for_interrupt {
+        while !stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(10));
+        }
+    } else if held {
         // Keep the second assessment in flight until the denied assessment has
         // failed and a queued assessment takes its slot.
         let mut state = lock.lock().unwrap();
@@ -176,8 +190,23 @@ fn serve(
     // Keep requests in flight long enough for an incorrectly unbounded batch to
     // exceed its configured concurrency, without assuming task launch order.
     thread::sleep(Duration::from_millis(40));
-    let failed =
-        matches!(behavior, Behavior::Judgments { failing_subject: Some(name) } if subject == name);
+    let failed = matches!(behavior, Behavior::Judgments { failing_subject: Some(name) } if subject == name)
+        || (matches!(behavior, Behavior::MixedJudgments)
+            && subject == "example requirements.alpha_case");
+    let determination = match (behavior, subject.as_str()) {
+        (Behavior::MixedJudgments, "requirement requirements.alpha") => json!(false),
+        (Behavior::MixedJudgments, "requirement requirements.beta") => json!({"FIXME": ["#123"]}),
+        _ => json!(true),
+    };
+    let rationale = if matches!(behavior, Behavior::MixedJudgments)
+        && subject == "requirement requirements.alpha"
+    {
+        "Fixture false rationale:\n\n- The implementation omits a boundary case.\n- Add an assertion for that case.".to_owned()
+    } else {
+        format!(
+            "Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs."
+        )
+    };
     let response = if failed {
         json!({"error": "fixture model rejected this subject"})
     } else if denied {
@@ -196,8 +225,8 @@ fn serve(
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":"judgment", "type":"function", "function":{
                     "name":"submit_judgment", "arguments":{
-                        "determination":true,
-                        "rationale":format!("Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs.")
+                        "determination":determination,
+                        "rationale":rationale
                     }
                 }
             }]},
@@ -294,6 +323,94 @@ impl Fixture {
         command
     }
 
+    // {test}`requirements.authoring.progress`
+    // {test}`requirements.authoring.batch`
+    #[cfg(unix)]
+    fn run_in_pty(&self, interrupt: bool, term: &str) -> Output {
+        self.run_in_pty_with_args(interrupt, term, &["author", "--all"])
+    }
+
+    // {test}`requirements.authoring.progress`
+    // {test}`requirements.authoring.reporting`
+    // {test}`requirements.authoring.batch`
+    #[cfg(unix)]
+    fn run_in_pty_with_args(&self, interrupt: bool, term: &str, args: &[&str]) -> Output {
+        // Keep stdout piped: the bar belongs to stderr and must detect that
+        // terminal independently. Python's stdlib provides a portable Unix PTY.
+        let script = r#"
+import errno
+import fcntl
+import os
+import pty
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import termios
+import time
+
+master, slave = pty.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 160, 0, 0))
+process = subprocess.Popen(
+    [sys.argv[1], *sys.argv[3:]],
+    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,
+)
+os.close(slave)
+captured = bytearray()
+interrupted = False
+deadline = time.monotonic() + 20
+try:
+    while True:
+        if time.monotonic() >= deadline:
+            raise RuntimeError('habeas PTY test did not finish within 20 seconds')
+        readable, _, _ = select.select([master], [], [], 0.1)
+        if not readable:
+            continue
+        try:
+            chunk = os.read(master, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        captured.extend(chunk)
+        plain = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', captured)
+        if sys.argv[2] == 'interrupt' and not interrupted and re.search(rb'Authoring[^\r\n]*\b[1-5]/6 finished\b', plain):
+            process.send_signal(signal.SIGINT)
+            interrupted = True
+    stdout, _ = process.communicate(timeout=5)
+finally:
+    os.close(master)
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+sys.stdout.buffer.write(stdout)
+sys.stderr.buffer.write(captured)
+if sys.argv[2] == 'interrupt' and not interrupted:
+    raise RuntimeError('no partial progress frame was shown before completion')
+raise SystemExit(process.returncode if process.returncode >= 0 else 128 - process.returncode)
+"#;
+        Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(env!("CARGO_BIN_EXE_habeas"))
+            .arg(if interrupt { "interrupt" } else { "complete" })
+            .args(args)
+            .current_dir(&self.project)
+            .env("XDG_CONFIG_HOME", &self.config_root)
+            .env("APPDATA", &self.config_root)
+            .env("XDG_STATE_HOME", &self.state)
+            .env("LOCALAPPDATA", &self.state)
+            .env("TERM", term)
+            .env("NO_COLOR", "1")
+            .env("CLICOLOR_FORCE", "1")
+            .output()
+            .expect("PTY progress tests require python3 on Unix")
+    }
+
     // {test}`requirements.authoring.batch`
     // {test}`requirements.authoring.function_attestations`
     fn evidence(&self, name: &str) -> Value {
@@ -334,6 +451,7 @@ impl Fixture {
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.ci.determination`
+// {test}`requirements.authoring.progress`
 #[test]
 fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {
     let server = Server::start(true, None);
@@ -402,6 +520,20 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
         "{}",
         String::from_utf8_lossy(&no_config.stderr)
     );
+    #[cfg(unix)]
+    {
+        let no_op_terminal = fixture.run_in_pty(false, "xterm-256color");
+        assert!(
+            no_op_terminal.status.success(),
+            "{}",
+            String::from_utf8_lossy(&no_op_terminal.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&no_op_terminal.stdout).trim(),
+            "0 authored; 6 unchanged; 0 failed"
+        );
+        assert!(!String::from_utf8_lossy(&no_op_terminal.stderr).contains("0/0 finished"));
+    }
     assert_eq!(server.subjects().len(), 6);
     assert_eq!(fixture.usage().len(), 6);
 
@@ -444,11 +576,14 @@ fn ollama_batches_are_serial_by_default() {
 
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.progress`
 #[test]
 fn failed_assessment_keeps_other_results_and_reports_failure() {
     let server = Server::start(true, Some("requirement requirements.alpha"));
     let fixture = Fixture::new(&server.endpoint, Some(2));
     let output = fixture.run(&["author", "--all"]);
+    assert!(!output.stderr.contains(&b'\x1b'));
+    assert!(!output.stderr.contains(&b'\r'));
     assert!(!output.status.success());
     assert_eq!(server.subjects().len(), 6);
     assert!(
@@ -494,6 +629,206 @@ fn failed_assessment_keeps_other_results_and_reports_failure() {
     assert!(
         diagnostics.contains("fixture model rejected"),
         "{diagnostics}"
+    );
+}
+
+// {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.reporting`
+#[cfg(unix)]
+#[test]
+fn terminal_progress_distinguishes_judgments_from_authoring_errors() {
+    let server = Server::start_with(true, Behavior::MixedJudgments);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run_in_pty(false, "xterm-256color");
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 6);
+    let terminal = String::from_utf8_lossy(&output.stderr);
+    assert!(terminal.contains('\x1b'), "no terminal redraw: {terminal}");
+    assert!(
+        !regex::Regex::new(r"\x1b\[[0-9;]*m")
+            .unwrap()
+            .is_match(&terminal),
+        "NO_COLOR must override forced color: {terminal}"
+    );
+    let escape = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap();
+    let plain = escape.replace_all(&terminal, "");
+    let counted_progress = regex::Regex::new(r"\b[0-9]+/[1-9][0-9]*\b").unwrap();
+    assert!(
+        plain.split(['\r', '\n']).any(|line| {
+            line.contains("Inspecting evidence")
+                && line.contains('%')
+                && counted_progress.is_match(line)
+        }),
+        "inspection must show counted progress before authoring: {plain}"
+    );
+    assert!(plain.contains("100%"), "{plain}");
+    assert!(plain.contains("6/6 finished"), "{plain}");
+    assert!(plain.contains("Finished"), "{plain}");
+    let final_counts = plain
+        .split(['\r', '\n'])
+        .rfind(|line| line.contains("true ") && line.contains("errors "))
+        .expect("final outcome counts in the terminal progress display");
+    assert!(
+        !final_counts.contains("Error:"),
+        "the final progress line must end before command diagnostics: {final_counts}"
+    );
+    for count in [
+        "true 3", "false 1", "FIXME 1", "errors 1", "0 active", "0 queued",
+    ] {
+        assert!(
+            final_counts.contains(count),
+            "missing {count}: {final_counts}"
+        );
+    }
+    assert!(plain.contains("fixture model rejected"), "{plain}");
+    assert!(!plain.contains(": true (usage:"), "{plain}");
+    assert!(
+        plain.contains("requirements.alpha: false (usage:"),
+        "{plain}"
+    );
+    assert!(!plain.contains("Fixture judgment for"), "{plain}");
+    assert!(!plain.contains("Fixture false rationale"), "{plain}");
+    assert!(plain.contains("requirements.beta: FIXME"), "{plain}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "5 authored; 0 unchanged; 1 failed");
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        false
+    );
+    assert_eq!(
+        fixture.evidence("requirements.beta")["determination"],
+        json!({"FIXME": ["#123"]})
+    );
+}
+
+// {test}`requirements.authoring.reporting`
+// {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.batch`
+#[test]
+fn batch_reports_false_rationales_only_when_verbose() {
+    for verbose in [false, true] {
+        let server = Server::start_with(true, Behavior::MixedJudgments);
+        let fixture = Fixture::new(&server.endpoint, Some(2));
+        let args = if verbose {
+            vec!["author", "--all", "--verbose"]
+        } else {
+            vec!["author", "--all"]
+        };
+        let output = fixture.run(&args);
+        assert!(!output.status.success(), "{output:?}");
+        assert_eq!(server.subjects().len(), 6);
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        assert!(!diagnostics.contains('\x1b'), "{diagnostics}");
+        assert!(!diagnostics.contains(": true (usage:"), "{diagnostics}");
+        assert!(
+            diagnostics.contains("requirements.alpha: false (usage:"),
+            "{diagnostics}"
+        );
+        let rationale = fixture.evidence("requirements.alpha")["rationale"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(diagnostics.contains(&rationale), verbose, "{diagnostics}");
+        assert!(
+            diagnostics.contains("requirements.beta: FIXME"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("fixture model rejected"),
+            "{diagnostics}"
+        );
+        assert!(!diagnostics.contains("pub fn alpha()"), "{diagnostics}");
+        let true_rationale = fixture.function("fn[alpha]")["rationale"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!diagnostics.contains(&true_rationale), "{diagnostics}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "5 authored; 0 unchanged; 1 failed"
+        );
+    }
+}
+
+// {test}`requirements.authoring.reporting`
+// {test}`requirements.authoring.progress`
+#[cfg(unix)]
+#[test]
+fn verbose_false_rationale_is_readable_above_terminal_progress() {
+    let server = Server::start_with(true, Behavior::MixedJudgments);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run_in_pty_with_args(false, "xterm-256color", &["author", "--all", "-v"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 6);
+    let terminal = String::from_utf8_lossy(&output.stderr);
+    let escape = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap();
+    let plain = escape.replace_all(&terminal, "").replace('\r', "");
+    let rationale = fixture.evidence("requirements.alpha")["rationale"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(plain.contains("requirements.alpha: false"), "{plain}");
+    assert!(plain.contains(&rationale), "{plain}");
+    assert!(!plain.contains("pub fn alpha()"), "{plain}");
+    assert!(!plain.contains(": true (usage:"), "{plain}");
+    assert!(plain.contains("6/6 finished"), "{plain}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "5 authored; 0 unchanged; 1 failed"
+    );
+}
+
+// {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.batch`
+#[cfg(unix)]
+#[test]
+fn dumb_terminal_keeps_plain_batch_diagnostics() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run_in_pty(false, "dumb");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 6);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains('\x1b'), "{stderr}");
+    assert!(
+        stderr.contains("Authoring 6 assessments with concurrency 2"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("6/6 finished"), "{stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "6 authored; 0 unchanged; 0 failed"
+    );
+}
+
+// {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.concurrency`
+#[cfg(unix)]
+#[test]
+fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
+    let server = Server::start_with(true, Behavior::WaitAfterFirst);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run_in_pty(true, "xterm-256color");
+    assert!(!output.status.success(), "{output:?}");
+    let terminal = String::from_utf8_lossy(&output.stderr);
+    let escape = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap();
+    let plain = escape.replace_all(&terminal, "");
+    assert!(plain.contains("Stopped"), "{plain}");
+    assert!(plain.contains("assessments not started"), "{plain}");
+    let stopped = &plain[plain.rfind("Stopped").unwrap()..];
+    assert!(!stopped.contains("100%"), "{stopped}");
+    assert!(!stopped.contains("6/6 finished"), "{stopped}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 authored;"));
+    assert!(server.subjects().len() < 6);
+    let usage = fixture.usage();
+    assert_eq!(
+        usage
+            .iter()
+            .filter(|run| run["evidence_written"] == true)
+            .count(),
+        1
     );
 }
 
