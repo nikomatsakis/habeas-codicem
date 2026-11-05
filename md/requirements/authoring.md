@@ -30,6 +30,8 @@ judgment, and usage record. The command MUST report each success or error and
 retain successful writes when another assessment fails. It MUST return a nonzero
 exit status if any assessment fails. False judgments MUST still be written as
 completed assessments; they remain failures under ordinary evidence validation.
+An access-policy denial MUST abort only the affected assessment under
+{cite}`requirements.authoring.read_denial`.
 Concurrent function assessments in one source file MUST be merged into that
 file's attestation record without losing other function entries. Assessments
 reading that record MUST see a complete version while results are saved.
@@ -66,15 +68,18 @@ forms. Each form MUST correspond to one existing evidence-input kind:
 Rust file and selector arguments MUST use the syntax defined by
 {cite}`requirements.references.rust_item_selectors`. Reads MUST use the current
 project working tree, including unstaged changes to tracked files and staged new
-files. All source inputs, including mandatory inputs, MUST stay within the
-project root after resolving symlinks. In a Git worktree, both the requested file
-and its resolved target MUST be present in the Git index. Untracked mandatory
-inputs and explicit reads MUST fail with guidance to stage the file using
-`git add`. Projects outside Git MUST use the same project-root and generated-output
-boundaries without requiring an index; failure to read an existing repository's
-index MUST be reported as an error.
-The project-root `evidence/` directory contains generated output and MUST be
-excluded from source reads, including paths that resolve there through symlinks.
+files. By default, source inputs MUST stay within the project root after
+resolving symlinks; in a Git worktree, both the requested file and its resolved
+target MUST be present in the Git index. Projects outside Git MUST use the same
+containment rules without requiring an index. Failure to read an existing
+repository's index MUST be reported as an error.
+The project-root `evidence/` directory and an active workspace configuration
+containing literal credentials MUST be excluded from model reads by default,
+including symlink aliases. Generated build outputs MUST follow
+{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST
+follow {cite}`requirements.configuration.evidence_paths`, including explicit
+permission for otherwise excluded inputs. A denied mandatory input or explicit
+read MUST abort under {cite}`requirements.authoring.read_denial`.
 
 File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read
 through EOF; the returned evidence input MUST contain the actual numeric ending
@@ -97,9 +102,53 @@ HabeasResult {
 ```
 
 `definitions` MUST be empty when no additional terminology is required. The
-harness MUST record inputs supplied to the model in the assessment's evidence. A failed
-read MUST return an explanatory tool error and add no evidence input.
+harness MUST record inputs supplied to the model in the assessment's evidence.
+A failed read MUST add no evidence input. Access-policy denials MUST abort;
+other failed reads MUST return an explanatory tool error.
 :::
+
+:::{req} read_denial
+When a mandatory input or dispatched model read is denied by source-access
+policy, the assessment MUST abort and report the denied path and reason to its caller.
+It MUST NOT return the denial to the model as a recoverable tool result or make
+another model request for that assessment. An untracked-file diagnostic MUST
+explain that the caller can stage the file with `git add` or configure a workspace
+allow rule; the harness MUST NOT stage or permit the file itself.
+
+The aborted assessment MUST NOT write evidence or emit evidence JSON. Its usage
+record MUST identify the failure and any failed tool call. In a batch, other
+assessments MUST continue, including queued assessments, and their successful
+writes MUST be retained. The command MUST return a nonzero exit status after
+the batch finishes. Discovery and search MAY omit denied candidates without
+aborting, but explicitly requesting a denied file or directory MUST abort the
+affected assessment.
+Malformed tool arguments and ordinary read failures MUST retain their existing
+recoverable tool-error behavior.
+:::
+
+:::{req} generated_inputs
+Habeas MUST permit existing Cargo build-script output directories as an exception
+to default Git tracking and containment restrictions. It MUST discover the Cargo
+build directory using metadata and inspect existing build-script output records,
+without running a build or executing build scripts. It MUST NOT treat its own
+inherited `OUT_DIR` environment variable as the workspace's output directory.
+Only discovered output directories and their contents MUST receive this default
+permission; unrelated build artifacts MUST remain subject to ordinary rules.
+Workspace disallow entries MUST override this permission.
+
+Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be
+able to allow undiscovered outputs explicitly using `habeas.toml`. The model's
+root directory listing MUST expose available generated-output directories,
+including external ones. Generated inputs MUST use the existing file-range and
+Rust-item formats and receive ordinary freshness checks. Validation MUST NOT
+invoke a build to materialize an input.
+:::
+
+Cargo has one `OUT_DIR` per build-script execution. Discovery uses existing
+`root-output` records beneath the Cargo build directory; this is Cargo's current
+internal layout, so an explicit allow is the fallback for an undiscovered layout.
+Generated paths are recorded as ordinary file selectors. CI must build the
+matching paths and contents before checking that evidence.
 
 ### Discover files: `list_files`
 
@@ -115,14 +164,18 @@ DirectoryEntry {
 }
 ```
 
-The tool MUST list the immediate children of the requested project-relative
-directory, returning project-relative paths. The model can list a returned
+The tool MUST list the immediate children of the requested directory, returning
+project-relative paths where possible and absolute paths for permitted external
+files. Its root listing MUST also expose available generated-output directories
+and configured external allow paths. The model can list a returned
 directory in another call to explore further. A failed listing MUST return an
-explanatory tool error. Directory listings MUST NOT become evidence inputs.
+explanatory tool error unless access was denied, which MUST abort under
+{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.
 Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.
-In a Git worktree, directories MUST have at least one eligible tracked source
-descendant to be listed. Explicitly requesting an excluded path MUST return a
-tool error.
+In a Git worktree, directories MUST have at least one eligible source
+descendant to be listed unless explicitly allowed or discovered as generated
+output. Explicitly requesting an excluded path MUST return an
+authoring error under {cite}`requirements.authoring.read_denial`.
 :::
 
 ### Search file contents: `ripgrep`
@@ -139,9 +192,11 @@ SearchResult {
 }
 ```
 
-The tool MUST search the requested project-relative file or directory using
+The tool MUST search the requested permitted file or directory using
 ripgrep's regular-expression syntax and default case-sensitive search and ignore
-rules. Its model-facing description MUST explain those conventions. `context`
+rules. Explicitly allowed paths and discovered generated-output directories MUST
+be searched even when ignored or hidden; workspace disallow rules still apply.
+Its model-facing description MUST explain those conventions. `context`
 MUST be nonnegative and specify how many lines before and after each matching
 line to include, defaulting to five on each side. Windows MUST stop at file
 boundaries, and overlapping windows in the same file MUST be merged. Each
@@ -150,7 +205,7 @@ inclusive line range, and complete text under {cite}`requirements.ci.inputs`.
 Setting `context` to zero MUST return only matching lines.
 Search results MUST exclude files disallowed by
 {cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
-path MUST return a tool error.
+path MUST abort under {cite}`requirements.authoring.read_denial`.
 Required terminology MUST be included under
 {cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied
 to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
@@ -195,7 +250,9 @@ applicable contribution, deduplicate identical selections, and report
 unresolvable mandatory inputs before inference. The complete set MUST be supplied
 in the initial model request.
 Generated output under project-root `evidence/`, including symlink aliases, MUST
-be omitted even when a previous evidence record lists it as an input.
+be omitted from previous input selections when the default exclusion applies.
+An explicit workspace allow MUST permit those selections; an explicit disallow
+MUST abort under {cite}`requirements.authoring.read_denial`.
 :::
 
 The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),
@@ -308,14 +365,16 @@ assessment tools, prompt, or evidence format.
 :::
 
 :::{req} configuration
-Authoring MUST use the `[authoring]` section of the shared user configuration.
+Authoring MUST use the `[authoring]` sections of the shared user configuration
+and the selected workspace's `habeas.toml`.
 {cite}`requirements.configuration.user_location`
 {cite}`requirements.configuration.structure`
 {cite}`requirements.configuration.feature_sections`
-It MUST support named configurations and a user-local selection for each project.
-It defines no shared project configuration section. Credentials MUST be obtained
-through the selected backend's credential mechanism; saved configuration MUST
-contain credential-source references rather than credential values.
+It MUST support named configurations, workspace defaults, and a user-local
+selection for each project. Credential-source references SHOULD be used;
+explicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.
+{cite}`requirements.configuration.workspace_location`
+{cite}`requirements.configuration.workspace_structure`
 :::
 
 ### Serialized configuration data model
@@ -333,6 +392,11 @@ UserAuthoringConfig {
     projects: Map<CanonicalProjectRoot, ProjectSelection>,
 }
 
+WorkspaceAuthoringConfig {
+    default: Optional<ConfigName>,
+    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty
+}
+
 ProjectSelection {
     config: ConfigName,
 }
@@ -348,18 +412,28 @@ BedrockConfig {
     model: ModelId,                           // model ID or inference-profile ID/ARN
     aws_profile: Optional<String>,
     region: Optional<String>,
+    credentials: Optional<BedrockCredentials>,
     options: Map<String, OptionValue>,
+}
+
+BedrockCredentials {
+    access_key_id: SecretString,
+    secret_access_key: SecretString,
+    session_token: Optional<SecretString>,
 }
 
 OllamaConfig {
     model: ModelId,                           // exact identifier, including tag
     endpoint: Optional<String>,               // default: http://localhost:11434
     api_key_env: Optional<EnvironmentVariableName>,
+    api_key: Optional<SecretString>,
     options: Map<String, OptionValue>,
 }
 
 OptionValue = String | Boolean | Integer | FiniteFloat
             | Array<OptionValue> | Map<String, OptionValue>
+
+SecretString = String                         // serialized normally; redacted in Debug
 
 ModelRef {
     backend: BackendKind,                     // Bedrock or Ollama
@@ -373,11 +447,14 @@ connection settings such as AWS profile, region, or Ollama endpoint.
 :::
 
 :::{req} configuration_serialization
-The `[authoring]` table MUST serialize UserAuthoringConfig. Each
+The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace
+table MUST serialize WorkspaceAuthoringConfig. Each
 `[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with
 `backend = "bedrock"` or `backend = "ollama"` and that variant's fields in the same
 table. Backend-specific inference options MUST appear in its `options` subtable.
-Within a present authoring section, `configs` MUST be present but MAY be empty;
+Within a present user authoring section, `configs` MUST be present but MAY be empty;
+workspace `configs` MAY be omitted, allowing a workspace default to select a
+named user configuration.
 omitted `projects` and `options` tables MUST deserialize as empty maps.
 Serialization MUST follow the common rules in
 {cite}`requirements.configuration.serialization`.
@@ -414,16 +491,41 @@ replace the selected model, the assessment prompt, or tool definitions.
 :::{req} configuration_precedence
 `--config <name>` MUST select a configuration for that invocation. Otherwise,
 authoring MUST use the user's selection for the canonical project root, then the
-user's default. Backend, model, connection settings, and options MUST come from
-that configuration as a unit. Missing configuration or an unknown selection MUST
-produce an error identifying the user-file path and pointing to the documented
-examples.
+workspace default, then the user's default. Named workspace configurations MUST
+override same-named user configurations as complete records. Backend, model,
+connection settings, and options MUST come from the selected record as a unit;
+fields MUST NOT be merged between records. Workspace-only authoring MUST work
+without a user configuration file. Missing configuration or an unknown selection
+MUST identify the relevant configuration file and point to documented examples.
 
 An explicit Bedrock AWS profile or region MUST override the corresponding SDK
 default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use
 its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its
 named variable MUST supply the credential; a missing or empty value MUST produce
 an error before a model request.
+:::
+
+:::{req} credentials
+Bedrock configurations MAY supply `credentials` containing nonempty
+`access_key_id`, `secret_access_key`, and optional nonempty `session_token`.
+Ollama configurations MAY supply a nonempty `api_key`. Habeas MUST reject a
+Bedrock record combining explicit credentials with `aws_profile`, and an Ollama
+record combining `api_key` with `api_key_env`.
+
+Explicit credentials MUST be passed directly to the selected provider without
+changing process environment variables or writing credential files. Saved
+explicit values MUST round-trip; credentials resolved from profiles or the
+environment MUST NOT be serialized back. Debug output, configuration diagnostics,
+usage records, and initial prompts MUST NOT include credential values. TOML
+diagnostics MUST NOT echo credential-containing source lines. An active workspace
+file containing explicit credentials MUST be excluded from model source reads by
+default under {cite}`requirements.authoring.source_tools`; explicit workspace path
+overrides still apply.
+
+Documentation MUST discourage literal credentials in workspace files and
+recommend AWS profiles or environment-variable references. Examples MUST use
+placeholders and explain that workspace files may be committed or read as source
+when explicitly allowed.
 :::
 
 :::{req} rig_configuration_mapping
@@ -433,7 +535,7 @@ format. Rig model references MAY be reused internally without discarding the
 connection settings they do not represent.
 
 The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK
-configuration. The Ollama adapter MUST use the chosen server, exact model ID,
+configuration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,
 and optional authentication; the server MAY be local or remote. Both adapters
 MUST supply the same tools and initial prompt.
 :::
@@ -449,6 +551,28 @@ by hand. It MUST explain backend-specific options and credential-source referenc
 :::
 
 Create the user file at the [shared configuration location](configuration.md#locations-and-scope).
+For workspace settings, create `habeas.toml` in the directory whose descendants
+should use them. The nearest enclosing file wins. This complete workspace file
+selects the user's saved `cloud` configuration and makes a generated source
+directory readable while excluding its private subtree:
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[evidence]
+allow = ["generated"]
+disallow = ["generated/private"]
+```
+
+Workspace files can also contain `[authoring.configs.<name>]` tables using the
+same backend structures shown below. Those records override same-named user
+records as a whole. A user's explicit project selection takes precedence over a
+workspace default; `--config` takes precedence over both. Remove the workspace
+default or configuration table to fall back to the user settings.
+
 For Ollama, this is a complete minimal file; replace `MODEL_TAG` with a model
 identifier available on the local server:
 
@@ -540,6 +664,39 @@ Backend options belong under
 `api_key_env = "OLLAMA_API_KEY"` in its configuration table and set that variable
 outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an
 Ollama endpoint to use localhost.
+
+Literal credentials are supported but not recommended, especially in a
+workspace file that might be committed. Prefer the profile and environment
+references above. If needed, this complete `habeas.toml` illustrates the fields;
+replace every uppercase placeholder with your own value and keep the resulting
+file out of version control. Omit `session_token` for credentials without one.
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+region = "AWS_REGION"
+
+[authoring.configs.cloud.credentials]
+access_key_id = "AWS_ACCESS_KEY_ID"
+secret_access_key = "AWS_SECRET_ACCESS_KEY"
+session_token = "AWS_SESSION_TOKEN"
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+api_key = "OLLAMA_API_KEY_VALUE"
+```
+
+Do not combine `credentials` with `aws_profile`, or `api_key` with `api_key_env`.
+The active workspace file is excluded from model source reads when it contains
+literal credentials, unless you explicitly allow it. Such an allow exposes its
+contents to the model and records them as evidence inputs.
 
 ## Recording results
 

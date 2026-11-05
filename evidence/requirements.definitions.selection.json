@@ -1,7 +1,7 @@
 {
   "requirement": "Existing requirements input globs MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the glob. Sharing a glob's matching name prefix alone MUST NOT make a definition a dependency.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and one test covers the main scenario. One edge case is untested; I judged it low risk.\n\n**Implementation**\n- `InputSelector::resolve` in `src/inputs.rs`, `Requirements` arm, skips every declaration whose kind is `Term`. It only matches the glob against requirements and examples, and it errors if nothing matches. Named definitions are therefore never selected by a glob.\n- `terms::dependencies` in `src/terms.rs` is separate from glob matching. For a `Requirements` input it scans the selected text, and it adds each referenced term to the set. Terms referenced by those terms are added as well. Each result becomes a separate `definition` input. This happens whether or not the term's name matches the glob.\n- Because dependencies come only from references, a definition that merely shares the glob's name prefix is never added.\n- The CLI paths use the same rule. `status_markdown_with_options` and `info_markdown` in `src/commands.rs` skip `DefinitionKind::Term`. `preprocess_book` passes only non-term definitions to the index (`evidence_definitions`).\n\n**Tests**\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` in `tests/definitions.rs` is cited for both `selection` and the `glob_dependency` example.\n  - It adds an unreferenced `rules.unrelated` definition and captures the glob `rules.*`.\n  - It asserts that `matches` is exactly `[\"rules.ready\"]`.\n  - It asserts that `inputs[1]` and `inputs[2]` are the separate definition inputs `glossary.a` and `glossary.b`. These do not match the glob and are pulled in only through references, including transitively.\n  - It asserts that `status_markdown(..., true)` does not mention `rules.unrelated`.\n  - This is the `glob_dependency` scenario: a referenced definition outside the glob is captured, and an unreferenced definition that matches the glob by name is not.\n- Other tests in `tests/definitions.rs` and `tests/commands.rs` exercise the capture, dependency-change detection and `info` behaviour that rely on this selection. These include the 3-input record, the missing/duplicate definition input checks, and `info_markdown` showing `glossary.a`.\n\n**Gap**\n- No test has a referenced term whose name does match the glob. The code makes dependency capture independent of glob matching, so I did not count this against the requirement.",
+  "rationale": "**Verdict:** the requirement is implemented and tested.\n\n**Implementation**\n- `InputSelector::resolve` (`src/inputs.rs`), `Requirements` arm: it loops over all declarations and skips any with `DefinitionKind::Term` or a name that doesn't match the glob. So a requirements glob selects only requirements and examples, and named definitions are excluded. A glob that matches nothing is an error.\n- `terms::dependencies` (`src/terms.rs`) builds the dependencies of a record's selected texts:\n  - It scans each `Requirements` input's declaration bodies for term references.\n  - It then follows references transitively through the definitions' own bodies, using `declarations.get(name).filter(kind == Term)`.\n  - Dependencies come only from references in the text, never from name matching. A definition that merely shares the glob's prefix is therefore not a dependency.\n  - Referenced definitions are returned whatever their names are, and captured as separate `definition` inputs (`src/authoring/inputs.rs`). `validate_dependencies` (`src/evidence.rs`) checks that each is present exactly once.\n- The same exclusion applies in the CLI paths:\n  - `status_markdown_with_options` skips `Term` definitions.\n  - `info_markdown` skips `Term` definitions.\n  - Both reject globs that match nothing.\n\n**Tests**\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` (`tests/definitions.rs`) is cited for both `selection` and `glob_dependency`, and it covers the example directly:\n  - It uses glob `rules.*`, which does not match the referenced `glossary.a` and `glossary.b`.\n  - It adds an unreferenced definition `rules.unrelated` whose name does match the glob.\n  - It asserts `inputs[0].matches == [\"rules.ready\"]`, so the unrelated definition is not selected.\n  - It asserts `inputs[1]` and `inputs[2]` are `glossary.a` and `glossary.b`, so out-of-glob referenced definitions are captured.\n  - It asserts status output doesn't mention `rules.unrelated`.\n- Related tests in `tests/definitions.rs`:\n  - The fixture's three-input count, the missing/duplicate dependency checks, and changed-text detection exercise capture and validation.\n  - The info test on an example shows the captured definition.\n  - The Rust-item test covers transitive dependencies.\n- `tests/commands.rs` covers glob selection through `info` and `status`: exact versus glob matches, unmatched globs failing with \"no definitions match\", and an empty requirements glob failing with \"matches no requirement or example\".\n\n**Gaps:** none found, and there are no FIXMEs.",
   "inputs": [
     {
       "requirements": "requirements.definitions.selection",
@@ -865,11 +865,11 @@
       "line_start": 451,
       "line_end": 455,
       "text": [
-        "    let missing = String::from_utf8(missing.stdout).unwrap();",
-        "    assert!(missing.contains(\"## Validation findings\"), \"{missing}\");",
-        "    assert!(missing.contains(\"missing for requirement\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No rationale recorded.\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");"
+        "                ),",
+        "                \"{args:?}: {text}\"",
+        "            );",
+        "            assert!(",
+        "                text.contains(\"src/main.rs:1 fn[main]: missing Rust function attestation file\"),"
       ]
     },
     {
@@ -877,11 +877,11 @@
       "line_start": 468,
       "line_end": 472,
       "text": [
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn commands_report_invalid_arguments_and_unmatched_selectors() {",
-        "    let temp = fixture();"
+        "    assert!(output.status.success(), \"{:?}\", output);",
+        "    let exact = String::from_utf8(output.stdout).unwrap();",
+        "    assert!(exact.starts_with(\"# `requirements.ready`\\n\"), \"{exact}\");",
+        "    assert!(!exact.contains(\"# `requirements.xready`\"), \"{exact}\");",
+        "    assert!("
       ]
     },
     {
@@ -889,10 +889,10 @@
       "line_start": 700,
       "line_end": 703,
       "text": [
-        "    assert!(stdout.contains(\"remains pending\"), \"{stdout}\");",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &["
+        "",
+        "// {test}`requirements.cli.add_input`",
+        "// {test}`requirements.references.rust_function_attestations`",
+        "// {test}`requirements.configuration.evidence_paths`"
       ]
     },
     {
@@ -917,6 +917,152 @@
         "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
         "    assert!(info.contains(\"## FIXME references\"));",
         "    assert!(info.contains(\"rust-lang/rust#123\"));"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 291,
+      "line_end": 297,
+      "text": [
+        "            \"added\"",
+        "        };",
+        "        output.push_str(&format!(\"- {action}: {selector:?}\"));",
+        "        if !matches.is_empty() {",
+        "            output.push_str(&format!(\" matching {}\", matches.join(\", \")));",
+        "        }",
+        "        output.push('\\n');"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 472,
+      "line_end": 478,
+      "text": [
+        "    subject: Option<&str>,",
+        ") -> io::Result<Vec<Value>> {",
+        "    let record = json!({ \"inputs\": inputs });",
+        "    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)",
+        "        .map_err(io::Error::other)?",
+        "        .into_iter()",
+        "        .map(|definition| {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 467,
+      "line_end": 473,
+      "text": [
+        "        ));",
+        "    }",
+        "",
+        "    crate::terms::validate_dependencies(",
+        "        definitions,",
+        "        object,",
+        "        expected.map(|d| d.text.as_str()),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1321,
+      "line_end": 1327,
+      "text": [
+        "        let Some(inputs) = array_field(entry, \"inputs\", &entry_label, errors) else {",
+        "            continue;",
+        "        };",
+        "        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);",
+        "        let mut self_inputs = 0;",
+        "        let mut definition_inputs = 0;",
+        "        let mut matched_definitions = BTreeSet::new();"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 43,
+      "line_end": 49,
+      "text": [
+        "",
+        "// {impl}`requirements.definitions.dependencies`",
+        "// {impl}`requirements.definitions.selection`",
+        "pub(crate) fn dependencies(",
+        "    declarations: &BTreeMap<String, Declaration>,",
+        "    record: &Map<String, Value>,",
+        "    subject: Option<&str>,"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 112,
+      "line_end": 125,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.definitions.dependencies`",
+        "pub(crate) fn validate_dependencies(",
+        "    declarations: &BTreeMap<String, Declaration>,",
+        "    record: &Map<String, Value>,",
+        "    subject: Option<&str>,",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") {",
+        "    match dependencies(declarations, record, subject) {",
+        "        Ok(required) => {",
+        "            for name in required {",
+        "                let count = record"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 550,
+      "line_end": 562,
+      "text": [
+        "            \"{command}: {invalid:?}\"",
+        "        );",
+        "    }",
+        "    let unmatched = habeas(temp.path(), &[\"info\", \"nothing.*\"]);",
+        "    assert!(!unmatched.status.success());",
+        "    assert!(",
+        "        String::from_utf8_lossy(&unmatched.stderr).contains(\"no definitions match\"),",
+        "        \"{unmatched:?}\"",
+        "    );",
+        "    let status = habeas(temp.path(), &[\"status\", \"requirements.*ready\", \"--all\"]);",
+        "    assert!(status.status.success(), \"{status:?}\");",
+        "    let status = String::from_utf8(status.stdout).unwrap();",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 567,
+      "line_end": 579,
+      "text": [
+        "        status.contains(\"`requirements.xready` (requirement)\"),",
+        "        \"{status}\"",
+        "    );",
+        "    assert!(!status.contains(\"| `requirements.pending`\"), \"{status}\");",
+        "    let no_status = habeas(temp.path(), &[\"status\", \"nothing.*\"]);",
+        "    assert!(!no_status.status.success());",
+        "    assert!(String::from_utf8_lossy(&no_status.stderr).contains(\"no definitions match\"));",
+        "",
+        "    let outside_project = TempDir::new().unwrap();",
+        "    let status = habeas(outside_project.path(), &[\"status\"]);",
+        "    assert!(!status.status.success(), \"{status:?}\");",
+        "    assert!(",
+        "        String::from_utf8_lossy(&status.stderr)"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 925,
+      "line_end": 932,
+      "text": [
+        "            \"rules.ready\",",
+        "            \"--requirements\",",
+        "            \"missing.*\",",
+        "        ],",
+        "    );",
+        "    assert!(!invalid.status.success());",
+        "    assert!(String::from_utf8_lossy(&invalid.stderr).contains(\"matches no requirement or example\"));",
+        "}"
       ]
     }
   ]

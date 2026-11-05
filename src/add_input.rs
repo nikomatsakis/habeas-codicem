@@ -70,6 +70,8 @@ pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Resul
 // {impl}`requirements.cli.add_input_file_range`
 // {impl}`requirements.cli.add_input_rust_item`
 // {impl}`requirements.cli.add_input_requirements`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.ci.schema`
 fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {
     match mode {
         InputMode::FileRange(specification) => {
@@ -104,7 +106,7 @@ fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelec
             let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;
             let rust_file = path
                 .strip_prefix(root)
-                .unwrap()
+                .unwrap_or(&path)
                 .to_str()
                 .ok_or_else(|| invalid_input("Rust file path must be UTF-8"))?;
             let items = parse_items(&source).map_err(|error| {
@@ -191,7 +193,11 @@ fn add_function_inputs(
     let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;
     let rust_file = path
         .strip_prefix(root)
-        .unwrap()
+        .map_err(|_| {
+            invalid_input(format!(
+                "{rust_file}: function attestation target must be inside the repository"
+            ))
+        })?
         .to_str()
         .ok_or_else(|| invalid_input("Rust file path must be UTF-8"))?;
     let functions = function_citations(&source, definitions).map_err(|error| {

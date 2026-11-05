@@ -1,7 +1,7 @@
 {
   "requirement": "After one valid judgment, the harness MUST write the subject text, submitted\ndetermination and rationale, and recorded inputs using the existing evidence\nschema. {cite}`requirements.ci.schema`\nBy default, it MUST write the subject's evidence file. With `--stdout`, it MUST\nemit a single evidence JSON object followed by a newline to stdout and MUST NOT\ncreate or change evidence files or directories. All three outcomes MUST be\nwritten to the selected destination as completed assessments; their validation\nstatus MUST follow {cite}`requirements.ci.determination`.",
   "determination": true,
-  "rationale": "**Verdict: the persistence requirement is met.** I did not run the tests. I also did not read `configured_record`, so I did not check that it never writes files or directories.\n\n**Implementation**\n- `configured_assessment` (`src/authoring/mod.rs`) takes the record built by `assess` and serialises it as pretty JSON plus a trailing newline.\n  - `assess` builds the record as `{requirement|example: subject_text, determination, rationale, inputs}`. That matches the schema in `requirements.ci.schema`.\n  - `Judgment::to_value` (`src/judgment.rs`) maps true, false and `{\"FIXME\": [...]}` to the stored determination. All three outcomes go through the same write path, so each is saved as a completed assessment.\n- Default output (`EvidenceOutput::File`) writes `evidence/<subject>.json`, creating the directory if needed.\n- `--stdout` (`EvidenceOutput::Stdout`) writes the JSON to stdout, flushes, and returns `evidence_path = None`. It makes no `create_dir_all` or `fs::write` call for evidence. `src/main.rs` sends the summary and usage path to stderr in that case.\n- `--stdout` combined with `--all` is rejected. `tests/authoring_batch.rs:438-440` exercises this.\n- Batch mode uses `write_record` (`src/authoring/batch.rs`). It writes definition evidence to `evidence/<name>.json`. For Rust functions it merges into the per-file attestation record and replaces the file atomically through a temp file. This follows the same schema.\n- Validation status follows `requirements.ci.determination`. `false` is saved but still fails validation, and `true` and `FIXME` are accepted. That behaviour belongs to the validator, which is not under review here.\n\n**Tests (`tests/authoring_cli.rs`, `tests/live_bedrock.rs`)**\n- `stdout_emits_only_evidence_json_without_changing_project_files` loops over true, false and FIXME with existing evidence, and over true with no evidence directory.\n  - It parses stdout as JSON and checks the trailing newline.\n  - It checks the requirement text, determination, rationale and inputs (requirements, definition and rust-file inputs).\n  - It checks that the existing evidence file is unchanged, or that the `evidence` directory still does not exist.\n  - It checks that stderr carries the summary, `Evidence: stdout` and the usage path, and that usage records `evidence_output=stdout`.\n- `false_is_a_completed_assessment` checks that a false judgment is saved to the evidence file with its inputs and rationale, and that usage is \"completed\".\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (around lines 340-376) checks that the FIXME judgment, requirement text and inputs are written to the file.\n- `failed_evidence_write_keeps_the_accepted_judgment_in_usage` covers the write-failure path. It checks a nonzero exit, `evidence_written=false`, and that the accepted determination is kept in usage.\n- `live_bedrock_authoring` checks stdout evidence output against a real model and confirms that no `evidence` directory is created.\n- Batch tests in `tests/authoring_batch.rs` cover the multi-record write path.\n\n**Gaps**\nThe tests do not assert that the output has exactly the four schema keys. The schema is otherwise exercised through field-by-field checks. This is minor, and no FIXME comments are involved.",
+  "rationale": "**Implementation**\n\n- `assess` in `src/authoring/mod.rs` accepts exactly one valid `submit_judgment`. It builds an evidence object in the existing schema. For a requirement or example this is `{requirement|example: subject_text, determination, rationale, inputs: recorded_inputs}`. `Judgment::to_value` in `src/judgment.rs` serialises `true`, `false` and `{\"FIXME\": [...]}`.\n- `configured_assessment` in `src/authoring/mod.rs` handles the single-subject path.\n  - By default (`EvidenceOutput::File`) it writes `evidence/<subject>.json`.\n  - With `EvidenceOutput::Stdout` it writes pretty JSON plus a trailing newline to stdout and creates no evidence file or directory. The directory creation happens only in the `File` branch.\n  - All determination kinds go through the same path, and a successful write sets `evidence_written`.\n  - Usage state is kept outside the project, and the code rejects a state root inside it.\n- In the batch path, `write_record` in `src/authoring/batch.rs` writes definition evidence to `evidence/<name>.json`. It merges Rust-function attestations into `evidence/rust/<file>.json` through an atomic temp-file persist, so concurrent readers see a complete file. `PendingAssessment::persisted` then records the write.\n- A false judgment is saved as a completed assessment. Validation status is left to `requirements.ci.determination`, which accepts true and FIXME and fails false.\n\n**Tests**\n\n- `stdout_emits_only_evidence_json_without_changing_project_files` in `tests/authoring_cli.rs` covers true, false and FIXME on stdout. It also covers both an existing and a missing `evidence/` directory. It asserts:\n  - the single JSON object ends with a newline;\n  - the `requirement` field, determination, rationale and inputs are correct;\n  - the existing evidence file is unchanged, or no `evidence` directory is created;\n  - stderr and usage record the destination.\n- `false_is_a_completed_assessment` in `tests/authoring_cli.rs` shows a false judgment written to the evidence file with rationale and inputs, and the usage outcome recorded as completed.\n- The FIXME-to-file case is exercised in `tests/authoring_cli.rs` around lines 274–341 (`{\"FIXME\":[\"#125\"]}` asserted in the written evidence).\n- `failed_evidence_write_keeps_the_accepted_judgment_in_usage` covers a failed write: the usage record shows `evidence_written` false and the failure is reported.\n- `tests/authoring_batch.rs` tests the batch persistence cases:\n  - `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence` check that successful definition and Rust-function records are retained and merged (3 function entries) while a failed one writes nothing.\n- `explicit_untracked_reads_abort_without_another_request_or_evidence_write` checks that an aborted assessment leaves evidence untouched.\n- `live_bedrock_authoring` checks stdout output on a real provider, with no `evidence` directory created.\n- `tests/outcomes.rs` covers validation of the three outcomes.\n\nI found no unacknowledged gaps. The requirement's stated obligations are implemented and exercised across the interesting cases: file versus stdout, true/false/FIXME, an existing versus a missing evidence directory, write failure, and batch merging.",
   "inputs": [
     {
       "requirements": "requirements.authoring.persistence",
@@ -28,7 +28,7 @@
       ],
       "text": [
         ":::{req} schema",
-        "A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST be repository-relative, line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.",
+        "A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. Line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.",
         ":::"
       ]
     },
@@ -46,7 +46,7 @@
     {
       "file": "md/reference.md",
       "line_start": 1,
-      "line_end": 377,
+      "line_end": 419,
       "text": [
         "# How it works",
         "",
@@ -150,10 +150,49 @@
         "{cite}`requirements.authoring.text_search`",
         "",
         "In a Git worktree, stage new source files with `git add` before authoring. The",
-        "model can read unstaged edits to tracked files. Reads exclude untracked files,",
+        "model can read unstaged edits to tracked files. By default, reads exclude untracked files,",
         "generated `evidence/` content, and paths outside the project, including symlink",
         "aliases. Standalone projects use the same containment rules without requiring Git.",
+        "An explicitly requested excluded path aborts that assessment and reports an error",
+        "to the caller; it is not sent back to the model to work around. In a batch, other",
+        "assessments continue and successful writes are retained. The command exits",
+        "unsuccessfully after the batch finishes.",
         "{cite}`requirements.authoring.source_tools`",
+        "{cite}`requirements.authoring.read_denial`",
+        "",
+        "The nearest enclosing `habeas.toml` supplies workspace settings. Relative paths",
+        "in this file use its directory as their base. This complete example selects a",
+        "user configuration named `cloud` and allows a generated directory except for one",
+        "subtree:",
+        "",
+        "```toml",
+        "version = 1",
+        "",
+        "[authoring]",
+        "default = \"cloud\"",
+        "",
+        "[evidence]",
+        "allow = [\"generated\"]",
+        "disallow = [\"generated/private\"]",
+        "```",
+        "",
+        "An allow overrides all defaults; disallow wins if both match. Paths name literal",
+        "files or directory subtrees, not globs. Absolute paths can allow external inputs.",
+        "Workspace files can also define `[authoring.configs.<name>]` records, which",
+        "replace same-named user records as a whole. No ancestor workspace files are",
+        "merged. Selection order is `--config`, the user's per-project selection, workspace",
+        "default, then user default.",
+        "{cite}`requirements.configuration.workspace_location`",
+        "{cite}`requirements.configuration.evidence_paths`",
+        "{cite}`requirements.authoring.configuration_precedence`",
+        "",
+        "Existing Cargo build-script output directories are automatically allowed when",
+        "discoverable from the current build layout, including external build directories.",
+        "No build is run to find or recreate them. Root listings expose discovered output",
+        "directories, and workspace disallow rules still win. For an undiscovered layout,",
+        "add its output directory to `allow`. CI must generate the recorded paths and",
+        "contents before validating their evidence.",
+        "{cite}`requirements.authoring.generated_inputs`",
         "",
         "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
         "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
@@ -186,8 +225,11 @@
         "`http://localhost:11434`; add `endpoint = \"http://workstation:11434\"` to its table",
         "for a remote server, replacing `workstation` with that server's host name. For",
         "authentication, add `api_key_env = \"OLLAMA_API_KEY\"` and set that variable outside",
-        "the file. Credentials belong to AWS's credential sources or the named environment",
-        "variable. {cite}`requirements.authoring.configuration_precedence`",
+        "the file. Profiles and environment references are preferred. Literal Bedrock",
+        "`credentials` or Ollama `api_key` values are supported but not recommended in",
+        "workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).",
+        "{cite}`requirements.authoring.configuration_precedence`",
+        "{cite}`requirements.authoring.credentials`",
         "",
         "Run from the project:",
         "",
@@ -448,6 +490,8 @@
         "retain successful writes when another assessment fails. It MUST return a nonzero",
         "exit status if any assessment fails. False judgments MUST still be written as",
         "completed assessments; they remain failures under ordinary evidence validation.",
+        "An access-policy denial MUST abort only the affected assessment under",
+        "{cite}`requirements.authoring.read_denial`.",
         "Concurrent function assessments in one source file MUST be merged into that",
         "file's attestation record without losing other function entries. Assessments",
         "reading that record MUST see a complete version while results are saved.",
@@ -677,6 +721,7 @@
         "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -772,7 +817,11 @@
         "                }",
         "                Err(error) => {",
         "                    usage.tool(call.function.name.as_str(), true);",
-        "                    results.push(call.error_result(vec![ToolResultContent::text(error)]));",
+        "                    if error.kind() == io::ErrorKind::PermissionDenied {",
+        "                        return Err(error);",
+        "                    }",
+        "                    results",
+        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
         "                }",
         "            }",
         "        }",
@@ -795,6 +844,197 @@
         "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
         "        }",
         "    }"
+      ]
+    },
+    {
+      "rust_file": "tests/authoring_batch.rs",
+      "rust_item": "fn[denied_read_aborts_only_its_assessment_and_runs_queued_assessments]",
+      "text": [
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn denied_read_aborts_only_its_assessment_and_runs_queued_assessments() {",
+        "    let server = Server::start_with(",
+        "        false,",
+        "        Behavior::DeniedRead {",
+        "            subject: \"example requirements.alpha_case\",",
+        "            hold_other_requests: false,",
+        "        },",
+        "    );",
+        "    let fixture = Fixture::new(&server.endpoint, Some(1));",
+        "    fs::create_dir(fixture.project.join(\"evidence\")).unwrap();",
+        "    fs::write(",
+        "        fixture.project.join(\"evidence/private.txt\"),",
+        "        \"generated output\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(!output.status.success(), \"{output:?}\");",
+        "    let subjects = server.subjects();",
+        "    assert_eq!(subjects.len(), 6, \"{subjects:?}\");",
+        "    assert_eq!(",
+        "        &subjects[..2],",
+        "        [",
+        "            \"requirement requirements.alpha\",",
+        "            \"example requirements.alpha_case\"",
+        "        ]",
+        "    );",
+        "    assert_eq!(",
+        "        fixture.evidence(\"requirements.alpha\")[\"determination\"],",
+        "        true",
+        "    );",
+        "    assert!(",
+        "        !fixture",
+        "            .project",
+        "            .join(\"evidence/requirements.alpha_case.json\")",
+        "            .exists()",
+        "    );",
+        "    assert_eq!(fixture.evidence(\"requirements.beta\")[\"determination\"], true);",
+        "    assert_eq!(",
+        "        fixture.evidence(\"rust/src/lib.rs\")[\"functions\"]",
+        "            .as_array()",
+        "            .unwrap()",
+        "            .len(),",
+        "        3",
+        "    );",
+        "    let diagnostic = String::from_utf8_lossy(&output.stderr);",
+        "    assert!(diagnostic.contains(\"evidence/private.txt\"), \"{diagnostic}\");",
+        "    assert!(",
+        "        !diagnostic.contains(\"assessments not started\"),",
+        "        \"{diagnostic}\"",
+        "    );",
+        "    let usage = fixture.usage();",
+        "    assert_eq!(usage.len(), 6);",
+        "    assert_eq!(",
+        "        usage",
+        "            .iter()",
+        "            .filter(|run| run[\"outcome\"] == \"completed\")",
+        "            .count(),",
+        "        5",
+        "    );",
+        "    let failed = usage.iter().find(|run| run[\"outcome\"] == \"failed\").unwrap();",
+        "    assert_eq!(failed[\"subject\"], \"requirements.alpha_case\");",
+        "    assert_eq!(failed[\"request_count\"], 1);",
+        "    assert_eq!(failed[\"tool_failures\"][\"habeas\"], 1);",
+        "    assert_eq!(failed[\"evidence_written\"], false);",
+        "    assert_eq!(",
+        "        subjects",
+        "            .iter()",
+        "            .filter(|subject| *subject == \"example requirements.alpha_case\")",
+        "            .count(),",
+        "        1",
+        "    );",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/authoring_batch.rs",
+      "rust_item": "fn[denied_read_preserves_in_flight_assessments_and_their_evidence]",
+      "text": [
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.usage_requests`",
+        "#[test]",
+        "fn denied_read_preserves_in_flight_assessments_and_their_evidence() {",
+        "    let server = Server::start_with(",
+        "        true,",
+        "        Behavior::DeniedRead {",
+        "            subject: \"requirement requirements.alpha\",",
+        "            hold_other_requests: true,",
+        "        },",
+        "    );",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    fs::create_dir(fixture.project.join(\"evidence\")).unwrap();",
+        "    fs::write(",
+        "        fixture.project.join(\"evidence/private.txt\"),",
+        "        \"generated output\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    let mut child = fixture",
+        "        .command()",
+        "        .args([\"author\", \"--all\"])",
+        "        .stdout(Stdio::piped())",
+        "        .stderr(Stdio::piped())",
+        "        .spawn()",
+        "        .unwrap();",
+        "    let deadline = Instant::now() + Duration::from_secs(10);",
+        "    let exited = loop {",
+        "        if child.try_wait().unwrap().is_some() {",
+        "            break true;",
+        "        }",
+        "        if Instant::now() >= deadline {",
+        "            child.kill().unwrap();",
+        "            break false;",
+        "        }",
+        "        thread::sleep(Duration::from_millis(10));",
+        "    };",
+        "    let output = child.wait_with_output().unwrap();",
+        "    let subjects = server.subjects();",
+        "    drop(server);",
+        "    assert!(",
+        "        exited,",
+        "        \"batch did not finish its independent assessments: {output:?}\"",
+        "    );",
+        "    assert!(!output.status.success(), \"{output:?}\");",
+        "    assert_eq!(subjects.len(), 6, \"{subjects:?}\");",
+        "    assert_eq!(",
+        "        subjects",
+        "            .iter()",
+        "            .filter(|subject| *subject == \"requirement requirements.alpha\")",
+        "            .count(),",
+        "        1",
+        "    );",
+        "    assert!(",
+        "        !fixture",
+        "            .project",
+        "            .join(\"evidence/requirements.alpha.json\")",
+        "            .exists()",
+        "    );",
+        "    assert_eq!(",
+        "        fixture.evidence(\"requirements.alpha_case\")[\"determination\"],",
+        "        true",
+        "    );",
+        "    assert_eq!(fixture.evidence(\"requirements.beta\")[\"determination\"], true);",
+        "    assert_eq!(",
+        "        fixture.evidence(\"rust/src/lib.rs\")[\"functions\"]",
+        "            .as_array()",
+        "            .unwrap()",
+        "            .len(),",
+        "        3",
+        "    );",
+        "    let usage = fixture.usage();",
+        "    assert_eq!(usage.len(), 6);",
+        "    assert_eq!(",
+        "        usage",
+        "            .iter()",
+        "            .filter(|run| run[\"outcome\"] == \"failed\")",
+        "            .count(),",
+        "        1",
+        "    );",
+        "    let failed = usage.iter().find(|run| run[\"outcome\"] == \"failed\").unwrap();",
+        "    assert_eq!(failed[\"subject\"], \"requirements.alpha\");",
+        "    assert_eq!(failed[\"request_count\"], 1);",
+        "    assert_eq!(failed[\"tool_failures\"][\"habeas\"], 1);",
+        "    assert_eq!(failed[\"evidence_written\"], false);",
+        "    let completed: Vec<_> = usage",
+        "        .iter()",
+        "        .filter(|run| run[\"outcome\"] == \"completed\")",
+        "        .collect();",
+        "    assert_eq!(completed.len(), 5);",
+        "    assert!(completed.iter().all(|run| run[\"evidence_written\"] == true));",
+        "    assert!(completed.iter().all(|run| run[\"request_count\"] == 1));",
+        "    assert!(",
+        "        completed",
+        "            .iter()",
+        "            .all(|run| run[\"requests\"][0][\"outcome\"] == \"completed\")",
+        "    );",
+        "    assert!(usage.iter().all(|run| !run[\"end_time_ms\"].is_null()));",
+        "}"
       ]
     },
     {
@@ -933,6 +1173,63 @@
         "            original,",
         "        }",
         "    }"
+      ]
+    },
+    {
+      "rust_file": "tests/authoring_cli.rs",
+      "rust_item": "fn[explicit_untracked_reads_abort_without_another_request_or_evidence_write]",
+      "text": [
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.source_tools`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.usage_requests`",
+        "#[test]",
+        "fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {",
+        "    for (tool, arguments) in [",
+        "        (\"habeas\", json!({\"file\":\"untracked.txt\", \"line_start\":1})),",
+        "        (",
+        "            \"ripgrep\",",
+        "            json!({\"path\":\"untracked.txt\", \"pattern\":\"hidden\"}),",
+        "        ),",
+        "        (\"list_files\", json!({\"path\":\"untracked-directory\"})),",
+        "    ] {",
+        "        let server = Server::start(vec![reply(vec![call(\"denied\", tool, arguments)])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        for args in [[\"init\", \"--quiet\"], [\"add\", \".\"]] {",
+        "            let git = Command::new(\"git\")",
+        "                .current_dir(&fixture.project)",
+        "                .args(args)",
+        "                .output()",
+        "                .unwrap();",
+        "            assert!(git.status.success(), \"{git:?}\");",
+        "        }",
+        "        fs::write(fixture.project.join(\"untracked.txt\"), \"hidden source\\n\").unwrap();",
+        "        fs::create_dir(fixture.project.join(\"untracked-directory\")).unwrap();",
+        "        fs::write(",
+        "            fixture.project.join(\"untracked-directory/hidden.txt\"),",
+        "            \"hidden source\\n\",",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let output = fixture.run(&[\"author\", SUBJECT, \"--stdout\"]);",
+        "        assert!(!output.status.success(), \"{tool}: {output:?}\");",
+        "        assert!(output.stdout.is_empty(), \"{tool}: {output:?}\");",
+        "        let diagnostics = String::from_utf8_lossy(&output.stderr);",
+        "        assert!(diagnostics.contains(\"untracked\"), \"{tool}: {diagnostics}\");",
+        "        assert_eq!(",
+        "            fs::read_to_string(&fixture.evidence).unwrap(),",
+        "            fixture.original",
+        "        );",
+        "        assert_eq!(server.finish().len(), 1);",
+        "        let usage = fixture.usage();",
+        "        assert_eq!(usage[\"outcome\"], \"failed\", \"{tool}: {usage}\");",
+        "        assert_eq!(usage[\"request_count\"], 1, \"{tool}: {usage}\");",
+        "        assert_eq!(usage[\"tool_failures\"][tool], 1, \"{tool}: {usage}\");",
+        "        assert_eq!(usage[\"evidence_written\"], false, \"{tool}: {usage}\");",
+        "        assert!(usage[\"determination\"].is_null(), \"{tool}: {usage}\");",
+        "    }",
+        "}"
       ]
     },
     {
@@ -1198,866 +1495,306 @@
       ]
     },
     {
-      "file": "md/reference.md",
-      "line_start": 1,
-      "line_end": 346,
+      "file": "src/authoring/batch.rs",
+      "line_start": 111,
+      "line_end": 116,
       "text": [
-        "# How it works",
-        "",
-        "Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `cargo test --workspace` checks the evidence; `mdbook build` renders links to it.",
-        "",
-        "## Requirements",
-        "",
-        "Write a colon-fenced `{req}` directive in a book chapter. For example, in `md/requirements.md`:",
-        "",
-        "```text",
-        ":::{req} check",
-        "The CLI MUST report invalid arguments.",
-        ":::",
-        "```",
-        "",
-        "The chapter path is part of the requirement's name, so this one is `requirements.check`. Everything between the opening and closing fences is its body, including headings and other Markdown.",
-        "",
-        "## Examples",
-        "",
-        "An example is a separate named definition for a concrete case. State the situation, action, and expected result, and cite the requirement it illustrates. This book contains a working example:",
-        "",
-        ":::{example} cli.unknown_command",
-        "Running `habeas unknown` fails with a nonzero exit status and prints a usage message. {cite}`requirements.cli.invocation`",
-        ":::",
-        "",
-        "Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The authoring harness records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the citations are current; the rationale explains why the tests are adequate.",
-        "",
-        "## Evidence",
-        "",
-        "Run `habeas author --all` to create and refresh evidence for requirements, examples,",
-        "and Rust function attestations. The harness writes `evidence/requirements.check.json`",
-        "for the requirement above and `evidence/reference.cli.unknown_command.json` for the",
-        "example. Each requirement or example evidence file records four fields:",
-        "",
-        "| Field | Meaning |",
-        "| --- | --- |",
-        "| `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |",
-        "| `determination` | `true`, `false`, or `{\"FIXME\": [\"#125\"]}` for explicitly documented gaps. |",
-        "| `rationale` | A Markdown explanation of that judgment. |",
-        "| `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or glob of definitions. |",
-        "",
-        "For a requirement, the model reviews whether the cited code implements its stated obligations",
-        "and whether tests cover the interesting design cases. If there are no tests,",
-        "its rationale explains why the logic is simple enough to need none or testing is impractical.",
-        "For an example, the model reviews whether tests cover its scenario and expected outcomes;",
-        "a true judgment requires a covered `{test}` reference. The assessment concerns",
-        "the named subject, using referenced requirements and definitions as context.",
-        "{cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`",
-        "",
-        "The model chooses `true` when that review supports the subject and FIXME when",
-        "source comments or tests explicitly acknowledge the remaining implementation or",
-        "testing gaps; otherwise it chooses `false` for gaps or missing information.",
-        "The FIXME array records the acknowledged gaps' issue references or other",
-        "identifying source content, with each gap and source location explained in the",
-        "rationale. The expected comment",
-        "convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may",
-        "appear elsewhere in the comment or test. The harness captures those source inputs.",
-        "{cite}`requirements.ci.outcomes`",
-        "",
-        "An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:",
-        "",
-        "```json",
-        "{\"file\":\"src/main.rs\",\"line_start\":1,\"line_end\":3,\"text\":[\"...\"]}",
-        "{\"rust_file\":\"src/main.rs\",\"rust_item\":\"fn[main]\",\"text\":[\"...\"]}",
-        "{\"requirements\":\"requirements.cli.*\",\"matches\":[\"requirements.cli.info\"],\"text\":[\"...\"]}",
-        "```",
-        "",
-        "`habeas author --all` captures source text and delegates judgments to the configured",
-        "model. The supervising agent fixes reported gaps and reruns the command; it does",
-        "not write evidence by hand. The lower-level `habeas add-input` command remains",
-        "available for selecting an additional input. A changed input leaves its",
-        "determination false until the authoring harness reassesses it.",
-        "{cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`",
-        "",
-        "```sh",
-        "habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20",
-        "habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26",
-        "habeas add-input --for-rust-item src/evidence.rs 'fn[validate_repository]' --requirements 'requirements.ci.*'",
-        "```",
-        "",
-        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`",
-        "",
-        "Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference.",
-        "",
-        "## Authoring evidence with a model",
-        "",
-        "`habeas author --all` fills in missing or stale evidence and reassesses invalid or",
-        "false records. It includes requirements, examples, and Rust function attestations,",
-        "preserving current accepted evidence, including FIXME judgments. Each assessment",
-        "gets its own conversation and usage record. Successful results are kept if",
-        "another assessment fails; the command reports failures and exits unsuccessfully.",
-        "A completed false judgment is saved and remains a validation failure.",
-        "{cite}`requirements.authoring.batch` {cite}`requirements.authoring.function_attestations`",
-        "",
-        "`habeas author <full-name>` assesses one requirement or example, records the",
-        "source inputs delivered to the model, and writes its judgment to the usual",
-        "evidence file. `author-evidence` remains an alias. Install `rg` (ripgrep) on your PATH for the model's search tool.",
-        "Choose a model that supports tool calls, either on Amazon Bedrock or an accessible",
-        "Ollama server. The server can run on another machine; Habeas does not need a GPU.",
-        "{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`",
-        "{cite}`requirements.authoring.text_search`",
-        "",
-        "In a Git worktree, stage new source files with `git add` before authoring. The",
-        "model can read unstaged edits to tracked files. Reads exclude untracked files,",
-        "generated `evidence/` content, and paths outside the project, including symlink",
-        "aliases. Standalone projects use the same containment rules without requiring Git.",
-        "{cite}`requirements.authoring.source_tools`",
-        "",
-        "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
-        "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
-        "relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local",
-        "and is not part of the project. Here is a complete configuration with two choices:",
-        "{cite}`requirements.configuration.user_location`",
-        "{cite}`requirements.authoring.configuration_documentation`",
-        "",
-        "```toml",
-        "version = 1",
-        "",
-        "[authoring]",
-        "default = \"cloud\"",
-        "",
-        "[authoring.configs.cloud]",
-        "backend = \"bedrock\"",
-        "model = \"MODEL_ID\"",
-        "aws_profile = \"research\"",
-        "region = \"us-east-1\"",
-        "",
-        "[authoring.configs.local]",
-        "backend = \"ollama\"",
-        "model = \"MODEL_TAG\"",
-        "```",
-        "",
-        "Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,",
-        "`research` with your configured AWS profile, `us-east-1` with your region, and",
-        "`MODEL_TAG` with a model installed on your Ollama server. Omit `aws_profile` and",
-        "`region` to use standard AWS SDK resolution. Ollama defaults to",
-        "`http://localhost:11434`; add `endpoint = \"http://workstation:11434\"` to its table",
-        "for a remote server, replacing `workstation` with that server's host name. For",
-        "authentication, add `api_key_env = \"OLLAMA_API_KEY\"` and set that variable outside",
-        "the file. Credentials belong to AWS's credential sources or the named environment",
-        "variable. {cite}`requirements.authoring.configuration_precedence`",
-        "",
-        "Run from the project:",
-        "",
-        "```sh",
-        "habeas author --all",
-        "habeas author --all --config local",
-        "```",
-        "",
-        "For a single requirement or example, replace `requirements.check` with its full name:",
-        "",
-        "```sh",
-        "habeas author requirements.check",
-        "habeas author requirements.check --config local",
-        "habeas info requirements.check",
-        "```",
-        "",
-        "Use `--stdout` to emit the evidence JSON followed by a newline without creating",
-        "or changing evidence files or directories. The completion summary, usage-record",
-        "path, and diagnostics go to stderr, so stdout can be redirected or piped:",
-        "",
-        "```sh",
-        "habeas author requirements.check --stdout > /tmp/assessment.json",
-        "```",
-        "",
-        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
-        "assessment that fails before accepting a valid judgment emits no evidence JSON.",
-        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
-        "Usage is still recorded outside the project, with `evidence_output` identifying",
-        "the selected `file` or `stdout` destination and `evidence_written` reporting",
-        "whether the write succeeded.",
-        "{cite}`requirements.authoring.invocation`",
-        "{cite}`requirements.authoring.submission`",
-        "{cite}`requirements.authoring.persistence`",
-        "{cite}`requirements.authoring.usage_storage`",
-        "",
-        "Change `authoring.default` to switch the default, or add a per-project selection",
-        "using its canonical absolute path (replace `/absolute/path/to/project`):",
-        "",
-        "```toml",
-        "[authoring.projects.\"/absolute/path/to/project\"]",
-        "config = \"local\"",
-        "```",
-        "",
-        "The invocation's `--config` wins over that project selection, which wins over the",
-        "default. Remove the project table or default field to remove a selection. Delete",
-        "a configuration's table to remove it, updating selections that named it. Provider",
-        "inference options go under `[authoring.configs.<name>.options]`; supported keys",
-        "depend on the provider, and cannot replace the model, prompt, or tools. See the",
-        "[configuration reference](requirements/authoring.md#configuration) for the full",
-        "format. {cite}`requirements.authoring.configuration_storage`",
-        "{cite}`requirements.authoring.configuration_documentation`",
-        "",
-        "Bedrock runs assessments concurrently by default, using the available logical CPU",
-        "count. Ollama runs one at a time. Override either default with a positive",
-        "`concurrency` value alongside `backend` and `model` in its configuration table:",
-        "",
-        "```toml",
-        "[authoring.configs.cloud]",
-        "backend = \"bedrock\"",
-        "model = \"MODEL_ID\"",
-        "concurrency = 4",
-        "```",
-        "",
-        "Four is an example, not a fixed default. Authoring uses asynchronous tasks on a",
-        "fixed worker thread pool and limits simultaneous assessments to this value.",
-        "Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work",
-        "on records that still need attention. {cite}`requirements.authoring.concurrency`",
-        "",
-        "For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and",
-        "`stopSequences` directly in that options table. Habeas maps them to Converse's",
-        "`inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.",
-        "Use these flat keys without an `inferenceConfig` wrapper. For example:",
-        "",
-        "```toml",
-        "[authoring.configs.cloud.options]",
-        "temperature = 0.25",
-        "maxTokens = 321",
-        "topP = 0.75",
-        "stopSequences = [\"END\"]",
-        "```",
-        "",
-        "These values are illustrative choices, not Habeas defaults. Omit any setting to",
-        "leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`",
-        "go in the same options table; Rig places them in Ollama's native request.",
-        "{cite}`requirements.authoring.configuration_storage`",
-        "{cite}`requirements.authoring.rig_configuration_mapping`",
-        "",
-        "The command reports the evidence destination and usage-record path. Usage",
-        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
-        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
-        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
-        "book rendering remain deterministic and do not require model configuration or",
-        "credentials. {cite}`requirements.authoring.usage_storage`",
-        "{cite}`requirements.authoring.deterministic_validation`",
-        "",
-        "### Live Bedrock tests",
-        "",
-        "`cargo test` includes a live Bedrock integration test. It skips with a visible",
-        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing",
-        "Bedrock authoring configuration fails the test. A skip returns successfully, so",
-        "Cargo displays `ok` rather than `ignored`. Once credentials load, provider and",
-        "authoring errors fail the test. Local runs with credentials make billable model",
-        "requests and retain their usage records in the usual user state directory.",
-        "",
-        "Run just these tests with:",
-        "",
-        "```sh",
-        "cargo test --test live_bedrock",
-        "```",
-        "",
-        "The live test uses the project's or user's selected Bedrock configuration,",
-        "falling back to the first named Bedrock configuration in name order. To select",
-        "one explicitly:",
-        "",
-        "```sh",
-        "HABEAS_LIVE_CONFIG=sonnet cargo test --test live_bedrock",
-        "```",
-        "",
-        "The test uses a temporary project and stdout evidence output, leaving the",
-        "checkout's evidence unchanged. Any set `CI` environment variable disables live",
-        "testing before configuration or credential lookup, even if credentials are",
-        "available. For example, `CI=1 cargo test` runs the suite without live inference.",
-        "{cite}`requirements.integration.live_bedrock_test`",
-        "",
-        "## References",
-        "",
-        "Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:",
-        "",
-        "```text",
-        "{impl}`requirements.check`",
-        "{cite}`requirements.check`",
-        "{test}`requirements.check`",
-        "{test}`reference.cli.unknown_command`",
-        "```",
-        "",
-        "Each reference must name an existing requirement or example. Its evidence must include an input covering the line with the reference. In the book, references and definitions become linked badges.",
-        "",
-        "For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example cites a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit project requirement such as `internal-detail` and provide evidence explaining why it adds no otherwise unspecified user-visible behavior.",
-        "",
-        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
-        "",
-        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
-        "",
-        "## Checking and viewing",
-        "",
-        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
-        "",
-        "Run `habeas status [<glob>]` from within the project to list requirements and named",
-        "examples needing attention and their validation findings. FIXME judgments are",
-        "summarized by issue, for example:",
-        "",
-        "```text",
-        "- #123 — affects 22 judgments",
-        "- #45 — affects 3 judgments",
-        "- 16 judgments marked FIXME without an issue",
-        "```",
-        "",
-        "Each judgment counts once per issue, even if it repeats that reference. A judgment",
-        "with several issues counts in each group; the final group counts judgments with",
-        "no recognized issue reference. References may appear in explanatory text or",
-        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
-        "URLs are also recognized. Groups with the most affected judgments come first.",
-        "{cite}`requirements.cli.fixme_summary`",
-        "",
-        "Use `--verbose` to list the actual judgments in each group, with their full names,",
-        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
-        "evidence state. Stale or invalid FIXME evidence still reports its validation",
-        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
-        "including current texts, rationales, inputs, FIXME references, and findings. Both",
-        "commands match whole full names; `*` can span any number of characters, including",
-        "dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
-        "{cite}`requirements.references.definition_globs`",
-        "",
-        "```sh",
-        "habeas info requirements.ci.inputs",
-        "habeas info 'requirements.cli.*'",
-        "habeas status 'requirements.cli.*' --all",
-        "habeas status --verbose",
-        "```",
-        "",
-        "Agent skills installed by Habeas point to `habeas info` for looking up definition details.",
-        "",
-        "To add an evidence index, list a chapter in `SUMMARY.md` and put this directive in it:",
-        "",
-        "```text",
-        ":::{requirements-index}",
-        ":::",
-        "```",
-        "",
-        "The build fills that chapter with requirement and example states and adds an evidence page under it for each definition.",
-        "",
-        "## Using a local checkout",
-        "",
-        "To use a checkout instead of the registry package, install the CLI from that checkout and point setup at it:",
-        "",
-        "```sh",
-        "cargo install --path /path/to/habeas-codicem",
-        "habeas setup --path /path/to/habeas-codicem",
-        "```",
-        "",
-        "Run `habeas setup` in the consuming Cargo and mdBook project. Its book uses the installed `habeas mdbook` CLI; the repository-local `cargo habeas` alias is only for Habeas's own book.",
-        "",
-        "## Named definitions",
-        "",
-        "Use a definition for shared vocabulary. It has a stable chapter-qualified name,",
-        "a short display phrase, and an explanatory body:"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 516,
-      "line_end": 524,
-      "text": [
-        "project table to remove a selection. To remove a named configuration, delete its",
-        "table and update any selections naming it. Preserve other feature sections when",
-        "editing an existing file.",
-        "",
-        "Run `habeas author --all` to fill in evidence needing attention, or",
-        "`habeas author <full-name>` to assess one requirement or example. Add `--config local`",
-        "to override the saved selection for one run. Set `concurrency` alongside `backend`",
-        "and `model` to override the provider's default number of simultaneous assessments:",
-        ""
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 142,
-      "line_end": 142,
-      "text": [
-        "Run from the project:"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 167,
-      "line_end": 167,
-      "text": [
-        "`--stdout` is available for one named subject; it cannot be combined with `--all`."
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 44,
-      "line_end": 44,
-      "text": [
-        "{cite}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 636,
-      "line_end": 636,
-      "text": [
-        "{cite}`requirements.authoring.source_tools`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 650,
-      "line_end": 650,
-      "text": [
-        "`determination: false` and a rationale explaining the discrepancy. The harness"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 41,
-      "line_end": 41,
-      "text": [
-        "{cite}`requirements.authoring.persistence`"
+        "            // This collector is the sole writer: functions in the same source",
+        "            // file can finish concurrently without replacing each other's entries.",
+        "            match write_record(&root, &pending) {",
+        "                Ok(path) => pending.persisted(path),",
+        "                Err(error) => Err(pending.failed(error)),",
+        "            }"
       ]
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 136,
-      "line_end": 136,
+      "line_start": 162,
+      "line_end": 166,
       "text": [
-        "// {impl}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 67,
-      "line_end": 67,
-      "text": [
-        "impl PendingAssessment {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 232,
-      "line_end": 232,
-      "text": [
-        "// {impl}`requirements.authoring.invocation`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 400,
-      "line_end": 400,
-      "text": [
-        "        .into_iter()"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 43,
-      "line_end": 43,
-      "text": [
-        "    // {impl}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 38,
-      "line_end": 38,
-      "text": [
-        "    // {test}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 113,
-      "line_end": 113,
-      "text": [
-        "    // {test}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 422,
-      "line_end": 422,
-      "text": [
-        "// {test}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 460,
-      "line_end": 460,
-      "text": [
-        "// {test}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 785,
-      "line_end": 785,
-      "text": [
-        "// {test}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 103,
-      "line_end": 103,
-      "text": [
-        "// {test}`requirements.authoring.persistence`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 96,
-      "line_end": 100,
-      "text": [
-        "            )),",
-        "        }",
-        "    }",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 107,
-      "line_end": 111,
-      "text": [
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 117,
-      "line_end": 121,
-      "text": [
-        "// {impl}`requirements.authoring.usage_storage`",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,",
-        "    subject: &str,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 129,
-      "line_end": 134,
-      "text": [
-        "        return Err(io::Error::other(",
-        "            \"authoring usage state must be outside the project repository\",",
-        "        ));",
-        "    }",
-        "    let mut usage = UsageLog::start(&state, &root, subject)?;",
-        "    usage.record.evidence_output = match output {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 235,
-      "line_end": 239,
-      "text": [
-        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.persistence`",
-        "async fn configured_assessment(",
-        "    root: &Path,",
-        "    subject: &str,"
+        "fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {",
+        "    let (path, record) = match &pending.subject {",
+        "        AuthoringSubject::Definition(name) => ("
       ]
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 248,
-      "line_end": 252,
+      "line_start": 71,
+      "line_end": 75,
       "text": [
-        "        &config,",
-        "        usage,",
-        "    )",
-        "    .await?;",
-        "    let json = format!(\"{}\\n\", serde_json::to_string_pretty(&evidence)?);"
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.configuration.state_location`",
+        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {",
+        "        self.usage.record.evidence_written = true;",
+        "        self.outcome.evidence_path = Some(path);"
       ]
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 254,
-      "line_end": 258,
-      "text": [
-        "        EvidenceOutput::File => {",
-        "            let path = root.join(\"evidence\").join(format!(\"{subject}.json\"));",
-        "            fs::create_dir_all(path.parent().expect(\"evidence parent\"))?;",
-        "            fs::write(&path, json)?;",
-        "            Some(path)"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 149,
-      "line_end": 155,
-      "text": [
-        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
-        "                    )",
-        "                    .into());",
-        "                }",
-        "                return Ok(());",
-        "            }",
-        "            let output = if stdout {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 149,
-      "line_end": 149,
-      "text": [
-        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 220,
-      "line_end": 220,
-      "text": [
-        "fn call(id: &str, name: &str, arguments: Value) -> Value {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 226,
-      "line_end": 226,
-      "text": [
-        "fn reply(calls: Vec<Value>) -> Value {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 245,
-      "line_end": 245,
-      "text": [
-        "fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 274,
-      "line_end": 274,
-      "text": [
-        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 340,
-      "line_end": 341,
-      "text": [
-        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
-        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 376,
-      "line_end": 376,
-      "text": [
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 425,
-      "line_end": 425,
-      "text": [
-        "fn false_is_a_completed_assessment() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 429,
-      "line_end": 429,
-      "text": [
-        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 433,
-      "line_end": 433,
-      "text": [
-        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 443,
-      "line_end": 443,
-      "text": [
-        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 445,
-      "line_end": 445,
-      "text": [
-        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 454,
-      "line_end": 454,
-      "text": [
-        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 464,
-      "line_end": 464,
-      "text": [
-        "fn stdout_emits_only_evidence_json_without_changing_project_files() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 468,
-      "line_end": 468,
-      "text": [
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 507,
-      "line_end": 507,
-      "text": [
-        "                fs::read_to_string(&fixture.evidence).unwrap(),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 533,
-      "line_end": 533,
-      "text": [
-        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 550,
-      "line_end": 550,
-      "text": [
-        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 565,
-      "line_end": 565,
-      "text": [
-        "                fs::read_to_string(&fixture.evidence).unwrap(),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 584,
-      "line_end": 584,
-      "text": [
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 600,
-      "line_end": 600,
-      "text": [
-        "        fs::read_to_string(&fixture.evidence).unwrap(),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 615,
-      "line_end": 615,
-      "text": [
-        "fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 747,
-      "line_end": 747,
-      "text": [
-        "            .unwrap()[\"properties\"][\"FIXME\"];"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 762,
-      "line_end": 762,
-      "text": [
-        "            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 788,
-      "line_end": 788,
-      "text": [
-        "fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 790,
-      "line_end": 790,
-      "text": [
-        "    let evidence_path = fixture.evidence.clone();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 796,
-      "line_end": 796,
-      "text": [
-        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\""
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 812,
-      "line_end": 812,
-      "text": [
-        "    assert!(fixture.evidence.is_dir());"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 815,
-      "line_end": 815,
-      "text": [
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 100,
-      "line_end": 232,
+      "line_start": 110,
+      "line_end": 114,
       "text": [
         "",
         "#[derive(Clone, Copy)]",
         "pub enum EvidenceOutput {",
         "    File,",
-        "    Stdout,",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
+        "    Stdout,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 121,
+      "line_end": 125,
+      "text": [
         "    selection: Option<&str>,",
         ") -> io::Result<AuthoringOutcome> {",
         "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
         "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 132,
+      "line_end": 136,
+      "text": [
+        "    subject: &str,",
+        "    selection: Option<&str>,",
+        "    output: EvidenceOutput,",
+        ") -> io::Result<AuthoringOutcome> {",
+        "    let root = fs::canonicalize(root)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 144,
+      "line_end": 149,
+      "text": [
+        "    let mut usage = UsageLog::start(&state, &root, subject)?;",
+        "    usage.record.evidence_output = match output {",
+        "        EvidenceOutput::File => \"file\",",
+        "        EvidenceOutput::Stdout => \"stdout\",",
+        "    };",
+        "    usage.save()?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 269,
+      "line_end": 273,
+      "text": [
+        "    subject: &str,",
+        "    selection: Option<&str>,",
+        "    output: EvidenceOutput,",
+        "    usage: &mut UsageLog,",
+        ") -> io::Result<AuthoringOutcome> {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 282,
+      "line_end": 286,
+      "text": [
+        "    let json = format!(\"{}\\n\", serde_json::to_string_pretty(&evidence)?);",
+        "    let evidence_path = match output {",
+        "        EvidenceOutput::File => {",
+        "            let path = root.join(\"evidence\").join(format!(\"{subject}.json\"));",
+        "            fs::create_dir_all(path.parent().expect(\"evidence parent\"))?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 288,
+      "line_end": 292,
+      "text": [
+        "            Some(path)",
+        "        }",
+        "        EvidenceOutput::Stdout => {",
+        "            let mut stdout = io::stdout().lock();",
+        "            stdout.write_all(json.as_bytes())?;"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 357,
+      "line_end": 361,
+      "text": [
         "",
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    fn persisted(log: &UsageLog) -> Value {",
+        "        serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 380,
+      "line_end": 384,
+      "text": [
+        "        log.prepared(\"habeas\", &[file]);",
+        "        log.save().unwrap();",
+        "        let prepared = persisted(&log);",
+        "        assert_eq!(prepared[\"inputs\"][0][\"bytes\"], \"λ\\nDO_NOT_LOG_SOURCE\".len());",
+        "        assert_eq!(prepared[\"inputs\"][0][\"lines\"], 2);"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 390,
+      "line_end": 394,
+      "text": [
+        "        assert!(prepared[\"inputs\"][0][\"sent_in_request\"].is_null());",
+        "        let index = log.begin_request().unwrap();",
+        "        let submitted = persisted(&log);",
+        "        assert_eq!(submitted[\"inputs\"][0][\"submitted_in_request\"], index);",
+        "        assert!(submitted[\"inputs\"][0][\"sent_in_request\"].is_null());"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 397,
+      "line_end": 401,
+      "text": [
+        "        log.record.evidence_written = true;",
+        "        log.finish(\"completed\").unwrap();",
+        "        let sent = persisted(&log);",
+        "        assert_eq!(sent[\"inputs\"][0][\"sent_in_request\"], index);",
+        "        assert_eq!(sent[\"requests\"][0][\"outcome\"], \"completed\");"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 435,
+      "line_end": 443,
+      "text": [
+        "        log.end_request(first, 3, Some(&measured)).unwrap();",
+        "        let second = log.begin_request().unwrap();",
+        "        let in_flight = persisted(&log);",
+        "        assert_eq!(in_flight[\"tokens\"][\"complete\"], false);",
+        "        assert_eq!(in_flight[\"tokens\"][\"input\"], 100);",
+        "        log.end_request(second, 4, Some(&measured)).unwrap();",
+        "        let complete = persisted(&log);",
+        "        assert_eq!(complete[\"tokens\"][\"input\"], 200);",
+        "        assert_eq!(complete[\"tokens\"][\"output\"], 40);"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 449,
+      "line_end": 453,
+      "text": [
+        "        log.end_request(third, 2, None).unwrap();",
+        "        log.finish(\"failed\").unwrap();",
+        "        let failed = persisted(&log);",
+        "        assert_eq!(failed[\"request_count\"], 3);",
+        "        assert_eq!(failed[\"requests\"][2][\"outcome\"], \"failed\");"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 473,
+      "line_end": 482,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let known = persisted(&log);",
+        "        assert_eq!(known[\"tokens\"][\"complete\"], true);",
+        "        assert!(known[\"tokens\"][\"cached_input\"].is_null());",
+        "        let failed = log.begin_request().unwrap();",
+        "        log.end_request(failed, 1, None).unwrap();",
+        "        let partial = persisted(&log);",
+        "        assert_eq!(partial[\"tokens\"][\"input\"], 10);",
+        "        assert_eq!(partial[\"tokens\"][\"output\"], 3);"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 508,
+      "line_end": 512,
+      "text": [
+        "            )",
+        "            .unwrap();",
+        "        let mixed = persisted(&optional);",
+        "        assert_eq!(mixed[\"tokens\"][\"input\"], 15);",
+        "        assert_eq!(mixed[\"tokens\"][\"output\"], 5);"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 523,
+      "line_end": 527,
+      "text": [
+        "        let mut log =",
+        "            UsageLog::start(state.path(), Path::new(\"/project\"), \"requirements.case\").unwrap();",
+        "        let initial = persisted(&log);",
+        "        assert_eq!(initial[\"outcome\"], \"unfinished\");",
+        "        assert!(initial[\"end_time_ms\"].is_null());"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 536,
+      "line_end": 540,
+      "text": [
+        "        log.active_request = Some((second, Instant::now() - Duration::from_millis(12)));",
+        "        log.finish(\"cancelled\").unwrap();",
+        "        let cancelled = persisted(&log);",
+        "        assert_eq!(cancelled[\"outcome\"], \"cancelled\");",
+        "        assert!(!cancelled[\"end_time_ms\"].is_null());"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 566,
+      "line_end": 570,
+      "text": [
+        "        log.skipped_tool(\"OTHER_MODEL_TEXT\");",
+        "        log.finish(\"completed\").unwrap();",
+        "        let value = persisted(&log);",
+        "        assert_eq!(value[\"tool_call_count\"], 5);",
+        "        assert_eq!(value[\"tool_calls\"][\"list_files\"], 1);"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 594,
+      "line_end": 601,
+      "text": [
+        "        let first = log.begin_request().unwrap();",
+        "        log.end_request(first, 2, None).unwrap();",
+        "        assert!(persisted(&log)[\"inputs\"][0][\"sent_in_request\"].is_null());",
+        "        let retry = log.begin_request().unwrap();",
+        "        log.end_request(retry, 3, Some(&Usage::new())).unwrap();",
+        "        let value = persisted(&log);",
+        "        assert_eq!(value[\"inputs\"][0][\"submitted_in_request\"], first);",
+        "        assert_eq!(value[\"inputs\"][0][\"sent_in_request\"], retry);"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 166,
+      "line_end": 172,
+      "text": [
+        "            }",
+        "            let output = if stdout {",
+        "                habeas::authoring::EvidenceOutput::Stdout",
+        "            } else {",
+        "                habeas::authoring::EvidenceOutput::File",
+        "            };",
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 126,
+      "line_end": 268,
+      "text": [
         "// {impl}`requirements.authoring.invocation`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.configuration.state_location`",
+        "// {impl}`requirements.authoring.read_denial`",
         "pub async fn author_evidence_with_output(",
         "    root: &Path,",
         "    subject: &str,",
@@ -2093,11 +1830,18 @@
         "        Err(_) => \"failed\",",
         "    };",
         "    usage.finish(outcome).map_err(|error| {",
-        "        io::Error::other(format!(",
-        "            \"cannot record usage at {} (evidence written: {}): {error}\",",
-        "            usage.path.display(),",
-        "            usage.record.evidence_written",
-        "        ))",
+        "        let cause = result",
+        "            .as_ref()",
+        "            .err()",
+        "            .map_or(String::new(), |cause| format!(\"{cause}; \"));",
+        "        io::Error::new(",
+        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
+        "            format!(",
+        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
+        "                usage.path.display(),",
+        "                usage.record.evidence_written",
+        "            ),",
+        "        )",
         "    })?;",
         "    result.map_err(|error| {",
         "        io::Error::new(",
@@ -2111,10 +1855,12 @@
         "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.configuration.state_location`",
+        "// {impl}`requirements.authoring.read_denial`",
         "pub(crate) async fn prepare_assessment(",
         "    root: &Path,",
         "    subject: &AuthoringSubject,",
         "    config: &ResolvedAuthoringConfig,",
+        "    mut cancellation: watch::Receiver<Option<&'static str>>,",
         ") -> io::Result<PendingAssessment> {",
         "    let root = fs::canonicalize(root)?;",
         "    let state = config::state_root()?;",
@@ -2126,6 +1872,13 @@
         "    }",
         "    let mut usage = UsageLog::start(&state, &root, &subject.label())?;",
         "    let result = tokio::select! {",
+        "        biased;",
+        "        _ = cancellation.changed() => {",
+        "            Err(io::Error::new(",
+        "                io::ErrorKind::Interrupted,",
+        "                cancellation.borrow().unwrap_or(\"evidence authoring cancelled\"),",
+        "            ))",
+        "        }",
         "        result = configured_record(&root, subject, config, &mut usage) => result,",
         "        signal = tokio::signal::ctrl_c() => {",
         "            match signal {",
@@ -2158,10 +1911,13 @@
         "                \"failed\"",
         "            };",
         "            usage.finish(outcome).map_err(|usage_error| {",
-        "                io::Error::other(format!(",
-        "                    \"{error}; cannot record usage at {}: {usage_error}\",",
-        "                    usage.path.display()",
-        "                ))",
+        "                io::Error::new(",
+        "                    error.kind(),",
+        "                    format!(",
+        "                        \"{error}; cannot record usage at {}: {usage_error}\",",
+        "                        usage.path.display()",
+        "                    ),",
+        "                )",
         "            })?;",
         "            Err(io::Error::new(",
         "                error.kind(),",
@@ -2171,685 +1927,195 @@
         "    }",
         "}",
         "",
-        "// {impl}`requirements.authoring.invocation`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 330,
-      "line_end": 380,
-      "text": [
-        "            .as_str()",
-        "            .unwrap()",
-        "            .contains(\"SECRET_SOURCE_PAYLOAD\")",
-        "    }));",
-        "    assert!(",
-        "        results",
-        "            .iter()",
-        "            .any(|message| message[\"content\"].as_str().unwrap().contains(\"absent.txt\"))",
-        "    );",
-        "",
-        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
-        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));",
-        "    assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
-        "    let inputs = evidence[\"inputs\"].as_array().unwrap();",
-        "    assert!(",
-        "        inputs",
-        "            .iter()",
-        "            .any(|input| input[\"definition\"] == \"terms.readiness\")",
-        "    );",
-        "    let extra = inputs",
-        "        .iter()",
-        "        .filter(|input| input[\"file\"] == \"extra.txt\")",
-        "        .collect::<Vec<_>>();",
-        "    assert_eq!(",
-        "        extra.len(),",
-        "        2,",
-        "        \"repeated delivery is deduplicated in evidence\"",
-        "    );",
-        "    assert!(",
-        "        extra",
-        "            .iter()",
-        "            .any(|input| input[\"line_start\"] == 1 && input[\"line_end\"] == 11)",
-        "    );",
-        "    assert!(",
-        "        extra",
-        "            .iter()",
-        "            .any(|input| input[\"line_start\"] == 10 && input[\"line_end\"] == 12)",
-        "    );",
-        "    assert!(",
-        "        !inputs",
-        "            .iter()",
-        "            .any(|input| input[\"file\"] == \"absent.txt\" || input[\"file\"] == \".\")",
-        "    );",
-        "",
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage[\"outcome\"], \"completed\");",
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
-        "    assert_eq!(usage[\"evidence_written\"], true);",
-        "    assert_eq!(usage[\"request_count\"], 2);",
-        "    assert_eq!(usage[\"tool_call_count\"], 6);",
-        "    assert_eq!(usage[\"tool_calls\"][\"habeas\"], 3);"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 730,
-      "line_end": 780,
-      "text": [
-        "            \"definition\",",
-        "        ] {",
-        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"string\");",
-        "        }",
-        "        for field in [\"line_start\", \"line_end\"] {",
-        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"integer\");",
-        "            assert_eq!(habeas_schema[\"properties\"][field][\"minimum\"], 1);",
-        "        }",
-        "        let judgment_schema = &tool_specs",
-        "            .iter()",
-        "            .find(|tool| tool[\"toolSpec\"][\"name\"] == \"submit_judgment\")",
-        "            .unwrap()[\"toolSpec\"][\"inputSchema\"][\"json\"][\"properties\"][\"determination\"];",
-        "        let outcomes = judgment_schema[\"oneOf\"].as_array().unwrap();",
-        "        assert!(outcomes.iter().any(|outcome| outcome[\"type\"] == \"boolean\"));",
-        "        let fixme = &outcomes",
-        "            .iter()",
-        "            .find(|outcome| outcome[\"type\"] == \"object\")",
-        "            .unwrap()[\"properties\"][\"FIXME\"];",
-        "        assert_eq!(fixme[\"type\"], \"array\");",
-        "        assert_eq!(fixme[\"minItems\"], 1);",
-        "        assert_eq!(fixme[\"items\"][\"type\"], \"string\");",
-        "        assert_eq!(fixme[\"items\"][\"minLength\"], 1);",
-        "        let mut tools = tool_specs",
-        "            .iter()",
-        "            .map(|tool| tool[\"toolSpec\"][\"name\"].as_str().unwrap())",
-        "            .collect::<Vec<_>>();",
-        "        tools.sort();",
-        "        assert_eq!(",
-        "            tools,",
-        "            [\"habeas\", \"list_files\", \"ripgrep\", \"submit_judgment\"]",
-        "        );",
-        "        let evidence: Value =",
-        "            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
-        "        assert_eq!(evidence[\"determination\"], true);",
-        "        assert!(",
-        "            evidence[\"inputs\"]",
-        "                .as_array()",
-        "                .unwrap()",
-        "                .iter()",
-        "                .any(|input| input[\"file\"] == \"extra.txt\"",
-        "                    && input[\"line_start\"] == 1",
-        "                    && input[\"line_end\"] == 2)",
-        "        );",
-        "        let usage = fixture.usage();",
-        "        assert_eq!(usage[\"backend\"], \"bedrock\");",
-        "        assert_eq!(usage[\"model\"], \"fixture-bedrock-model\");",
-        "        assert_eq!(usage[\"tokens\"][\"input\"], 38);",
-        "        assert_eq!(usage[\"tokens\"][\"output\"], 10);",
-        "        assert_eq!(usage[\"request_count\"], 2);",
-        "        assert_eq!(usage[\"tool_calls\"][\"habeas\"], 1);",
-        "        assert_eq!(usage[\"tool_calls\"][\"submit_judgment\"], 1);"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 36,
-      "line_end": 40,
-      "text": [
-        "",
-        "    // {test}`requirements.authoring.provider`",
-        "    // {test}`requirements.authoring.persistence`",
-        "    fn start_with(responses: Vec<Value>, mut before_reply: impl FnMut() + Send + 'static) -> Self {",
-        "        let listener = TcpListener::bind((\"127.0.0.1\", 0)).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 111,
-      "line_end": 115,
-      "text": [
-        "impl Fixture {",
-        "    // {test}`requirements.authoring.complete_initial_bundle`",
-        "    // {test}`requirements.authoring.persistence`",
-        "    // {test}`requirements.authoring.configuration`",
-        "    fn new(endpoint: &str) -> Self {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 420,
-      "line_end": 424,
-      "text": [
-        "",
-        "// {test}`requirements.authoring.negative_assessment`",
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.ci.fixme_with_unacknowledged_gap`",
-        "#[test]"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 458,
-      "line_end": 462,
-      "text": [
-        "",
-        "// {test}`requirements.authoring.invocation`",
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.authoring.delivered_inputs`",
-        "// {test}`requirements.authoring.usage_storage`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 783,
-      "line_end": 787,
-      "text": [
-        "}",
-        "",
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 101,
-      "line_end": 105,
-      "text": [
-        "// {test}`requirements.authoring.source_tools`",
-        "// {test}`requirements.authoring.submission`",
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 94,
-      "line_end": 107,
-      "text": [
-        "                continue;",
-        "            }",
-        "        };",
-        "        let result = result.and_then(|pending| {",
-        "            // This collector is the sole writer: functions in the same source",
-        "            // file can finish concurrently without replacing each other's entries.",
-        "            match write_record(&root, &pending) {",
-        "                Ok(path) => pending.persisted(path),",
-        "                Err(error) => Err(pending.failed(error)),",
-        "            }",
-        "        });",
-        "        match result {",
-        "            Ok(assessment) => {",
-        "                eprintln!("
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 131,
-      "line_end": 143,
-      "text": [
-        "    Ok(outcome)",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.authoring.function_attestations`",
+        "// {impl}`requirements.authoring.invocation`",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.persistence`",
-        "fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {",
-        "    let (path, record) = match &pending.subject {",
-        "        AuthoringSubject::Definition(name) => (",
-        "            root.join(\"evidence\").join(format!(\"{name}.json\")),",
-        "            pending.record.clone(),",
-        "        ),",
-        "        AuthoringSubject::RustFunction {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 63,
-      "line_end": 75,
-      "text": [
-        "    outcome: AuthoringOutcome,",
-        "    usage: UsageLog,",
-        "}",
-        "",
-        "impl PendingAssessment {",
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {",
-        "        self.usage.record.evidence_written = true;",
-        "        self.outcome.evidence_path = Some(path);",
-        "        self.usage.finish(\"completed\").map_err(|error| {"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 353,
-      "line_end": 365,
-      "text": [
-        "mod tests {",
-        "    use super::*;",
-        "    use serde_json::json;",
-        "    use std::time::Duration;",
-        "",
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    fn persisted(log: &UsageLog) -> Value {",
-        "        serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.usage_inputs`",
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    #[test]"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 376,
-      "line_end": 405,
-      "text": [
-        "            \"matches\": [\"private.match.a\", \"private.match.b\"],",
-        "            \"text\": [\"PRIVATE_REQUIREMENT_TEXT\"]",
-        "        });",
-        "        log.prepared(\"mandatory\", &[file.clone(), requirements]);",
-        "        log.prepared(\"habeas\", &[file]);",
-        "        log.save().unwrap();",
-        "        let prepared = persisted(&log);",
-        "        assert_eq!(prepared[\"inputs\"][0][\"bytes\"], \"λ\\nDO_NOT_LOG_SOURCE\".len());",
-        "        assert_eq!(prepared[\"inputs\"][0][\"lines\"], 2);",
-        "        assert_eq!(prepared[\"inputs\"][1][\"components\"], 2);",
-        "        assert_eq!(prepared[\"inputs\"][0][\"unique\"], true);",
-        "        assert_eq!(prepared[\"inputs\"][2][\"unique\"], false);",
-        "        assert_eq!(prepared[\"inputs\"][2][\"origin\"], \"habeas\");",
-        "        assert!(prepared[\"inputs\"][0][\"submitted_in_request\"].is_null());",
-        "        assert!(prepared[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        let index = log.begin_request().unwrap();",
-        "        let submitted = persisted(&log);",
-        "        assert_eq!(submitted[\"inputs\"][0][\"submitted_in_request\"], index);",
-        "        assert!(submitted[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
-        "        log.record.determination = Some(\"FIXME\".into());",
-        "        log.record.evidence_written = true;",
-        "        log.finish(\"completed\").unwrap();",
-        "        let sent = persisted(&log);",
-        "        assert_eq!(sent[\"inputs\"][0][\"sent_in_request\"], index);",
-        "        assert_eq!(sent[\"requests\"][0][\"outcome\"], \"completed\");",
-        "        assert_eq!(sent[\"outcome\"], \"completed\");",
-        "        assert_eq!(sent[\"determination\"], \"FIXME\");",
-        "        assert_eq!(sent[\"evidence_written\"], true);",
-        "        assert!(sent[\"tokens\"][\"input\"].is_null());"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 431,
-      "line_end": 457,
-      "text": [
-        "            .cached_input_tokens(30)",
-        "            .cache_creation_input_tokens(10)",
-        "            .reasoning_tokens(5);",
-        "        let first = log.begin_request().unwrap();",
-        "        log.end_request(first, 3, Some(&measured)).unwrap();",
-        "        let second = log.begin_request().unwrap();",
-        "        let in_flight = persisted(&log);",
-        "        assert_eq!(in_flight[\"tokens\"][\"complete\"], false);",
-        "        assert_eq!(in_flight[\"tokens\"][\"input\"], 100);",
-        "        log.end_request(second, 4, Some(&measured)).unwrap();",
-        "        let complete = persisted(&log);",
-        "        assert_eq!(complete[\"tokens\"][\"input\"], 200);",
-        "        assert_eq!(complete[\"tokens\"][\"output\"], 40);",
-        "        assert_eq!(complete[\"tokens\"][\"cached_input\"], 60);",
-        "        assert_eq!(complete[\"tokens\"][\"cache_creation_input\"], 20);",
-        "        assert_eq!(complete[\"tokens\"][\"reasoning\"], 10);",
-        "        assert_eq!(complete[\"tokens\"][\"complete\"], true);",
-        "        let third = log.begin_request().unwrap();",
-        "        log.end_request(third, 2, None).unwrap();",
-        "        log.finish(\"failed\").unwrap();",
-        "        let failed = persisted(&log);",
-        "        assert_eq!(failed[\"request_count\"], 3);",
-        "        assert_eq!(failed[\"requests\"][2][\"outcome\"], \"failed\");",
-        "        assert_eq!(failed[\"outcome\"], \"failed\");",
-        "        assert_eq!(failed[\"requests\"][0][\"tokens\"][\"input\"], 100);",
-        "        assert!(failed[\"requests\"][2][\"tokens\"][\"input\"].is_null());",
-        "        assert_eq!(failed[\"tokens\"][\"input\"], 200);"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 469,
-      "line_end": 486,
-      "text": [
-        "        log.end_request(",
-        "            first,",
-        "            2,",
-        "            Some(&Usage::new().input_tokens(10).output_tokens(3)),",
-        "        )",
-        "        .unwrap();",
-        "        let known = persisted(&log);",
-        "        assert_eq!(known[\"tokens\"][\"complete\"], true);",
-        "        assert!(known[\"tokens\"][\"cached_input\"].is_null());",
-        "        let failed = log.begin_request().unwrap();",
-        "        log.end_request(failed, 1, None).unwrap();",
-        "        let partial = persisted(&log);",
-        "        assert_eq!(partial[\"tokens\"][\"input\"], 10);",
-        "        assert_eq!(partial[\"tokens\"][\"output\"], 3);",
-        "        assert_eq!(partial[\"tokens\"][\"complete\"], false);",
-        "        assert!(partial[\"requests\"][failed][\"tokens\"][\"input\"].is_null());",
-        "        assert!(partial[\"tokens\"][\"cached_input\"].is_null());",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 504,
-      "line_end": 516,
-      "text": [
-        "                        .input_tokens(5)",
-        "                        .output_tokens(2)",
-        "                        .cached_input_tokens(0),",
-        "                ),",
-        "            )",
-        "            .unwrap();",
-        "        let mixed = persisted(&optional);",
-        "        assert_eq!(mixed[\"tokens\"][\"input\"], 15);",
-        "        assert_eq!(mixed[\"tokens\"][\"output\"], 5);",
-        "        assert_eq!(mixed[\"tokens\"][\"cached_input\"], 0);",
-        "        assert!(mixed[\"tokens\"][\"reasoning\"].is_null());",
-        "        assert_eq!(mixed[\"tokens\"][\"complete\"], false);",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 519,
-      "line_end": 544,
-      "text": [
-        "    // {test}`requirements.authoring.usage_requests`",
-        "    #[test]",
-        "    fn cancelled_request_persists_elapsed_time_and_incomplete_totals() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log =",
-        "            UsageLog::start(state.path(), Path::new(\"/project\"), \"requirements.case\").unwrap();",
-        "        let initial = persisted(&log);",
-        "        assert_eq!(initial[\"outcome\"], \"unfinished\");",
-        "        assert!(initial[\"end_time_ms\"].is_null());",
-        "        let first = log.begin_request().unwrap();",
-        "        log.end_request(",
-        "            first,",
-        "            2,",
-        "            Some(&Usage::new().input_tokens(2).output_tokens(3)),",
-        "        )",
-        "        .unwrap();",
-        "        let second = log.begin_request().unwrap();",
-        "        log.active_request = Some((second, Instant::now() - Duration::from_millis(12)));",
-        "        log.finish(\"cancelled\").unwrap();",
-        "        let cancelled = persisted(&log);",
-        "        assert_eq!(cancelled[\"outcome\"], \"cancelled\");",
-        "        assert!(!cancelled[\"end_time_ms\"].is_null());",
-        "        assert_eq!(cancelled[\"requests\"][second][\"outcome\"], \"cancelled\");",
-        "        assert!(",
-        "            cancelled[\"requests\"][second][\"elapsed_ms\"]",
-        "                .as_u64()"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 562,
-      "line_end": 574,
-      "text": [
-        "        log.tool(\"list_files\", false);",
-        "        log.tool(\"habeas\", true);",
-        "        log.skipped_tool(\"ripgrep\");",
-        "        log.tool(\"MODEL_TEXT_SHOULD_NOT_APPEAR\", true);",
-        "        log.skipped_tool(\"OTHER_MODEL_TEXT\");",
-        "        log.finish(\"completed\").unwrap();",
-        "        let value = persisted(&log);",
-        "        assert_eq!(value[\"tool_call_count\"], 5);",
-        "        assert_eq!(value[\"tool_calls\"][\"list_files\"], 1);",
-        "        assert_eq!(value[\"tool_failures\"][\"habeas\"], 1);",
-        "        assert_eq!(value[\"tool_skipped\"][\"ripgrep\"], 1);",
-        "        assert_eq!(value[\"tool_calls\"][\"unknown\"], 2);",
-        "        assert_eq!(value[\"tool_failures\"][\"unknown\"], 1);"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 590,
-      "line_end": 604,
-      "text": [
-        "        log.prepared(",
-        "            \"mandatory\",",
-        "            &[json!({\"file\": \"source\", \"text\": [\"source content\"]})],",
-        "        );",
-        "        let first = log.begin_request().unwrap();",
-        "        log.end_request(first, 2, None).unwrap();",
-        "        assert!(persisted(&log)[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        let retry = log.begin_request().unwrap();",
-        "        log.end_request(retry, 3, Some(&Usage::new())).unwrap();",
-        "        let value = persisted(&log);",
-        "        assert_eq!(value[\"inputs\"][0][\"submitted_in_request\"], first);",
-        "        assert_eq!(value[\"inputs\"][0][\"sent_in_request\"], retry);",
-        "        assert_eq!(value[\"request_count\"], 2);",
-        "    }",
-        "}"
+        "async fn configured_assessment(",
+        "    root: &Path,"
       ]
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 283,
-      "line_end": 285,
+      "line_start": 362,
+      "line_end": 362,
       "text": [
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"author\", \"--all\", \"--config\", \"mock\"]);",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 325,
-      "line_end": 327,
-      "text": [
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
-        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 332,
-      "line_end": 334,
-      "text": [
-        "    fs::remove_file(&fixture.config).unwrap();",
-        "    let no_config = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 346,
-      "line_end": 348,
-      "text": [
-        "    fs::write(source, changed).unwrap();",
-        "    let updated = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 368,
-      "line_end": 370,
-      "text": [
-        "    let fixture = Fixture::new(&server.endpoint, None);",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 384,
-      "line_end": 386,
-      "text": [
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(!output.status.success());"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 438,
-      "line_end": 440,
-      "text": [
-        "    let fixture = Fixture::new(&server.endpoint, None);",
-        "    let output = fixture.run(&[\"author\", \"--all\", \"--stdout\"]);",
-        "    assert!(!output.status.success());"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 463,
-      "line_end": 465,
-      "text": [
-        "        fs::remove_file(&fixture.config).unwrap();",
-        "        let output = fixture.run(&[\"author\", \"--all\"]);",
-        "        assert!(!output.status.success());"
+        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 590,
-      "line_end": 592,
+      "line_start": 274,
+      "line_end": 274,
       "text": [
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!("
+        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 341,
+      "line_end": 341,
+      "text": [
+        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 376,
+      "line_end": 376,
+      "text": [
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 581,
+      "line_end": 581,
+      "text": [
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 663,
+      "line_end": 663,
+      "text": [
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 860,
+      "line_end": 860,
+      "text": [
+        "            .unwrap()[\"properties\"][\"FIXME\"];"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 909,
+      "line_end": 909,
+      "text": [
+        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\""
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 928,
+      "line_end": 928,
+      "text": [
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 148,
-      "line_end": 150,
+      "line_start": 184,
+      "line_end": 184,
       "text": [
-        "            \"Beta MUST work.\",",
-        "            vec![\"#123\", \"#45\", \"Rust-Lang/rust#456\", \"An unrelated note\"],",
-        "        ),"
+        "                \"determination\": {\"FIXME\": references},"
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 245,
-      "line_end": 247,
+      "line_start": 298,
+      "line_end": 298,
       "text": [
-        "        assert!(all.contains(summary), \"{all}\");",
-        "    }",
-        "}"
+        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")"
       ]
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 268,
-      "line_end": 270,
+      "file": "tests/outcomes.rs",
+      "line_start": 59,
+      "line_end": 59,
       "text": [
-        "        \"An unrelated note\",",
-        "        \"&lt;script&gt;alert(1)&lt;/script&gt;\",",
-        "    ] {"
+        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },"
       ]
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 289,
-      "line_end": 291,
+      "file": "tests/outcomes.rs",
+      "line_start": 91,
+      "line_end": 92,
       "text": [
-        "    ] {",
-        "        assert!(!filtered.contains(excluded), \"{filtered}\");",
-        "    }"
+        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
+        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),"
       ]
     },
     {
-      "file": "src/main.rs",
-      "line_start": 120,
-      "line_end": 200,
+      "file": "tests/outcomes.rs",
+      "line_start": 98,
+      "line_end": 98,
       "text": [
-        "            let root = setup::project_root()?;",
-        "            io::stdout()",
-        "                .lock()",
-        "                .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.authoring.invocation`",
-        "        // {impl}`requirements.authoring.batch`",
-        "        // {impl}`requirements.authoring.concurrency`",
-        "        Command::Author {",
-        "            subject,",
-        "            all,",
-        "            config,",
-        "            stdout,",
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            // Tokio's fixed worker pool is shared by all async assessments.",
-        "            let runtime = tokio::runtime::Runtime::new()?;",
-        "            if all {",
-        "                let outcome =",
-        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;",
-        "                println!(",
-        "                    \"{} authored; {} unchanged; {} failed\",",
-        "                    outcome.completed.len(),",
-        "                    outcome.unchanged,",
-        "                    outcome.failures.len()",
-        "                );",
-        "                if !outcome.failures.is_empty() {",
-        "                    return Err(io::Error::other(",
-        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
-        "                    )",
-        "                    .into());",
-        "                }",
-        "                return Ok(());",
-        "            }",
-        "            let output = if stdout {",
-        "                habeas::authoring::EvidenceOutput::Stdout",
-        "            } else {",
-        "                habeas::authoring::EvidenceOutput::File",
-        "            };",
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
-        "                &root,",
-        "                &subject.expect(\"clap requires a subject or --all\"),",
-        "                config.as_deref(),",
-        "                output,",
-        "            ))?;",
-        "            let summary = format!(",
-        "                \"{}: {} / {} — {}\",",
-        "                outcome.subject,",
-        "                outcome.backend,",
-        "                outcome.model,",
-        "                outcome.determination.kind(),",
-        "            );",
-        "            if let Some(path) = outcome.evidence_path {",
-        "                println!(",
-        "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
-        "                    path.display(),",
-        "                    outcome.usage_path.display()",
-        "                );",
-        "            } else {",
-        "                eprintln!(",
-        "                    \"{summary}\\nEvidence: stdout\\nUsage: {}\",",
-        "                    outcome.usage_path.display()",
-        "                );",
-        "            }",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.integration.symposium_setup_hook`",
-        "        Command::Hook {",
-        "            command: HookCommand::SessionStart,",
-        "        } => hook::session_start(),",
-        "        // {impl}`requirements.cli.add_input`",
-        "        Command::AddInput {",
-        "            for_requirement,",
-        "            for_example,",
-        "            for_rust_item,",
-        "            file_range,",
-        "            rust_item,",
-        "            requirements,",
-        "        } => {",
-        "            let root = setup::project_root()?;"
+        "        json!(\"FIXME\"),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 101,
+      "line_end": 106,
+      "text": [
+        "        json!({ \"FIXME\": [] }),",
+        "        json!({ \"FIXME\": [\"\"] }),",
+        "        json!({ \"FIXME\": [\"   \"] }),",
+        "        json!({ \"FIXME\": [\"#125\", 125] }),",
+        "        json!({ \"FIXME\": \"#125\" }),",
+        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 152,
+      "line_end": 152,
+      "text": [
+        "            json!({ \"FIXME\": [\"#125\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 156,
+      "line_end": 156,
+      "text": [
+        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 182,
+      "line_end": 182,
+      "text": [
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 265,
+      "line_end": 265,
+      "text": [
+        "            \"determination\": {\"FIXME\": [\"#125\"]},"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 300,
+      "line_end": 300,
+      "text": [
+        "        assert!(status.contains(\"FIXME\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 328,
+      "line_end": 328,
+      "text": [
+        "    assert!(index.content.contains(\"FIXME\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 337,
+      "line_end": 337,
+      "text": [
+        "    assert!(detail.content.contains(\"evidence-FIXME\"));"
       ]
     }
   ]

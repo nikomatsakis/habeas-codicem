@@ -9,7 +9,7 @@ Every JSON file directly under `evidence/` MUST correspond to a declared require
 :::
 
 :::{req} schema
-A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST be repository-relative, line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
+A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. Line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
 :::
 
 :::{req} requirement_text
@@ -109,7 +109,7 @@ Validation MUST report a requirement or example with a missing closing fence or 
 :::
 
 :::{req} input_containment
-Every project file named directly by an evidence input or resolved from its selector MUST resolve within the project root, including when its path contains symlinks. Validation MUST report a missing or unreadable file and a path that resolves outside the project.
+Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`
 :::
 
 ## Existing evidence inputs used by authoring

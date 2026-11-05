@@ -100,10 +100,49 @@ Ollama server. The server can run on another machine; Habeas does not need a GPU
 {cite}`requirements.authoring.text_search`
 
 In a Git worktree, stage new source files with `git add` before authoring. The
-model can read unstaged edits to tracked files. Reads exclude untracked files,
+model can read unstaged edits to tracked files. By default, reads exclude untracked files,
 generated `evidence/` content, and paths outside the project, including symlink
 aliases. Standalone projects use the same containment rules without requiring Git.
+An explicitly requested excluded path aborts that assessment and reports an error
+to the caller; it is not sent back to the model to work around. In a batch, other
+assessments continue and successful writes are retained. The command exits
+unsuccessfully after the batch finishes.
 {cite}`requirements.authoring.source_tools`
+{cite}`requirements.authoring.read_denial`
+
+The nearest enclosing `habeas.toml` supplies workspace settings. Relative paths
+in this file use its directory as their base. This complete example selects a
+user configuration named `cloud` and allows a generated directory except for one
+subtree:
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[evidence]
+allow = ["generated"]
+disallow = ["generated/private"]
+```
+
+An allow overrides all defaults; disallow wins if both match. Paths name literal
+files or directory subtrees, not globs. Absolute paths can allow external inputs.
+Workspace files can also define `[authoring.configs.<name>]` records, which
+replace same-named user records as a whole. No ancestor workspace files are
+merged. Selection order is `--config`, the user's per-project selection, workspace
+default, then user default.
+{cite}`requirements.configuration.workspace_location`
+{cite}`requirements.configuration.evidence_paths`
+{cite}`requirements.authoring.configuration_precedence`
+
+Existing Cargo build-script output directories are automatically allowed when
+discoverable from the current build layout, including external build directories.
+No build is run to find or recreate them. Root listings expose discovered output
+directories, and workspace disallow rules still win. For an undiscovered layout,
+add its output directory to `allow`. CI must generate the recorded paths and
+contents before validating their evidence.
+{cite}`requirements.authoring.generated_inputs`
 
 Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
 `$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or
@@ -136,8 +175,11 @@ Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,
 `http://localhost:11434`; add `endpoint = "http://workstation:11434"` to its table
 for a remote server, replacing `workstation` with that server's host name. For
 authentication, add `api_key_env = "OLLAMA_API_KEY"` and set that variable outside
-the file. Credentials belong to AWS's credential sources or the named environment
-variable. {cite}`requirements.authoring.configuration_precedence`
+the file. Profiles and environment references are preferred. Literal Bedrock
+`credentials` or Ollama `api_key` values are supported but not recommended in
+workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).
+{cite}`requirements.authoring.configuration_precedence`
+{cite}`requirements.authoring.credentials`
 
 Run from the project:
 

@@ -1,7 +1,7 @@
 {
   "requirement": "An mdBook chapter MAY declare a named definition using a fenced `{definition}` directive. Definitions MUST use the same chapter-qualified names, identifier rules, fence rules, and nonempty-body rules as requirements and examples. Names MUST be unique across all three kinds.\n\nEach definition MUST declare exactly one nonempty `:phrase:` option before its explanatory body. The phrase MUST be interpreted as plain text. Definitions MUST NOT require their own evidence records or determinations.",
   "determination": true,
-  "rationale": "**Verdict:** the sources implement the requirement and the tests cover its main points. The gaps below are small and covered by shared code paths.\n\n**Implementation**\n- `definition_blocks` (src/lib.rs) recognises `{definition}` next to `{req}` and `{example}`, as `DefinitionKind::Term`. It uses the same colon-fence matching, closing-fence search, and `valid_name` check as the other two kinds.\n- `collect_definitions` (src/evidence.rs) qualifies names with the chapter namespace and reports invalid names.\n  - It reports a missing closing fence and an empty body for every kind.\n  - It stores all three kinds in one `BTreeMap`, so duplicate names across kinds are reported as \"duplicate … first declared at …\".\n  - For terms it calls `terms::declaration`.\n- `terms::declaration` (src/terms.rs) requires exactly one nonempty `:phrase:` option on the first line, before a nonempty body. It rejects a missing phrase, an empty phrase, a body-less definition, and a duplicate `:phrase:` line.\n- The phrase is rendered as plain text. `replace_definitions` in src/lib.rs calls `terms::escaped_phrase`, which escapes Markdown and HTML metacharacters.\n- Definitions need no evidence or determination. `inspect_repository` excludes `DefinitionKind::Term` from the \"missing evidence\" and \"no matching requirement or example\" checks. `validate_references` also skips terms when looking for evidence files.\n- `noun()` and `badge()` supply the \"definition\" labels used in diagnostics and rendering.\n\n**Tests (tests/definitions.rs)**\n- `invalid_declarations_and_reference_targets_are_reported` covers these cases:\n  - a body with no `:phrase:`;\n  - an empty phrase;\n  - duplicate `:phrase:` options;\n  - a phrase with no body;\n  - a missing closing fence;\n  - a definition that duplicates a requirement name, which exercises uniqueness across kinds.\n- The `fixture()` helper declares valid definitions `glossary.a` and `glossary.b`. They are chapter-qualified and have no evidence files.\n  - `cyclic_dependencies_are_captured_once_and_changes_require_review` asserts that `validate_repository` returns no errors for this fixture. That shows definitions need no evidence records.\n- `phrases_are_plain_links_and_markdown_literals_are_preserved` checks that the phrase is rendered as escaped plain text. It uses `*alpha* & <beta>` and asserts the output contains `&#42;alpha&#42; &amp; &lt;beta&gt;`.\n\n**Minor gaps**\n- There is no definition-specific test for invalid identifiers. That code is shared with requirements and examples and covered by other identifier tests.\n- Nothing tests a definition whose body is empty after a valid phrase except the \"phrase only\" case. That case does hit the empty-body path.",
+  "rationale": "**Verdict:** the sources meet `requirements.definitions.declaration`. There is one small gap in test coverage, noted at the end.\n\n**Implementation**\n- `definition_blocks` in `src/lib.rs` parses `{definition}` fences. It uses the same colon-fence matching, `valid_name` identifier check and code-block protection as `{req}` and `{example}`. The definition kind is `DefinitionKind::Term`.\n- `collect_definitions` in `src/evidence.rs` resolves chapter-qualified names with `full_requirement_name`. It reports invalid names, missing closing fences and empty bodies for all three kinds, using `DefinitionKind::noun` to say \"definition\".\n- All three kinds go into one `definitions` map. A name used twice produces \"duplicate … first declared at …\", whatever the kinds are.\n- `terms::declaration` in `src/terms.rs` enforces the `:phrase:` rules:\n  - It requires the first line to be a nonempty `:phrase:` option.\n  - It requires a nonempty explanatory body.\n  - It rejects a second `:phrase:` line at the start of the body.\n- Phrases are treated as plain text. `replace_definitions` renders the phrase through `terms::escaped_phrase`, which escapes Markdown and HTML metacharacters.\n- Definitions need no evidence records or determinations. `inspect_repository` excludes `DefinitionKind::Term` from the missing-evidence check, and an evidence file named after a term is reported as having no matching requirement or example. `validate_references` also skips terms.\n\n**Tests** (`tests/definitions.rs`, citing `{test}` on the requirement)\n- `invalid_declarations_and_reference_targets_are_reported` covers these cases:\n  - a body with no `:phrase:`;\n  - an empty phrase;\n  - duplicate `:phrase:` options;\n  - a phrase with no body;\n  - a missing closing fence;\n  - a `{req}` and a `{definition}` sharing one name, which is reported as a duplicate.\n- `fixture` declares valid definitions. The `validate_repository` assertions that use it (for example `cyclic_dependencies_are_captured_once_and_changes_require_review`) assert no errors, although no evidence files exist for those definitions. This shows terms need no evidence.\n- `phrases_are_plain_links_and_markdown_literals_are_preserved` checks that a phrase like `*alpha* & <beta>` is escaped and rendered as plain text.\n\n**Gap:** there is no definition-specific test for invalid identifier names. That path is shared code with requirements and examples, so I don't count this as a gap.",
   "inputs": [
     {
       "requirements": "requirements.definitions.declaration",
@@ -26,9 +26,15 @@
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
         "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
         "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
         "    let mut errors = Vec::new();",
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
+        "        errors.push(error.to_string());",
+        "    }",
         "    let md_root = book_source_dir(&root, &mut errors);",
         "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
         "    let mut discovery_errors = errors.clone();",
@@ -1137,7 +1143,7 @@
       "line_start": 203,
       "line_end": 203,
       "text": [
-        "    root.join(relative)"
+        "            .components()"
       ]
     },
     {
@@ -1145,7 +1151,7 @@
       "line_start": 903,
       "line_end": 903,
       "text": [
-        "}"
+        "    errors: &mut Vec<String>,"
       ]
     },
     {
@@ -1374,6 +1380,16 @@
         "    }",
         "    output",
         "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 548,
+      "line_end": 550,
+      "text": [
+        "        assert!(",
+        "            String::from_utf8_lossy(&invalid.stderr).contains(\"invalid definition glob\"),",
+        "            \"{command}: {invalid:?}\""
       ]
     }
   ]

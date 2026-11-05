@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -47,14 +48,20 @@ impl AssessmentSources {
     // {impl}`requirements.references.authoring_inputs`
     // {impl}`requirements.definitions.authoring_inputs`
     // {impl}`requirements.ci.authoring_inputs`
-    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {
-        let root = fs::canonicalize(root).map_err(|error| format!("project root: {error}"))?;
+    // {impl}`requirements.authoring.source_tools`
+    // {impl}`requirements.authoring.read_denial`
+    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
+        let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
-        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;
+        let definitions = load_definitions(&root)?;
         let subject = definitions
             .get(subject_name)
             .filter(|definition| definition.kind != DefinitionKind::Term)
-            .ok_or_else(|| format!("{subject_name}: no matching requirement or named example"))?;
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "{subject_name}: no matching requirement or named example"
+                ))
+            })?;
         let mut selectors = vec![InputSelector::Requirements {
             requirements: subject_name.to_owned(),
         }];
@@ -67,10 +74,10 @@ impl AssessmentSources {
                 .get(reference.name)
                 .is_some_and(|definition| definition.kind != DefinitionKind::Term)
             {
-                return Err(format!(
+                return Err(io::Error::other(format!(
                     "{subject_name}: referenced subject {} does not exist",
                     reference.name
-                ));
+                )));
             }
             insert_selector(
                 &mut selectors,
@@ -83,11 +90,12 @@ impl AssessmentSources {
         let mut errors = Vec::new();
         let references = collect_references(&root, &mut errors);
         if !errors.is_empty() {
-            return Err(errors.join("\n"));
+            return Err(io::Error::other(errors.join("\n")));
         }
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name && reference.kind != ReferenceKind::Term
         }) {
+            access.file(&root, &reference.file)?;
             insert_selector(
                 &mut selectors,
                 reference_selector(&root, &definitions, reference)?,
@@ -97,34 +105,40 @@ impl AssessmentSources {
         let evidence_path = root.join("evidence").join(format!("{subject_name}.json"));
         match fs::read_to_string(&evidence_path) {
             Ok(content) => {
-                let evidence: Value = serde_json::from_str(&content)
-                    .map_err(|error| format!("{}: {error}", evidence_path.display()))?;
+                let evidence: Value = serde_json::from_str(&content).map_err(|error| {
+                    io::Error::other(format!("{}: {error}", evidence_path.display()))
+                })?;
                 let inputs = evidence
                     .get("inputs")
                     .and_then(Value::as_array)
                     .ok_or_else(|| {
-                        format!(
+                        io::Error::other(format!(
                             "{}: existing evidence inputs must be an array",
                             evidence_path.display()
-                        )
+                        ))
                     })?;
                 for (index, input) in inputs.iter().enumerate() {
                     let selector = InputSelector::from_input(input).ok_or_else(|| {
-                        format!(
+                        io::Error::other(format!(
                             "{}: inputs[{index}] has no resolvable selector",
                             evidence_path.display()
-                        )
+                        ))
                     })?;
                     insert_selector(&mut selectors, selector);
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", evidence_path.display())),
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", evidence_path.display()),
+                ));
+            }
         }
 
         let mut mandatory = Vec::new();
         for selector in selectors {
-            if !generated_evidence_selector(&root, &selector) {
+            if !generated_evidence_selector(&root, &access, &selector) {
                 mandatory.push(source_input(&root, &access, &definitions, &selector)?);
             }
         }
@@ -156,21 +170,29 @@ impl AssessmentSources {
     // {impl}`requirements.ci.authoring_inputs`
     // {impl}`requirements.references.rust_function_attestations`
     // {impl}`requirements.definitions.authoring_inputs`
+    // {impl}`requirements.authoring.source_tools`
+    // {impl}`requirements.authoring.read_denial`
     pub(crate) fn prepare_function(
         root: &Path,
         rust_file: &str,
         rust_item: &str,
-    ) -> Result<Self, String> {
-        let root = fs::canonicalize(root).map_err(|error| format!("project root: {error}"))?;
+    ) -> io::Result<Self> {
+        let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
-        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;
+        let definitions = load_definitions(&root)?;
         access.file(&root, Path::new(rust_file))?;
-        let (_, source) = read_project_file(&root, rust_file)?;
+        let (_, source) = read_project_file(&root, rust_file).map_err(io::Error::other)?;
         let (_, citations) = crate::rust_items::function_citations(&source, &definitions)
-            .map_err(|error| format!("{rust_file}: cannot parse Rust source: {error}"))?
+            .map_err(|error| {
+                io::Error::other(format!("{rust_file}: cannot parse Rust source: {error}"))
+            })?
             .into_iter()
             .find(|(item, _)| item.selector == rust_item)
-            .ok_or_else(|| format!("{rust_file}: no function matches Rust item {rust_item:?}"))?;
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "{rust_file}: no function matches Rust item {rust_item:?}"
+                ))
+            })?;
         let mut selectors = vec![
             InputSelector::RustItem {
                 rust_file: rust_file.to_owned(),
@@ -184,34 +206,45 @@ impl AssessmentSources {
         match fs::read_to_string(&path) {
             Ok(content) => {
                 let sidecar: Value = serde_json::from_str(&content)
-                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
                 let functions = sidecar["functions"].as_array().ok_or_else(|| {
-                    format!("{}: existing functions must be an array", path.display())
+                    io::Error::other(format!(
+                        "{}: existing functions must be an array",
+                        path.display()
+                    ))
                 })?;
                 if let Some(entry) = functions
                     .iter()
                     .find(|entry| entry["rust_item"] == rust_item)
                 {
                     let inputs = entry["inputs"].as_array().ok_or_else(|| {
-                        format!("{}: existing inputs must be an array", path.display())
+                        io::Error::other(format!(
+                            "{}: existing inputs must be an array",
+                            path.display()
+                        ))
                     })?;
                     for (index, input) in inputs.iter().enumerate() {
                         let selector = InputSelector::from_input(input).ok_or_else(|| {
-                            format!(
+                            io::Error::other(format!(
                                 "{}: inputs[{index}] has no resolvable selector",
                                 path.display()
-                            )
+                            ))
                         })?;
                         insert_selector(&mut selectors, selector);
                     }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", path.display())),
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", path.display()),
+                ));
+            }
         }
         let mut mandatory = Vec::new();
         for selector in selectors {
-            if !generated_evidence_selector(&root, &selector) {
+            if !generated_evidence_selector(&root, &access, &selector) {
                 mandatory.push(source_input(&root, &access, &definitions, &selector)?);
             }
         }
@@ -258,16 +291,16 @@ impl AssessmentSources {
 
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.text_search`
-    pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {
-        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;
+    pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {
+        let definitions = load_definitions(&self.root)?;
         source_input(&self.root, &self.access, &definitions, selector)
     }
 
     // {impl}`requirements.definitions.authoring_inputs`
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.text_search`
-    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {
-        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;
+    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> io::Result<Vec<Value>> {
+        let definitions = load_definitions(&self.root)?;
         Ok(
             definition_inputs(&self.root, &self.access, &definitions, inputs, None)?
                 .into_iter()
@@ -293,12 +326,17 @@ pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.ci.authoring_inputs`
-fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {
+// {impl}`requirements.configuration.evidence_paths`
+fn generated_evidence_selector(
+    root: &Path,
+    access: &SourceAccess,
+    selector: &InputSelector,
+) -> bool {
     match selector {
         InputSelector::FileRange { file, .. }
         | InputSelector::RustItem {
             rust_file: file, ..
-        } => generated_evidence_path(root, Path::new(file)),
+        } => access.omit_generated_evidence(root, Path::new(file)),
         InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,
     }
 }
@@ -307,20 +345,39 @@ fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.ci.authoring_inputs`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.read_denial`
 fn source_input(
     root: &Path,
     access: &SourceAccess,
     definitions: &BTreeMap<String, Declaration>,
     selector: &InputSelector,
-) -> Result<Value, String> {
-    if let InputSelector::FileRange { file, .. }
-    | InputSelector::RustItem {
-        rust_file: file, ..
-    } = selector
-    {
-        access.file(root, Path::new(file))?;
+) -> io::Result<Value> {
+    match selector {
+        InputSelector::FileRange { file, .. }
+        | InputSelector::RustItem {
+            rust_file: file, ..
+        } => {
+            access.file(root, Path::new(file))?;
+        }
+        InputSelector::Definition { definition } => {
+            if let Some(definition) = definitions.get(definition) {
+                access.file(root, Path::new(&definition.file))?;
+            }
+        }
+        InputSelector::Requirements { requirements } => {
+            for (name, definition) in definitions {
+                if definition.kind != DefinitionKind::Term
+                    && crate::definition_glob::matches(requirements, name)
+                {
+                    access.file(root, Path::new(&definition.file))?;
+                }
+            }
+        }
     }
-    let resolved = selector.resolve(root, definitions)?;
+    let resolved = selector
+        .resolve(root, definitions)
+        .map_err(io::Error::other)?;
     for range in &resolved.ranges {
         access.file(root, Path::new(&range.file))?;
     }
@@ -339,22 +396,25 @@ fn reference_selector(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     reference: &SourceReference,
-) -> Result<InputSelector, String> {
+) -> io::Result<InputSelector> {
     let file = reference
         .file
         .strip_prefix(root)
-        .map_err(|_| "reference is outside project root".to_owned())?
+        .map_err(|_| io::Error::other("reference is outside project root"))?
         .to_str()
-        .ok_or_else(|| "reference path is not UTF-8".to_owned())?
+        .ok_or_else(|| io::Error::other("reference path is not UTF-8"))?
         .to_owned();
     if reference
         .file
         .extension()
         .is_some_and(|extension| extension == "rs")
     {
-        let (_, source) = read_project_file(root, &file)?;
-        let items = crate::rust_items::parse_items(&source)
-            .map_err(|error| format!("{file}: cannot parse referenced Rust source: {error}"))?;
+        let (_, source) = read_project_file(root, &file).map_err(io::Error::other)?;
+        let items = crate::rust_items::parse_items(&source).map_err(|error| {
+            io::Error::other(format!(
+                "{file}: cannot parse referenced Rust source: {error}"
+            ))
+        })?;
         if let Some(item) = items
             .iter()
             .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)
@@ -394,7 +454,7 @@ fn reference_selector(
             }
         });
     }
-    let (_, source) = read_project_file(root, &file)?;
+    let (_, source) = read_project_file(root, &file).map_err(io::Error::other)?;
     Ok(InputSelector::FileRange {
         file,
         line_start: 1,
@@ -410,9 +470,10 @@ fn definition_inputs(
     definitions: &BTreeMap<String, Declaration>,
     inputs: &[Value],
     subject: Option<&str>,
-) -> Result<Vec<Value>, String> {
+) -> io::Result<Vec<Value>> {
     let record = json!({ "inputs": inputs });
-    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)?
+    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)
+        .map_err(io::Error::other)?
         .into_iter()
         .map(|definition| {
             let selector = InputSelector::Definition { definition };
@@ -563,6 +624,7 @@ pub(super) mod tests {
             AssessmentSources::prepare(root.path(), "requirements.ready")
                 .err()
                 .unwrap()
+                .to_string()
                 .contains("missing.txt")
         );
         assert!(AssessmentSources::prepare(root.path(), "missing").is_err());
@@ -722,7 +784,8 @@ pub(super) mod tests {
             .err()
             .unwrap();
         assert!(
-            error.contains("md/requirements.md") && error.contains("git add"),
+            error.to_string().contains("md/requirements.md")
+                && error.to_string().contains("git add"),
             "{error}"
         );
         git(root.path(), &["add", "md"]);
@@ -740,7 +803,7 @@ pub(super) mod tests {
         ] {
             let error = result.err().unwrap();
             assert!(
-                error.contains("src/lib.rs") && error.contains("git add"),
+                error.to_string().contains("src/lib.rs") && error.to_string().contains("git add"),
                 "{error}"
             );
         }
@@ -763,7 +826,7 @@ pub(super) mod tests {
             .err()
             .unwrap();
         assert!(
-            error.contains("md/terms.md") && error.contains("git add"),
+            error.to_string().contains("md/terms.md") && error.to_string().contains("git add"),
             "{error}"
         );
         git(root.path(), &["add", "md/terms.md"]);
@@ -783,7 +846,7 @@ pub(super) mod tests {
         ] {
             let error = result.err().unwrap();
             assert!(
-                error.contains("notes.txt") && error.contains("git add"),
+                error.to_string().contains("notes.txt") && error.to_string().contains("git add"),
                 "{error}"
             );
         }
@@ -800,5 +863,70 @@ pub(super) mod tests {
                         && input["text"] == json!(["current notes"]))
             );
         }
+    }
+
+    // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.ci.authoring_inputs`
+    #[test]
+    fn existing_evidence_inputs_obey_explicit_allow_and_fatal_disallow() {
+        let root = project();
+        fs::create_dir(root.path().join("evidence")).unwrap();
+        fs::write(
+            root.path().join("evidence/notes.txt"),
+            "reviewable output\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("evidence/requirements.ready.json"),
+            json!({"inputs":[{
+                "file":"evidence/notes.txt", "line_start":1, "line_end":1, "text":["old"]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['evidence']\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "evidence/notes.txt"
+                    && input["text"] == json!(["reviewable output"]))
+        );
+        for denied in ["evidence/notes.txt", "md/requirements.md"] {
+            fs::write(
+                root.path().join("habeas.toml"),
+                format!("version = 1\n[evidence]\nallow = ['evidence']\ndisallow = ['{denied}']\n"),
+            )
+            .unwrap();
+            let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(error.to_string().contains(denied), "{error}");
+        }
+        fs::write(root.path().join("notes.txt"), "ordinary source\n").unwrap();
+        fs::write(root.path().join("habeas.toml"), "version = 1\n").unwrap();
+        fs::write(
+            root.path().join("evidence/requirements.ready.json"),
+            json!({"inputs":[{
+                "file":"evidence/../notes.txt", "line_start":1, "line_end":1, "text":["old"]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "evidence/../notes.txt")
+        );
     }
 }

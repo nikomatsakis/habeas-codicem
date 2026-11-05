@@ -1,6 +1,6 @@
 # Configuration
 
-Habeas uses a shared user configuration file and project settings in `book.toml`.
+Habeas uses a shared user configuration file and workspace settings in `habeas.toml`.
 This chapter defines their locations, common structure, and loading rules. Each
 configurable feature defines its own section, data structures, defaults, and
 resolution rules, and cites these shared requirements.
@@ -21,8 +21,20 @@ explanatory diagnostic.
 
 The same user configuration MUST be usable across projects. Its location MUST
 NOT be selected relative to the current project or changed by project settings.
-User-local preferences for a project MUST remain in the user configuration;
-shared project settings MUST remain in the project's `book.toml`.
+User-local preferences for a project MAY remain in the user configuration;
+workspace settings MUST use `habeas.toml` under
+{cite}`requirements.configuration.workspace_location`.
+:::
+
+:::{req} workspace_location
+Habeas MUST search from its invocation directory upward for the nearest enclosing
+`habeas.toml`. It MUST use that file alone, without merging ancestor workspace
+files. A library operation given a project root MUST search from that root unless
+its current directory is inside the project, in which case it MUST start there.
+The directory containing the selected file defines the base for its relative
+paths; it does not replace the Cargo and mdBook project root. A missing file MUST
+mean absent workspace settings. Discovery MUST report unreadable candidate files
+rather than silently selecting an ancestor. Loading MUST NOT create the file.
 :::
 
 ### Persistent state
@@ -56,14 +68,21 @@ UserConfig {
     authoring: Optional<UserAuthoringConfig>,  // defined by evidence authoring
 }
 
-ProjectConfig {
-    // No shared project feature settings are currently defined.
+WorkspaceConfig {
+    version: Integer,                              // exactly 1
+    authoring: Optional<WorkspaceAuthoringConfig>,  // defined by evidence authoring
+    evidence: Optional<EvidenceConfig>,
+}
+
+EvidenceConfig {
+    allow: Array<Path>,                            // omitted means empty
+    disallow: Array<Path>,                         // omitted means empty
 }
 ```
 
-`UserConfig` is the root of the user file. `ProjectConfig` is the `[habeas]` table
-within `book.toml`; the rest of the book configuration retains its existing
-meaning. Adding a configurable feature adds a named, typed optional field to the
+`UserConfig` is the root of the user file. `WorkspaceConfig` is the root of
+`habeas.toml`; `book.toml` remains mdBook configuration. Adding a configurable
+feature adds a named, typed optional field to the
 applicable structure. These are explicitly defined fields, not an unrestricted
 map of arbitrary settings.
 
@@ -74,12 +93,42 @@ root MUST contain only the schema version and those feature tables; feature
 settings MUST NOT occupy unscoped root keys. A user file containing only
 `version = 1` MUST be valid common configuration.
 
-Shared project configuration MUST serialize ProjectConfig under `[habeas]` in
-`book.toml`, with each feature in `[habeas.<feature>]`. The `[habeas]` table and
-its feature tables MAY be absent. The user-file version MUST NOT be required in
-`book.toml`. The absence of an optional feature section MUST be distinguishable
+Workspace configuration MUST follow {cite}`requirements.configuration.workspace_structure`.
+The absence of an optional feature section MUST be distinguishable
 from that feature's explicit settings and interpreted according to its own
 requirements.
+:::
+
+:::{req} workspace_structure
+`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
+Its supported feature tables are `[authoring]` and `[evidence]`; either MAY be
+absent. Unknown common keys, unsupported versions, invalid field types, and
+invalid TOML MUST produce a diagnostic identifying the file and setting.
+Features MUST define their own data structures and loading rules under
+{cite}`requirements.configuration.feature_sections`. A file containing only
+`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table
+inside `book.toml`.
+:::
+
+:::{req} evidence_paths
+The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and
+`disallow` MUST be arrays of nonempty literal paths, each naming a file or a
+directory subtree. Relative paths MUST resolve from the selected `habeas.toml`
+directory; absolute paths MUST be supported. These paths are not glob patterns.
+
+For authoring reads, a matching disallow MUST reject the path; otherwise a
+matching allow MUST permit it; otherwise the default source-access rules MUST
+apply. Explicit allow MUST override every default, including Git tracking,
+project containment, generated-evidence exclusion, and automatic generated-output
+rules. Disallow MUST win even when an allow or generated-output rule also matches.
+Both the requested path and its resolved symlink target MUST be checked for
+disallow, so an allowed alias cannot expose a disallowed target.
+
+The same explicit disallow rules and external-path exceptions MUST apply when
+resolving recorded evidence inputs, including ordinary validation and
+`add-input`. Validation MUST remain independent of Git index membership: it
+checks the recorded inputs' existence and contents. Loading path policy MUST NOT
+resolve credentials or validate unused authoring settings.
 :::
 
 For example, this is a complete user file with no feature settings:
@@ -88,10 +137,26 @@ For example, this is a complete user file with no feature settings:
 version = 1
 ```
 
-Evidence authoring adds `[authoring]` and its subtables to the user file. It
-defines no shared project settings. Complete examples and the definition of
-`UserAuthoringConfig` appear in
+Evidence authoring adds `[authoring]` and its subtables to both files. Complete
+examples and the definitions of their authoring structures appear in
 [Authoring evidence](authoring.md#serialized-configuration-data-model).
+
+A workspace file can select a model configuration saved in the user file and
+permit generated sources while excluding one subtree:
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[evidence]
+allow = ["generated"]
+disallow = ["generated/private"]
+```
+
+`generated/private` is excluded even though its parent is allowed. An allow is an
+exception to the defaults, not an exclusive list of every readable path.
 
 ## Feature sections
 
@@ -119,7 +184,10 @@ round-trip.
 
 Loading configuration or running a configured feature MUST NOT rewrite the user
 or project configuration as a side effect. Resolved credentials and live runtime
-objects MUST NOT enter the serialized data structures.
+objects MUST NOT enter the serialized data structures. Explicitly supplied
+credential values are permitted only in the fields documented by the authoring
+feature; credentials resolved from a profile or environment MUST NOT be written
+back to configuration.
 :::
 
 ## Loading and diagnostics
@@ -141,7 +209,9 @@ An operation MUST NOT require or semantically validate configuration for a
 feature it does not use. This isolation MUST NOT suppress TOML syntax errors in
 a shared file that the operation otherwise needs to parse. In particular,
 ordinary validation still requires a parseable `book.toml` while remaining
-independent of authoring settings and the user configuration file.
+independent of authoring settings and the user configuration file. It MUST apply
+the selected workspace's evidence path policy without loading its model clients
+or credentials.
 :::
 
 ## Manual editing and documentation
@@ -155,6 +225,7 @@ all placeholders and the file to edit. Documentation MUST explain how to change
 or remove optional settings and selections.
 
 Configuration MUST NOT require a configuration-management command or generated
-state beyond the documented files. Examples MUST use credential-source
-references rather than secrets.
+state beyond the documented files. Primary examples MUST use credential-source
+references; examples explaining explicit credential fields MUST use clearly
+identified placeholders, never real secrets.
 :::

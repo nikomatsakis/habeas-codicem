@@ -418,6 +418,119 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert!(stdout.contains(MODEL) && stdout.contains("Evidence:") && stdout.contains("Usage:"));
 }
 
+// {test}`requirements.configuration.workspace_location`
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.credentials`
+// {test}`requirements.authoring.provider`
+// {test}`requirements.authoring.rig_configuration_mapping`
+// {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.usage_storage`
+#[test]
+fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":true,"rationale":"The supplied sources support the subject."}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::remove_file(fixture.config.join("habeas/config.toml")).unwrap();
+    fs::write(
+        fixture.project.join("habeas.toml"),
+        "version = 1\n[authoring]\ndefault = 'missing-parent-choice'\n",
+    )
+    .unwrap();
+    let nested = fixture.project.join("src/nested");
+    fs::create_dir(&nested).unwrap();
+    let workspace = nested.join("habeas.toml");
+    fs::write(
+        &workspace,
+        format!(
+            "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\nendpoint = '{}'\napi_key = 'WORKSPACE_LITERAL_KEY'\n",
+            server.endpoint
+        ),
+    )
+    .unwrap();
+    let output = fixture
+        .command()
+        .current_dir(&nested)
+        .args(["author", SUBJECT])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body["model"], "workspace-model");
+    assert!(requests[0].headers.contains("WORKSPACE_LITERAL_KEY"));
+    assert!(
+        !requests[0]
+            .body
+            .to_string()
+            .contains("WORKSPACE_LITERAL_KEY")
+    );
+    let usage = fixture.usage();
+    assert_eq!(usage["model"], "workspace-model");
+    for text in [
+        usage.to_string(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ] {
+        assert!(!text.contains("WORKSPACE_LITERAL_KEY"), "{text}");
+    }
+}
+
+// {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.source_tools`
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.usage_requests`
+#[test]
+fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
+    for (tool, arguments) in [
+        ("habeas", json!({"file":"untracked.txt", "line_start":1})),
+        (
+            "ripgrep",
+            json!({"path":"untracked.txt", "pattern":"hidden"}),
+        ),
+        ("list_files", json!({"path":"untracked-directory"})),
+    ] {
+        let server = Server::start(vec![reply(vec![call("denied", tool, arguments)])]);
+        let fixture = Fixture::new(&server.endpoint);
+        for args in [["init", "--quiet"], ["add", "."]] {
+            let git = Command::new("git")
+                .current_dir(&fixture.project)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(git.status.success(), "{git:?}");
+        }
+        fs::write(fixture.project.join("untracked.txt"), "hidden source\n").unwrap();
+        fs::create_dir(fixture.project.join("untracked-directory")).unwrap();
+        fs::write(
+            fixture.project.join("untracked-directory/hidden.txt"),
+            "hidden source\n",
+        )
+        .unwrap();
+
+        let output = fixture.run(&["author", SUBJECT, "--stdout"]);
+        assert!(!output.status.success(), "{tool}: {output:?}");
+        assert!(output.stdout.is_empty(), "{tool}: {output:?}");
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostics.contains("untracked"), "{tool}: {diagnostics}");
+        assert_eq!(
+            fs::read_to_string(&fixture.evidence).unwrap(),
+            fixture.original
+        );
+        assert_eq!(server.finish().len(), 1);
+        let usage = fixture.usage();
+        assert_eq!(usage["outcome"], "failed", "{tool}: {usage}");
+        assert_eq!(usage["request_count"], 1, "{tool}: {usage}");
+        assert_eq!(usage["tool_failures"][tool], 1, "{tool}: {usage}");
+        assert_eq!(usage["evidence_written"], false, "{tool}: {usage}");
+        assert!(usage["determination"].is_null(), "{tool}: {usage}");
+    }
+}
+
 // {test}`requirements.authoring.negative_assessment`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.ci.fixme_with_unacknowledged_gap`

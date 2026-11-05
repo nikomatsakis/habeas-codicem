@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
   "determination": true,
-  "rationale": "I judge the requirement satisfied. The code records each element of `usage_inputs`, and the tests cover the interesting cases. I did not run the tests. My judgment rests on the supplied excerpts.\n\n**Counts and sizes by evidence kind**\n- `UsageLog::prepared` in `src/authoring/usage.rs` pushes one `InputUsage` per input.\n- Each record has a `kind`, which is `file_range`, `rust_item`, `requirements` or `definition`.\n- It also has `bytes`, `lines`, `components` and `origin`.\n- `bytes` is the UTF-8 length of the text lines plus the newlines between them. `lines` is the number of text entries.\n- `components` is the length of `matches` for a requirements input, and 1 otherwise. This is the matched-declaration count.\n- `configured_record` calls `usage.prepared(\"mandatory\", …)` for the mandatory inputs.\n- `assess` calls `usage.prepared(<tool name>, &delivery.inputs)` for additional inputs from `habeas` and `ripgrep`. This includes any definitions those reads pull in.\n- Aggregate counts by kind are not stored, but they follow directly from the per-input `kind` field.\n\n**Unique versus repeated reads**\n- `unique` is set by `self.seen.insert(input.to_string())`.\n\n**Successful versus failed reads**\n- `UsageLog::tool(name, failed)` increments `tool_calls` and `tool_failures` separately.\n- `skipped_tool` counts calls skipped because a submission was present.\n- `assess` calls `usage.prepared` only on a successful dispatch, so a failed read adds no input record and is counted as a failure.\n\n**Prepared versus actually sent**\n- `begin_request` stamps `submitted_in_request` on every input that does not yet have one.\n- `end_request` sets `sent_in_request` only when the provider returned usage, meaning the request succeeded.\n\n**File discovery**\n- `list_files` returns a `ToolDelivery` with empty `inputs`, so directory listings are not recorded as inputs.\n- `UsageLog::tool` still counts the call.\n\n**Test coverage**\n- `input_metadata_counts_components_and_reads_without_persisting_source` (`usage.rs`) covers these points:\n  - bytes with a multibyte character, and lines;\n  - the requirements `components` count of 2;\n  - `unique` true then false on a repeat read, and the habeas `origin`;\n  - `submitted_in_request` and `sent_in_request` as null, then submitted, then sent;\n  - no source content in the stored file.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` covers an input that was submitted but not sent after a failed request, then sent on the retry.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` covers distinct call, failure and skipped counters. It also asserts that `inputs` is empty after `list_files` calls.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`) is an end-to-end run with `list_files`, `ripgrep`, a repeated `habeas` read and a failed `habeas` read. It asserts:\n  - `tool_call_count` is 6 and the `habeas` failure count is 1;\n  - a repeated `habeas` input has `unique` false and `sent_in_request` 1;\n  - a mandatory definition input has `bytes` > 0;\n  - no secrets appear in the usage log.\n- `src/authoring/tools.rs` also has a unit test that asserts `listing.inputs.is_empty()`.\n\n**Minor gap**\n- The tests do not explicitly assert the `kind` value for the `rust_item` or `requirements` inputs. The CLI test checks `kind == \"definition\"` only. The kind branching in `prepared` is simple, so this does not undermine the requirement.",
+  "rationale": "**Verdict:** the code implements `requirements.authoring.usage_inputs`, and the tests cover its main points. There are a few small gaps in test coverage, listed at the end.\n\n**Implementation**\n- **Per-input records.**\n  - `UsageLog::prepared` in `src/authoring/usage.rs` adds an `InputUsage` entry for every input.\n  - Each entry carries the `origin` (`mandatory`, `habeas`, `ripgrep`), the evidence `kind` (`file_range`, `rust_item`, `requirements` or `definition`), `bytes` and `lines`.\n  - `bytes` is the UTF-8 length of the text lines plus the newlines between them. `lines` is the number of text entries.\n  - Counts and sizes by evidence kind can be derived from these records.\n- **Matched declarations.** `components` is the length of the `matches` array for a requirements input, and 1 otherwise.\n- **Mandatory inputs.** `configured_record` calls `usage.prepared(\"mandatory\", …)`.\n- **Additional inputs.** `assess` calls `usage.prepared(<tool name>, &delivery.inputs)` for each successful tool call.\n  - `habeas` deliveries record their inputs, including any definitions they bring in.\n  - `ripgrep` (`search` in `tools.rs`) turns its matches into `file_range` inputs, which are recorded the same way.\n- **Unique versus repeated.** `unique: self.seen.insert(input.to_string())` marks the first read as unique and later identical reads as not unique.\n- **Successful versus failed reads.** `UsageLog::tool(name, failed)` increments `tool_calls` and, on failure, `tool_failures`. `assess` calls it on both outcomes of `tools::dispatch`.\n- **Prepared, submitted and sent.**\n  - Inputs start with `submitted_in_request` and `sent_in_request` both `None`.\n  - `begin_request` sets `submitted_in_request` for every input that doesn't have one yet.\n  - `end_request` sets `sent_in_request` only when the provider returned usage, which means the request succeeded.\n  - A failed request therefore does not mark inputs as sent, and a later retry does.\n- **File discovery.** The `list_files` delivery has `inputs: Vec::new()`, so nothing is passed to `prepared`. `assess` still calls `usage.tool` for it, so it counts as a tool call but adds no source input.\n\n**Tests**\n- `input_metadata_counts_components_and_reads_without_persisting_source` checks:\n  - UTF-8 byte size and line count, using a multibyte string;\n  - `components == 2` for a requirements input;\n  - `unique` true for a first read and false for a repeat, with `origin` set to `habeas`;\n  - `submitted_in_request` and `sent_in_request` moving from null to set across `begin_request` and `end_request`;\n  - no source content in the stored file.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` checks that a failed request (no usage) leaves the input submitted but not sent, and a retry then marks it sent.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` checks that calls, failures and skipped calls are counted separately, and that no inputs are recorded for tool calls alone.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` is an end-to-end test.\n  - It runs `list_files`, `ripgrep`, two identical `habeas` reads and one failing `habeas` read.\n  - It asserts `tool_call_count` is 6 and `tool_failures.habeas` is 1.\n  - It asserts a repeated `habeas` input with `unique == false` and `sent_in_request == 1`.\n  - It asserts a mandatory definition input with bytes greater than 0.\n  - It asserts that no source content appears in the usage record.\n  - It asserts that evidence contains no `.` or `absent.txt` inputs, so directory listings and failed reads are not recorded as inputs.\n\n**Minor gaps, none acknowledged as FIXMEs**\n- Aggregate totals by kind are not stored. They have to be computed from the per-input records.\n- No test asserts that a `ripgrep` call produces usage entries with `origin == \"ripgrep\"`. The code path is shared with `habeas`, so I treat this as minor.\n- `list_files` producing no inputs is verified in the end-to-end test only indirectly, through the absence of a `.` input in evidence, and by the code (`inputs: Vec::new()`).",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -32,6 +32,7 @@
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.usage_inputs`",
         "// {impl}`requirements.authoring.provider`",
+        "// {impl}`requirements.authoring.read_denial`",
         "async fn configured_record(",
         "    root: &Path,",
         "    subject: &AuthoringSubject,",
@@ -51,8 +52,7 @@
         "            rust_file,",
         "            rust_item,",
         "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),",
-        "    }",
-        "    .map_err(io::Error::other)?;",
+        "    }?;",
         "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
         "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
         "    usage.save()?;",
@@ -82,6 +82,7 @@
         "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -177,7 +178,11 @@
         "                }",
         "                Err(error) => {",
         "                    usage.tool(call.function.name.as_str(), true);",
-        "                    results.push(call.error_result(vec![ToolResultContent::text(error)]));",
+        "                    if error.kind() == io::ErrorKind::PermissionDenied {",
+        "                        return Err(error);",
+        "                    }",
+        "                    results",
+        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
         "                }",
         "            }",
         "        }",
@@ -615,13 +620,13 @@
       "line_start": 299,
       "line_end": 305,
       "text": [
-        "    usage.record.model = Some(model.model.clone());",
-        "    let mut sources = match subject {",
-        "        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),",
-        "        AuthoringSubject::RustFunction {",
-        "            rust_file,",
-        "            rust_item,",
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),"
+        "    Ok(AuthoringOutcome {",
+        "        subject: subject.into(),",
+        "        backend: usage.record.backend.clone().expect(\"configured backend\"),",
+        "        model: config.model_ref().model,",
+        "        evidence_path,",
+        "        usage_path: usage.path.clone(),",
+        "        determination,"
       ]
     },
     {
@@ -629,13 +634,13 @@
       "line_start": 488,
       "line_end": 494,
       "text": [
-        "            response",
-        "                .message()",
-        "                .ok_or_else(|| io::Error::other(\"model returned an empty response\"))?,",
-        "        );",
-        "        let mut results = Vec::new();",
-        "        for call in calls {",
-        "            match tools::dispatch("
+        "                return Err(io::Error::other(",
+        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
+        "                ));",
+        "            }",
+        "            let result = submission(",
+        "                &Value::Object(submissions[0].function.arguments.clone()),",
+        "                function,"
       ]
     },
     {
@@ -643,13 +648,13 @@
       "line_start": 569,
       "line_end": 575,
       "text": [
-        "        )",
-        "        .unwrap();",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
-        "            let mut sources =",
-        "                AssessmentSources::prepare_function(project.path(), \"src/lib.rs\", \"fn[ready]\")",
-        "                    .unwrap();"
+        "                .find(|tool| tool.name == \"submit_judgment\")",
+        "                .unwrap();",
+        "            assert_eq!(",
+        "                submit.parameters[\"properties\"][\"determination\"],",
+        "                json!({\"type\": \"boolean\"})",
+        "            );",
+        "            Ok(CompletionResponse::new("
       ]
     },
     {
@@ -829,6 +834,7 @@
       "line_start": 6,
       "line_end": 15,
       "text": [
+        "",
         "use serde_json::{Map, Value, json};",
         "",
         "use super::inputs::AssessmentSources;",
@@ -837,8 +843,7 @@
         "pub(crate) struct ToolDelivery {",
         "    pub(crate) result: Value,",
         "    pub(crate) inputs: Vec<Value>,",
-        "}",
-        ""
+        "}"
       ]
     },
     {
@@ -846,11 +851,11 @@
       "line_start": 35,
       "line_end": 39,
       "text": [
-        "        }),",
-        "        json!({",
-        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible project-local sources are listed; Git worktrees omit untracked files and directories without tracked source descendants. Generated evidence under evidence/ is excluded.\",",
-        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
-        "        }),"
+        "                \"rust_file\":{\"type\":\"string\"},",
+        "                \"rust_item\":{\"type\":\"string\"},",
+        "                \"requirements\":{\"type\":\"string\"},",
+        "                \"definition\":{\"type\":\"string\"}",
+        "            }, \"additionalProperties\":false}"
       ]
     },
     {
@@ -859,12 +864,12 @@
       "line_end": 106,
       "text": [
         "        }",
-        "    };",
-        "    let input = sources.read_selector(&selector)?;",
-        "    let definitions = sources.additional_definitions(std::slice::from_ref(&input))?;",
-        "    let result = json!({ \"input\": input, \"definitions\": definitions });",
-        "    let mut inputs = vec![input];",
-        "    inputs.extend(definitions);"
+        "    } else if args.contains_key(\"requirements\") {",
+        "        check_keys(args, &[\"requirements\"])?;",
+        "        InputSelector::Requirements {",
+        "            requirements: string(args, \"requirements\")?.to_owned(),",
+        "        }",
+        "    } else {"
       ]
     },
     {
@@ -872,11 +877,11 @@
       "line_start": 136,
       "line_end": 140,
       "text": [
-        "        } else {",
-        "            continue;",
-        "        };",
-        "        entries.push((relative, kind));",
-        "    }"
+        "        let relative = relative_path(&sources.root, &entry.path())?;",
+        "        if sources",
+        "            .access",
+        "            .path(&sources.root, Path::new(&relative))",
+        "            .is_err()"
       ]
     },
     {
@@ -884,11 +889,11 @@
       "line_start": 181,
       "line_end": 185,
       "text": [
-        "        return Err(format!(",
-        "            \"ripgrep failed: {}\",",
-        "            String::from_utf8_lossy(&output.stderr).trim()",
-        "        ));",
-        "    }"
+        "                .collect(),",
+        "        ),",
+        "        inputs: Vec::new(),",
+        "    })",
+        "}"
       ]
     },
     {
@@ -896,11 +901,11 @@
       "line_start": 191,
       "line_end": 195,
       "text": [
-        "    {",
-        "        let event: Value = serde_json::from_slice(line)",
-        "            .map_err(|error| format!(\"invalid ripgrep output: {error}\"))?;",
-        "        if event[\"type\"] != \"match\" {",
-        "            continue;"
+        "// {impl}`requirements.authoring.read_denial`",
+        "fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
+        "    check_keys(args, &[\"pattern\", \"path\", \"context\"])?;",
+        "    let pattern = string(args, \"pattern\")?;",
+        "    let path = optional_path(args)?;"
       ]
     },
     {
@@ -908,11 +913,11 @@
       "line_start": 212,
       "line_end": 216,
       "text": [
-        "        let (_, source) = read_project_file(&sources.root, &file)?;",
-        "        let count = source.lines().count();",
-        "        lines.sort_unstable();",
-        "        let mut windows: Vec<(usize, usize)> = Vec::new();",
-        "        for line in lines {"
+        "            continue;",
+        "        };",
+        "        if sources.access.path(&sources.root, &candidate).is_ok() {",
+        "            searches.push((candidate, true));",
+        "        }"
       ]
     },
     {
@@ -920,14 +925,14 @@
       "line_start": 219,
       "line_end": 226,
       "text": [
-        "            }",
-        "            let start = line.saturating_sub(context).max(1);",
-        "            let end = line.saturating_add(context).min(count);",
-        "            if let Some(last) = windows.last_mut()",
-        "                && start <= last.1.saturating_add(1)",
-        "            {",
-        "                last.1 = last.1.max(end);",
-        "            } else {"
+        "    searches.dedup();",
+        "    let mut outputs = Vec::new();",
+        "    for (path, include_ignored) in searches {",
+        "        let mut command = Command::new(\"rg\");",
+        "        command.current_dir(&sources.root).args([",
+        "            \"--json\",",
+        "            \"--no-config\",",
+        "            \"--case-sensitive\","
       ]
     },
     {
@@ -935,17 +940,17 @@
       "line_start": 299,
       "line_end": 309,
       "text": [
-        "        .to_str()",
-        "        .map(str::to_owned)",
-        "        .ok_or_else(|| \"path is not UTF-8\".to_owned())",
+        "    }",
+        "    let definitions = sources.additional_definitions(&inputs)?;",
+        "    let result = json!({\"inputs\":inputs,\"definitions\":definitions});",
+        "    inputs.extend(definitions);",
+        "    Ok(ToolDelivery { result, inputs })",
         "}",
         "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use super::*;",
-        "    use crate::authoring::access::tests::git;",
-        "    use crate::authoring::inputs::tests::{project, role};",
-        ""
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
+        "fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {"
       ]
     },
     {
@@ -953,11 +958,11 @@
       "line_start": 322,
       "line_end": 326,
       "text": [
-        "        .unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"src/lib.rs\"),",
-        "            format!(\"// {}\\nfn work() {{}}\\n\", role(\"term\", \"terms.value\")),",
-        "        )"
+        "fn string<'a>(args: &'a Map<String, Value>, key: &str) -> io::Result<&'a str> {",
+        "    args.get(key)",
+        "        .and_then(Value::as_str)",
+        "        .ok_or_else(|| io::Error::other(format!(\"{key} must be a string\")))",
+        "}"
       ]
     },
     {
@@ -965,16 +970,16 @@
       "line_start": 329,
       "line_end": 338,
       "text": [
-        "        let listing = dispatch(&sources, \"list_files\", &json!({\"path\":\"src\"})).unwrap();",
-        "        assert_eq!(listing.result, json!([{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]));",
-        "        assert!(listing.inputs.is_empty());",
-        "        let read = dispatch(",
-        "            &sources,",
-        "            \"habeas\",",
-        "            &json!({\"rust_file\":\"src/lib.rs\",\"rust_item\":\"fn[work]\"}),",
-        "        )",
-        "        .unwrap();",
-        "        assert_eq!(read.inputs.len(), 2);"
+        "// {impl}`requirements.authoring.text_search`",
+        "fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {",
+        "    args.get(key)",
+        "        .and_then(Value::as_u64)",
+        "        .and_then(|value| usize::try_from(value).ok())",
+        "        .ok_or_else(|| io::Error::other(format!(\"{key} must be a nonnegative integer\")))",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`"
       ]
     },
     {
@@ -982,11 +987,11 @@
       "line_start": 342,
       "line_end": 346,
       "text": [
-        "        sources.record_inputs(&read.inputs);",
-        "        assert_eq!(sources.recorded_inputs().len(), 2);",
-        "        let eof = dispatch(",
-        "            &sources,",
-        "            \"habeas\","
+        "    } else {",
+        "        Ok(\".\")",
+        "    }",
+        "}",
+        ""
       ]
     },
     {
@@ -994,15 +999,15 @@
       "line_start": 401,
       "line_end": 409,
       "text": [
-        "                    \"needle\".to_owned()",
-        "                } else {",
-        "                    format!(\"line {number}\")",
-        "                }",
-        "            })",
-        "            .collect::<Vec<_>>();",
-        "        fs::write(root.path().join(\"sample.txt\"), lines.join(\"\\n\")).unwrap();",
-        "        git(root.path(), &[\"add\", \"--force\", \".\"]);",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();"
+        "            \"habeas\",",
+        "            &json!({\"rust_file\":\"src/lib.rs\",\"rust_item\":\"fn[work]\"}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(read.inputs.len(), 2);",
+        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");",
+        "        assert!(sources.recorded_inputs().is_empty());",
+        "        sources.record_inputs(&read.inputs);",
+        "        sources.record_inputs(&read.inputs);"
       ]
     },
     {
@@ -1010,15 +1015,15 @@
       "line_start": 412,
       "line_end": 420,
       "text": [
-        "        assert_eq!(search.inputs[0][\"file\"], \"sample.txt\");",
-        "        assert_eq!(search.inputs[0][\"line_start\"], 1);",
-        "        assert_eq!(search.inputs[0][\"line_end\"], 11);",
-        "        assert_eq!(search.inputs[0][\"text\"], json!(&lines[..11]));",
-        "        let exact = dispatch(",
         "            &sources,",
-        "            \"ripgrep\",",
-        "            &json!({\"pattern\":\"needle\",\"path\":\"sample.txt\",\"context\":0}),",
-        "        )"
+        "            \"habeas\",",
+        "            &json!({\"file\":\"src/lib.rs\",\"line_start\":2}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(eof.result[\"input\"][\"line_end\"], 2);",
+        "        assert_eq!(eof.result[\"input\"][\"text\"], json!([\"fn work() {}\"]));",
+        "        assert!(",
+        "            dispatch("
       ]
     },
     {
@@ -1168,6 +1173,7 @@
       "line_start": 5,
       "line_end": 17,
       "text": [
+        "use std::process::Command;",
         "",
         "use serde_json::{Map, Value, json};",
         "",
@@ -1179,8 +1185,7 @@
         "    pub(crate) inputs: Vec<Value>,",
         "}",
         "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`"
+        "// {impl}`requirements.authoring.source_tools`"
       ]
     },
     {
@@ -1188,19 +1193,19 @@
       "line_start": 103,
       "line_end": 115,
       "text": [
+        "        InputSelector::Requirements {",
+        "            requirements: string(args, \"requirements\")?.to_owned(),",
+        "        }",
+        "    } else {",
+        "        check_keys(args, &[\"definition\"])?;",
+        "        InputSelector::Definition {",
+        "            definition: string(args, \"definition\")?.to_owned(),",
+        "        }",
+        "    };",
+        "    let input = sources.read_selector(&selector)?;",
         "    let definitions = sources.additional_definitions(std::slice::from_ref(&input))?;",
         "    let result = json!({ \"input\": input, \"definitions\": definitions });",
-        "    let mut inputs = vec![input];",
-        "    inputs.extend(definitions);",
-        "    Ok(ToolDelivery { result, inputs })",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.source_tools`",
-        "fn list_files(",
-        "    sources: &AssessmentSources,",
-        "    args: &Map<String, Value>,",
-        ") -> Result<ToolDelivery, String> {"
+        "    let mut inputs = vec![input];"
       ]
     },
     {
@@ -1208,19 +1213,19 @@
       "line_start": 134,
       "line_end": 146,
       "text": [
-        "        } else if metadata.is_file() {",
-        "            \"file\"",
-        "        } else {",
+        "            io::Error::new(error.kind(), format!(\"cannot list {path}: {error}\"))",
+        "        })?;",
+        "        let relative = relative_path(&sources.root, &entry.path())?;",
+        "        if sources",
+        "            .access",
+        "            .path(&sources.root, Path::new(&relative))",
+        "            .is_err()",
+        "        {",
         "            continue;",
-        "        };",
-        "        entries.push((relative, kind));",
-        "    }",
-        "    entries.sort();",
-        "    Ok(ToolDelivery {",
-        "        result: Value::Array(",
-        "            entries",
-        "                .into_iter()",
-        "                .map(|(path, kind)| json!({\"path\":path,\"kind\":kind}))"
+        "        }",
+        "        let metadata = fs::metadata(entry.path()).map_err(|error| {",
+        "            io::Error::new(",
+        "                error.kind(),"
       ]
     },
     {
@@ -1228,19 +1233,141 @@
       "line_start": 233,
       "line_end": 245,
       "text": [
+        "            .arg(\"--\")",
+        "            .arg(pattern)",
+        "            .arg(path)",
+        "            .output()",
+        "            .map_err(|error| io::Error::other(format!(\"cannot run ripgrep: {error}\")))?;",
+        "        if !output.status.success() && output.status.code() != Some(1) {",
+        "            return Err(io::Error::other(format!(",
+        "                \"ripgrep failed: {}\",",
+        "                String::from_utf8_lossy(&output.stderr).trim()",
+        "            )));",
+        "        }",
+        "        outputs.push(output.stdout);",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 186,
+      "line_end": 300,
+      "text": [
+        "",
+        "// {impl}`requirements.authoring.text_search`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.authoring.generated_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
+        "fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
+        "    check_keys(args, &[\"pattern\", \"path\", \"context\"])?;",
+        "    let pattern = string(args, \"pattern\")?;",
+        "    let path = optional_path(args)?;",
+        "    let requested = project_path(sources, path)?;",
+        "    let context = if args.contains_key(\"context\") {",
+        "        integer(args, \"context\")?",
+        "    } else {",
+        "        5",
+        "    };",
+        "    let mut searches = vec![(requested.clone(), false)];",
+        "    for extra in sources.access.extra_roots() {",
+        "        let Ok(extra) = sources.access.path(&sources.root, extra) else {",
+        "            continue;",
+        "        };",
+        "        let candidate = if requested.starts_with(&extra) {",
+        "            requested.clone()",
+        "        } else if extra.starts_with(&requested) || requested == sources.root {",
+        "            extra.clone()",
+        "        } else {",
+        "            continue;",
+        "        };",
+        "        if sources.access.path(&sources.root, &candidate).is_ok() {",
+        "            searches.push((candidate, true));",
+        "        }",
+        "    }",
+        "    searches.sort();",
+        "    searches.dedup();",
+        "    let mut outputs = Vec::new();",
+        "    for (path, include_ignored) in searches {",
+        "        let mut command = Command::new(\"rg\");",
+        "        command.current_dir(&sources.root).args([",
+        "            \"--json\",",
+        "            \"--no-config\",",
+        "            \"--case-sensitive\",",
+        "            \"--color=never\",",
+        "        ]);",
+        "        if include_ignored {",
+        "            command.args([\"--no-ignore\", \"--hidden\"]);",
+        "        }",
+        "        let output = command",
+        "            .arg(\"--\")",
+        "            .arg(pattern)",
+        "            .arg(path)",
+        "            .output()",
+        "            .map_err(|error| io::Error::other(format!(\"cannot run ripgrep: {error}\")))?;",
+        "        if !output.status.success() && output.status.code() != Some(1) {",
+        "            return Err(io::Error::other(format!(",
+        "                \"ripgrep failed: {}\",",
+        "                String::from_utf8_lossy(&output.stderr).trim()",
+        "            )));",
+        "        }",
+        "        outputs.push(output.stdout);",
+        "    }",
+        "    let mut matches: BTreeMap<String, Vec<usize>> = BTreeMap::new();",
+        "    for line in outputs",
+        "        .iter()",
+        "        .flat_map(|output| output.split(|byte| *byte == b'\\n'))",
+        "        .filter(|line| !line.is_empty())",
+        "    {",
+        "        let event: Value = serde_json::from_slice(line)",
+        "            .map_err(|error| io::Error::other(format!(\"invalid ripgrep output: {error}\")))?;",
+        "        if event[\"type\"] != \"match\" {",
+        "            continue;",
+        "        }",
+        "        let file = event[\"data\"][\"path\"][\"text\"]",
+        "            .as_str()",
+        "            .ok_or_else(|| io::Error::other(\"ripgrep found a non-UTF-8 path\"))?;",
+        "        if sources.access.file(&sources.root, Path::new(file)).is_err() {",
+        "            continue;",
+        "        }",
+        "        let number = event[\"data\"][\"line_number\"]",
+        "            .as_u64()",
+        "            .and_then(|number| usize::try_from(number).ok())",
+        "            .ok_or_else(|| io::Error::other(\"ripgrep returned an invalid line number\"))?;",
+        "        let file = relative_path(&sources.root, &sources.root.join(file))?;",
+        "        matches.entry(file).or_default().push(number);",
+        "    }",
+        "    let mut inputs = Vec::new();",
+        "    for (file, mut lines) in matches {",
+        "        let (_, source) = read_project_file(&sources.root, &file).map_err(io::Error::other)?;",
+        "        let count = source.lines().count();",
+        "        lines.sort_unstable();",
+        "        let mut windows: Vec<(usize, usize)> = Vec::new();",
+        "        for line in lines {",
+        "            if line == 0 || line > count {",
+        "                return Err(io::Error::other(format!(",
+        "                    \"{file}: ripgrep returned an out-of-range match\"",
+        "                )));",
+        "            }",
+        "            let start = line.saturating_sub(context).max(1);",
+        "            let end = line.saturating_add(context).min(count);",
+        "            if let Some(last) = windows.last_mut()",
+        "                && start <= last.1.saturating_add(1)",
+        "            {",
+        "                last.1 = last.1.max(end);",
+        "            } else {",
+        "                windows.push((start, end));",
+        "            }",
+        "        }",
+        "        for (line_start, line_end) in windows {",
+        "            inputs.push(sources.read_selector(&InputSelector::FileRange {",
+        "                file: file.clone(),",
         "                line_start,",
         "                line_end,",
         "            })?);",
         "        }",
         "    }",
-        "    let definitions = sources.additional_definitions(&inputs)?;",
-        "    let result = json!({\"inputs\":inputs,\"definitions\":definitions});",
-        "    inputs.extend(definitions);",
-        "    Ok(ToolDelivery { result, inputs })",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`"
+        "    let definitions = sources.additional_definitions(&inputs)?;"
       ]
     }
   ]

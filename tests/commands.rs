@@ -194,6 +194,65 @@ fn fixme_fixture() -> TempDir {
     temp
 }
 
+// {test}`requirements.configuration.workspace_location`
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.configuration.loading`
+// {test}`requirements.authoring.deterministic_validation`
+// {test}`requirements.cli.status`
+#[test]
+fn status_loads_nearest_workspace_file_without_validating_authoring() {
+    let temp = fixture();
+    let nested = temp.path().join("src/nested");
+    fs::write(temp.path().join("habeas.toml"), "version = 99\n").unwrap();
+    fs::write(
+        nested.join("habeas.toml"),
+        "version = 1\n[authoring]\nconfigs = 'invalid but unused'\n",
+    )
+    .unwrap();
+    let output = habeas(&nested, &["status"]);
+    assert!(output.status.success(), "{output:?}");
+
+    let output = habeas(temp.path(), &["status"]);
+    assert!(!output.status.success(), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("habeas.toml") && error.contains("version"),
+        "{error}"
+    );
+
+    fs::write(temp.path().join("habeas.toml"), "version = 1\n").unwrap();
+    fs::write(nested.join("habeas.toml"), "version = [\n").unwrap();
+    let output = habeas(&nested, &["status"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains(&nested.join("habeas.toml").display().to_string()),
+        "{output:?}"
+    );
+}
+
+// {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.ci.input_containment`
+// {test}`requirements.cli.status`
+// {test}`requirements.authoring.deterministic_validation`
+#[test]
+fn status_applies_workspace_disallow_to_existing_evidence() {
+    let temp = fixture();
+    fs::write(
+        temp.path().join("habeas.toml"),
+        "version = 1\n[evidence]\nallow = ['src']\ndisallow = ['src/main.rs']\n",
+    )
+    .unwrap();
+    let output = habeas(temp.path(), &["status", "requirements.ready"]);
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("Invalid") && text.contains("disallowed"),
+        "{text}"
+    );
+    assert!(text.contains("src/main.rs"), "{text}");
+}
+
 // {test}`requirements.cli.status`
 // {test}`requirements.cli.fixme_summary`
 #[test]
@@ -568,6 +627,123 @@ fn status_tables_align_each_column_to_its_widest_cell() {
         assert_eq!(table[1].split('|').nth(1).unwrap().trim(), "---");
         assert_eq!(table[1].split('|').nth(2).unwrap().trim(), "---");
     }
+}
+
+// {test}`requirements.cli.add_input`
+// {test}`requirements.cli.add_input_file_range`
+// {test}`requirements.cli.add_input_rust_item`
+// {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.ci.schema`
+#[test]
+fn add_input_external_sources_respect_allow_and_disallow() {
+    let temp = fixture();
+    let external = TempDir::new().unwrap();
+    let source = external.path().join("source.rs");
+    fs::write(&source, "pub fn external() {}\n").unwrap();
+    let source = fs::canonicalize(source).unwrap();
+    let allowed = toml::Value::String(external.path().display().to_string());
+    let config = format!("version = 1\n[evidence]\nallow = [{allowed}]\n");
+    fs::write(temp.path().join("habeas.toml"), &config).unwrap();
+    let evidence = temp.path().join("evidence/requirements.absent.json");
+    for (mode, location) in [
+        ("--file-range", format!("{}:1-1", source.display())),
+        ("--rust-item", format!("{}:1", source.display())),
+    ] {
+        let output = habeas(
+            temp.path(),
+            &[
+                "add-input",
+                "--for-requirement",
+                "requirements.absent",
+                mode,
+                &location,
+            ],
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
+    let contents = fs::read(&evidence).unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&contents).unwrap();
+    assert_eq!(
+        record["inputs"],
+        json!([
+            {"file": source, "line_start": 1, "line_end": 1, "text": ["pub fn external() {}"]},
+            {"rust_file": source, "rust_item": "fn[external]", "text": ["pub fn external() {}"]},
+        ])
+    );
+
+    fs::write(
+        temp.path().join("habeas.toml"),
+        format!("{config}disallow = [{allowed}]\n"),
+    )
+    .unwrap();
+    for (mode, location) in [
+        ("--file-range", format!("{}:1-1", source.display())),
+        ("--rust-item", format!("{}:1", source.display())),
+    ] {
+        let output = habeas(
+            temp.path(),
+            &[
+                "add-input",
+                "--for-requirement",
+                "requirements.absent",
+                mode,
+                &location,
+            ],
+        );
+        assert!(!output.status.success(), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("disallowed"), "{error}");
+        assert!(!error.contains("panicked"), "{error}");
+        assert_eq!(fs::read(&evidence).unwrap(), contents);
+    }
+}
+
+// {test}`requirements.cli.add_input`
+// {test}`requirements.references.rust_function_attestations`
+// {test}`requirements.configuration.evidence_paths`
+#[test]
+fn add_input_rejects_external_function_targets_without_creating_sidecars() {
+    let temp = fixture();
+    let external = TempDir::new().unwrap();
+    let source = external.path().join("source.rs");
+    fs::write(&source, "pub fn external() {}\n").unwrap();
+    let allowed = toml::Value::String(external.path().display().to_string());
+    fs::write(
+        temp.path().join("habeas.toml"),
+        format!("version = 1\n[evidence]\nallow = [{allowed}]\n"),
+    )
+    .unwrap();
+    let mut targets = vec![source.clone()];
+    #[cfg(unix)]
+    {
+        let alias = temp.path().join("external.rs");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        targets.push(alias);
+    }
+    for target in targets {
+        let output = habeas(
+            temp.path(),
+            &[
+                "add-input",
+                "--for-rust-item",
+                target.to_str().unwrap(),
+                "fn[external]",
+                "--requirements",
+                "requirements.absent",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("function attestation target must be inside the repository"),
+            "{error}"
+        );
+        assert!(error.contains(target.to_str().unwrap()), "{error}");
+        assert!(!error.contains("panicked"), "{error}");
+    }
+    assert!(!temp.path().join("evidence/rust").exists());
+    assert!(!source.with_extension("rs.json").exists());
+    assert_eq!(fs::read_dir(external.path()).unwrap().count(), 1);
 }
 
 // {test}`requirements.cli.add_input`

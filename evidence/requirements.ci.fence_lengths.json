@@ -1,7 +1,7 @@
 {
   "requirement": "A `{req}` opening fence MAY contain four or more colons. Habeas MUST accept opening fences of any length of at least three colons. A colon-only line with fewer colons than the opener MUST remain inside the requirement body, allowing a nested colon directive. A closing fence outside a fenced code example with at least as many colons as the opener MUST end the body.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation matches each clause, and the tests cover the main cases. I judged this from the supplied excerpts and did not run the tests.\n\n**Implementation (`src/lib.rs`, `definition_blocks` and `colon_fence`)**\n- **Opening fences.** `colon_fence` counts leading colons, allowing up to 3 spaces of indent. It accepts any line with `length >= 3` and returns the fence length. `definition_blocks` takes that length as `fence_length`, so `::::{req} x` and `:::::::{req} x` are accepted.\n- **Shorter colon-only lines stay in the body.** The closer search only accepts a line when `count >= fence_length && suffix.trim().is_empty()`. A `:::` line inside a `::::` block fails that check, so it stays in the body and a nested `:::{note}` directive survives. Lines with fewer than 3 colons are not fences at all.\n- **Closers inside code are ignored.** Candidate closers that overlap a CommonMark code block are skipped through `!overlaps_protected(..., &code_ranges)`. The code ranges come from pulldown-cmark `Tag::CodeBlock` events.\n- **Closers with at least as many colons end the body.** The first unprotected line with `count >= fence_length` closes the block, so longer closers are accepted.\n- **Callers.** The evidence validator (`src/evidence.rs`, around line 234), the book preprocessor, the terms code and the index marker code all use `definition_blocks` or `colon_fence`. They therefore share the same fence logic.\n\n**Tests**\n- **`validates_four_or_more_colon_fences_and_longer_closers`** (`src/evidence.rs`). It is tagged `{test}` for this requirement. It runs the full validator on `::::`/`::::`, `::::`/`:::::` and `:::::::`/`::::::::`. The body contains a nested `:::{note}…:::` and text after it. The test passes only if the whole body, including that nested directive and the trailing text, is the requirement text and no errors are reported.\n- **`colon_requirement_span_includes_markdown_and_excludes_following_text`** (`src/evidence.rs`). It is also tagged `{test}` for this requirement. It puts a bare `:::` line inside a fenced code example in the body. That line must not end the body. The body must end only at the real closer, and the text after it must be excluded.\n- **`a_longer_colon_fence_contains_a_shorter_nested_directive`** (`src/lib.rs`). It is tagged for `requirements.ci.span`, not this requirement, but it directly checks the `::::` opener, the nested `:::` directive and the body bounds.\n- **`marker_accepts_long_fences_and_ignores_examples`** (`src/index.rs`). It covers long fences for the index marker.\n- Many other tests use plain three-colon fences.\n\n**Remaining gaps.** There are no FIXMEs. The tests do not exercise every edge, such as a 5-colon opener with a 4-colon inner line or a closing line with trailing text. The code paths for those cases are the same ones the existing tests cover, so I don't count them as gaps.",
+  "rationale": "**Verdict:** The requirement is implemented and tested. I found no acknowledged gaps and no unacknowledged ones.\n\n**Implementation**\n- `colon_fence` (src/lib.rs, around lines 541–548) accepts up to three leading spaces. It counts leading colons and returns the suffix and length when the length is at least 3. So openers of any length of three or more colons are accepted, not only `:::`.\n- `definition_blocks` (src/lib.rs, around lines 467–537) takes the opener length as `fence_length`. It parses `{req}`, `{example}` and `{definition}` from the suffix.\n- It finds the closer with `colon_fence(...)` where `count >= fence_length` and the suffix is empty, on a line that does not overlap a Markdown code block. This matches the requirement:\n  - A colon-only line with fewer colons than the opener fails `count >= fence_length`, so it stays in the body and a nested directive such as `:::{note} … :::` is preserved.\n  - A line with at least as many colons ends the body, including longer closers.\n  - Candidate closers inside code blocks are skipped via `overlaps_protected` against the `code_ranges` from pulldown-cmark. This gives the \"outside a fenced code example\" behaviour.\n- `evidence.rs` (around lines 232–248), `index.rs` (`marker_ranges`, around lines 677–712) and the preprocessing, reference and term scanning in `lib.rs` and `terms.rs` all use the same `definition_blocks` and `colon_fence`. Fence handling is therefore consistent across validation and rendering.\n\n**Tests**\n- `validates_four_or_more_colon_fences_and_longer_closers` (src/evidence.rs) is tagged `{test}` for this requirement. It runs full repository validation with these opener/closer pairs: `::::`/`::::`, `::::`/`:::::`, and `:::::::`/`::::::::`. Each body contains a nested `:::{note}…:::` and trailing text, and the evidence's requirement text must equal the whole body. This covers longer openers, equal and longer closers, nested shorter fences staying inside, and text after the closer being excluded.\n- `colon_requirement_span_includes_markdown_and_excludes_following_text` (src/evidence.rs) is also tagged for this requirement. It places a `:::` line inside a fenced code example within the body, followed by headings. It checks that the code-block `:::` does not close the body and that text after the real closer is excluded.\n- `a_longer_colon_fence_contains_a_shorter_nested_directive` (src/lib.rs) checks the exact `body_start..body_end` and `closed` for `::::{req}` with a nested `:::` directive. It is tagged for `requirements.ci.span`, but it also exercises this behaviour directly.\n- `marker_accepts_long_fences_and_ignores_examples` (src/index.rs) covers long fences for the index marker, and several other tests use `::::{req}` with nested `:::{example}`.\n\nThe tests cover the interesting points of the design space: opener lengths, closers equal to and longer than the opener, shorter nested colon-only lines, and colon fences inside code blocks.",
   "inputs": [
     {
       "requirements": "requirements.ci.fence_lengths",
@@ -97,16 +97,6 @@
       "line_start": 1623,
       "line_end": 1656,
       "text": [
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "",
-        "    // {test}`requirements.references.targets`",
         "    #[test]",
         "    fn reports_unknown_references_and_uncovered_lines() {",
         "        let temp = fixture();",
@@ -130,7 +120,17 @@
         "                    \"line_start\": 1,",
         "                    \"line_end\": 1,",
         "                    \"text\": [source.lines().next().unwrap()]",
-        "                }]"
+        "                }]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        let errors = report.errors.join(\"\\n\");",
+        "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
+        "        assert!(",
+        "            errors.contains(&format!("
       ]
     },
     {
@@ -336,11 +336,11 @@
       "line_start": 205,
       "line_end": 209,
       "text": [
-        "",
-        "// {impl}`requirements.ci.definition_errors`",
-        "// {impl}`requirements.ci.identifiers`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`"
+        "    {",
+        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
+        "        return root.join(\"md\");",
+        "    }",
+        "    root.join(relative)"
       ]
     },
     {
@@ -348,11 +348,11 @@
       "line_start": 1627,
       "line_end": 1631,
       "text": [
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        ""
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        let known = [\"{\", \"test}`foo.bar.ready`\"].concat();"
       ]
     },
     {
@@ -360,11 +360,11 @@
       "line_start": 1659,
       "line_end": 1663,
       "text": [
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");"
+        "            \"{errors}\"",
+        "        );",
+        "        assert!(",
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\""
       ]
     },
     {
@@ -606,7 +606,7 @@
       "line_start": 1396,
       "line_end": 1396,
       "text": [
-        "    use serde_json::json;"
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();"
       ]
     },
     {
@@ -614,7 +614,7 @@
       "line_start": 1598,
       "line_end": 1598,
       "text": [
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();"
+        "                \"rationale\": \"The source and notes were examined.\","
       ]
     },
     {
@@ -662,7 +662,7 @@
       "line_start": 197,
       "line_end": 197,
       "text": [
-        "        fs::write(project.join(\"md/requirements.md\"), \":::{req} alpha\\nalpha MUST return one.\\n:::\\n\\n:::{req} beta\\nbeta MUST return two.\\n:::\\n\\n:::{example} alpha_case\\nCalling alpha returns one. CITE`requirements.alpha`\\n:::\\n\".replace(\"CITE\", \"{cite}\")).unwrap();"
+        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{"
       ]
     },
     {
@@ -670,7 +670,7 @@
       "line_start": 454,
       "line_end": 454,
       "text": [
-        "            \":::{req} unclosed\\nThis MUST be valid.\\n\","
+        "    assert!("
       ]
     },
     {
@@ -694,7 +694,7 @@
       "line_start": 432,
       "line_end": 432,
       "text": [
-        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();"
+        "        \"submit\","
       ]
     },
     {
@@ -718,7 +718,7 @@
       "line_start": 352,
       "line_end": 352,
       "text": [
-        "    ];"
+        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\", \"rules.unlinked\"]);"
       ]
     },
     {
@@ -798,7 +798,7 @@
       "line_start": 143,
       "line_end": 143,
       "text": [
-        "        format!(\":::{{req}} parity\\n{REQUIREMENT}\\n:::\\n\"),"
+        "    )"
       ]
     },
     {
@@ -846,16 +846,6 @@
       "line_start": 1585,
       "line_end": 1625,
       "text": [
-        "",
-        "    // {test}`requirements.references.evidence_coverage`",
-        "    #[test]",
-        "    fn source_references_are_covered_by_evidence_inputs() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
         "        let implementation = [\"{\", \"impl}`foo.bar.ready`\"].concat();",
         "        let citation = [\"{\", \"cite}`foo.bar.ready`\"].concat();",
         "        let test = [\"{\", \"test}`foo.bar.ready`\"].concat();",
@@ -886,7 +876,17 @@
         "                ]",
         "            })",
         "            .to_string(),",
-        "        )"
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.references.targets`",
+        "    #[test]",
+        "    fn reports_unknown_references_and_uncovered_lines() {",
+        "        let temp = fixture();"
       ]
     },
     {
@@ -1095,11 +1095,11 @@
       "line_start": 1468,
       "line_end": 1472,
       "text": [
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.requirement_text`"
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write("
       ]
     },
     {
@@ -1133,13 +1133,13 @@
       "line_start": 1675,
       "line_end": 1681,
       "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.ci.span`",
-        "    // {test}`requirements.ci.fence_lengths`",
-        "    #[test]",
-        "    fn colon_requirement_span_includes_markdown_and_excludes_following_text() {",
-        "        let temp = fixture();"
+        "            format!(",
+        "                \"# Requirements\\n\\n:::{{req}} first\\n{first}\\n:::\\n\\nOutside the requirement.\\n\\n:::{{req}} second\\nSecond MUST work.\\n:::\\n\"",
+        "            ),",
+        "        )",
+        "        .unwrap();",
+        "        for (name, requirement) in [(\"first\", first), (\"second\", \"Second MUST work.\")] {",
+        "            fs::write("
       ]
     },
     {
@@ -1147,13 +1147,13 @@
       "line_start": 1740,
       "line_end": 1746,
       "text": [
-        "        );",
-        "    }",
-        "",
-        "    // {test}`requirements.ci.fence_lengths`",
-        "    #[test]",
-        "    fn validates_four_or_more_colon_fences_and_longer_closers() {",
-        "        let body = \"Body MUST remain.\\n\\n:::{note}\\nNested.\\n:::\\n\\nStill in the requirement.\";"
+        "                temp.path().join(\"md/requirements.md\"),",
+        "                format!(",
+        "                    \"# Requirements\\n\\n{opening}{{req}} ready\\n{body}\\n{closing}\\n\\nOutside the requirement.\\n\"",
+        "                ),",
+        "            )",
+        "            .unwrap();",
+        "            fs::write("
       ]
     },
     {
@@ -1175,13 +1175,13 @@
       "line_start": 231,
       "line_end": 237,
       "text": [
-        "            }",
-        "        };",
-        "        let namespace = chapter_namespace(relative);",
-        "        for block in definition_blocks(&content) {",
-        "            let line = content[..block.start]",
-        "                .bytes()",
-        "                .filter(|byte| *byte == b'\\n')"
+        "        let label = display_path(root, &file);",
+        "        let content = match fs::read_to_string(&file) {",
+        "            Ok(content) => content,",
+        "            Err(error) => {",
+        "                errors.push(format!(\"{label}: cannot read chapter: {error}\"));",
+        "                continue;",
+        "            }"
       ]
     },
     {
@@ -1189,13 +1189,13 @@
       "line_start": 1710,
       "line_end": 1716,
       "text": [
-        "    // {test}`requirements.ci.span`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn reports_a_missing_closing_colon_fence() {",
-        "        let temp = fixture();",
         "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),"
+        "            temp.path().join(\"evidence/requirements.ready.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ready.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The current body was examined.\",",
+        "                \"inputs\": []"
       ]
     },
     {
@@ -1203,13 +1203,61 @@
       "line_start": 1742,
       "line_end": 1748,
       "text": [
+        "                    \"# Requirements\\n\\n{opening}{{req}} ready\\n{body}\\n{closing}\\n\\nOutside the requirement.\\n\"",
+        "                ),",
+        "            )",
+        "            .unwrap();",
+        "            fs::write(",
+        "                temp.path().join(\"evidence/requirements.ready.json\"),",
+        "                json!({"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 4,
+      "line_end": 20,
+      "text": [
+        "use std::path::{Component, Path, PathBuf};",
         "",
-        "    // {test}`requirements.ci.fence_lengths`",
-        "    #[test]",
-        "    fn validates_four_or_more_colon_fences_and_longer_closers() {",
-        "        let body = \"Body MUST remain.\\n\\n:::{note}\\nNested.\\n:::\\n\\nStill in the requirement.\";",
-        "        for (opening, closing) in [(\"::::\", \"::::\"), (\"::::\", \":::::\"), (\":::::::\", \"::::::::\")] {",
-        "            let temp = fixture();"
+        "use serde_json::{Map, Value};",
+        "use toml_edit::DocumentMut;",
+        "",
+        "use crate::inputs::{InputSelector, ResolvedInput};",
+        "use crate::judgment::Judgment;",
+        "use crate::{",
+        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
+        "    reference_roles, valid_name,",
+        "};",
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "#[derive(Debug)]",
+        "pub struct EvidenceReport {",
+        "    pub requirements: usize,",
+        "    pub examples: usize,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 232,
+      "line_end": 248,
+      "text": [
+        "        let content = match fs::read_to_string(&file) {",
+        "            Ok(content) => content,",
+        "            Err(error) => {",
+        "                errors.push(format!(\"{label}: cannot read chapter: {error}\"));",
+        "                continue;",
+        "            }",
+        "        };",
+        "        let namespace = chapter_namespace(relative);",
+        "        for block in definition_blocks(&content) {",
+        "            let line = content[..block.start]",
+        "                .bytes()",
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()",
+        "                + 1;",
+        "            let source = format!(\"{label}:{line}\");",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            if !valid_name(&name) {"
       ]
     }
   ]

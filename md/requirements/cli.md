@@ -62,7 +62,7 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::
 
 :::{req} add_input_rust_item
-`habeas add-input --rust-item <rust-file>:<line>` MUST parse the file with `syn` and add or refresh one Rust-item input for every explicit item declared on that line. An item with a declared name is declared on the line containing that name; an item without one is declared on the line containing its distinctive keyword or introducer, such as `use` or `impl`. Each input MUST store the repository-relative `rust_file`, the item's syntactic `rust_item` selector, and its complete raw source lines. The command MUST report every selected item and reject a line on which no item is declared.
+`habeas add-input --rust-item <rust-file>:<line>` MUST parse the file with `syn` and add or refresh one Rust-item input for every explicit item declared on that line. An item with a declared name is declared on the line containing that name; an item without one is declared on the line containing its distinctive keyword or introducer, such as `use` or `impl`. Each input MUST store the selected `rust_file` under the path rules in {cite}`requirements.ci.schema`, the item's syntactic `rust_item` selector, and its complete raw source lines. The command MUST report every selected item and reject a line on which no item is declared.
 :::
 
 :::{req} add_input_requirements

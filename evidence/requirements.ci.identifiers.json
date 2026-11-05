@@ -1,7 +1,7 @@
 {
   "requirement": "Requirement and reference names MUST have nonempty dot-separated segments containing only ASCII letters, digits, underscores, or hyphens. An invalid `{req}` directive or role MUST remain literal and MUST NOT define or reference a requirement. For nested chapter paths, a leading `reqs/` and a final `index` or `README` segment MUST be omitted from the requirement namespace.",
   "determination": false,
-  "rationale": "**Implementation: largely correct**\n- `valid_name` (src/lib.rs:650) requires a nonempty name whose dot-separated segments are each nonempty and made only of ASCII alphanumerics, `_` or `-`. This matches the rule.\n- `definition_blocks` (src/lib.rs:506-511) skips a `{req}`, `{example}` or `{definition}` directive whose name is invalid. The directive stays literal and is not defined.\n- `reference_roles` (src/lib.rs:603) drops `{impl}`, `{cite}`, `{test}` and `{term}` roles whose name is invalid.\n- `collect_definitions` (src/evidence.rs:241) also checks the combined `namespace.name`. A file path that produces an invalid namespace is reported as an error and the block is not defined.\n- `chapter_namespace` (src/lib.rs:226) drops a leading `reqs` and a final `index` or `README`. It does so only when more than one path segment remains. As a result `reqs/index.md` gives the namespace `index`, not an empty one. The requirement text does not clearly say which is intended, so I count this only as an untested edge.\n\n**Tests: they do not cover the main design space**\n- `chapter_path_prefixes_the_requirement_name` (src/lib.rs:687) covers the namespace rules well:\n  - the plain `requirements.md` case;\n  - `reqs/foo/bar.md`;\n  - `reqs/foo/README.md`;\n  - `reqs/foo/index.md`;\n  - a dotted name rendered as `requirements.tui.table`.\n- `invalid_names_remain_literal_and_html_is_escaped` (src/lib.rs:743) is the only test of invalid names. It uses one case, `bad name`, which contains a space. It checks that this `{req}` directive stays literal and that one `{impl}` role is not recognised.\n- No test covers the other invalid shapes the requirement names:\n  - empty segments (`a..b`, `.a`, `a.`);\n  - non-ASCII characters;\n  - other punctuation.\n- No test checks that valid `_` and `-` names are accepted.\n- No test covers the invalid-name error path in `collect_definitions` (src/evidence.rs:241). My searches of `tests/` found nothing on this.\n- No test covers an invalid `{cite}`, `{test}` or `{term}` role. The only role test is one `{impl}` case, and it calls `reference_roles` directly.\n- The `reqs/index.md` edge is untested.\n\n`valid_name` is simple, but the segment and character rules are the core of this requirement. Testing only a space does not exercise them. No FIXME or issue reference acknowledges these gaps, so the answer is false, not FIXME.",
+  "rationale": "**Verdict: the core implementation is sound, but test coverage is too thin and there are two untested behaviour gaps.**\n\n**What the code does correctly**\n- `valid_name` (`src/lib.rs:649–659`) matches the character rule. It rejects an empty name and any empty dot segment. It allows only ASCII alphanumerics, `_` and `-`, and it checks bytes, so non-ASCII is rejected.\n- `definition_blocks` (`src/lib.rs:507–511`) skips a `{req}`, `{example}` or `{definition}` directive whose name is invalid, and it requires whitespace before the name. The directive therefore stays literal and defines nothing.\n- `reference_roles` (`src/lib.rs:602–604`) only records a role when `valid_name(name)` is true. An invalid role therefore references nothing.\n- `chapter_namespace` (`src/lib.rs:225–243`) drops the extension, a leading `reqs`, and a trailing `index` or `README`.\n- `collect_definitions` (`src/evidence.rs:247–253`) validates the full namespaced name and reports an error without defining it.\n\n**Test coverage**\n- `chapter_path_prefixes_the_requirement_name` covers four namespace cases: `requirements.md`, `reqs/foo/bar.md`, `reqs/foo/README.md` and `reqs/foo/index.md`. It also checks a valid `tui.table` definition rendering.\n- `invalid_names_remain_literal_and_html_is_escaped` covers one invalid directive (`bad name`) and one invalid role (`{impl}\\`bad name\\``, called with `markdown = false`).\n\n**Gaps**\n1. **Untested name rules.** No test covers the other invalid shapes: empty segments (`a..b`, `.a`, `a.`), non-ASCII characters, or other punctuation such as `/`. No test covers the Markdown (`markdown = true`) reference path for an invalid role. No test covers `collect_definitions`' \"invalid name\" error for a bad name or a bad chapter filename.\n2. **Namespace not validated at render time.**\n   - `replace_definitions` in `src/lib.rs` builds `full_requirement_name(namespace, &block.name)` and renders a badge. It only checked the block's local name, so the namespace is never validated there.\n   - A chapter whose path contains an invalid segment, such as `bad name.md`, would be rendered by mdBook as a requirement with an invalid full name. The requirement says an invalid name must remain literal.\n   - `collect_definitions` does catch this in validation, but the rendering path is neither guarded nor tested.\n3. **Edge case in `chapter_namespace`.** For `reqs/index.md` or `reqs/README.md`, the `reqs` segment is removed first. The `parts.len() > 1` guard then stops the `index` pop, giving the namespace `index`. A strict reading of \"omit a leading `reqs/` and a final `index` or `README` segment\" for nested paths suggests an empty namespace. This case is untested and the behaviour is arguably inconsistent with the requirement text.\n\nNone of these gaps is acknowledged in a FIXME, so I judge false.",
   "inputs": [
     {
       "requirements": "requirements.ci.identifiers",
@@ -772,11 +772,11 @@
       "line_start": 205,
       "line_end": 209,
       "text": [
-        "",
-        "// {impl}`requirements.ci.definition_errors`",
-        "// {impl}`requirements.ci.identifiers`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`"
+        "    {",
+        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
+        "        return root.join(\"md\");",
+        "    }",
+        "    root.join(relative)"
       ]
     },
     {
@@ -784,13 +784,13 @@
       "line_start": 240,
       "line_end": 246,
       "text": [
-        "            let source = format!(\"{label}:{line}\");",
-        "            let name = full_requirement_name(&namespace, &block.name);",
-        "            if !valid_name(&name) {",
-        "                errors.push(format!(",
-        "                    \"{source}: invalid {} name {name:?}\",",
-        "                    block.kind.noun()",
-        "                ));"
+        "        for block in definition_blocks(&content) {",
+        "            let line = content[..block.start]",
+        "                .bytes()",
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()",
+        "                + 1;",
+        "            let source = format!(\"{label}:{line}\");"
       ]
     },
     {
@@ -924,13 +924,13 @@
       "line_start": 239,
       "line_end": 245,
       "text": [
-        "                + 1;",
-        "            let source = format!(\"{label}:{line}\");",
-        "            let name = full_requirement_name(&namespace, &block.name);",
-        "            if !valid_name(&name) {",
-        "                errors.push(format!(",
-        "                    \"{source}: invalid {} name {name:?}\",",
-        "                    block.kind.noun()"
+        "        let namespace = chapter_namespace(relative);",
+        "        for block in definition_blocks(&content) {",
+        "            let line = content[..block.start]",
+        "                .bytes()",
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()",
+        "                + 1;"
       ]
     },
     {
@@ -1072,7 +1072,7 @@
       "line_start": 207,
       "line_end": 207,
       "text": [
-        "// {impl}`requirements.ci.identifiers`"
+        "        return root.join(\"md\");"
       ]
     },
     {
@@ -1136,11 +1136,11 @@
       "line_start": 323,
       "line_end": 327,
       "text": [
-        "    }",
-        "",
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
-        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!("
+        "            \"habeas/authoring/usage\"",
+        "        });",
+        "        fs::read_dir(path)",
+        "            .unwrap()",
+        "            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())"
       ]
     },
     {
@@ -1160,11 +1160,11 @@
       "line_start": 531,
       "line_end": 535,
       "text": [
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]",
-        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {",
-        "    let valid =",
-        "        json!({\"determination\":true,\"rationale\":\"The reviewed sources support the subject.\"});"
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.negative_assessment`",
+        "// {test}`requirements.authoring.persistence`"
       ]
     },
     {
@@ -1172,11 +1172,11 @@
       "line_start": 582,
       "line_end": 586,
       "text": [
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write("
+        "        (json!(true), \"true\", false),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\","
       ]
     },
     {
@@ -1196,11 +1196,11 @@
       "line_start": 331,
       "line_end": 335,
       "text": [
-        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
-        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
-        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
-        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"input text changed\"), \"{text}\");"
+        "    }",
+        "    assert!(!text.contains(\"<script>\"), \"{text}\");",
+        "",
+        "    let output = habeas(temp.path(), &[\"status\", \"rules.case\", \"--verbose\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");"
       ]
     },
     {
@@ -1208,11 +1208,11 @@
       "line_start": 463,
       "line_end": 467,
       "text": [
-        "    );",
-        "    assert!(malformed.contains(\"```json\\n{broken\\n```\"), \"{malformed}\");",
-        "}",
-        "",
-        "// {test}`requirements.cli.status`"
+        "// {test}`requirements.cli.definition_glob_search`",
+        "#[test]",
+        "fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {",
+        "    let temp = fixture();",
+        "    let output = habeas(temp.path(), &[\"info\", \"requirements.ready\"]);"
       ]
     },
     {
@@ -1220,15 +1220,15 @@
       "line_start": 479,
       "line_end": 487,
       "text": [
-        "        let output = habeas(temp.path(), args);",
-        "        assert!(!output.status.success(), \"{args:?}: {output:?}\");",
-        "        assert!(",
-        "            String::from_utf8_lossy(&output.stderr).contains(\"Usage: habeas\"),",
-        "            \"{args:?}: {output:?}\"",
-        "        );",
-        "    }",
-        "    for command in [\"info\", \"status\"] {",
-        "        let invalid = habeas(temp.path(), &[command, \"[\"]);"
+        "    );",
+        "    assert!(exact.contains(\"## Inputs\"), \"{exact}\");",
+        "    assert!(exact.contains(\"src/main.rs:1–1\"), \"{exact}\");",
+        "    assert!(",
+        "        exact.contains(\"```rust,noplayground\\nfn main() {}\"),",
+        "        \"{exact}\"",
+        "    );",
+        "    assert!(",
+        "        exact.contains(\"img.shields.io/badge/evidence-Valid-237346\"),"
       ]
     },
     {
@@ -1236,14 +1236,14 @@
       "line_start": 545,
       "line_end": 552,
       "text": [
-        "        for line in &table {",
-        "            let actual = line",
-        "                .match_indices('|')",
-        "                .map(|(index, _)| index)",
-        "                .collect::<Vec<_>>();",
-        "            assert_eq!(actual, pipes, \"{text}\");",
-        "            for cell in line.split('|').skip(1).take(2) {",
-        "                assert!(cell.starts_with(' ') && cell.ends_with(' '), \"{text}\");"
+        "    for command in [\"info\", \"status\"] {",
+        "        let invalid = habeas(temp.path(), &[command, \"[\"]);",
+        "        assert!(!invalid.status.success());",
+        "        assert!(",
+        "            String::from_utf8_lossy(&invalid.stderr).contains(\"invalid definition glob\"),",
+        "            \"{command}: {invalid:?}\"",
+        "        );",
+        "    }"
       ]
     },
     {
@@ -1251,11 +1251,11 @@
       "line_start": 736,
       "line_end": 740,
       "text": [
-        "    assert!(",
-        "        detail.contains(\"Rust item src/main.rs fn[main]\"),",
-        "        \"{detail}\"",
-        "    );",
-        "    assert!(detail.contains(\"src/main.rs:1–4\"), \"{detail}\");"
+        "        let error = String::from_utf8_lossy(&output.stderr);",
+        "        assert!(",
+        "            error.contains(\"function attestation target must be inside the repository\"),",
+        "            \"{error}\"",
+        "        );"
       ]
     },
     {
@@ -1263,11 +1263,11 @@
       "line_start": 746,
       "line_end": 750,
       "text": [
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--requirements\","
+        "    assert_eq!(fs::read_dir(external.path()).unwrap().count(), 1);",
+        "}",
+        "",
+        "// {test}`requirements.cli.add_input`",
+        "// {test}`requirements.cli.add_input_file_range`"
       ]
     },
     {
@@ -1275,6 +1275,7 @@
       "line_start": 31,
       "line_end": 40,
       "text": [
+        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
         "        state.join(\"habeas\")",
         "    );",
         "    for invalid_xdg in [\"\", \"relative\"] {",
@@ -1283,8 +1284,7 @@
         "                home.as_os_str().to_owned()",
         "            } else {",
         "                OsString::from(invalid_xdg)",
-        "            })",
-        "        };"
+        "            })"
       ]
     },
     {
@@ -1292,11 +1292,11 @@
       "line_start": 155,
       "line_end": 159,
       "text": [
+        "// {test}`requirements.configuration.loading`",
         "// {test}`requirements.configuration.serialization`",
         "#[test]",
         "fn authoring_concurrency_defaults_overrides_and_invalid_values() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"config.toml\");"
+        "    let dir = tempfile::tempdir().unwrap();"
       ]
     },
     {
@@ -1304,12 +1304,12 @@
       "line_start": 185,
       "line_end": 190,
       "text": [
+        "        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);",
         "        assert!(resolved.backend.options().is_empty());",
         "",
         "        for invalid in [\"0\", \"-1\", \"1.5\", \"'2'\"] {",
         "            let error = UserConfig::parse(&format!(\"{base}concurrency = {invalid}\\n\"), &path)",
-        "                .unwrap_err()",
-        "                .to_string();"
+        "                .unwrap_err()"
       ]
     },
     {
@@ -1317,11 +1317,11 @@
       "line_start": 267,
       "line_end": 271,
       "text": [
+        "// {test}`requirements.configuration.loading`",
         "// {test}`requirements.authoring.configuration_storage`",
         "#[test]",
         "fn invalid_schema_and_feature_values_report_the_configuration_path() {",
-        "    let path = Path::new(\"/settings/habeas/config.toml\");",
-        "    for source in ["
+        "    let path = Path::new(\"/settings/habeas/config.toml\");"
       ]
     },
     {
@@ -1367,11 +1367,11 @@
       "line_start": 225,
       "line_end": 229,
       "text": [
-        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
-        "    let config_path = root.join(\"config/habeas/config.toml\");",
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
-        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();",
-        "    assert!("
+        "        .env(\"AWS_EC2_METADATA_DISABLED\", \"true\")",
+        "        .env(\"AWS_ENDPOINT_URL_BEDROCK_RUNTIME\", \"http://127.0.0.1:9\");",
+        "    command",
+        "}",
+        ""
       ]
     },
     {
@@ -1603,13 +1603,13 @@
       "line_start": 230,
       "line_end": 236,
       "text": [
-        "                continue;",
-        "            }",
-        "        };",
-        "        let namespace = chapter_namespace(relative);",
-        "        for block in definition_blocks(&content) {",
-        "            let line = content[..block.start]",
-        "                .bytes()"
+        "",
+        "        let label = display_path(root, &file);",
+        "        let content = match fs::read_to_string(&file) {",
+        "            Ok(content) => content,",
+        "            Err(error) => {",
+        "                errors.push(format!(\"{label}: cannot read chapter: {error}\"));",
+        "                continue;"
       ]
     },
     {
@@ -1807,6 +1807,659 @@
         "            .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))",
         "            .map(|(current, path)| escape_html(&chapter_href(current, path, None)));",
         "        let tag = if detail_href.is_some() { \"a\" } else { \"span\" };"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 213,
+      "line_end": 213,
+      "text": [
+        "// {impl}`requirements.ci.identifiers`"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 252,
+      "line_end": 254,
+      "text": [
+        "        fs::write(",
+        "            project.join(\"md/SUMMARY.md\"),",
+        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 671,
+      "line_end": 673,
+      "text": [
+        "    assert!(completed.iter().all(|run| run[\"evidence_written\"] == true));",
+        "    assert!(completed.iter().all(|run| run[\"request_count\"] == 1));",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 140,
+      "line_end": 142,
+      "text": [
+        "            project.join(\"md/requirements.md\"),",
+        "            format!(\":::{{req}} ready\\n{REQUIREMENT}\\n:::\\n\"),",
+        "        )"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 544,
+      "line_end": 546,
+      "text": [
+        "    let fixture = Fixture::new(&server.endpoint);",
+        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 33,
+      "line_end": 35,
+      "text": [
+        "    for (name, text) in requirements {",
+        "        source.push_str(&format!(\":::{{req}} {name}\\n{text}\\n:::\\n\\n\"));",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 650,
+      "line_end": 652,
+      "text": [
+        "        (\"--rust-item\", format!(\"{}:1\", source.display())),",
+        "    ] {",
+        "        let output = habeas("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 24,
+      "line_end": 26,
+      "text": [
+        "        temp.path().join(\"md/rules.md\"),",
+        "        \":::{req} ready\\nUse TERM`glossary.a`.\\n:::\\n\".replace(\"TERM\", \"{term}\"),",
+        "    )"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 184,
+      "line_end": 186,
+      "text": [
+        "    );",
+        "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();",
+        "    let errors = validate_repository(temp.path()).unwrap().errors;"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 359,
+      "line_end": 361,
+      "text": [
+        "        root.join(\"md/rules.md\"),",
+        "        format!(\":::{{req}} ready\\n{body}\\n:::\\n\"),",
+        "    )"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 20,
+      "line_end": 22,
+      "text": [
+        "        root.join(\"md/rules.md\"),",
+        "        \":::{req} ready\\nRead the data.\\n:::\\n\",",
+        "    )"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 158,
+      "line_end": 160,
+      "text": [
+        "            \"requirements\":\"rules.ready\", \"matches\":[\"rules.ready\"],",
+        "            \"text\":[\":::{req} ready\", \"Read the data.\", \":::\"],",
+        "        }],"
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 152,
+      "line_end": 154,
+      "text": [
+        "        project.join(\"md/requirements.md\"),",
+        "        format!(\":::{{req}} parity\\n{REQUIREMENT}\\n:::\\n\"),",
+        "    )"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 29,
+      "line_end": 31,
+      "text": [
+        "        format!(",
+        "            \":::{{req}} ready\\nThe behavior MUST work.\\n:::\\n\\n{}\\n\",",
+        "            example_lines.join(\"\\n\")"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 269,
+      "line_end": 271,
+      "text": [
+        "                \"matches\": [\"requirements.ready\"],",
+        "                \"text\": [\":::{req} ready\", \"The behavior MUST work.\", \":::\"]",
+        "            }]"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 12,
+      "line_end": 13,
+      "text": [
+        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
+        "    reference_roles, valid_name,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 216,
+      "line_end": 216,
+      "text": [
+        "fn collect_definitions("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 239,
+      "line_end": 239,
+      "text": [
+        "        let namespace = chapter_namespace(relative);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 248,
+      "line_end": 248,
+      "text": [
+        "            if !valid_name(&name) {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 159,
+      "line_end": 159,
+      "text": [
+        "        let namespace = chapter_namespace(source_path);"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 210,
+      "line_end": 210,
+      "text": [
+        "            .map(chapter_namespace)"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 226,
+      "line_end": 226,
+      "text": [
+        "fn chapter_namespace(path: &Path) -> String {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 509,
+      "line_end": 509,
+      "text": [
+        "            || !valid_name(rest.trim())"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 604,
+      "line_end": 604,
+      "text": [
+        "        if valid_name(name) {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 651,
+      "line_end": 651,
+      "text": [
+        "fn valid_name(name: &str) -> bool {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 680,
+      "line_end": 680,
+      "text": [
+        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 690,
+      "line_end": 690,
+      "text": [
+        "            chapter_namespace(Path::new(\"requirements.md\")),"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 693,
+      "line_end": 695,
+      "text": [
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/bar.md\")), \"foo.bar\");",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/README.md\")), \"foo\");",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/index.md\")), \"foo\");"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 743,
+      "line_end": 743,
+      "text": [
+        "    fn invalid_names_remain_literal_and_html_is_escaped() {"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "line_start": 32,
+      "line_end": 36,
+      "text": [
+        "## Authoring format",
+        "",
+        "Put requirements in the book's Markdown source directory. Define each with a fenced `{req}` directive: the opening line is three or more colons followed by `{req} name`, and the closing line has at least as many colons. Derive the full name from the chapter path relative to that directory: remove `.md`, change `/` to `.`, and append the directive name. For nested chapters, omit a leading `reqs/` and a trailing `/index` or `/README`.",
+        "",
+        "```text"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 102,
+      "line_end": 106,
+      "text": [
+        "",
+        ":::{req} identifiers",
+        "Requirement and reference names MUST have nonempty dot-separated segments containing only ASCII letters, digits, underscores, or hyphens. An invalid `{req}` directive or role MUST remain literal and MUST NOT define or reference a requirement. For nested chapter paths, a leading `reqs/` and a final `index` or `README` segment MUST be omitted from the requirement namespace.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1392,
+      "line_end": 1396,
+      "text": [
+        "    fn fixture() -> TempDir {",
+        "        let temp = TempDir::new().unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1466,
+      "line_end": 1470,
+      "text": [
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1579,
+      "line_end": 1583,
+      "text": [
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1625,
+      "line_end": 1629,
+      "text": [
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 691,
+      "line_end": 697,
+      "text": [
+        "            \"requirements\"",
+        "        );",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/bar.md\")), \"foo.bar\");",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/README.md\")), \"foo\");",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/index.md\")), \"foo\");",
+        "",
+        "        let rendered = replace_definitions("
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 743,
+      "line_end": 754,
+      "text": [
+        "    fn invalid_names_remain_literal_and_html_is_escaped() {",
+        "        let rendered = replace_definitions(",
+        "            \":::{req} bad name\\nInvalid.\\n:::\\n\\n:::{req} good\\nGood.\\n:::\",",
+        "            \"a&b\",",
+        "            None,",
+        "            None,",
+        "        );",
+        "        assert!(rendered.contains(\":::{req} bad name\"));",
+        "        assert!(rendered.contains(\"alt=\\\"req a&amp;b.good\\\"\"));",
+        "        assert!(reference_roles(\"{impl}`bad name`\", false).is_empty());",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 870,
+      "line_end": 874,
+      "text": [
+        "    #[test]",
+        "    fn examples_are_distinct_definitions_and_tests_link_to_them() {",
+        "        let source = \"::::{req} ready\\nReady.\\n\\n:::{example} something.foo\\nGiven ready, it succeeds. CITE`requirements.ready`\\n:::\\n::::\\n\\n:::{example} bad name\\nInvalid.\\n:::\\n\\n```text\\n:::{example} hidden\\nLiteral.\\n:::\\n```\"",
+        "            .replace(\"CITE\", \"{cite}\");",
+        "        let blocks = definition_blocks(&source);"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 907,
+      "line_end": 911,
+      "text": [
+        "                .contains(\"alt=\\\"example requirements.something.foo\\\"\")",
+        "        );",
+        "        assert!(chapters[0].content.contains(\":::{example} bad name\"));",
+        "        assert!(chapters[0].content.contains(\":::{example} hidden\"));",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 155,
+      "line_end": 157,
+      "text": [
+        "    let denied =",
+        "        matches!(behavior, Behavior::DeniedRead { subject: denied, .. } if subject == denied);",
+        "    let held = !denied"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 161,
+      "line_end": 163,
+      "text": [
+        "                hold_other_requests: true,",
+        "                ..",
+        "            }"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 524,
+      "line_end": 526,
+      "text": [
+        "    assert_eq!(",
+        "        &subjects[..2],",
+        "        ["
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 151,
+      "line_end": 153,
+      "text": [
+        "            project.join(\"extra.txt\"),",
+        "            (1..=12)",
+        "                .map(|line| {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 611,
+      "line_end": 616,
+      "text": [
+        "                assert!(cell.starts_with(' ') && cell.ends_with(' '), \"{text}\");",
+        "                assert!(!cell[1..].starts_with(' '), \"{text}\");",
+        "            }",
+        "        }",
+        "        for column in 0..2 {",
+        "            let content_width = table"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 380,
+      "line_end": 382,
+      "text": [
+        "    let path = temp.path().join(\"habeas.toml\");",
+        "    fs::write(&path, \"version = 1\\n[evidence]\\nallow = ['generated', '../shared']\\ndisallow = ['generated/private']\\n[authoring.configs.cloud]\\nbackend = 'unknown'\\ncredentials = 'DO_NOT_PRINT_THIS_CREDENTIAL'\\n\").unwrap();",
+        "    let policy = load_workspace_evidence(temp.path()).unwrap().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 386,
+      "line_end": 388,
+      "text": [
+        "        policy.evidence.allow,",
+        "        vec![Path::new(\"generated\"), Path::new(\"../shared\")]",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 228,
+      "line_end": 230,
+      "text": [
+        "            .content",
+        "            .matches(\"href=\\\"../glossary.html#habeas-definition-glossary.a\\\"\")",
+        "            .count(),"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 245,
+      "line_end": 247,
+      "text": [
+        "    fs::write(root.join(\"public/source.rs\"), \"pub struct Source;\\n\").unwrap();",
+        "    std::os::unix::fs::symlink(\"../public\", root.join(\"private/link\")).unwrap();",
+        "    fs::write("
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 254,
+      "line_end": 256,
+      "text": [
+        "        \"private/link/source.rs\",",
+        "        \"sub/../private/link/source.rs\",",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 354,
+      "line_end": 356,
+      "text": [
+        "            root.join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\ndisallow = ['../external-build']\\n\",",
+        "        )"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 156,
+      "line_end": 158,
+      "text": [
+        "        (",
+        "            \"[book]\\nsrc = \\\"../outside\\\"\\n\",",
+        "            \"book.src must be a directory\","
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 220,
+      "line_end": 222,
+      "text": [
+        "",
+        "    fs::write(&css, include_str!(\"../md/habeas.css\")).unwrap();",
+        "    fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 10,
+      "line_end": 15,
+      "text": [
+        "use crate::judgment::Judgment;",
+        "use crate::{",
+        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
+        "    reference_roles, valid_name,",
+        "};",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 237,
+      "line_end": 241,
+      "text": [
+        "            }",
+        "        };",
+        "        let namespace = chapter_namespace(relative);",
+        "        for block in definition_blocks(&content) {",
+        "            let line = content[..block.start]"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 246,
+      "line_end": 252,
+      "text": [
+        "            let source = format!(\"{label}:{line}\");",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            if !valid_name(&name) {",
+        "                errors.push(format!(",
+        "                    \"{source}: invalid {} name {name:?}\",",
+        "                    block.kind.noun()",
+        "                ));"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 157,
+      "line_end": 161,
+      "text": [
+        "            continue;",
+        "        };",
+        "        let namespace = chapter_namespace(source_path);",
+        "        for block in definition_blocks(&chapter.content) {",
+        "            if !block.closed {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 208,
+      "line_end": 212,
+      "text": [
+        "            .as_deref()",
+        "            .or(chapter.path.as_deref())",
+        "            .map(chapter_namespace)",
+        "            .unwrap_or_default();",
+        "        chapter.content = replace_definitions("
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 224,
+      "line_end": 228,
+      "text": [
+        "",
+        "// {impl}`requirements.ci.identifiers`",
+        "fn chapter_namespace(path: &Path) -> String {",
+        "    let path = path.with_extension(\"\");",
+        "    let mut parts: Vec<_> = path"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 649,
+      "line_end": 653,
+      "text": [
+        "",
+        "// {impl}`requirements.ci.identifiers`",
+        "fn valid_name(name: &str) -> bool {",
+        "    !name.is_empty()",
+        "        && name.split('.').all(|part| {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 678,
+      "line_end": 682,
+      "text": [
+        "mod tests {",
+        "    use super::{",
+        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,",
+        "        reference_roles, replace_definitions, shield_badge,",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 688,
+      "line_end": 697,
+      "text": [
+        "    fn chapter_path_prefixes_the_requirement_name() {",
+        "        assert_eq!(",
+        "            chapter_namespace(Path::new(\"requirements.md\")),",
+        "            \"requirements\"",
+        "        );",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/bar.md\")), \"foo.bar\");",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/README.md\")), \"foo\");",
+        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/index.md\")), \"foo\");",
+        "",
+        "        let rendered = replace_definitions("
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 741,
+      "line_end": 745,
+      "text": [
+        "    // {test}`requirements.references.safe_badges`",
+        "    #[test]",
+        "    fn invalid_names_remain_literal_and_html_is_escaped() {",
+        "        let rendered = replace_definitions(",
+        "            \":::{req} bad name\\nInvalid.\\n:::\\n\\n:::{req} good\\nGood.\\n:::\","
       ]
     }
   ]

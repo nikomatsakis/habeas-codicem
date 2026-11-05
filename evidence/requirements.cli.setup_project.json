@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas setup` MUST find an ancestor containing both `Cargo.toml` and `book.toml`, require a nonempty relative mdBook source path without parent components and a `SUMMARY.md` at that path, and report an error when these prerequisites are absent or invalid.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.cli.setup_project`. The only weak spot is that the `habeas setup` \"no project found\" error is not tested directly.\n\n**Implementation (`src/setup.rs`)**\n- `find_project_root` walks `cwd.ancestors()` and returns the first directory that has both `Cargo.toml` and `book.toml` as files.\n- `project_root` turns a `None` result into the error \"cannot find a project with Cargo.toml and book.toml\".\n- `book_source` defaults to `src` when `[book]` or `book.src` is absent. It reports an error if `book` is not a table or `book.src` is not a string.\n- `run` rejects an empty source. It also rejects any source path with a component that is not `Normal` or `CurDir`, so `..`, absolute paths and prefixes are refused. The error is \"book.src must be a directory inside this project\".\n- `run` then checks that `<source>/SUMMARY.md` is a file. If it isn't, it returns \"cannot find mdBook SUMMARY.md in …\".\n- All of these checks run before any file is written or `cargo add` is invoked.\n\n**Tests (`tests/setup.rs`)**\n- `setup_rejects_invalid_book_configuration` covers the invalid cases through the real binary:\n  - `book` not a table;\n  - `src` not a string;\n  - empty `src`;\n  - absolute `src`;\n  - `../outside`.\n\n  It also covers a missing `md/SUMMARY.md`. Each case asserts a nonzero exit status and the expected stderr message.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` covers the default `src` for an empty `book.toml` and for a `[book]` table without `src`. It then checks that a non-string `src` is treated as invalid.\n- `session_start_advises_only_when_setup_is_incomplete` exercises `find_project_root` through the hook:\n  - It finds the root from a nested cwd.\n  - Removing `book.toml` gives no project root.\n\n**Gaps**\n- No test runs `habeas setup` itself with no ancestor project. That path is a one-line `ok_or_else` over `find_project_root`, whose `None` case the hook test does cover.\n- No test runs `habeas setup` from a nested directory. The shared ancestor-search function is tested via the hook.\n\nI judge both gaps minor, so I am not choosing FIXME or false.",
+  "rationale": "**Verdict:** `habeas setup` meets `requirements.cli.setup_project`. The code implements each clause and the tests cover the interesting cases.\n\n**Implementation (`src/setup.rs`)**\n- `find_project_root` walks `cwd.ancestors()` and picks the first directory where both `Cargo.toml` and `book.toml` are files.\n- `project_root` turns a missing root into the error \"cannot find a project with Cargo.toml and book.toml\".\n- `book_source` defaults to `src` when `[book]` or `src` is absent. It reports \"book must be a table\" or \"book.src must be a string\" when the types are wrong.\n- `run` rejects an empty source. It also rejects any path with a component other than `Normal` or `CurDir`, so absolute paths, prefixes and `..` all fail with \"book.src must be a directory inside this project\".\n- `run` then requires `<source>/SUMMARY.md` to be a file, otherwise \"cannot find mdBook SUMMARY.md in …\".\n- All of these checks run before any file is written.\n\n**Tests (`tests/setup.rs`, `tests/commands.rs`)**\n- `setup_rejects_invalid_book_configuration` checks that setup fails with the expected stderr for each of these inputs:\n  - a non-table `book`\n  - a non-string `src`\n  - an empty `src`\n  - an absolute `src`\n  - a `../outside` `src`\n  - a missing `SUMMARY.md`\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` covers the default `src` when `[book]` or `src` is absent, and checks that an invalid `src` type is detected afterwards.\n- `session_start_advises_only_when_setup_is_incomplete` runs `find_project_root` from a nested directory (`src/nested`) and from the root, which exercises the ancestor search.\n- `tests/commands.rs` (around lines 575–582) checks the \"cannot find a project with Cargo.toml and book.toml\" error when run outside any project. It uses `status`, which calls the shared `project_root`.\n\n**Minor gaps (none acknowledged as FIXME)**\n- No test runs `setup` itself from outside a project. It shares `project_root` with `status`, so this is low risk.\n- No test covers a directory that has only one of `Cargo.toml` and `book.toml`. This is a trivial `&&` condition.\n- A Windows drive-prefix path is not testable on Unix. The component check covers it in code.\n\nNone of these gaps is significant enough to fail the requirement.",
   "inputs": [
     {
       "requirements": "requirements.cli.setup_project",
@@ -411,23 +411,23 @@
       "line_start": 29,
       "line_end": 45,
       "text": [
+        ":::{req} workspace_location",
+        "Habeas MUST search from its invocation directory upward for the nearest enclosing",
+        "`habeas.toml`. It MUST use that file alone, without merging ancestor workspace",
+        "files. A library operation given a project root MUST search from that root unless",
+        "its current directory is inside the project, in which case it MUST start there.",
+        "The directory containing the selected file defines the base for its relative",
+        "paths; it does not replace the Cargo and mdBook project root. A missing file MUST",
+        "mean absent workspace settings. Discovery MUST report unreadable candidate files",
+        "rather than silently selecting an ancestor. Loading MUST NOT create the file.",
+        ":::",
+        "",
+        "### Persistent state",
         "",
         "Usage history belongs in the state directory described by the",
         "[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/#variables).",
         "",
-        ":::{req} state_location",
-        "Habeas MUST store persistent per-user activity state under",
-        "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
-        "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
-        "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
-        "state root and document their record formats and locations.",
-        "",
-        "State MUST persist across invocations and MUST NOT be stored in the project",
-        "repository, the configuration file, or a disposable cache directory. Habeas MUST",
-        "create the required directories when recording state. If it cannot determine or",
-        "write the state location, the operation requiring that state MUST report the",
-        "failure and MUST NOT claim that its history was recorded.",
-        ":::"
+        ":::{req} state_location"
       ]
     },
     {
@@ -435,23 +435,23 @@
       "line_start": 1385,
       "line_end": 1401,
       "text": [
-        "                function.declaration_line",
-        "            ));",
-        "        }",
-        "    }",
-        "    valid",
-        "}",
-        "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use std::fs;",
         "",
         "    use serde_json::json;",
         "    use tempfile::TempDir;",
         "",
         "    use super::validate_repository;",
         "",
-        "    // {test}`requirements.integration.report_api`"
+        "    // {test}`requirements.integration.report_api`",
+        "    fn fixture() -> TempDir {",
+        "        let temp = TempDir::new().unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            \"// first line\\n// second line\\n\",",
+        "        )"
       ]
     },
     {
@@ -894,9 +894,9 @@
       "line_start": 161,
       "line_end": 163,
       "text": [
-        "        integer(args, \"context\")?",
-        "    } else {",
-        "        5"
+        "            if sources.access.path(&sources.root, extra).is_err() {",
+        "                continue;",
+        "            }"
       ]
     },
     {
@@ -965,13 +965,13 @@
       "line_start": 218,
       "line_end": 224,
       "text": [
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)"
+        "    state.active -= 1;",
+        "}",
+        "",
+        "struct Fixture {",
+        "    _temp: TempDir,",
+        "    project: PathBuf,",
+        "    config_root: PathBuf,"
       ]
     },
     {
@@ -1007,13 +1007,13 @@
       "line_start": 147,
       "line_end": 153,
       "text": [
-        "    // an additional source read instead of only the mandatory initial inputs.",
-        "    fs::write(project.join(\"src/parity.rs\"), \"pub fn is_even(value: u32) -> bool {\\n    value % 2 == 0\\n}\\n\\n#[test]\\nfn parity_cases() {\\n    assert!(is_even(0));\\n    assert!(!is_even(1));\\n    assert!(is_even(2));\\n    assert!(!is_even(u32::MAX));\\n}\\n\").unwrap();",
-        "    let output = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .current_dir(&project)",
-        "        .args([",
-        "            \"author-evidence\",",
-        "            SUBJECT,"
+        "        project.join(\"md/SUMMARY.md\"),",
+        "        \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(",
+        "        project.join(\"md/requirements.md\"),",
+        "        format!(\":::{{req}} parity\\n{REQUIREMENT}\\n:::\\n\"),"
       ]
     },
     {
@@ -1130,6 +1130,506 @@
         "    fs::remove_file(project.join(\"book.toml\")).unwrap();",
         "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
         "}"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 340,
+      "line_end": 344,
+      "text": [
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let source = fixture.project.join(\"src/lib.rs\");",
+        "    fs::write(",
+        "        &source,",
+        "        fs::read_to_string(&source).unwrap().replace("
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 356,
+      "line_end": 360,
+      "text": [
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    let entries = fixture.evidence(\"rust/src/lib.rs\");",
+        "    assert_eq!(entries[\"functions\"].as_array().unwrap().len(), 3);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 147,
+      "line_end": 151,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();",
+        "        fs::write(",
+        "            project.join(\"extra.txt\"),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 272,
+      "line_end": 276,
+      "text": [
+        "            \"submit_judgment\",",
+        "            json!({",
+        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),",
+        "        )]),",
+        "    ]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 339,
+      "line_end": 343,
+      "text": [
+        "",
+        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
+        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));",
+        "    assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
+        "    let inputs = evidence[\"inputs\"].as_array().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 374,
+      "line_end": 378,
+      "text": [
+        "    let usage = fixture.usage();",
+        "    assert_eq!(usage[\"outcome\"], \"completed\");",
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
+        "    assert_eq!(usage[\"evidence_written\"], true);",
+        "    assert_eq!(usage[\"request_count\"], 2);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 540,
+      "line_end": 548,
+      "text": [
+        "        \"submit\",",
+        "        \"submit_judgment\",",
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
+        "    )])]);",
+        "    let fixture = Fixture::new(&server.endpoint);",
+        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 554,
+      "line_end": 558,
+      "text": [
+        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
+        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
+        "    assert!(prompt.contains(\"queue[0] = value\"));",
+        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 565,
+      "line_end": 569,
+      "text": [
+        "            .contains(\"without acknowledging\")",
+        "    );",
+        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
+        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");",
+        "    assert_eq!(fixture.usage()[\"determination\"], \"false\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 579,
+      "line_end": 583,
+      "text": [
+        "        (json!(true), \"true\", true),",
+        "        (json!(false), \"false\", true),",
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
+        "        (json!(true), \"true\", false),",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 661,
+      "line_end": 665,
+      "text": [
+        "            \"empty\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
+        "        )],",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 858,
+      "line_end": 862,
+      "text": [
+        "            .iter()",
+        "            .find(|outcome| outcome[\"type\"] == \"object\")",
+        "            .unwrap()[\"properties\"][\"FIXME\"];",
+        "        assert_eq!(fixme[\"type\"], \"array\");",
+        "        assert_eq!(fixme[\"minItems\"], 1);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 907,
+      "line_end": 911,
+      "text": [
+        "            \"submit_judgment\",",
+        "            json!({",
+        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\"",
+        "            }),",
+        "        )])],"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 926,
+      "line_end": 930,
+      "text": [
+        "    let usage = fixture.usage();",
+        "    assert_eq!(usage[\"outcome\"], \"failed\");",
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
+        "    assert_eq!(usage[\"evidence_written\"], false);",
+        "    assert_eq!(usage[\"request_count\"], 1);"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 137,
+      "line_end": 141,
+      "text": [
+        "            \"Alpha MUST work.\",",
+        "            vec![",
+        "                \"FIXME(#00123)\",",
+        "                \"Repeated #123 and rust-lang/rust#000456.\",",
+        "                \"https://github.com/rust-lang/rust/issues/456\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 149,
+      "line_end": 153,
+      "text": [
+        "            vec![\"#123\", \"#45\", \"Rust-Lang/rust#456\", \"An unrelated note\"],",
+        "        ),",
+        "        (\"example\", \"case\", &example, vec![\"FIXME(#45)\"]),",
+        "        (",
+        "            \"req\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 182,
+      "line_end": 186,
+      "text": [
+        "            json!({",
+        "                subject_key: text,",
+        "                \"determination\": {\"FIXME\": references},",
+        "                \"rationale\": \"The fixture records acknowledged implementation gaps.\",",
+        "                \"inputs\": [input]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 296,
+      "line_end": 300,
+      "text": [
+        "        assert!(",
+        "            all.lines().any(",
+        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")",
+        "            ),",
+        "            \"{all}\""
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 321,
+      "line_end": 325,
+      "text": [
+        "        \"requirement\",",
+        "        \"example\",",
+        "        \"FIXME(#00123)\",",
+        "        \"Repeated #123 and rust-lang/rust#000456.\",",
+        "        \"https://github.com/rust-lang/rust/issues/456\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 578,
+      "line_end": 582,
+      "text": [
+        "    assert!(",
+        "        String::from_utf8_lossy(&status.stderr)",
+        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
+        "        \"{status:?}\"",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 33,
+      "line_end": 37,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    let source = \"// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).\";",
+        "    fs::write(temp.path().join(\"observed.txt\"), format!(\"{source}\\n\")).unwrap();",
+        "    let source_input = json!({"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 57,
+      "line_end": 61,
+      "text": [
+        "        json!({",
+        "            \"example\": example,",
+        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },",
+        "            \"rationale\": \"The recorded comments acknowledge the missing timeout tests.\",",
+        "            \"inputs\": [source_input]"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 89,
+      "line_end": 94,
+      "text": [
+        "        json!(true),",
+        "        json!(false),",
+        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
+        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
+        "    ] {",
+        "        assert_eq!(Judgment::from_value(&value).unwrap().to_value(), value);"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 96,
+      "line_end": 108,
+      "text": [
+        "    for invalid in [",
+        "        Value::Null,",
+        "        json!(\"FIXME\"),",
+        "        json!([\"#125\"]),",
+        "        json!({}),",
+        "        json!({ \"FIXME\": [] }),",
+        "        json!({ \"FIXME\": [\"\"] }),",
+        "        json!({ \"FIXME\": [\"   \"] }),",
+        "        json!({ \"FIXME\": [\"#125\", 125] }),",
+        "        json!({ \"FIXME\": \"#125\" }),",
+        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
+        "        json!({ \"fixme\": [\"#125\"] }),",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 149,
+      "line_end": 158,
+      "text": [
+        "    for (comment, judgment) in [",
+        "        (",
+        "            \"// FIXME(#125): capacity-zero insertion does not return Full yet.\",",
+        "            json!({ \"FIXME\": [\"#125\"] }),",
+        "        ),",
+        "        (",
+        "            \"// FIXME: cancellation races are not tested on Windows.\",",
+        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
+        "        ),",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 180,
+      "line_end": 184,
+      "text": [
+        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {",
+        "    let temp = fixture();",
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 263,
+      "line_end": 267,
+      "text": [
+        "            \"rust_item\": \"fn[sample]\",",
+        "            \"citations\": [{\"role\": \"impl\", \"name\": \"requirements.ready\"}],",
+        "            \"determination\": {\"FIXME\": [\"#125\"]},",
+        "            \"rationale\": \"The function's citations were reviewed.\",",
+        "            \"inputs\": [function, {"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 298,
+      "line_end": 302,
+      "text": [
+        "        let status = habeas::status_markdown(temp.path(), all).unwrap();",
+        "        assert_eq!(status.contains(\"requirements.timeout\"), all, \"{status}\");",
+        "        assert!(status.contains(\"FIXME\"));",
+        "        assert!(status.contains(\"#125\"));",
+        "        assert!(status.contains(\"rust-lang/rust#123\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 308,
+      "line_end": 312,
+      "text": [
+        "    assert!(verbose.contains(\"example\"), \"{verbose}\");",
+        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
+        "    assert!(info.contains(\"## FIXME references\"));",
+        "    assert!(info.contains(\"rust-lang/rust#123\"));",
+        ""
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 326,
+      "line_end": 330,
+      "text": [
+        "    habeas::preprocess_book(&mut book, temp.path()).unwrap();",
+        "    let index = book.chapters().nth(1).unwrap();",
+        "    assert!(index.content.contains(\"FIXME\"));",
+        "    let detail = index",
+        "        .sub_items"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 335,
+      "line_end": 340,
+      "text": [
+        "        })",
+        "        .unwrap();",
+        "    assert!(detail.content.contains(\"evidence-FIXME\"));",
+        "    assert!(detail.content.contains(\"## FIXME references\"));",
+        "    assert!(detail.content.contains(\"rust-lang/rust#123\"));",
+        "}"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 68,
+      "line_end": 71,
+      "text": [
+        "    let cwd = std::env::current_dir()?;",
+        "    find_project_root(&cwd)",
+        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 555,
+      "line_end": 585,
+      "text": [
+        "    assert!(",
+        "        String::from_utf8_lossy(&unmatched.stderr).contains(\"no definitions match\"),",
+        "        \"{unmatched:?}\"",
+        "    );",
+        "    let status = habeas(temp.path(), &[\"status\", \"requirements.*ready\", \"--all\"]);",
+        "    assert!(status.status.success(), \"{status:?}\");",
+        "    let status = String::from_utf8(status.stdout).unwrap();",
+        "    assert!(",
+        "        status.contains(\"`requirements.ready` (requirement)\"),",
+        "        \"{status}\"",
+        "    );",
+        "    assert!(",
+        "        status.contains(\"`requirements.xready` (requirement)\"),",
+        "        \"{status}\"",
+        "    );",
+        "    assert!(!status.contains(\"| `requirements.pending`\"), \"{status}\");",
+        "    let no_status = habeas(temp.path(), &[\"status\", \"nothing.*\"]);",
+        "    assert!(!no_status.status.success());",
+        "    assert!(String::from_utf8_lossy(&no_status.stderr).contains(\"no definitions match\"));",
+        "",
+        "    let outside_project = TempDir::new().unwrap();",
+        "    let status = habeas(outside_project.path(), &[\"status\"]);",
+        "    assert!(!status.status.success(), \"{status:?}\");",
+        "    assert!(",
+        "        String::from_utf8_lossy(&status.stderr)",
+        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
+        "        \"{status:?}\"",
+        "    );",
+        "}",
+        "",
+        "// {test}`requirements.cli.status_table_alignment`"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 122,
+      "line_end": 124,
+      "text": [
+        "        Command::Status { all, glob, verbose } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout().lock().write_all("
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 131,
+      "line_end": 133,
+      "text": [
+        "        Command::Info { selector } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout()"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 146,
+      "line_end": 148,
+      "text": [
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            // Tokio's fixed worker pool is shared by all async assessments."
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 211,
+      "line_end": 213,
+      "text": [
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            let target = if let Some(name) = for_requirement {"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 66,
+      "line_end": 68,
+      "text": [
+        "// {impl}`requirements.cli.setup_project`",
+        "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {",
+        "    let cwd = std::env::current_dir()?;"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 93,
+      "line_end": 95,
+      "text": [
+        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
+        "    let root = project_root()?;",
+        "    let book_path = root.join(\"book.toml\");"
       ]
     }
   ]

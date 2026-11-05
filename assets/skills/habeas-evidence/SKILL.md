@@ -19,12 +19,26 @@ rationale. The supervising agent must not compose or refresh evidence JSON,
 determinations, rationales, or source snapshots itself, or delegate that work to
 an ad hoc evidence-writing agent.
 
+Monitor summaries, outcomes, and validation diagnostics without loading generated
+evidence bodies into the supervising agent's context. If a rationale needs
+investigation, delegate that reading and request a concise implementation finding
+rather than the evidence text.
+
 In a Git worktree, stage new source files with `git add` before authoring.
-Unstaged edits to tracked files are readable. The harness excludes untracked
-files, generated `evidence/` content, and paths outside the project.
+Unstaged edits to tracked files are readable. The default exclusions are
+untracked files, generated `evidence/` content, and paths outside the project;
+existing Cargo build-script output directories are allowed when discoverable.
+The nearest enclosing `habeas.toml` can set `[evidence]` `allow` and `disallow`
+paths (literal files or directory subtrees relative to that file). Allow overrides
+the defaults and disallow wins. A denied explicit read aborts that assessment;
+other batch assessments continue, and the command ultimately reports failure.
+The driving human or agent must decide whether to stage the file or change policy.
+Do not bypass the error by writing evidence yourself.
 
 Use `--config <name>` to select a saved authoring configuration. Configuration and
-credentials stay outside the project. Bedrock defaults to concurrent assessments;
+credentials can come from the user file or nearest `habeas.toml`; prefer profiles
+and environment references over literal credentials in workspace files.
+Bedrock defaults to concurrent assessments;
 Ollama defaults to one at a time. Each named configuration's positive `concurrency`
 setting overrides its default. If the provider reports throttling, lower that
 setting and rerun the command. Do not substitute manual evidence creation when

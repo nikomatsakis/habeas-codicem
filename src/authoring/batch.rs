@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use super::{AuthoringOutcome, AuthoringSubject, PendingAssessment, prepare_assessment};
@@ -20,6 +21,7 @@ pub struct BatchOutcome {
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.concurrency`
 // {impl}`requirements.authoring.configuration_precedence`
+// {impl}`requirements.authoring.read_denial`
 pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {
     let root = fs::canonicalize(root)?;
     let inspection = inspect_repository(&root)?;
@@ -68,16 +70,21 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
     );
     let mut subjects = subjects.into_iter();
     let mut tasks = JoinSet::new();
-    let mut cancelled = false;
+    let (cancel, cancellation) = watch::channel(None::<&'static str>);
     loop {
-        while !cancelled && tasks.len() < concurrency {
+        while cancellation.borrow().is_none() && tasks.len() < concurrency {
             let Some(subject) = subjects.next() else {
                 break;
             };
             let root = root.clone();
             let config = config.clone();
+            let cancellation = cancellation.clone();
+            let cancel = cancel.clone();
             tasks.spawn(async move {
-                let result = prepare_assessment(&root, &subject, &config).await;
+                let result = prepare_assessment(&root, &subject, &config, cancellation).await;
+                if let Err(error) = &result {
+                    cancel_on_error(&cancel, error);
+                }
                 (subject.label(), result)
             });
         }
@@ -95,6 +102,12 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
             }
         };
         let result = result.and_then(|pending| {
+            // Serialize the stop signal with persistence: a write already in
+            // progress finishes before the signal; later completions are discarded.
+            let stop_reason = cancellation.borrow();
+            if let Some(reason) = *stop_reason {
+                return Err(pending.failed(io::Error::new(io::ErrorKind::Interrupted, reason)));
+            }
             // This collector is the sole writer: functions in the same source
             // file can finish concurrently without replacing each other's entries.
             match write_record(&root, &pending) {
@@ -113,22 +126,36 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
                 outcome.completed.push(assessment);
             }
             Err(error) => {
-                cancelled |= error.kind() == io::ErrorKind::Interrupted;
+                cancel_on_error(&cancel, &error);
                 eprintln!("{label}: {error}");
                 outcome.failures.push((label, error.to_string()));
             }
         }
     }
-    if cancelled {
+    if let Some(reason) = *cancellation.borrow() {
         let remaining = subjects.count();
         if remaining > 0 {
-            outcome.failures.push((
-                "batch".into(),
-                format!("cancelled; {remaining} assessments not started"),
-            ));
+            let message = format!("{reason}; {remaining} assessments not started");
+            eprintln!("batch: {message}");
+            outcome.failures.push(("batch".into(), message));
         }
     }
     Ok(outcome)
+}
+
+// {impl}`requirements.authoring.batch`
+fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Error) {
+    if error.kind() != io::ErrorKind::Interrupted {
+        return;
+    }
+    cancel.send_if_modified(|current| {
+        if current.is_none() {
+            *current = Some("evidence authoring cancelled");
+            true
+        } else {
+            false
+        }
+    });
 }
 
 // {impl}`requirements.authoring.batch`

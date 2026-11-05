@@ -2,11 +2,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -17,6 +17,17 @@ struct Requests {
     active: usize,
     peak: usize,
     first_pair_overlapped: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Behavior {
+    Judgments {
+        failing_subject: Option<&'static str>,
+    },
+    DeniedRead {
+        subject: &'static str,
+        hold_other_requests: bool,
+    },
 }
 
 struct Server {
@@ -30,6 +41,13 @@ impl Server {
     // {test}`requirements.authoring.batch`
     // {test}`requirements.authoring.concurrency`
     fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {
+        Self::start_with(require_overlap, Behavior::Judgments { failing_subject })
+    }
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.concurrency`
+    // {test}`requirements.authoring.read_denial`
+    fn start_with(require_overlap: bool, behavior: Behavior) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -43,8 +61,9 @@ impl Server {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let requests = worker_requests.clone();
+                        let stop = worker_stop.clone();
                         workers.push(thread::spawn(move || {
-                            serve(stream, requests, require_overlap, failing_subject);
+                            serve(stream, requests, require_overlap, behavior, stop);
                         }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -82,11 +101,13 @@ impl Drop for Server {
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.authoring.function_attestations`
+// {test}`requirements.authoring.read_denial`
 fn serve(
     mut stream: TcpStream,
     requests: Arc<(Mutex<Requests>, Condvar)>,
     require_overlap: bool,
-    failing_subject: Option<&str>,
+    behavior: Behavior,
+    stop: Arc<AtomicBool>,
 ) {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -131,12 +152,44 @@ fn serve(
         state.first_pair_overlapped = state.subjects.len() >= 2;
     }
     drop(state);
+    let denied =
+        matches!(behavior, Behavior::DeniedRead { subject: denied, .. } if subject == denied);
+    let held = !denied
+        && matches!(
+            behavior,
+            Behavior::DeniedRead {
+                hold_other_requests: true,
+                ..
+            }
+        );
+    if held {
+        // Keep the second assessment in flight until the denied assessment has
+        // failed and a queued assessment takes its slot.
+        let mut state = lock.lock().unwrap();
+        while state.subjects.len() < 3 && !stop.load(Ordering::Relaxed) {
+            let (next, _) = arrived
+                .wait_timeout(state, Duration::from_millis(50))
+                .unwrap();
+            state = next;
+        }
+    }
     // Keep requests in flight long enough for an incorrectly unbounded batch to
     // exceed its configured concurrency, without assuming task launch order.
     thread::sleep(Duration::from_millis(40));
-    let failed = failing_subject.is_some_and(|name| subject == name);
+    let failed =
+        matches!(behavior, Behavior::Judgments { failing_subject: Some(name) } if subject == name);
     let response = if failed {
         json!({"error": "fixture model rejected this subject"})
+    } else if denied {
+        json!({
+            "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
+            "message":{"role":"assistant", "content":"", "tool_calls":[{
+                "id":"denied-read", "type":"function", "function":{
+                    "name":"habeas", "arguments":{"file":"evidence/private.txt", "line_start":1}
+                }
+            }]},
+            "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
+        })
     } else {
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
@@ -154,7 +207,14 @@ fn serve(
     let body = response.to_string();
     let status = if failed { "400 Bad Request" } else { "200 OK" };
     let mut state = lock.lock().unwrap();
-    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    let sent = write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    if !held {
+        sent.unwrap();
+    }
     state.active -= 1;
 }
 
@@ -217,15 +277,21 @@ impl Fixture {
     // {test}`requirements.authoring.batch`
     // {test}`requirements.authoring.concurrency`
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_habeas"))
+        self.command().args(args).output().unwrap()
+    }
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.concurrency`
+    // {test}`requirements.authoring.read_denial`
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_habeas"));
+        command
             .current_dir(&self.project)
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("APPDATA", &self.config_root)
             .env("XDG_STATE_HOME", &self.state)
-            .env("LOCALAPPDATA", &self.state)
-            .args(args)
-            .output()
-            .unwrap()
+            .env("LOCALAPPDATA", &self.state);
+        command
     }
 
     // {test}`requirements.authoring.batch`
@@ -429,6 +495,187 @@ fn failed_assessment_keeps_other_results_and_reports_failure() {
         diagnostics.contains("fixture model rejected"),
         "{diagnostics}"
     );
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.usage_storage`
+#[test]
+fn denied_read_aborts_only_its_assessment_and_runs_queued_assessments() {
+    let server = Server::start_with(
+        false,
+        Behavior::DeniedRead {
+            subject: "example requirements.alpha_case",
+            hold_other_requests: false,
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint, Some(1));
+    fs::create_dir(fixture.project.join("evidence")).unwrap();
+    fs::write(
+        fixture.project.join("evidence/private.txt"),
+        "generated output\n",
+    )
+    .unwrap();
+    let output = fixture.run(&["author", "--all"]);
+    assert!(!output.status.success(), "{output:?}");
+    let subjects = server.subjects();
+    assert_eq!(subjects.len(), 6, "{subjects:?}");
+    assert_eq!(
+        &subjects[..2],
+        [
+            "requirement requirements.alpha",
+            "example requirements.alpha_case"
+        ]
+    );
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
+    assert!(
+        !fixture
+            .project
+            .join("evidence/requirements.alpha_case.json")
+            .exists()
+    );
+    assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
+    assert_eq!(
+        fixture.evidence("rust/src/lib.rs")["functions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("evidence/private.txt"), "{diagnostic}");
+    assert!(
+        !diagnostic.contains("assessments not started"),
+        "{diagnostic}"
+    );
+    let usage = fixture.usage();
+    assert_eq!(usage.len(), 6);
+    assert_eq!(
+        usage
+            .iter()
+            .filter(|run| run["outcome"] == "completed")
+            .count(),
+        5
+    );
+    let failed = usage.iter().find(|run| run["outcome"] == "failed").unwrap();
+    assert_eq!(failed["subject"], "requirements.alpha_case");
+    assert_eq!(failed["request_count"], 1);
+    assert_eq!(failed["tool_failures"]["habeas"], 1);
+    assert_eq!(failed["evidence_written"], false);
+    assert_eq!(
+        subjects
+            .iter()
+            .filter(|subject| *subject == "example requirements.alpha_case")
+            .count(),
+        1
+    );
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.usage_requests`
+#[test]
+fn denied_read_preserves_in_flight_assessments_and_their_evidence() {
+    let server = Server::start_with(
+        true,
+        Behavior::DeniedRead {
+            subject: "requirement requirements.alpha",
+            hold_other_requests: true,
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    fs::create_dir(fixture.project.join("evidence")).unwrap();
+    fs::write(
+        fixture.project.join("evidence/private.txt"),
+        "generated output\n",
+    )
+    .unwrap();
+    let mut child = fixture
+        .command()
+        .args(["author", "--all"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let exited = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let output = child.wait_with_output().unwrap();
+    let subjects = server.subjects();
+    drop(server);
+    assert!(
+        exited,
+        "batch did not finish its independent assessments: {output:?}"
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(subjects.len(), 6, "{subjects:?}");
+    assert_eq!(
+        subjects
+            .iter()
+            .filter(|subject| *subject == "requirement requirements.alpha")
+            .count(),
+        1
+    );
+    assert!(
+        !fixture
+            .project
+            .join("evidence/requirements.alpha.json")
+            .exists()
+    );
+    assert_eq!(
+        fixture.evidence("requirements.alpha_case")["determination"],
+        true
+    );
+    assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
+    assert_eq!(
+        fixture.evidence("rust/src/lib.rs")["functions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let usage = fixture.usage();
+    assert_eq!(usage.len(), 6);
+    assert_eq!(
+        usage
+            .iter()
+            .filter(|run| run["outcome"] == "failed")
+            .count(),
+        1
+    );
+    let failed = usage.iter().find(|run| run["outcome"] == "failed").unwrap();
+    assert_eq!(failed["subject"], "requirements.alpha");
+    assert_eq!(failed["request_count"], 1);
+    assert_eq!(failed["tool_failures"]["habeas"], 1);
+    assert_eq!(failed["evidence_written"], false);
+    let completed: Vec<_> = usage
+        .iter()
+        .filter(|run| run["outcome"] == "completed")
+        .collect();
+    assert_eq!(completed.len(), 5);
+    assert!(completed.iter().all(|run| run["evidence_written"] == true));
+    assert!(completed.iter().all(|run| run["request_count"] == 1));
+    assert!(
+        completed
+            .iter()
+            .all(|run| run["requests"][0]["outcome"] == "completed")
+    );
+    assert!(usage.iter().all(|run| !run["end_time_ms"].is_null()));
 }
 
 // {test}`requirements.authoring.batch`

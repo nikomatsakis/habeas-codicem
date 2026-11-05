@@ -85,7 +85,19 @@ enum HookCommand {
 
 fn main() -> Result<(), Box<dyn Error>> {
     // {impl}`requirements.cli.clap`
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    // {impl}`requirements.configuration.workspace_location`
+    // {impl}`requirements.configuration.workspace_structure`
+    // {impl}`requirements.configuration.loading`
+    if !matches!(
+        cli.command,
+        Command::Mdbook {
+            command: Some(MdbookCommand::Supports { .. })
+        }
+    ) {
+        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;
+    }
+    match cli.command {
         // {impl}`requirements.cli.mdbook`
         Command::Mdbook { command: None } => {
             let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;

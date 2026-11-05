@@ -2,12 +2,13 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs;
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const CONFIG_EXAMPLES: &str = "see md/requirements/authoring.md#editing-the-file";
 
@@ -22,6 +23,77 @@ pub struct UserConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceConfig {
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring: Option<WorkspaceAuthoringConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceConfig>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceAuthoringConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub configs: BTreeMap<String, AuthoringConfig>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallow: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadedWorkspaceConfig {
+    pub path: PathBuf,
+    pub root: PathBuf,
+    pub config: WorkspaceConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceEvidenceConfig {
+    pub path: PathBuf,
+    pub root: PathBuf,
+    pub evidence: EvidenceConfig,
+    pub contains_credentials: bool,
+}
+
+/// A user-supplied credential value. Serialization preserves it; diagnostics do not.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretString(String);
+
+impl SecretString {
+    // {impl}`requirements.authoring.credentials`
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretString {
+    // {impl}`requirements.authoring.credentials`
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BedrockCredentials {
+    pub access_key_id: SecretString,
+    pub secret_access_key: SecretString,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<SecretString>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +134,8 @@ pub struct BedrockConfig {
     pub aws_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<BedrockCredentials>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, OptionValue>,
 }
@@ -74,6 +148,8 @@ pub struct OllamaConfig {
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<SecretString>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, OptionValue>,
 }
@@ -136,8 +212,9 @@ impl UserConfig {
     // {impl}`requirements.authoring.configuration_storage`
     // {impl}`requirements.authoring.configuration_serialization`
     // {impl}`requirements.authoring.concurrency`
+    // {impl}`requirements.authoring.credentials`
     pub fn parse(text: &str, path: &Path) -> io::Result<Self> {
-        let config: Self = toml::from_str(text).map_err(|error| invalid(path, "", error))?;
+        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, "")?;
         config.validate(path)?;
         Ok(config)
     }
@@ -159,6 +236,75 @@ impl UserConfig {
         }
         if let Some(authoring) = &self.authoring {
             authoring.validate(path)?;
+        }
+        Ok(())
+    }
+}
+
+impl WorkspaceConfig {
+    // {impl}`requirements.configuration.workspace_structure`
+    // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.authoring.credentials`
+    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {
+        let table = parse_document(text, path)?;
+        validate_workspace_common(&table, path)?;
+        let config: Self = decode(toml::Value::Table(table), path, "")?;
+        config.validate(path)?;
+        Ok(config)
+    }
+
+    // {impl}`requirements.configuration.workspace_structure`
+    // {impl}`requirements.configuration.serialization`
+    pub fn to_toml(&self) -> io::Result<String> {
+        self.validate(Path::new("workspace configuration"))?;
+        toml::to_string_pretty(self).map_err(|_| {
+            invalid(
+                Path::new("workspace configuration"),
+                "",
+                "cannot serialize configuration",
+            )
+        })
+    }
+
+    // {impl}`requirements.configuration.workspace_structure`
+    // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.authoring.configuration_storage`
+    pub fn validate(&self, path: &Path) -> io::Result<()> {
+        if self.version != 1 {
+            return Err(invalid(path, "version", "expected version = 1"));
+        }
+        if let Some(authoring) = &self.authoring {
+            if let Some(name) = &authoring.default {
+                validate_name(path, "authoring.default", name)?;
+            }
+            for (name, config) in &authoring.configs {
+                let setting = format!("authoring.configs.{name}");
+                validate_name(path, &setting, name)?;
+                config.backend.validate(path, &setting)?;
+            }
+        }
+        if let Some(evidence) = &self.evidence {
+            evidence.validate(path)?;
+        }
+        Ok(())
+    }
+}
+
+impl EvidenceConfig {
+    // {impl}`requirements.configuration.workspace_structure`
+    // {impl}`requirements.configuration.evidence_paths`
+    // {impl}`requirements.configuration.loading`
+    pub fn validate(&self, path: &Path) -> io::Result<()> {
+        for (field, paths) in [("allow", &self.allow), ("disallow", &self.disallow)] {
+            for (index, entry) in paths.iter().enumerate() {
+                if entry.as_os_str().is_empty() || entry.to_string_lossy().contains('\0') {
+                    return Err(invalid(
+                        path,
+                        &format!("evidence.{field}[{index}]"),
+                        "expected a nonempty path without NUL",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -246,6 +392,7 @@ impl BackendConfig {
 
     // {impl}`requirements.authoring.configuration_storage`
     // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.authoring.credentials`
     fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {
         if self.model_ref().model.is_empty() {
             return Err(invalid(
@@ -263,6 +410,50 @@ impl BackendConfig {
                 &format!("{setting}.api_key_env"),
                 "expected a nonempty environment variable name without '=' or NUL",
             ));
+        }
+        match self {
+            Self::Bedrock(config) => {
+                if let Some(credentials) = &config.credentials {
+                    if config.aws_profile.is_some() {
+                        return Err(invalid(
+                            path,
+                            &format!("{setting}.credentials"),
+                            "credentials and aws_profile cannot both be set",
+                        ));
+                    }
+                    for (field, value) in [
+                        ("access_key_id", Some(&credentials.access_key_id)),
+                        ("secret_access_key", Some(&credentials.secret_access_key)),
+                        ("session_token", credentials.session_token.as_ref()),
+                    ] {
+                        if value.is_some_and(|value| value.expose_secret().is_empty()) {
+                            return Err(invalid(
+                                path,
+                                &format!("{setting}.credentials.{field}"),
+                                "credential values must be nonempty",
+                            ));
+                        }
+                    }
+                }
+            }
+            Self::Ollama(config) => {
+                if let Some(key) = &config.api_key {
+                    if config.api_key_env.is_some() {
+                        return Err(invalid(
+                            path,
+                            &format!("{setting}.api_key"),
+                            "api_key and api_key_env cannot both be set",
+                        ));
+                    }
+                    if key.expose_secret().is_empty() {
+                        return Err(invalid(
+                            path,
+                            &format!("{setting}.api_key"),
+                            "credential values must be nonempty",
+                        ));
+                    }
+                }
+            }
         }
         for (key, value) in self.options() {
             let field = format!("{setting}.options.{key}");
@@ -317,16 +508,21 @@ impl OllamaConfig {
 
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.credentials`
     pub fn api_key(&self) -> io::Result<Option<String>> {
         self.api_key_from(|name| std::env::var_os(name))
     }
 
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.credentials`
     pub fn api_key_from(
         &self,
         lookup: impl Fn(&str) -> Option<OsString>,
     ) -> io::Result<Option<String>> {
+        if let Some(key) = &self.api_key {
+            return Ok(Some(key.expose_secret().to_owned()));
+        }
         self.api_key_env.as_ref().map(|name| {
             lookup(name)
                 .filter(|value| !value.is_empty())
@@ -432,6 +628,173 @@ pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {
     }
 }
 
+// {impl}`requirements.configuration.workspace_location`
+// {impl}`requirements.configuration.loading`
+pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {
+    let Some((path, table)) = workspace_document(root)? else {
+        return Ok(None);
+    };
+    let config: WorkspaceConfig = decode(toml::Value::Table(table), &path, "")?;
+    config.validate(&path)?;
+    Ok(Some(LoadedWorkspaceConfig {
+        root: path
+            .parent()
+            .expect("configuration has a parent")
+            .to_owned(),
+        path,
+        config,
+    }))
+}
+
+// {impl}`requirements.configuration.workspace_location`
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.authoring.credentials`
+pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {
+    let Some((path, table)) = workspace_document(root)? else {
+        return Ok(None);
+    };
+    let evidence: EvidenceConfig = table
+        .get("evidence")
+        .map(|value| decode(value.clone(), &path, "evidence"))
+        .transpose()?
+        .unwrap_or_default();
+    evidence.validate(&path)?;
+    let contains_credentials = table
+        .get("authoring")
+        .and_then(|value| value.get("configs"))
+        .and_then(toml::Value::as_table)
+        .is_some_and(|configs| {
+            configs.values().any(|config| {
+                config.get("credentials").is_some() || config.get("api_key").is_some()
+            })
+        });
+    Ok(Some(WorkspaceEvidenceConfig {
+        root: path
+            .parent()
+            .expect("configuration has a parent")
+            .to_owned(),
+        path,
+        evidence,
+        contains_credentials,
+    }))
+}
+
+// {impl}`requirements.configuration.workspace_location`
+// {impl}`requirements.configuration.loading`
+fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {
+    let root = fs::canonicalize(root)?;
+    let start = std::env::current_dir()
+        .and_then(fs::canonicalize)
+        .ok()
+        .filter(|cwd| cwd.starts_with(&root))
+        .unwrap_or(root);
+    for directory in start.ancestors() {
+        let path = directory.join("habeas.toml");
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let text = fs::read_to_string(&path).map_err(|error| {
+                    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+                })?;
+                let table = parse_document(&text, &path)?;
+                validate_workspace_common(&table, &path)?;
+                return Ok(Some((path, table)));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", path.display()),
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.loading`
+fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()> {
+    if table.get("version").and_then(toml::Value::as_integer) != Some(1) {
+        return Err(invalid(path, "version", "expected version = 1"));
+    }
+    if let Some(key) = table
+        .keys()
+        .find(|key| !matches!(key.as_str(), "version" | "authoring" | "evidence"))
+    {
+        return Err(invalid(path, key, "unknown workspace configuration field"));
+    }
+    Ok(())
+}
+
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.authoring.credentials`
+fn parse_document(text: &str, path: &Path) -> io::Result<toml::Table> {
+    toml::from_str(text).map_err(|error: toml::de::Error| {
+        let position = error
+            .span()
+            .map(|span| {
+                let prefix = text.get(..span.start).unwrap_or(text);
+                let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+                format!(" at line {line}, column {column}")
+            })
+            .unwrap_or_default();
+        invalid(path, "", format!("invalid TOML syntax{position}"))
+    })
+}
+
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.authoring.credentials`
+fn decode<T: DeserializeOwned>(value: toml::Value, path: &Path, setting: &str) -> io::Result<T> {
+    let mut secrets = Vec::new();
+    credential_values(&value, false, &mut secrets);
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    value.try_into().map_err(|mut error: toml::de::Error| {
+        error.set_input(None);
+        let mut message = error.to_string();
+        for secret in secrets {
+            if !secret.is_empty() {
+                message = message
+                    .replace(&format!("{secret:?}"), "<redacted>")
+                    .replace(&secret, "<redacted>");
+            }
+        }
+        invalid(path, setting, message)
+    })
+}
+
+// {impl}`requirements.authoring.credentials`
+fn credential_values(value: &toml::Value, secret: bool, output: &mut Vec<String>) {
+    match value {
+        toml::Value::String(value) if secret => output.push(value.clone()),
+        toml::Value::Integer(_)
+        | toml::Value::Float(_)
+        | toml::Value::Boolean(_)
+        | toml::Value::Datetime(_)
+            if secret =>
+        {
+            output.push(value.to_string())
+        }
+        toml::Value::Table(table) => {
+            for (key, value) in table {
+                credential_values(
+                    value,
+                    secret || matches!(key.as_str(), "credentials" | "api_key"),
+                    output,
+                );
+            }
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                credential_values(value, secret, output);
+            }
+        }
+        _ => {}
+    }
+}
+
 // {impl}`requirements.authoring.configuration`
 // {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.rig_configuration_mapping`
@@ -441,14 +804,16 @@ pub fn resolve_authoring(
     root: &Path,
     explicit: Option<&str>,
 ) -> io::Result<ResolvedAuthoringConfig> {
-    let project_path = root.join("book.toml");
-    let project_text = fs::read_to_string(&project_path).map_err(|error| {
-        io::Error::new(error.kind(), format!("{}: {error}", project_path.display()))
-    })?;
-    ProjectConfig::from_book_toml(&project_text, &project_path)?;
+    let workspace = load_workspace_config(root)?;
     let path = user_config_path()?;
     let config = load_user_config(&path)?;
-    resolve_authoring_from(&path, config.as_ref(), root, explicit)
+    resolve_authoring_with_workspace_from(
+        &path,
+        config.as_ref(),
+        workspace.as_ref(),
+        root,
+        explicit,
+    )
 }
 
 // {impl}`requirements.authoring.configuration_precedence`
@@ -463,6 +828,20 @@ pub fn resolve_authoring_from(
     root: &Path,
     explicit: Option<&str>,
 ) -> io::Result<ResolvedAuthoringConfig> {
+    resolve_authoring_with_workspace_from(path, user, None, root, explicit)
+}
+
+// {impl}`requirements.authoring.configuration_precedence`
+// {impl}`requirements.authoring.configuration_storage`
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.loading`
+pub fn resolve_authoring_with_workspace_from(
+    path: &Path,
+    user: Option<&UserConfig>,
+    workspace: Option<&LoadedWorkspaceConfig>,
+    root: &Path,
+    explicit: Option<&str>,
+) -> io::Result<ResolvedAuthoringConfig> {
     let project_root = fs::canonicalize(root).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -472,39 +851,60 @@ pub fn resolve_authoring_from(
     if let Some(user) = user {
         user.validate(path)?;
     }
-    let authoring = user
-        .and_then(|config| config.authoring.as_ref())
-        .ok_or_else(|| {
-            invalid(
-                path,
-                "authoring",
-                format!("no authoring configuration; {CONFIG_EXAMPLES}"),
-            )
-        })?;
+    if let Some(workspace) = workspace {
+        workspace.config.validate(&workspace.path)?;
+    }
+    let authoring = user.and_then(|config| config.authoring.as_ref());
+    let local = workspace.and_then(|workspace| workspace.config.authoring.as_ref());
+    let diagnostic_path = workspace.map_or(path, |workspace| workspace.path.as_path());
+    if authoring.is_none() && local.is_none() {
+        return Err(invalid(
+            diagnostic_path,
+            "authoring",
+            format!("no authoring configuration; {CONFIG_EXAMPLES}"),
+        ));
+    }
     let selected = explicit
         .or_else(|| {
-            authoring
+            authoring?
                 .projects
                 .get(&project_root)
                 .map(|selection| selection.config.as_str())
         })
-        .or(authoring.default.as_deref())
+        .or_else(|| local.and_then(|local| local.default.as_deref()))
+        .or_else(|| authoring.and_then(|authoring| authoring.default.as_deref()))
         .ok_or_else(|| {
             invalid(
-                path,
+                diagnostic_path,
                 "authoring",
                 format!("no configuration selected; {CONFIG_EXAMPLES}"),
             )
         })?;
-    let config = authoring.configs.get(selected).ok_or_else(|| {
+    let configured = local
+        .and_then(|local| local.configs.get(selected))
+        .map(|config| {
+            (
+                workspace
+                    .expect("local configuration has a file")
+                    .path
+                    .as_path(),
+                config,
+            )
+        })
+        .or_else(|| {
+            authoring
+                .and_then(|authoring| authoring.configs.get(selected))
+                .map(|config| (path, config))
+        });
+    let (source_path, config) = configured.ok_or_else(|| {
         invalid(
-            path,
+            diagnostic_path,
             "authoring",
             format!("unknown configuration {selected:?}; {CONFIG_EXAMPLES}"),
         )
     })?;
     Ok(ResolvedAuthoringConfig {
-        config_path: path.to_owned(),
+        config_path: source_path.to_owned(),
         project_root,
         name: selected.to_owned(),
         concurrency: config.concurrency,

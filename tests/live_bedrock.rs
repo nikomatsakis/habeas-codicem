@@ -68,6 +68,7 @@ fn selected_config() -> Result<Option<ResolvedAuthoringConfig>, Box<dyn Error>> 
 
 // {test}`requirements.integration.live_bedrock_test`
 // {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.credentials`
 fn credentials_available(config: &BedrockConfig) -> bool {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
@@ -76,6 +77,15 @@ fn credentials_available(config: &BedrockConfig) -> bool {
         }
         if let Some(region) = &config.region {
             loader = loader.region(aws_config::Region::new(region.clone()));
+        }
+        if let Some(credentials) = &config.credentials {
+            loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(
+                credentials.access_key_id.expose_secret(),
+                credentials.secret_access_key.expose_secret(),
+                credentials.session_token.as_ref().map(|value| value.expose_secret().to_owned()),
+                None,
+                "Habeas configuration",
+            ));
         }
         let sdk = loader.load().await;
         let Some(provider) = sdk.credentials_provider() else {

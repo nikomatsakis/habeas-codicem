@@ -1,7 +1,7 @@
 {
   "requirement": "For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project depending on `habeas` MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.",
   "determination": true,
-  "rationale": "**Verdict:** The sources satisfy the requirement. I found no acknowledged gaps (no FIXME or TODO markers), and the untested edge cases below are minor.\n\n**Implementation**\n- `Cargo.toml` lines 31–37 declare a Symposium `SessionStart` hook, `habeas-setup-check`. It runs `habeas hook session-start`, in the `symposium` format and as a plugin metadata entry. That is how a supported agent session gets the hook.\n- `src/main.rs` routes `Command::Hook { SessionStart }` to `hook::session_start()`.\n- `src/hook.rs` `session_start_response` returns the following:\n  - It returns an empty `{\"SessionStart\": {}}` when the input has no `SessionStart` event, when no ancestor of the cwd holds both `Cargo.toml` and `book.toml`, when the project does not depend on habeas, or when setup is complete.\n  - Otherwise it returns `additionalContext` saying \"Habeas Codicem is not fully configured in …. Run `habeas setup` …\". This context is advisory and does not block the session.\n- The hook only reads files. It never writes to the project and never invokes `setup::run`.\n- `setup::is_configured` checks everything `habeas setup` establishes:\n  - the habeas dev dependency;\n  - a valid `book.src` that is relative, nonempty, free of parent components, and contains `SUMMARY.md`;\n  - the `habeas mdbook` preprocessor with `renderers = [\"html\"]`;\n  - the CSS entry in `additional-css`;\n  - a `habeas.css` file with the exact expected content;\n  - a `tests/habeas.rs` file with the exact expected content.\n  Setup itself refuses to overwrite files whose content differs, so treating a differing file as \"not compatible\" is consistent.\n\n**Tests**\n- `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` runs the real binary through a `session_start` helper and checks these cases:\n  - A project without habeas gets no advisory.\n  - A project that has been set up gets no advisory, including when the cwd is a nested directory.\n  - After the stylesheet is deleted, the advisory contains \"Habeas Codicem is not fully configured\" and \"habeas setup\". The hook does not recreate the stylesheet, and `book.toml` is unchanged.\n  - A wrong preprocessor command produces an advisory.\n  - With no `book.toml`, there is no advisory.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` checks that a default `src` is accepted as configured and that an invalid `book.src` produces an advisory.\n- `tests/symposium_hook_smoke.py` is an end-to-end test against a real Symposium (`cargo-agents`). It enables the plugin, checks that the hook is registered, and checks that the advisory is delivered before setup. After `habeas setup` runs, it checks that the advisory disappears.\n\n**Minor untested edge cases**\n- A missing or differing `tests/habeas.rs` and a differing `habeas.css` are not tested individually. They go through the same `is_configured` boolean path as the cases that are tested.\n- \"Depending on `habeas`\" is implemented as a `[dev-dependencies]` entry only, which matches what setup creates.",
+  "rationale": "**Verdict: the requirement is met.** The implementation matches each clause, and both the Rust tests and the Symposium smoke test cover the main cases. I found a few minor edge cases but no gaps worth failing it for.\n\n**Implementation**\n- **Hook registration:** `Cargo.toml` lines 31-37 declare `[[package.metadata.symposium.hooks]]`. The hook is named `habeas-setup-check`, runs on `SessionStart`, uses the `symposium` format, and runs `habeas hook session-start`.\n- **Dispatch:** `src/main.rs` routes `Command::Hook { SessionStart }` to `hook::session_start()`.\n- **Hook logic:** `session_start_response` in `src/hook.rs` takes the `cwd` from the event, falling back to the process cwd.\n  - It finds the project root with `setup::find_project_root`, which looks for an ancestor containing both `Cargo.toml` and `book.toml`.\n  - It then checks `project_depends_on_habeas`.\n  - It then checks `setup::is_configured`, which re-checks the prerequisites from `requirements.cli.setup`, `setup_project` and `setup_css`.\n    - The checks cover the dev dependency, the `book.src` path and `SUMMARY.md`, the `habeas mdbook` preprocessor with the `html` renderer only, the `additional-css` entry, and the exact content of `habeas.css` and `tests/habeas.rs`.\n- **Output:**\n  - If the project is not applicable or setup is complete, it returns `{\"SessionStart\": {}}`, which is no advisory.\n  - Otherwise it returns `additionalContext` saying \"Habeas Codicem is not fully configured … Run `habeas setup`\". That is nonblocking context.\n- **No modification:** the hook only reads files. It never calls `setup::run`.\n\n**Tests**\n- `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` runs the real binary with a JSON `SessionStart` event.\n  - A project without Habeas gets no advisory.\n  - After `habeas setup`, a nested cwd gets no advisory.\n  - Deleting the CSS produces an advisory containing \"Habeas Codicem is not fully configured\" and \"habeas setup\".\n  - The same test asserts the hook did not recreate the CSS and did not change `book.toml`.\n  - A wrong preprocessor produces an advisory.\n  - With `book.toml` removed (no applicable project), there is no advisory.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` checks that the default `src` is treated as configured, and that an invalid `book.src` triggers an advisory.\n- `tests/symposium_hook_smoke.py` is an end-to-end test through a real Symposium (`cargo-agents`) consumer.\n  - It enables the plugin and checks that the hook is registered.\n  - It checks that an incomplete project receives the advisory through Symposium.\n  - It checks that no advisory is delivered after `habeas setup`.\n\n**Minor observations (not gaps)**\n- `project_depends_on_habeas` only recognizes a `[dev-dependencies]` entry, which is what `habeas setup` adds.\n- `main` loads workspace evidence config before dispatching the hook, so a malformed `habeas.toml` would make the hook fail instead of staying silent.\n- There is no test that an incorrect `tests/habeas.rs` triggers the advisory. The code checks it and the CSS case covers the same path.\n- The smoke test depends on an external `cargo-agents` binary.",
   "inputs": [
     {
       "requirements": "requirements.integration.symposium_setup_hook",
@@ -71,7 +71,7 @@
         "serde_json = \"1\"",
         "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
         "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\"] }",
+        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\"] }",
         "toml = \"1.2.0\"",
         "toml_edit = \"0.25.17\"",
         "",
@@ -133,7 +133,19 @@
       "text": [
         "fn main() -> Result<(), Box<dyn Error>> {",
         "    // {impl}`requirements.cli.clap`",
-        "    match Cli::parse().command {",
+        "    let cli = Cli::parse();",
+        "    // {impl}`requirements.configuration.workspace_location`",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    if !matches!(",
+        "        cli.command,",
+        "        Command::Mdbook {",
+        "            command: Some(MdbookCommand::Supports { .. })",
+        "        }",
+        "    ) {",
+        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
+        "    }",
+        "    match cli.command {",
         "        // {impl}`requirements.cli.mdbook`",
         "        Command::Mdbook { command: None } => {",
         "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
@@ -910,7 +922,7 @@
         "serde_json = \"1\"",
         "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
         "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\"] }",
+        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\"] }",
         "toml = \"1.2.0\"",
         "toml_edit = \"0.25.17\"",
         "",
@@ -987,10 +999,10 @@
       "line_start": 158,
       "line_end": 161,
       "text": [
-        "                habeas::authoring::EvidenceOutput::File",
-        "            };",
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
-        "                &root,"
+        "                );",
+        "                if !outcome.failures.is_empty() {",
+        "                    return Err(io::Error::other(",
+        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\","
       ]
     },
     {
@@ -1383,11 +1395,11 @@
       "line_start": 180,
       "line_end": 184,
       "text": [
-        "                eprintln!(",
-        "                    \"{summary}\\nEvidence: stdout\\nUsage: {}\",",
-        "                    outcome.usage_path.display()",
-        "                );",
-        "            }"
+        "                outcome.subject,",
+        "                outcome.backend,",
+        "                outcome.model,",
+        "                outcome.determination.kind(),",
+        "            );"
       ]
     },
     {
@@ -1647,9 +1659,9 @@
       "line_start": 392,
       "line_end": 394,
       "text": [
-        "    } else {",
-        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
-        "    };"
+        "        .as_object()",
+        "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;",
+        "    if object.len() != 2"
       ]
     },
     {
@@ -1657,9 +1669,9 @@
       "line_start": 571,
       "line_end": 573,
       "text": [
-        "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
-        "            let mut sources ="
+        "            assert_eq!(",
+        "                submit.parameters[\"properties\"][\"determination\"],",
+        "                json!({\"type\": \"boolean\"})"
       ]
     },
     {
@@ -1794,6 +1806,106 @@
         "        all: bool,",
         "        /// List the judgments and original FIXME entries within each issue group.",
         "        #[arg(long)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 614,
+      "line_end": 694,
+      "text": [
+        "        )",
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.configuration.serialization`",
+        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
+        "    match fs::read_to_string(path) {",
+        "        Ok(text) => UserConfig::parse(&text, path).map(Some),",
+        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),",
+        "        Err(error) => Err(io::Error::new(",
+        "            error.kind(),",
+        "            format!(\"{}: {error}\", path.display()),",
+        "        )),",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {",
+        "    let Some((path, table)) = workspace_document(root)? else {",
+        "        return Ok(None);",
+        "    };",
+        "    let config: WorkspaceConfig = decode(toml::Value::Table(table), &path, \"\")?;",
+        "    config.validate(&path)?;",
+        "    Ok(Some(LoadedWorkspaceConfig {",
+        "        root: path",
+        "            .parent()",
+        "            .expect(\"configuration has a parent\")",
+        "            .to_owned(),",
+        "        path,",
+        "        config,",
+        "    }))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.authoring.credentials`",
+        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
+        "    let Some((path, table)) = workspace_document(root)? else {",
+        "        return Ok(None);",
+        "    };",
+        "    let evidence: EvidenceConfig = table",
+        "        .get(\"evidence\")",
+        "        .map(|value| decode(value.clone(), &path, \"evidence\"))",
+        "        .transpose()?",
+        "        .unwrap_or_default();",
+        "    evidence.validate(&path)?;",
+        "    let contains_credentials = table",
+        "        .get(\"authoring\")",
+        "        .and_then(|value| value.get(\"configs\"))",
+        "        .and_then(toml::Value::as_table)",
+        "        .is_some_and(|configs| {",
+        "            configs.values().any(|config| {",
+        "                config.get(\"credentials\").is_some() || config.get(\"api_key\").is_some()",
+        "            })",
+        "        });",
+        "    Ok(Some(WorkspaceEvidenceConfig {",
+        "        root: path",
+        "            .parent()",
+        "            .expect(\"configuration has a parent\")",
+        "            .to_owned(),",
+        "        path,",
+        "        evidence,",
+        "        contains_credentials,",
+        "    }))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.loading`",
+        "fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let start = std::env::current_dir()",
+        "        .and_then(fs::canonicalize)",
+        "        .ok()",
+        "        .filter(|cwd| cwd.starts_with(&root))",
+        "        .unwrap_or(root);",
+        "    for directory in start.ancestors() {",
+        "        let path = directory.join(\"habeas.toml\");"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 2,
+      "line_end": 6,
+      "text": [
+        "\"\"\"Exercise Habeas's local CLI, skills, and hook through a Symposium consumer.",
+        "",
+        "Run with `python3 tests/symposium_hook_smoke.py`. Set SYMPOSIUM_BIN to test a",
+        "specific cargo-agents binary. The test gives Symposium a local executable",
+        "that runs the current checkout with Cargo, without installing the CLI."
       ]
     }
   ]

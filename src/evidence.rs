@@ -68,9 +68,15 @@ pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Decla
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.examples.evidence`
+// {impl}`requirements.configuration.workspace_location`
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.loading`
 pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {
     let root = fs::canonicalize(root)?;
     let mut errors = Vec::new();
+    if let Err(error) = crate::config::load_workspace_evidence(&root) {
+        errors.push(error.to_string());
+    }
     let md_root = book_source_dir(&root, &mut errors);
     let definitions = collect_definitions(&root, &md_root, &mut errors);
     let mut discovery_errors = errors.clone();
@@ -573,6 +579,7 @@ fn validate_input(
 
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.inputs`
+// {impl}`requirements.configuration.evidence_paths`
 fn validate_file_range_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -588,15 +595,8 @@ fn validate_file_range_input(
     );
 
     let file = string_field(object, "file", label, errors).and_then(|file| {
-        let relative = Path::new(file);
-        if file.is_empty()
-            || !relative
-                .components()
-                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
-        {
-            errors.push(format!(
-                "{label}: file must be a path relative to the repository"
-            ));
+        if file.is_empty() {
+            errors.push(format!("{label}: file must be a nonempty path"));
             None
         } else {
             Some(file)
@@ -704,6 +704,7 @@ fn validate_resolved_input(
 
 // {impl}`requirements.ci.inputs`
 // {impl}`requirements.ci.input_containment`
+// {impl}`requirements.configuration.evidence_paths`
 fn validate_input_lines(
     root: &Path,
     file: &str,
@@ -713,21 +714,10 @@ fn validate_input_lines(
     label: &str,
     errors: &mut Vec<String>,
 ) {
-    let path = match fs::canonicalize(root.join(file)) {
-        Ok(path) => path,
+    let (_, content) = match crate::inputs::read_project_file(root, file) {
+        Ok(source) => source,
         Err(error) => {
-            errors.push(format!("{label}: cannot open {file}: {error}"));
-            return;
-        }
-    };
-    if !path.starts_with(root) {
-        errors.push(format!("{label}: {file} resolves outside the repository"));
-        return;
-    }
-    let content = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(error) => {
-            errors.push(format!("{label}: cannot read {file}: {error}"));
+            errors.push(format!("{label}: {error}"));
             return;
         }
     };
@@ -1529,7 +1519,7 @@ mod tests {
                         "text": ["changed line"]
                     },
                     {
-                        "file": "../outside",
+                        "file": "",
                         "line_start": 0,
                         "line_end": 2,
                         "text": [1]
@@ -1573,7 +1563,7 @@ mod tests {
             "requirement must be a string",
             "missing field \"determination\"",
             "inputs must be an array",
-            "file must be a path relative to the repository",
+            "file must be a nonempty path",
             "line_start must be a positive integer",
             "text[0] must be a string",
             "duplicate requirement requirements.one; first declared at md/requirements.md:3",

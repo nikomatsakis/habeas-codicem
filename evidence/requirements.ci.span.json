@@ -1,7 +1,7 @@
 {
   "requirement": "A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.ci.span`. The code implements each clause, and the tests cover the main points of the design space. I did not run the tests; this rests on reading the code and test bodies.\n\n**Implementation**\n- `colon_fence` in `src/lib.rs` accepts a line only if it has at most 3 leading spaces and at least three colons. It returns the colon count and the text after the colons.\n- `definition_blocks` in `src/lib.rs` requires the text after the colons to start with `{req}` (or `{example}` / `{definition}`). The prefix is matched with `strip_prefix`, so nothing may sit between the colons and `{req}`. It then requires whitespace and a valid name.\n- The closing fence is the first later line that meets three conditions:\n  - it is a colon fence,\n  - its colon count is at least the opening fence's count,\n  - nothing follows the colons.\n- That line must also lie outside Markdown code blocks. Code blocks are located with pulldown-cmark, so a `:::` inside a code block does not close the requirement.\n- The body is `body_start..body_end`: everything between the two fence lines, including headings, diagrams and blank lines. Text after the closing fence is excluded because `end` and `body_end` stop at the closing line.\n- `collect_definitions` in `src/evidence.rs` takes `content[body_start..body_end].trim()`, which excludes leading and trailing whitespace as required. It reports an unclosed fence as an error.\n- `replace_definitions` in `src/lib.rs` renders only closed blocks, using the same block boundaries.\n\n**Tests**\n- `colon_requirement_span_includes_markdown_and_excludes_following_text` in `src/evidence.rs` covers these cases:\n  - a body containing a fenced code block that holds `:::`, an ATX heading, a Setext heading and blank lines, all required to match evidence exactly;\n  - text after the closing fence, which is excluded;\n  - a second requirement following the first.\n- `reports_a_missing_closing_colon_fence` in `src/evidence.rs` covers the missing-closing-fence error.\n- `a_longer_colon_fence_contains_a_shorter_nested_directive` in `src/lib.rs` covers fence lengths. A `::::` opening is not closed by a nested `:::`. The body is the exact slice, and the text after the closing fence is outside the block.\n\n**Gaps**\n- I found no dedicated test for a malformed opening such as `:::` followed by a space before `{req}`. This is minor and arguably belongs to the identifiers requirement.\n- No FIXME comments or acknowledged gaps appear in the inputs.",
+  "rationale": "**Verdict: the requirement is met.**\n\n**Implementation**\n- `colon_fence` (src/lib.rs) accepts a fence line only if it has at most 3 leading spaces and at least 3 colons. It returns the text after the colons and the fence length.\n- `definition_blocks` (src/lib.rs) requires the text immediately after the colons to start with `{req}` (or `{example}` / `{definition}`). That text must be followed by whitespace and a valid name. Otherwise the line is not treated as a definition.\n- The closing fence is the first later line that is not inside a Markdown code block and meets two conditions. Its colon count is at least the opening count (`count >= fence_length`), and nothing follows the colons (`suffix.trim().is_empty()`).\n  - The code-block exclusion means `:::` inside a fenced example does not end the span.\n  - Because only a bare colon line closes a block, text after a closing fence is not treated as part of that fence. The body runs from the end of the opening line (`body_start`) to the start of the closing line (`body_end`), so it holds all Markdown between the fences, including headings, code, diagrams and blank lines.\n- `collect_definitions` (src/evidence.rs, lines 261-262) takes `content[body_start..body_end].trim()`, which drops leading and trailing whitespace. A block with no closing fence is reported as an error (\"missing a closing colon fence\").\n- `replace_definitions` (src/lib.rs) uses the same block spans when rendering, so the book output and the evidence check agree.\n\n**Tests**\n- `colon_requirement_span_includes_markdown_and_excludes_following_text` (src/evidence.rs) uses a body containing a code fence with `:::` inside, an ATX heading, a setext heading and blank lines. It checks that the whole body is matched as the requirement text. It also checks that the \"Outside the requirement.\" text and the second requirement are excluded.\n- `a_longer_colon_fence_contains_a_shorter_nested_directive` (src/lib.rs) checks that a four-colon opening fence is closed only by a fence of at least four colons. A nested three-colon directive stays inside the body, and text after the closing fence is excluded.\n- `reports_a_missing_closing_colon_fence` (src/evidence.rs) checks the unclosed case.\n\n**Gaps**\n- I did not see a dedicated test for CRLF line endings or for the 0–3 leading-space tolerance. The code handles both (CR is trimmed from lines, and `colon_fence` allows up to 3 leading spaces), and these are minor edge cases.\n- No acknowledged FIXMEs.\n\nThe main design points are covered: fence length, nesting, code-fenced colons, trimming, exclusion of text after the fence, and the unclosed block.",
   "inputs": [
     {
       "requirements": "requirements.ci.span",
@@ -326,16 +326,6 @@
       "line_start": 1558,
       "line_end": 1621,
       "text": [
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
         "            \"+ First.\",",
         "            \"determination is false\",",
         "            \"input text changed\",",
@@ -344,7 +334,7 @@
         "            \"requirement must be a string\",",
         "            \"missing field \\\"determination\\\"\",",
         "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
+        "            \"file must be a nonempty path\",",
         "            \"line_start must be a positive integer\",",
         "            \"text[0] must be a string\",",
         "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
@@ -389,7 +379,17 @@
         "                        \"line_start\": 3,",
         "                        \"line_end\": 3,",
         "                        \"text\": [test]",
-        "                    }"
+        "                    }",
+        "                ]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        ""
       ]
     },
     {
@@ -595,6 +595,67 @@
         "            \"Intro.\\n\\n:::{note}\\nNested.\\n:::\\n\"",
         "        );",
         "        assert!(content[blocks[0].end..].contains(\"Outside.\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 261,
+      "line_end": 265,
+      "text": [
+        "            }",
+        "            // {impl}`requirements.ci.span`",
+        "            let text = content[block.body_start..block.body_end].trim().to_owned();",
+        "            if text.is_empty() {",
+        "                errors.push(format!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 422,
+      "line_end": 426,
+      "text": [
+        "    // {impl}`requirements.ci.requirement_text`",
+        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
+        "        if text.trim().is_empty() {",
+        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 454,
+      "line_end": 458,
+      "text": [
+        "    let rationale = string_field(object, \"rationale\", &label, errors);",
+        "    if let Some(rationale) = rationale",
+        "        && rationale.trim().is_empty()",
+        "    {",
+        "        errors.push(format!(\"{label}: rationale must not be empty\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 463,
+      "line_end": 468,
+      "text": [
+        "            \"{label}: determination is false{}\",",
+        "            rationale",
+        "                .filter(|text| !text.trim().is_empty())",
+        "                .map_or(String::new(), |text| format!(\": {}\", text.trim()))",
+        "        ));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1310,
+      "line_end": 1314,
+      "text": [
+        "        let determination = boolean_field(entry, \"determination\", &entry_label, errors);",
+        "        let rationale = string_field(entry, \"rationale\", &entry_label, errors);",
+        "        if rationale.is_some_and(|value| value.trim().is_empty()) {",
+        "            errors.push(format!(\"{entry_label}: rationale must not be empty\"));",
+        "        }"
       ]
     }
   ]

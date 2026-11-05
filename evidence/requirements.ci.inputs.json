@@ -1,7 +1,7 @@
 {
   "requirement": "For a file-range input, Habeas MUST verify that `line_start` and `line_end` identify an inclusive, ordered range in `file` and that `text` exactly matches the current raw lines in that range. Habeas MUST report missing files, invalid ranges, and changed lines.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.ci.inputs`. Both the implementation and the tests cover what the requirement asks for.\n\n**Implementation**\n- `src/evidence.rs` `validate_file_range_input` checks that the `file` field is a relative path. It requires `line_start` and `line_end` to be positive integers and rejects `line_end < line_start` with \"line_end must be at least line_start\". This is the \"inclusive, ordered range\" check.\n- `src/evidence.rs` `validate_input_lines` handles the file and text checks:\n  - It reports a missing file as \"cannot open {file}\".\n  - It reports an unreadable file separately.\n  - It reports a path that resolves outside the repository.\n  - It reports a range past EOF as \"exceeds the file's N lines\".\n  - It reports a recorded text whose line count differs from the range length.\n  - It compares the recorded text to the current lines with exact equality (`text != actual`) and reports \"input text changed\" with a compact diff.\n- `src/inputs.rs` `raw_lines` and `InputSelector::resolve` use the same line splitting and range check (`start == 0`, `end < start`, `end > len`). Splitting uses `lines()` and strips a trailing `\\r`, which is a reasonable reading of \"raw lines\".\n\n**Tests**\n- `tests/evidence_boundaries.rs` `file_ranges_report_order_eof_length_and_missing_file_errors` covers four failures and one success:\n  - a valid range;\n  - reversed order;\n  - a range past EOF;\n  - a text length mismatch;\n  - a missing file.\n- `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` covers containment.\n- `src/evidence.rs` `collects_missing_orphan_format_false_and_changed_line_errors` checks \"input text changed\" with the diff lines. It also checks that `line_start` 0 and a bad path are rejected.\n- `validates_full_names_requirement_text_and_input_lines` covers the success path for a multi-line range.\n- `tests/outcomes.rs` `fixme_does_not_hide_stale_inputs_or_uncovered_references` shows that a stale input is reported as \"input text changed\" end to end.\n\n**Gaps:** I found no dedicated CRLF test. I don't consider that material, because the stripping logic is simple and shared by both code paths.",
+  "rationale": "**Verdict:** the code implements `requirements.ci.inputs` as stated, and the tests cover the main cases. I read the supplied sources and ran nothing.\n\n**Implementation**\n- `validate_file_range_input` in `src/evidence.rs` checks that `file` is a nonempty path. It requires `line_start` and `line_end` to be positive integers. It rejects `line_end < line_start` with \"line_end must be at least line_start\", so ranges must be ordered. It also requires `text` to be an array of strings.\n- `validate_input_lines` in `src/evidence.rs` reads the file through `read_project_file`.\n  - A missing or unreadable file is reported as an error (\"cannot open …\").\n  - A range past EOF is reported as \"exceeds the file's N lines\".\n  - A `text` array whose length differs from the range is reported as \"text has X lines, but … has Y\".\n  - Text that differs from the current lines is reported as \"input text changed\" with a compact diff.\n- Together these give an inclusive, ordered range check, an exact comparison of `text` with the current lines, and reports for missing files, invalid ranges and changed lines.\n- Lines are compared as raw lines. Only a trailing `\\r` is stripped, in both `validate_input_lines` and `raw_lines`. Comments and whitespace are preserved.\n- `InputSelector::resolve` in `src/inputs.rs` applies the same inclusive-range check when it resolves inputs. It rejects a start of 0, an inverted range and a range past EOF.\n\n**Tests**\n- `tests/evidence_boundaries.rs::file_ranges_report_order_eof_length_and_missing_file_errors` covers a valid range, an inverted range, a range past EOF, a `text` length mismatch and a missing file. It asserts the specific error messages.\n- `src/evidence.rs::validates_full_names_requirement_text_and_input_lines` is the positive case: a two-line range whose text matches the file.\n- The multi-error test in `src/evidence.rs` (around lines 1509–1583) covers changed text with its diff. It also covers an empty `file`, a non-positive `line_start` and non-string `text` entries.\n- `tests/outcomes.rs::fixme_does_not_hide_stale_inputs_or_uncovered_references` checks that a changed input is reported as \"input text changed\". It also checks that a FIXME determination does not hide the change.\n- The symlink, configured-path and generated-output tests in `tests/evidence_boundaries.rs` cover changed lines in files outside the repository. They also cover path containment and the allow/disallow rules.\n\n**Remaining gaps**\n- I found no test for a CRLF file.\n- I found no test of a start of 0 against `resolve` itself. It is covered by `positive_integer_field`, which rejects it earlier in validation.\n- Neither gap affects the behaviour the requirement states, and neither is acknowledged by a FIXME.",
   "inputs": [
     {
       "requirements": "requirements.ci.inputs",
@@ -34,15 +34,18 @@
         "Rust file and selector arguments MUST use the syntax defined by",
         "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
         "project working tree, including unstaged changes to tracked files and staged new",
-        "files. All source inputs, including mandatory inputs, MUST stay within the",
-        "project root after resolving symlinks. In a Git worktree, both the requested file",
-        "and its resolved target MUST be present in the Git index. Untracked mandatory",
-        "inputs and explicit reads MUST fail with guidance to stage the file using",
-        "`git add`. Projects outside Git MUST use the same project-root and generated-output",
-        "boundaries without requiring an index; failure to read an existing repository's",
-        "index MUST be reported as an error.",
-        "The project-root `evidence/` directory contains generated output and MUST be",
-        "excluded from source reads, including paths that resolve there through symlinks.",
+        "files. By default, source inputs MUST stay within the project root after",
+        "resolving symlinks; in a Git worktree, both the requested file and its resolved",
+        "target MUST be present in the Git index. Projects outside Git MUST use the same",
+        "containment rules without requiring an index. Failure to read an existing",
+        "repository's index MUST be reported as an error.",
+        "The project-root `evidence/` directory and an active workspace configuration",
+        "containing literal credentials MUST be excluded from model reads by default,",
+        "including symlink aliases. Generated build outputs MUST follow",
+        "{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST",
+        "follow {cite}`requirements.configuration.evidence_paths`, including explicit",
+        "permission for otherwise excluded inputs. A denied mandatory input or explicit",
+        "read MUST abort under {cite}`requirements.authoring.read_denial`.",
         "",
         "File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read",
         "through EOF; the returned evidence input MUST contain the actual numeric ending",
@@ -65,8 +68,9 @@
         "```",
         "",
         "`definitions` MUST be empty when no additional terminology is required. The",
-        "harness MUST record inputs supplied to the model in the assessment's evidence. A failed",
-        "read MUST return an explanatory tool error and add no evidence input.",
+        "harness MUST record inputs supplied to the model in the assessment's evidence.",
+        "A failed read MUST add no evidence input. Access-policy denials MUST abort;",
+        "other failed reads MUST return an explanatory tool error.",
         ":::"
       ]
     },
@@ -88,9 +92,11 @@
         "}",
         "```",
         "",
-        "The tool MUST search the requested project-relative file or directory using",
+        "The tool MUST search the requested permitted file or directory using",
         "ripgrep's regular-expression syntax and default case-sensitive search and ignore",
-        "rules. Its model-facing description MUST explain those conventions. `context`",
+        "rules. Explicitly allowed paths and discovered generated-output directories MUST",
+        "be searched even when ignored or hidden; workspace disallow rules still apply.",
+        "Its model-facing description MUST explain those conventions. `context`",
         "MUST be nonnegative and specify how many lines before and after each matching",
         "line to include, defaulting to five on each side. Windows MUST stop at file",
         "boundaries, and overlapping windows in the same file MUST be merged. Each",
@@ -99,7 +105,7 @@
         "Setting `context` to zero MUST return only matching lines.",
         "Search results MUST exclude files disallowed by",
         "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
-        "path MUST return a tool error.",
+        "path MUST abort under {cite}`requirements.authoring.read_denial`.",
         "Required terminology MUST be included under",
         "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
         "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -148,6 +154,7 @@
       "text": [
         "// {impl}`requirements.ci.schema`",
         "// {impl}`requirements.ci.inputs`",
+        "// {impl}`requirements.configuration.evidence_paths`",
         "fn validate_file_range_input(",
         "    root: &Path,",
         "    definitions: &BTreeMap<String, Declaration>,",
@@ -163,15 +170,8 @@
         "    );",
         "",
         "    let file = string_field(object, \"file\", label, errors).and_then(|file| {",
-        "        let relative = Path::new(file);",
-        "        if file.is_empty()",
-        "            || !relative",
-        "                .components()",
-        "                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{label}: file must be a path relative to the repository\"",
-        "            ));",
+        "        if file.is_empty() {",
+        "            errors.push(format!(\"{label}: file must be a nonempty path\"));",
         "            None",
         "        } else {",
         "            Some(file)",
@@ -215,6 +215,7 @@
       "text": [
         "// {impl}`requirements.ci.inputs`",
         "// {impl}`requirements.ci.input_containment`",
+        "// {impl}`requirements.configuration.evidence_paths`",
         "fn validate_input_lines(",
         "    root: &Path,",
         "    file: &str,",
@@ -224,21 +225,10 @@
         "    label: &str,",
         "    errors: &mut Vec<String>,",
         ") {",
-        "    let path = match fs::canonicalize(root.join(file)) {",
-        "        Ok(path) => path,",
+        "    let (_, content) = match crate::inputs::read_project_file(root, file) {",
+        "        Ok(source) => source,",
         "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    if !path.starts_with(root) {",
-        "        errors.push(format!(\"{label}: {file} resolves outside the repository\"));",
-        "        return;",
-        "    }",
-        "    let content = match fs::read_to_string(&path) {",
-        "        Ok(content) => content,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot read {file}: {error}\"));",
+        "            errors.push(format!(\"{label}: {error}\"));",
         "            return;",
         "        }",
         "    };",
@@ -573,6 +563,180 @@
       ]
     },
     {
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]",
+      "text": [
+        "// {test}`requirements.configuration.evidence_paths`",
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.rust_item_inputs`",
+        "#[test]",
+        "fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow() {",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    let external = temp.path().join(\"generated\");",
+        "    fs::create_dir(&external).unwrap();",
+        "    let source = external.join(\"generated.rs\");",
+        "    fs::write(&source, \"pub fn generated() {}\\n\").unwrap();",
+        "    let external_toml = toml::Value::String(external.display().to_string());",
+        "    let config = format!(\"version = 1\\n[evidence]\\nallow = [{external_toml}]\\n\");",
+        "    for input in [",
+        "        json!({\"file\":source, \"line_start\":1, \"line_end\":1, \"text\":[\"pub fn generated() {}\"]}),",
+        "        json!({\"rust_file\":source, \"rust_item\":\"fn[generated]\", \"text\":[\"pub fn generated() {}\"]}),",
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)",
+        "                .unwrap()",
+        "                .errors",
+        "                .join(\"\\n\")",
+        "                .contains(\"outside the repository\")",
+        "        );",
+        "        fs::write(root.join(\"habeas.toml\"), &config).unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "        fs::write(&source, \"pub fn generated() { /* changed */ }\\n\").unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)",
+        "                .unwrap()",
+        "                .errors",
+        "                .join(\"\\n\")",
+        "                .contains(\"input text changed\")",
+        "        );",
+        "        fs::write(&source, \"pub fn generated() {}\\n\").unwrap();",
+        "        fs::write(",
+        "            root.join(\"habeas.toml\"),",
+        "            format!(\"{config}disallow = [{external_toml}]\\n\"),",
+        "        )",
+        "        .unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)",
+        "                .unwrap()",
+        "                .errors",
+        "                .join(\"\\n\")",
+        "                .contains(\"disallowed\")",
+        "        );",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
+      "text": [
+        "// {test}`requirements.configuration.evidence_paths`",
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.rust_item_inputs`",
+        "#[cfg(unix)]",
+        "#[test]",
+        "fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources() {",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    for directory in [\"private\", \"public\", \"sub\"] {",
+        "        fs::create_dir(root.join(directory)).unwrap();",
+        "    }",
+        "    fs::write(root.join(\"public/source.rs\"), \"pub struct Source;\\n\").unwrap();",
+        "    std::os::unix::fs::symlink(\"../public\", root.join(\"private/link\")).unwrap();",
+        "    fs::write(",
+        "        root.join(\"habeas.toml\"),",
+        "        \"version = 1\\n[evidence]\\nallow = ['public']\\ndisallow = ['private']\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    for file in [",
+        "        \"public/source.rs\",",
+        "        \"private/link/source.rs\",",
+        "        \"sub/../private/link/source.rs\",",
+        "    ] {",
+        "        for input in [",
+        "            json!({\"file\":file, \"line_start\":1, \"line_end\":1, \"text\":[\"pub struct Source;\"]}),",
+        "            json!({\"rust_file\":file, \"rust_item\":\"struct[Source]\", \"text\":[\"pub struct Source;\"]}),",
+        "        ] {",
+        "            write_inputs(&root, vec![input]);",
+        "            let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "            if file == \"public/source.rs\" {",
+        "                assert!(errors.is_empty(), \"{errors}\");",
+        "            } else {",
+        "                assert!(errors.contains(\"disallowed\"), \"{file}: {errors}\");",
+        "                assert!(errors.contains(file), \"{errors}\");",
+        "            }",
+        "        }",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
+      "text": [
+        "// {test}`requirements.authoring.generated_inputs`",
+        "// {test}`requirements.configuration.evidence_paths`",
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.rust_item_inputs`",
+        "// {test}`requirements.integration.report_api`",
+        "#[test]",
+        "fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    fs::write(",
+        "        root.join(\"Cargo.toml\"),",
+        "        \"[package]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(",
+        "        root.join(\"Cargo.lock\"),",
+        "        \"version = 4\\n\\n[[package]]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(root.join(\"src/lib.rs\"), \"\").unwrap();",
+        "    fs::create_dir(root.join(\".cargo\")).unwrap();",
+        "    let build = temp.path().join(\"external-build\");",
+        "    let target = temp.path().join(\"external-target\");",
+        "    fs::write(",
+        "        root.join(\".cargo/config.toml\"),",
+        "        format!(",
+        "            \"[build]\\nbuild-dir = {}\\ntarget-dir = {}\\n\",",
+        "            toml::Value::String(build.display().to_string()),",
+        "            toml::Value::String(target.display().to_string()),",
+        "        ),",
+        "    )",
+        "    .unwrap();",
+        "    let out = build.join(\"debug/build/fixture-hash/out\");",
+        "    fs::create_dir_all(&out).unwrap();",
+        "    fs::write(",
+        "        out.parent().unwrap().join(\"root-output\"),",
+        "        out.to_str().unwrap(),",
+        "    )",
+        "    .unwrap();",
+        "    let generated = out.join(\"generated.rs\");",
+        "    fs::write(&generated, \"pub fn generated() {}\\n\").unwrap();",
+        "    for input in [",
+        "        json!({\"file\":generated, \"line_start\":1, \"line_end\":1, \"text\":[\"pub fn generated() {}\"]}),",
+        "        json!({\"rust_file\":generated, \"rust_item\":\"fn[generated]\", \"text\":[\"pub fn generated() {}\"]}),",
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "        fs::write(&generated, \"pub fn generated() { /* changed */ }\\n\").unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"input text changed\"), \"{errors}\");",
+        "        fs::write(&generated, \"pub fn generated() {}\\n\").unwrap();",
+        "        fs::write(",
+        "            root.join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\ndisallow = ['../external-build']\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"disallowed\"), \"{errors}\");",
+        "    }",
+        "    assert!(!target.exists(), \"metadata must not run a build\");",
+        "}"
+      ]
+    },
+    {
       "rust_file": "tests/outcomes.rs",
       "rust_item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
       "text": [
@@ -619,16 +783,6 @@
       "line_start": 1354,
       "line_end": 1383,
       "text": [
-        "                }",
-        "                _ => {}",
-        "            }",
-        "        }",
-        "        if self_inputs != 1 {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: expected exactly one Rust-item input selecting this function, found {self_inputs}\"",
-        "            ));",
-        "        }",
-        "        if definition_inputs == 0 {",
         "            errors.push(format!(",
         "                \"{entry_label}: expected at least one requirements input\"",
         "            ));",
@@ -648,7 +802,17 @@
         "    }",
         "    for (selector, (function, _)) in expected {",
         "        if !present.contains(selector) {",
-        "            errors.push(format!("
+        "            errors.push(format!(",
+        "                \"{label}: {rust_file}:{} {selector}: missing Rust function attestation\",",
+        "                function.declaration_line",
+        "            ));",
+        "        }",
+        "    }",
+        "    valid",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {"
       ]
     },
     {
@@ -691,6 +855,7 @@
         "",
         "// {impl}`requirements.ci.inputs`",
         "// {impl}`requirements.ci.input_containment`",
+        "// {impl}`requirements.configuration.evidence_paths`",
         "fn validate_input_lines(",
         "    root: &Path,",
         "    file: &str,",
@@ -700,14 +865,13 @@
         "    label: &str,",
         "    errors: &mut Vec<String>,",
         ") {",
-        "    let path = match fs::canonicalize(root.join(file)) {",
-        "        Ok(path) => path,",
+        "    let (_, content) = match crate::inputs::read_project_file(root, file) {",
+        "        Ok(source) => source,",
         "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
+        "            errors.push(format!(\"{label}: {error}\"));",
         "            return;",
         "        }",
-        "    };",
-        "    if !path.starts_with(root) {"
+        "    };"
       ]
     },
     {
@@ -727,7 +891,7 @@
       "line_start": 1390,
       "line_end": 1390,
       "text": [
-        "}"
+        ""
       ]
     },
     {
@@ -763,9 +927,9 @@
       "line_start": 617,
       "line_end": 619,
       "text": [
-        "        let mut read_call = json!({\"toolUseId\":\"bedrock-read\",\"name\":\"habeas\",",
-        "        \"input\":{\"file\":\"extra.txt\",\"line_start\":1,\"line_end\":2}});",
-        "        let mut submit_call = json!({\"toolUseId\":\"bedrock-submit\",\"name\":\"submit_judgment\","
+        "        );",
+        "        if existing_evidence {",
+        "            assert_eq!("
       ]
     },
     {
@@ -773,9 +937,9 @@
       "line_start": 733,
       "line_end": 735,
       "text": [
-        "        }",
-        "        for field in [\"line_start\", \"line_end\"] {",
-        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"integer\");"
+        "        \"input\":{\"determination\":true,\"rationale\":\"The supplied sources support the subject.\"}});",
+        "        if typed {",
+        "            read_call[\"type\"] = json!(\"tool_use\");"
       ]
     },
     {
@@ -783,9 +947,9 @@
       "line_start": 770,
       "line_end": 772,
       "text": [
-        "                    && input[\"line_start\"] == 1",
-        "                    && input[\"line_end\"] == 2)",
-        "        );"
+        "            \"AWS_DEFAULT_REGION\",",
+        "            \"AWS_ENDPOINT_URL\",",
+        "            \"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS\","
       ]
     },
     {
@@ -843,9 +1007,9 @@
       "line_start": 84,
       "line_end": 86,
       "text": [
-        "                .map_err(|_| invalid_input(\"file range start must be a positive integer\"))?;",
-        "            let line_end = end",
-        "                .parse::<usize>()"
+        "            let line_start = start",
+        "                .parse::<usize>()",
+        "                .map_err(|_| invalid_input(\"file range start must be a positive integer\"))?;"
       ]
     },
     {
@@ -853,9 +1017,9 @@
       "line_start": 90,
       "line_end": 92,
       "text": [
-        "                line_start,",
-        "                line_end,",
-        "            }])"
+        "            Ok(vec![InputSelector::FileRange {",
+        "                file: file.to_owned(),",
+        "                line_start,"
       ]
     },
     {
@@ -863,12 +1027,12 @@
       "line_start": 289,
       "line_end": 294,
       "text": [
-        "        || fs::canonicalize(&path)",
-        "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
-        "}",
+        "        }",
+        "    }",
         "",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.authoring.source_tools`"
+        "    // {impl}`requirements.authoring.source_tools`",
+        "    // {impl}`requirements.authoring.text_search`",
+        "    pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {"
       ]
     },
     {
@@ -876,11 +1040,11 @@
       "line_start": 312,
       "line_end": 316,
       "text": [
-        "    access: &SourceAccess,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    selector: &InputSelector,",
-        ") -> Result<Value, String> {",
-        "    if let InputSelector::FileRange { file, .. }"
+        "",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`"
       ]
     },
     {
@@ -888,9 +1052,9 @@
       "line_start": 330,
       "line_end": 332,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) {",
-        "    if !selectors.contains(&selector) {"
+        "fn generated_evidence_selector(",
+        "    root: &Path,",
+        "    access: &SourceAccess,"
       ]
     },
     {
@@ -898,9 +1062,9 @@
       "line_start": 412,
       "line_end": 414,
       "text": [
-        "    subject: Option<&str>,",
-        ") -> Result<Vec<Value>, String> {",
-        "    let record = json!({ \"inputs\": inputs });"
+        "        let (_, source) = read_project_file(root, &file).map_err(io::Error::other)?;",
+        "        let items = crate::rust_items::parse_items(&source).map_err(|error| {",
+        "            io::Error::other(format!("
       ]
     },
     {
@@ -908,9 +1072,9 @@
       "line_start": 485,
       "line_end": 487,
       "text": [
-        "            })",
-        "            .to_string(),",
-        "        )"
+        "#[cfg(test)]",
+        "pub(super) mod tests {",
+        "    use super::*;"
       ]
     },
     {
@@ -918,8 +1082,8 @@
       "line_start": 534,
       "line_end": 536,
       "text": [
-        "                .unwrap()",
-        "                .contains(\"old secret judgment\")",
+        "            role(\"cite\", \"requirements.distant\"),",
+        "            role(\"cite\", \"requirements.ready\")",
         "        );"
       ]
     },
@@ -928,9 +1092,9 @@
       "line_start": 24,
       "line_end": 26,
       "text": [
-        "            \"name\": \"habeas\",",
-        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Read only project-local sources; in Git worktrees, files and their resolved symlink targets must be tracked. Generated evidence under evidence/ is excluded.\",",
-        "            \"parameters\": {\"type\":\"object\", \"properties\": {"
+        "pub(crate) fn definitions() -> Vec<Value> {",
+        "    // Providers such as Anthropic require a plain object at the schema root.",
+        "    // Describe the alternative forms here and enforce them in read()."
       ]
     },
     {
@@ -938,9 +1102,9 @@
       "line_start": 28,
       "line_end": 30,
       "text": [
-        "                \"line_start\":{\"type\":\"integer\",\"minimum\":1},",
-        "                \"line_end\":{\"type\":\"integer\",\"minimum\":1},",
-        "                \"rust_file\":{\"type\":\"string\"},"
+        "        json!({",
+        "            \"name\": \"habeas\",",
+        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\","
       ]
     },
     {
@@ -948,13 +1112,13 @@
       "line_start": 68,
       "line_end": 74,
       "text": [
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.definitions.authoring_inputs`",
         "// {impl}`requirements.authoring.delivered_inputs`",
-        "fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDelivery, String> {",
-        "    let selector = if args.contains_key(\"file\") {",
-        "        check_keys(args, &[\"file\", \"line_start\", \"line_end\"])?;",
-        "        let file = string(args, \"file\")?.to_owned();",
-        "        sources.access.file(&sources.root, Path::new(&file))?;",
-        "        let line_start = integer(args, \"line_start\")?;"
+        "// {impl}`requirements.authoring.read_denial`"
       ]
     },
     {
@@ -962,9 +1126,9 @@
       "line_start": 79,
       "line_end": 81,
       "text": [
-        "        };",
-        "        InputSelector::FileRange {",
-        "            file,"
+        "        sources.access.file(&sources.root, Path::new(&file))?;",
+        "        let line_start = integer(args, \"line_start\")?;",
+        "        let line_end = if args.contains_key(\"line_end\") {"
       ]
     },
     {
@@ -972,9 +1136,9 @@
       "line_start": 212,
       "line_end": 214,
       "text": [
-        "        let (_, source) = read_project_file(&sources.root, &file)?;",
-        "        let count = source.lines().count();",
-        "        lines.sort_unstable();"
+        "            continue;",
+        "        };",
+        "        if sources.access.path(&sources.root, &candidate).is_ok() {"
       ]
     },
     {
@@ -982,9 +1146,9 @@
       "line_start": 216,
       "line_end": 218,
       "text": [
-        "        for line in lines {",
-        "            if line == 0 || line > count {",
-        "                return Err(format!(\"{file}: ripgrep returned an out-of-range match\"));"
+        "        }",
+        "    }",
+        "    searches.sort();"
       ]
     },
     {
@@ -992,9 +1156,9 @@
       "line_start": 277,
       "line_end": 279,
       "text": [
-        "        string(args, \"path\")",
-        "    } else {",
-        "        Ok(\".\")"
+        "            if line == 0 || line > count {",
+        "                return Err(io::Error::other(format!(",
+        "                    \"{file}: ripgrep returned an out-of-range match\""
       ]
     },
     {
@@ -1002,9 +1166,9 @@
       "line_start": 342,
       "line_end": 344,
       "text": [
-        "        sources.record_inputs(&read.inputs);",
-        "        assert_eq!(sources.recorded_inputs().len(), 2);",
-        "        let eof = dispatch("
+        "    } else {",
+        "        Ok(\".\")",
+        "    }"
       ]
     },
     {
@@ -1012,9 +1176,9 @@
       "line_start": 405,
       "line_end": 407,
       "text": [
-        "            })",
-        "            .collect::<Vec<_>>();",
-        "        fs::write(root.path().join(\"sample.txt\"), lines.join(\"\\n\")).unwrap();"
+        "        assert_eq!(read.inputs.len(), 2);",
+        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");",
+        "        assert!(sources.recorded_inputs().is_empty());"
       ]
     },
     {
@@ -1022,9 +1186,9 @@
       "line_start": 415,
       "line_end": 417,
       "text": [
-        "        assert_eq!(search.inputs[0][\"text\"], json!(&lines[..11]));",
-        "        let exact = dispatch(",
-        "            &sources,"
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(eof.result[\"input\"][\"line_end\"], 2);"
       ]
     },
     {
@@ -1052,9 +1216,9 @@
       "line_start": 254,
       "line_end": 256,
       "text": [
-        "                ));",
         "            }",
-        "            // {impl}`requirements.ci.span`"
+        "",
+        "            if !block.closed {"
       ]
     },
     {
@@ -1062,9 +1226,9 @@
       "line_start": 557,
       "line_end": 559,
       "text": [
-        "        };",
-        "        let selector = InputSelector::Requirements {",
-        "            requirements: requirements.to_owned(),"
+        "            }",
+        "            Some(names)",
+        "        });"
       ]
     },
     {
@@ -1072,9 +1236,9 @@
       "line_start": 578,
       "line_end": 580,
       "text": [
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    object: &Map<String, Value>,",
-        "    label: &str,"
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`"
       ]
     },
     {
@@ -1082,9 +1246,9 @@
       "line_start": 584,
       "line_end": 586,
       "text": [
-        "        object,",
-        "        &[\"file\", \"line_start\", \"line_end\", \"text\"],",
-        "        label,"
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    object: &Map<String, Value>,"
       ]
     },
     {
@@ -1112,9 +1276,9 @@
       "line_start": 712,
       "line_end": 714,
       "text": [
+        "    end: usize,",
         "    text: &[&str],",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,"
+        "    label: &str,"
       ]
     },
     {
@@ -1122,9 +1286,9 @@
       "line_start": 720,
       "line_end": 722,
       "text": [
+        "            errors.push(format!(\"{label}: {error}\"));",
         "            return;",
-        "        }",
-        "    };"
+        "        }"
       ]
     },
     {
@@ -1132,9 +1296,9 @@
       "line_start": 874,
       "line_end": 876,
       "text": [
-        "            errors.push(format!(\"{label}: {key} must be an array\"));",
-        "            None",
-        "        }"
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn display_path(root: &Path, path: &Path) -> String {",
+        "    path.strip_prefix(root)"
       ]
     },
     {
@@ -1142,9 +1306,9 @@
       "line_start": 943,
       "line_end": 945,
       "text": [
-        "    }",
-        "",
-        "    for (name, definition) in definitions {"
+        "                .iter()",
+        "                .any(|reference| reference.kind == ReferenceKind::Test)",
+        "            && fs::read_to_string(&evidence_file)"
       ]
     },
     {
@@ -1152,9 +1316,9 @@
       "line_start": 1070,
       "line_end": 1072,
       "text": [
-        "    references",
-        "}",
-        ""
+        "        .ok()",
+        "        .and_then(|content| serde_json::from_str::<Value>(&content).ok())",
+        "        .and_then(|value| value.get(\"inputs\").and_then(Value::as_array).cloned())"
       ]
     },
     {
@@ -1162,9 +1326,9 @@
       "line_start": 1407,
       "line_end": 1409,
       "text": [
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),"
+        "    #[test]",
+        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
+        "        let temp = TempDir::new().unwrap();"
       ]
     },
     {
@@ -1172,9 +1336,9 @@
       "line_start": 1444,
       "line_end": 1446,
       "text": [
-        "        for (configuration, expected) in [",
-        "            (\"[book\", \"invalid TOML\"),",
-        "            (\"book = 'wrong'\", \"book must be a table\"),"
+        "            (",
+        "                \"[book]\\nsrc = 'md/../outside'\",",
+        "                \"book.src must be a directory\","
       ]
     },
     {
@@ -1182,9 +1346,9 @@
       "line_start": 1450,
       "line_end": 1452,
       "text": [
-        "            (\"[book.src]\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
-        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),"
+        "            let mut errors = Vec::new();",
+        "            super::book_source_dir(root, &mut errors);",
+        "            assert!("
       ]
     },
     {
@@ -1192,35 +1356,15 @@
       "line_start": 1529,
       "line_end": 1531,
       "text": [
-        "                        \"text\": [\"changed line\"]",
-        "                    },",
-        "                    {"
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();"
       ]
     },
     {
       "file": "src/evidence.rs",
       "line_start": 1535,
       "line_end": 1537,
-      "text": [
-        "                        \"text\": [1]",
-        "                    }",
-        "                ]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1570,
-      "line_end": 1572,
-      "text": [
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1718,
-      "line_end": 1720,
       "text": [
         "        )",
         "        .unwrap();",
@@ -1229,12 +1373,32 @@
     },
     {
       "file": "src/evidence.rs",
+      "line_start": 1570,
+      "line_end": 1572,
+      "text": [
+        "            \"requirement requirements.empty has no text\",",
+        "        ] {",
+        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1718,
+      "line_end": 1720,
+      "text": [
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
       "line_start": 1735,
       "line_end": 1737,
       "text": [
-        "            report.errors.join(\"\\n\").contains(",
-        "                \"md/requirements.md:1: requirement requirements.ready is missing a closing colon fence\"",
-        "            ),"
+        "    fn validates_four_or_more_colon_fences_and_longer_closers() {",
+        "        let body = \"Body MUST remain.\\n\\n:::{note}\\nNested.\\n:::\\n\\nStill in the requirement.\";",
+        "        for (opening, closing) in [(\"::::\", \"::::\"), (\"::::\", \":::::\"), (\":::::::\", \"::::::::\")] {"
       ]
     },
     {
@@ -1435,11 +1599,11 @@
       "line_start": 244,
       "line_end": 248,
       "text": [
-        "    let root =",
-        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
-        "    let path = fs::canonicalize(root.join(relative))",
-        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
-        "    if !path.starts_with(root) {"
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "fn raw_lines(content: &str) -> Vec<String> {",
+        "    content"
       ]
     },
     {
@@ -1507,16 +1671,6 @@
       "line_start": 1418,
       "line_end": 1500,
       "text": [
-        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
-        "        let temp = TempDir::new().unwrap();",
-        "        let root = temp.path();",
-        "        let path = root.join(\"book.toml\");",
-        "        for (configuration, expected) in [",
-        "            (\"\", \"src\"),",
-        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),",
-        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),",
-        "            (\"book = { src = 'docs' }\\n\", \"docs\"),",
-        "        ] {",
         "            fs::write(&path, configuration).unwrap();",
         "            let mut errors = Vec::new();",
         "            assert_eq!(",
@@ -1589,7 +1743,17 @@
         "        .unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 1);"
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.evidence_files, 1);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.errors`",
+        "    // {test}`requirements.ci.diagnostics`",
+        "    // {test}`requirements.ci.input_containment`",
+        "    // {test}`requirements.ci.definition_errors`",
+        "    #[test]"
       ]
     },
     {
@@ -1597,11 +1761,11 @@
       "line_start": 97,
       "line_end": 101,
       "text": [
-        "        let mut line = String::new();",
-        "        assert!(reader.read_line(&mut line).unwrap() > 0);",
-        "        if line == \"\\r\\n\" {",
-        "            break;",
-        "        }"
+        "        self.thread.take().unwrap().join().unwrap();",
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.batch`"
       ]
     },
     {
@@ -1609,11 +1773,11 @@
       "line_start": 155,
       "line_end": 159,
       "text": [
-        "    let status = if failed { \"400 Bad Request\" } else { \"200 OK\" };",
-        "    let mut state = lock.lock().unwrap();",
-        "    write!(stream, \"HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}\", body.len()).unwrap();",
-        "    state.active -= 1;",
-        "}"
+        "    let denied =",
+        "        matches!(behavior, Behavior::DeniedRead { subject: denied, .. } if subject == denied);",
+        "    let held = !denied",
+        "        && matches!(",
+        "            behavior,"
       ]
     },
     {
@@ -1657,11 +1821,11 @@
       "line_start": 685,
       "line_end": 689,
       "text": [
-        "            requests[0]",
-        "                .headers",
-        "                .starts_with(\"POST /model/fixture-bedrock-model/converse HTTP/1.1\\r\\n\")",
-        "        );",
-        "        assert!("
+        "                if stdout { \"stdout\" } else { \"file\" }",
+        "            );",
+        "            assert_eq!(usage[\"evidence_written\"], false);",
+        "            assert_eq!(usage[\"request_count\"], 1);",
+        "            assert!(usage[\"determination\"].is_null());"
       ]
     },
     {
@@ -1669,16 +1833,6 @@
       "line_start": 822,
       "line_end": 862,
       "text": [
-        "// {impl}`requirements.ci.schema`",
-        "fn boolean_field(",
-        "    object: &Map<String, Value>,",
-        "    key: &str,",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") -> Option<bool> {",
-        "    match object.get(key) {",
-        "        Some(Value::Bool(value)) => Some(*value),",
-        "        Some(_) => {",
         "            errors.push(format!(\"{label}: {key} must be a boolean\"));",
         "            None",
         "        }",
@@ -1709,7 +1863,17 @@
         "            None",
         "        }",
         "    }",
-        "}"
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "fn array_field<'a>(",
+        "    object: &'a Map<String, Value>,",
+        "    key: &str,",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Option<&'a Vec<Value>> {",
+        "    match object.get(key) {",
+        "        Some(Value::Array(values)) => Some(values),"
       ]
     },
     {
@@ -1717,16 +1881,6 @@
       "line_start": 1509,
       "line_end": 1539,
       "text": [
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
         "            temp.path().join(\"evidence/requirements.one.json\"),",
         "            json!({",
         "                \"requirement\": \"Old text.\",",
@@ -1740,14 +1894,24 @@
         "                        \"text\": [\"changed line\"]",
         "                    },",
         "                    {",
-        "                        \"file\": \"../outside\",",
+        "                        \"file\": \"\",",
         "                        \"line_start\": 0,",
         "                        \"line_end\": 2,",
         "                        \"text\": [1]",
         "                    }",
         "                ]",
         "            })",
-        "            .to_string(),"
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/requirements.three.json\"),",
+        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/ghost.json\"),",
+        "            json!({"
       ]
     },
     {
@@ -1755,16 +1919,6 @@
       "line_start": 1553,
       "line_end": 1583,
       "text": [
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
         "            \"no matching requirement\",",
         "            \"invalid JSON\",",
         "            \"missing for requirement\",",
@@ -1778,14 +1932,24 @@
         "            \"requirement must be a string\",",
         "            \"missing field \\\"determination\\\"\",",
         "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
+        "            \"file must be a nonempty path\",",
         "            \"line_start must be a positive integer\",",
         "            \"text[0] must be a string\",",
         "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
         "            \"requirement requirements.empty has no text\",",
         "        ] {",
         "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
-        "        }"
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.references.evidence_coverage`",
+        "    #[test]",
+        "    fn source_references_are_covered_by_evidence_inputs() {",
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
+        "        )"
       ]
     },
     {
@@ -1842,6 +2006,56 @@
         "        report",
         "            .errors",
         "            .iter()"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 58,
+      "line_end": 60,
+      "text": [
+        "",
+        "An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 65,
+      "line_end": 67,
+      "text": [
+        ":::{req} inputs",
+        "For a file-range input, Habeas MUST verify that `line_start` and `line_end` identify an inclusive, ordered range in `file` and that `text` exactly matches the current raw lines in that range. Habeas MUST report missing files, invalid ranges, and changed lines.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 73,
+      "line_end": 75,
+      "text": [
+        ":::{req} requirements_inputs",
+        "For a requirements input, Habeas MUST match the glob in `requirements` against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A glob matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the glob and affected definitions when available.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 60,
+      "line_end": 62,
+      "text": [
+        ":::{req} add_input_file_range",
+        "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/references.md",
+      "line_start": 77,
+      "line_end": 79,
+      "text": [
+        ":::{example} attestation_reassessment",
+        "A function attestation has a Rust-item input selecting its function and a requirements input matching the definitions reviewed for it. Changing the function's raw lines or adding a definition matched by the requirements glob invalidates the attestation until the agent reviews it again. {cite}`requirements.references.rust_function_attestations`",
+        ":::"
       ]
     }
   ]

@@ -1,7 +1,7 @@
 {
   "requirement": "When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.\n\nRepeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The code implements each clause, and the tests exercise the interesting cases. I judged this from the supplied excerpts and did not run the tests.\n\n**Implementation**\n- `add_definition_inputs` (src/add_input.rs) builds or reads the record for a requirement or example. It passes the definition text as the subject to `update_inputs`, and it writes the file only when `update_inputs` reports a change.\n- `add_function_inputs` does the same for Rust-function attestations. It passes `None` as the subject, writes only when something changed or the entry is new, and shares `update_inputs`.\n- `update_inputs` first applies the requested inputs. It then calls `terms::dependencies(definitions, object, subject)`.\n- `terms::dependencies` (src/terms.rs) takes the terms referenced in the subject text. It adds the terms referenced in every recorded input, with a separate scan for each input kind: definition, Rust item, `.rs` file range, other file range, and requirements. It then follows terms transitively through the current definition bodies. A visited set makes this safe for cycles, and a missing definition gives an error.\n- For each required definition, `update_inputs` resolves a fresh definition input. If the record doesn't hold exactly one matching input, or that input differs, it removes all inputs for that definition and pushes one new input. This guarantees no duplicates and repairs missing or duplicated inputs.\n- If anything changed, `update_inputs` sets `determination` to false and replaces the rationale with a review-pending message.\n- If nothing changed, `changed` stays false and nothing is written, so the record file is byte-identical.\n\n**Tests** (tests/definitions.rs, each citing `requirements.definitions.capture`)\n- `cyclic_dependencies_are_captured_once_and_changes_require_review`:\n  - Mutually referencing definitions `glossary.a` and `glossary.b` yield exactly 3 inputs.\n  - A second capture leaves the file byte-identical, which covers the \"no change, no rewrite\" clause.\n  - A whitespace-only change to the glossary does not make the evidence stale.\n  - Changing a phrase or body text makes validation report stale input text without modifying the record.\n  - Re-running capture refreshes the record, gives `determination == false` and still 3 inputs.\n  - After the validator is shown a record with a definition input removed (\"found 0\") and one with a duplicated input (\"found 2\"), re-running capture repairs the record back to 3 inputs.\n- `example_subject_and_definition_display_use_the_same_dependencies` covers capture for examples, with subject-text dependencies.\n- `function_attestations_capture_terms_without_counting_them_as_citations` covers Rust-function attestations. It captures terms from the function's own comments, and a later term change makes the requirement and the sidecar both stale.\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` shows that referenced terms outside the glob are captured, and that unreferenced ones are not.\n- `definition_schema_deletion_and_literal_references_are_checked` shows that literal or escaped references create no definition inputs.\n\n**Minor observations (not gaps against this requirement)**\n- Definition inputs that are no longer required are not pruned.\n- Dependencies of already-recorded but stale inputs are computed from their stored text.",
+  "rationale": "**Verdict: the requirement is met.**\n\n**Implementation**\n- `add_input` (`src/add_input.rs`) sends every target kind through `update_inputs`. The targets are requirement, example and Rust-function attestation. The call is made from `add_definition_inputs` (with `Some(&definition.text)` as the subject) and from `add_function_inputs` (with `None`).\n- `update_inputs` first applies the explicitly requested inputs. Each one is reported as added, refreshed or unchanged.\n- It then calls `terms::dependencies(definitions, object, subject)`. That function collects term references from:\n  - the subject text;\n  - every recorded input, whether a file range, a Rust item, a requirements glob body, or an existing definition input;\n  - the transitive closure of the definition bodies.\n  - A `BTreeSet` plus the `required.insert` check make the closure terminate on cycles.\n- Each required definition is resolved fresh and compared with the existing definition inputs.\n  - If there is not exactly one existing input, or it differs from the fresh one, all inputs for that definition are removed and the fresh one is pushed.\n  - That gives refresh and de-duplication, and repeated references never produce duplicate definition inputs.\n- If anything changed, `determination` is set to `false` and the rationale is reset to a review-pending message. This satisfies \"any change leaves the determination false\".\n- Records are written only when `changed` is true (or when a sidecar entry is new). If nothing changed, the file is left untouched.\n\n**Tests (`tests/definitions.rs`)**\n- `cyclic_dependencies_are_captured_once_and_changes_require_review` covers most of the design space against a fixture with cyclic terms:\n  - Capture yields exactly 3 inputs: the requirement glob plus `glossary.a` and `glossary.b`. Each cyclic term is captured once.\n  - An approved record validates cleanly.\n  - Re-running capture leaves the file byte-identical.\n  - Whitespace-only glossary edits cause no stale error.\n  - Changing the phrase or the body of `glossary.b` makes validation report \"input text changed\". Validation does not modify the record (the test compares the bytes before and after).\n  - Re-running capture refreshes the record, resets `determination` to false, keeps 3 inputs, and the record validates again once re-approved.\n  - A missing definition input and a duplicated one are both detected, and capture repairs the record back to 3 inputs.\n  - This is the `reassessment` example scenario.\n- `example_subject_and_definition_display_use_the_same_dependencies` covers an example subject whose own text carries a term reference. Three inputs are captured.\n- `function_attestations_capture_terms_without_counting_them_as_citations` covers the Rust-function attestation path. It captures terms from comments and checks that a term change invalidates both the requirement record and the sidecar.\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` covers capture of referenced terms that fall outside the glob.\n- `definition_schema_deletion_and_literal_references_are_checked` covers code-literal term references not being captured (only 1 input).\n\n**Minor observations**\n- Definition inputs that are no longer required are not pruned. The requirement does not demand pruning, and validation checks for missing or duplicate inputs.\n- There are no FIXMEs or acknowledged gaps.",
   "inputs": [
     {
       "requirements": "requirements.definitions.capture",
@@ -96,7 +96,11 @@
         "    let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;",
         "    let rust_file = path",
         "        .strip_prefix(root)",
-        "        .unwrap()",
+        "        .map_err(|_| {",
+        "            invalid_input(format!(",
+        "                \"{rust_file}: function attestation target must be inside the repository\"",
+        "            ))",
+        "        })?",
         "        .to_str()",
         "        .ok_or_else(|| invalid_input(\"Rust file path must be UTF-8\"))?;",
         "    let functions = function_citations(&source, definitions).map_err(|error| {",
@@ -390,6 +394,12 @@
       "line_start": 310,
       "line_end": 347,
       "text": [
+        "        let input = selector.to_input(&resolved);",
+        "        let positions: Vec<_> = existing",
+        "            .iter()",
+        "            .enumerate()",
+        "            .filter_map(|(i, old)| {",
+        "                (old.get(\"definition\").and_then(Value::as_str) == Some(definition.as_str()))",
         "                    .then_some(i)",
         "            })",
         "            .collect();",
@@ -421,13 +431,7 @@
         "            .map_err(|error| invalid_input(format!(\"{}: invalid JSON: {error}\", path.display()))),",
         "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(fallback),",
         "        Err(error) => Err(error),",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "fn invalid_input(message: impl Into<String>) -> io::Error {",
-        "    io::Error::new(io::ErrorKind::InvalidInput, message.into())",
-        "}"
+        "    }"
       ]
     },
     {
@@ -548,6 +552,8 @@
       "line_start": 149,
       "line_end": 176,
       "text": [
+        "        return Err(invalid_input(format!(",
+        "            \"{name:?} is an {}, not a {}\",",
         "            definition.kind.noun(),",
         "            kind.noun()",
         "        )));",
@@ -573,9 +579,7 @@
         "        fs::create_dir_all(root.join(\"evidence\"))?;",
         "        fs::write(",
         "            &path,",
-        "            format!(\"{}\\n\", serde_json::to_string_pretty(&record)?),",
-        "        )?;",
-        "    }"
+        "            format!(\"{}\\n\", serde_json::to_string_pretty(&record)?),"
       ]
     },
     {
@@ -670,15 +674,15 @@
       "line_start": 415,
       "line_end": 423,
       "text": [
+        "    check_keys(",
+        "        object,",
+        "        &[text_field, \"determination\", \"rationale\", \"inputs\"],",
+        "        &label,",
+        "        errors,",
+        "    );",
         "",
         "    // {impl}`requirements.ci.requirement_text`",
-        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
-        "        if text.trim().is_empty() {",
-        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
-        "        }",
-        "        if let Some(expected) = expected",
-        "            && text != expected.text",
-        "        {"
+        "    if let Some(text) = string_field(object, text_field, &label, errors) {"
       ]
     },
     {
@@ -702,15 +706,15 @@
       "line_start": 745,
       "line_end": 753,
       "text": [
-        "    let expected_count = end - start + 1;",
-        "    if text.len() != expected_count {",
-        "        errors.push(format!(",
-        "            \"{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}\",",
-        "            text.len()",
+        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
+        "            compact_diff(text, actual)",
         "        ));",
         "    }",
-        "    let actual = &lines[start - 1..end];",
-        "    if text != actual {"
+        "}",
+        "",
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn compact_diff(recorded: &[&str], current: &[&str]) -> String {",
+        "    let prefix = recorded"
       ]
     },
     {
@@ -718,19 +722,19 @@
       "line_start": 1553,
       "line_end": 1565,
       "text": [
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
         "            \"no matching requirement\",",
         "            \"invalid JSON\",",
-        "            \"missing for requirement\","
+        "            \"missing for requirement\",",
+        "            \"requirement text changed\",",
+        "            \"- Old text.\",",
+        "            \"+ First.\",",
+        "            \"determination is false\",",
+        "            \"input text changed\",",
+        "            \"- changed line\",",
+        "            \"+ // first line\",",
+        "            \"requirement must be a string\",",
+        "            \"missing field \\\"determination\\\"\",",
+        "            \"inputs must be an array\","
       ]
     },
     {
@@ -738,15 +742,15 @@
       "line_start": 1903,
       "line_end": 1911,
       "text": [
-        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        uncovered[\"inputs\"] = json!([]);",
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        )",
+        "        .unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
-        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
-        "        fs::write(&example_path, &old).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),"
+        "        assert!(",
+        "            errors.contains(\"input text changed for RustItem\"),",
+        "            \"{errors}\"",
+        "        );",
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
+        "        fs::write("
       ]
     },
     {
@@ -754,15 +758,15 @@
       "line_start": 1922,
       "line_end": 1930,
       "text": [
-        "            temp.path().join(\"md/rules.md\"),",
-        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
-        "        )",
-        "        .unwrap();",
+        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
+        "        evidence[\"example\"] = \"Outdated.\".into();",
+        "        fs::write(&example_path, evidence.to_string()).unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"requirements glob matches changed\"),",
-        "            \"{errors}\"",
-        "        );"
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
+        "",
+        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();",
+        "        let example_text = wrong_field"
       ]
     },
     {
@@ -822,13 +826,13 @@
       "line_start": 154,
       "line_end": 160,
       "text": [
+        "    }",
+        "    let path = root.join(\"evidence\").join(format!(\"{name}.json\"));",
         "    let mut record = read_or_new(",
         "        &path,",
         "        json!({",
         "            kind.noun(): definition.text,",
-        "            \"determination\": false,",
-        "            \"rationale\": \"Review pending: inspect the definition, behavior, and supporting inputs.\",",
-        "            \"inputs\": [],"
+        "            \"determination\": false,"
       ]
     },
     {
@@ -836,13 +840,13 @@
       "line_start": 165,
       "line_end": 171,
       "text": [
+        "    let output = update_inputs(",
+        "        &mut record,",
         "        inputs,",
         "        root,",
         "        definitions,",
         "        Some(&definition.text),",
-        "    )?;",
-        "    if output.1 {",
-        "        fs::create_dir_all(root.join(\"evidence\"))?;"
+        "    )?;"
       ]
     },
     {
@@ -850,13 +854,13 @@
       "line_start": 134,
       "line_end": 140,
       "text": [
-        "            &definitions,",
-        "            &mandatory,",
-        "            Some(&subject.text),",
-        "        )?;",
-        "        for input in dependencies {",
-        "            if !mandatory.contains(&input) {",
-        "                mandatory.push(input);"
+        "                    format!(\"{}: {error}\", evidence_path.display()),",
+        "                ));",
+        "            }",
+        "        }",
+        "",
+        "        let mut mandatory = Vec::new();",
+        "        for selector in selectors {"
       ]
     },
     {
@@ -878,13 +882,13 @@
       "line_start": 288,
       "line_end": 294,
       "text": [
-        "                    block.kind.noun(),",
-        "                    previous.get().source",
-        "                )),",
-        "            }",
-        "        }",
-        "    }",
-        ""
+        "                        line_end: line + raw_lines.len().saturating_sub(1),",
+        "                        raw_lines,",
+        "                    });",
+        "                }",
+        "                Entry::Occupied(previous) => errors.push(format!(",
+        "                    \"{source}: duplicate {} {name}; first declared at {}\",",
+        "                    block.kind.noun(),"
       ]
     },
     {
@@ -934,13 +938,13 @@
       "line_start": 1920,
       "line_end": 1926,
       "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"md/rules.md\"),",
-        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
+        "        );",
+        "",
+        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
+        "        evidence[\"example\"] = \"Outdated.\".into();",
+        "        fs::write(&example_path, evidence.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");"
       ]
     },
     {
@@ -948,13 +952,13 @@
       "line_start": 1932,
       "line_end": 1938,
       "text": [
-        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        evidence[\"example\"] = \"Outdated.\".into();",
-        "        fs::write(&example_path, evidence.to_string()).unwrap();",
+        "            .unwrap()",
+        "            .remove(\"example\")",
+        "            .unwrap();",
+        "        wrong_field[\"requirement\"] = example_text;",
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
-        ""
+        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");"
       ]
     },
     {
@@ -962,6 +966,7 @@
       "line_start": 28,
       "line_end": 40,
       "text": [
+        "            Self::RustFunction { .. } => \"rust_function\",",
         "        }",
         "    }",
         "}",
@@ -973,8 +978,7 @@
         "    pub(crate) subject_kind: AssessmentKind,",
         "    pub(crate) subject_text: String,",
         "    mandatory: Vec<Value>,",
-        "    recorded: Vec<Value>,",
-        "}"
+        "    recorded: Vec<Value>,"
       ]
     },
     {
@@ -982,19 +986,19 @@
       "line_start": 131,
       "line_end": 143,
       "text": [
-        "        let dependencies = definition_inputs(",
-        "            &root,",
-        "            &access,",
-        "            &definitions,",
-        "            &mandatory,",
-        "            Some(&subject.text),",
-        "        )?;",
-        "        for input in dependencies {",
-        "            if !mandatory.contains(&input) {",
-        "                mandatory.push(input);",
+        "            Err(error) => {",
+        "                return Err(io::Error::new(",
+        "                    error.kind(),",
+        "                    format!(\"{}: {error}\", evidence_path.display()),",
+        "                ));",
         "            }",
         "        }",
-        "        Ok(Self {"
+        "",
+        "        let mut mandatory = Vec::new();",
+        "        for selector in selectors {",
+        "            if !generated_evidence_selector(&root, &access, &selector) {",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
+        "            }"
       ]
     },
     {
@@ -1002,19 +1006,19 @@
       "line_start": 217,
       "line_end": 229,
       "text": [
-        "        }",
-        "        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {",
-        "            if !mandatory.contains(&input) {",
-        "                mandatory.push(input);",
-        "            }",
-        "        }",
-        "        Ok(Self {",
-        "            root,",
-        "            access,",
-        "            subject_name: format!(\"{rust_file}:{rust_item}\"),",
-        "            subject_kind: AssessmentKind::RustFunction {",
-        "                rust_item: rust_item.to_owned(),",
-        "                citations: citations"
+        "                    .iter()",
+        "                    .find(|entry| entry[\"rust_item\"] == rust_item)",
+        "                {",
+        "                    let inputs = entry[\"inputs\"].as_array().ok_or_else(|| {",
+        "                        io::Error::other(format!(",
+        "                            \"{}: existing inputs must be an array\",",
+        "                            path.display()",
+        "                        ))",
+        "                    })?;",
+        "                    for (index, input) in inputs.iter().enumerate() {",
+        "                        let selector = InputSelector::from_input(input).ok_or_else(|| {",
+        "                            io::Error::other(format!(",
+        "                                \"{}: inputs[{index}] has no resolvable selector\","
       ]
     },
     {
@@ -1022,19 +1026,19 @@
       "line_start": 454,
       "line_end": 466,
       "text": [
-        "                for _ in &submissions {",
-        "                    usage.tool(\"submit_judgment\", true);",
-        "                }",
-        "                return Err(io::Error::other(",
-        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
-        "                ));",
-        "            }",
-        "            let result = submission(",
-        "                &Value::Object(submissions[0].function.arguments.clone()),",
-        "                function,",
-        "            );",
-        "            usage.tool(\"submit_judgment\", result.is_err());",
-        "            let (judgment, rationale) = result?;"
+        "    loop {",
+        "        let index = usage.begin_request()?;",
+        "        let started = Instant::now();",
+        "        let response = provider.complete(request.clone()).await;",
+        "        usage.end_request(",
+        "            index,",
+        "            started.elapsed().as_millis(),",
+        "            response.as_ref().ok().map(|r| &r.usage),",
+        "        )?;",
+        "        let response = response?;",
+        "        sources.record_inputs(&pending);",
+        "        pending.clear();",
+        "        if let Some(error) = turn_failure("
       ]
     },
     {
@@ -1475,6 +1479,8 @@
         "// {impl}`requirements.cli.add_input_file_range`",
         "// {impl}`requirements.cli.add_input_rust_item`",
         "// {impl}`requirements.cli.add_input_requirements`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.ci.schema`",
         "fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {",
         "    match mode {",
         "        InputMode::FileRange(specification) => {",
@@ -1509,7 +1515,7 @@
         "            let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;",
         "            let rust_file = path",
         "                .strip_prefix(root)",
-        "                .unwrap()",
+        "                .unwrap_or(&path)",
         "                .to_str()",
         "                .ok_or_else(|| invalid_input(\"Rust file path must be UTF-8\"))?;",
         "            let items = parse_items(&source).map_err(|error| {",
@@ -1540,9 +1546,7 @@
         "// {impl}`requirements.definitions.capture`",
         "fn add_definition_inputs(",
         "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    name: &str,",
-        "    kind: DefinitionKind,"
+        "    definitions: &BTreeMap<String, Declaration>,"
       ]
     },
     {
@@ -1550,19 +1554,19 @@
       "line_start": 288,
       "line_end": 300,
       "text": [
+        "        } else {",
+        "            existing.push(input);",
+        "            changed = true;",
+        "            \"added\"",
+        "        };",
+        "        output.push_str(&format!(\"- {action}: {selector:?}\"));",
         "        if !matches.is_empty() {",
         "            output.push_str(&format!(\" matching {}\", matches.join(\", \")));",
         "        }",
         "        output.push('\\n');",
         "    }",
         "    let required =",
-        "        crate::terms::dependencies(definitions, object, subject).map_err(invalid_input)?;",
-        "    let existing = object",
-        "        .get_mut(\"inputs\")",
-        "        .and_then(Value::as_array_mut)",
-        "        .unwrap();",
-        "    for definition in required {",
-        "        let selector = InputSelector::Definition {"
+        "        crate::terms::dependencies(definitions, object, subject).map_err(invalid_input)?;"
       ]
     },
     {
@@ -1570,19 +1574,19 @@
       "line_start": 395,
       "line_end": 407,
       "text": [
-        "        });",
-        "    }",
-        "    let (_, source) = read_project_file(root, &file)?;",
-        "    Ok(InputSelector::FileRange {",
-        "        file,",
-        "        line_start: 1,",
-        "        line_end: source.lines().count(),",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.definitions.authoring_inputs`",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "fn definition_inputs("
+        "fn reference_selector(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    reference: &SourceReference,",
+        ") -> io::Result<InputSelector> {",
+        "    let file = reference",
+        "        .file",
+        "        .strip_prefix(root)",
+        "        .map_err(|_| io::Error::other(\"reference is outside project root\"))?",
+        "        .to_str()",
+        "        .ok_or_else(|| io::Error::other(\"reference path is not UTF-8\"))?",
+        "        .to_owned();",
+        "    if reference"
       ]
     },
     {
@@ -1590,19 +1594,19 @@
       "line_start": 458,
       "line_end": 470,
       "text": [
+        "        errors.push(format!(\"{label}: rationale must not be empty\"));",
+        "    }",
+        "    // {impl}`requirements.ci.determination`",
+        "    if determination == Some(Judgment::False) {",
+        "        errors.push(format!(",
+        "            \"{label}: determination is false{}\",",
         "            rationale",
         "                .filter(|text| !text.trim().is_empty())",
         "                .map_or(String::new(), |text| format!(\": {}\", text.trim()))",
         "        ));",
         "    }",
         "",
-        "    crate::terms::validate_dependencies(",
-        "        definitions,",
-        "        object,",
-        "        expected.map(|d| d.text.as_str()),",
-        "        &label,",
-        "        errors,",
-        "    );"
+        "    crate::terms::validate_dependencies("
       ]
     },
     {
@@ -1610,19 +1614,19 @@
       "line_start": 1328,
       "line_end": 1340,
       "text": [
-        "                rationale.unwrap_or(\"\")",
-        "            ));",
-        "        }",
-        "        let Some(inputs) = array_field(entry, \"inputs\", &entry_label, errors) else {",
-        "            continue;",
-        "        };",
-        "        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);",
-        "        let mut self_inputs = 0;",
-        "        let mut definition_inputs = 0;",
-        "        let mut matched_definitions = BTreeSet::new();",
         "        for (input_index, input) in inputs.iter().enumerate() {",
         "            let input_label = format!(\"{entry_label}: inputs[{input_index}]\");",
-        "            let input_selector = InputSelector::from_input(input);"
+        "            let input_selector = InputSelector::from_input(input);",
+        "            let resolved = validate_input(root, definitions, input, &input_label, errors);",
+        "            match input_selector {",
+        "                Some(InputSelector::RustItem {",
+        "                    rust_file: selected_file,",
+        "                    rust_item,",
+        "                }) if selected_file == rust_file && rust_item == selector => {",
+        "                    self_inputs += 1;",
+        "                }",
+        "                Some(InputSelector::Requirements { .. }) => {",
+        "                    definition_inputs += 1;"
       ]
     },
     {

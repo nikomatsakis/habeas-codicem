@@ -4,8 +4,9 @@ use std::fs;
 use std::path::Path;
 
 use habeas::config::{
-    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, load_user_config,
-    resolve_authoring_from, state_root_from, user_config_path_from,
+    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,
+    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,
+    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,
 };
 
 // {test}`requirements.configuration.user_location`
@@ -315,4 +316,272 @@ fn ollama_authentication_resolves_separately_and_rejects_missing_values() {
     let serialized = config.to_toml().unwrap();
     assert!(serialized.contains("MODEL_KEY"));
     assert!(!serialized.contains("private-value"));
+}
+
+// {test}`requirements.configuration.workspace_location`
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.configuration.loading`
+// {test}`requirements.configuration.serialization`
+#[test]
+fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let nested = project.join("nested/deep");
+    fs::create_dir_all(&nested).unwrap();
+    let outer = temp.path().join("habeas.toml");
+    fs::write(&outer, "version = 1\n[evidence]\nallow = ['outer']\n").unwrap();
+    let inherited = load_workspace_config(&project).unwrap().unwrap();
+    assert_eq!(inherited.path, outer);
+    assert_eq!(inherited.root, temp.path().canonicalize().unwrap());
+    let path = project.join("nested/habeas.toml");
+    let text = "# preserved\nversion = 1\n[authoring]\ndefault = 'cloud'\n[evidence]\ndisallow = ['private']\n";
+    fs::write(&path, text).unwrap();
+    let closest = load_workspace_config(&nested).unwrap().unwrap();
+    assert_eq!(closest.path, path);
+    assert_eq!(closest.root, path.parent().unwrap());
+    assert!(
+        closest
+            .config
+            .authoring
+            .as_ref()
+            .unwrap()
+            .configs
+            .is_empty()
+    );
+    assert!(closest.config.evidence.as_ref().unwrap().allow.is_empty());
+    assert_eq!(
+        closest.config.evidence.as_ref().unwrap().disallow,
+        vec![Path::new("private")]
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let serialized = closest.config.to_toml().unwrap();
+    assert!(!serialized.contains("configs"));
+    assert_eq!(
+        WorkspaceConfig::parse(&serialized, &path).unwrap(),
+        closest.config
+    );
+
+    fs::write(&path, "version = 1\n[evidence\n").unwrap();
+    let error = load_workspace_config(&nested).unwrap_err().to_string();
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
+    assert!(error.contains("invalid TOML"), "{error}");
+    fs::remove_file(path).unwrap();
+    fs::remove_file(outer).unwrap();
+    assert!(load_workspace_config(&nested).unwrap().is_none());
+}
+
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.configuration.loading`
+// {test}`requirements.authoring.credentials`
+#[test]
+fn evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("habeas.toml");
+    fs::write(&path, "version = 1\n[evidence]\nallow = ['generated', '../shared']\ndisallow = ['generated/private']\n[authoring.configs.cloud]\nbackend = 'unknown'\ncredentials = 'DO_NOT_PRINT_THIS_CREDENTIAL'\n").unwrap();
+    let policy = load_workspace_evidence(temp.path()).unwrap().unwrap();
+    assert_eq!(policy.path, path);
+    assert_eq!(policy.root, temp.path().canonicalize().unwrap());
+    assert_eq!(
+        policy.evidence.allow,
+        vec![Path::new("generated"), Path::new("../shared")]
+    );
+    assert!(policy.contains_credentials);
+    let error = load_workspace_config(temp.path()).unwrap_err().to_string();
+    assert!(!error.contains("DO_NOT_PRINT_THIS_CREDENTIAL"), "{error}");
+
+    fs::write(&path, "version = 1\n[authoring]\ndefault = 123\n").unwrap();
+    assert!(
+        !load_workspace_evidence(temp.path())
+            .unwrap()
+            .unwrap()
+            .contains_credentials
+    );
+    assert!(load_workspace_config(temp.path()).is_err());
+    for source in [
+        "version = 2",
+        "version = 1\nunknown = true",
+        "version = 1\n[evidence]\nallow = ['']",
+        "version = 1\n[evidence]\ndisallow = [42]",
+        "version = 1\n[evidence]\nunknown = []",
+    ] {
+        fs::write(&path, source).unwrap();
+        let error = load_workspace_evidence(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+    }
+}
+
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.configuration.serialization`
+#[test]
+fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let user_path = root.join("user.toml");
+    let mut user = UserConfig::parse("version = 1\n[authoring]\ndefault = 'user'\n[authoring.configs.user]\nbackend = 'bedrock'\nmodel = 'user-model'\naws_profile = 'user-profile'\n[authoring.configs.shared]\nbackend = 'bedrock'\nmodel = 'old-model'\nregion = 'us-west-2'\nconcurrency = 7\n", &user_path).unwrap();
+    let path = root.join("habeas.toml");
+    fs::write(&path, "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\n[authoring.configs.shared]\nbackend = 'ollama'\nmodel = 'replacement'\n").unwrap();
+    let mut workspace = load_workspace_config(&root).unwrap().unwrap();
+    let selected = resolve_authoring_with_workspace_from(
+        &user_path,
+        Some(&user),
+        Some(&workspace),
+        &root,
+        None,
+    )
+    .unwrap();
+    assert_eq!(selected.name, "workspace");
+    assert_eq!(selected.config_path, path);
+    let replaced = resolve_authoring_with_workspace_from(
+        &user_path,
+        Some(&user),
+        Some(&workspace),
+        &root,
+        Some("shared"),
+    )
+    .unwrap();
+    assert_eq!(replaced.config_path, path);
+    assert_eq!(replaced.concurrency, None);
+    assert!(
+        matches!(&replaced.backend, BackendConfig::Ollama(config) if config.model == "replacement" && config.endpoint.is_none())
+    );
+
+    user.authoring.as_mut().unwrap().projects.insert(
+        root.clone(),
+        habeas::config::ProjectSelection {
+            config: "user".into(),
+        },
+    );
+    let project = resolve_authoring_with_workspace_from(
+        &user_path,
+        Some(&user),
+        Some(&workspace),
+        &root,
+        None,
+    )
+    .unwrap();
+    assert_eq!(project.name, "user");
+    assert_eq!(project.config_path, user_path);
+    let explicit = resolve_authoring_with_workspace_from(
+        &user_path,
+        Some(&user),
+        Some(&workspace),
+        &root,
+        Some("workspace"),
+    )
+    .unwrap();
+    assert_eq!(explicit.name, "workspace");
+    user.authoring.as_mut().unwrap().projects.clear();
+    workspace.config.authoring.as_mut().unwrap().default = Some("user".into());
+    let user_reference = resolve_authoring_with_workspace_from(
+        &user_path,
+        Some(&user),
+        Some(&workspace),
+        &root,
+        None,
+    )
+    .unwrap();
+    assert_eq!(user_reference.name, "user");
+    assert_eq!(user_reference.config_path, user_path);
+    workspace.config.authoring.as_mut().unwrap().default = None;
+    assert_eq!(
+        resolve_authoring_with_workspace_from(
+            &user_path,
+            Some(&user),
+            Some(&workspace),
+            &root,
+            None
+        )
+        .unwrap()
+        .name,
+        "user"
+    );
+    workspace.config.authoring.as_mut().unwrap().default = Some("workspace".into());
+    let workspace_only =
+        resolve_authoring_with_workspace_from(&user_path, None, Some(&workspace), &root, None)
+            .unwrap();
+    assert_eq!(workspace_only.name, "workspace");
+    let error = resolve_authoring_with_workspace_from(
+        &user_path,
+        Some(&user),
+        Some(&workspace),
+        &root,
+        Some("missing"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains(path.to_str().unwrap()) && error.contains("missing"),
+        "{error}"
+    );
+}
+
+// {test}`requirements.authoring.credentials`
+// {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.configuration.serialization`
+// {test}`requirements.configuration.loading`
+#[test]
+fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
+    let path = Path::new("habeas.toml");
+    let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n";
+    let config = WorkspaceConfig::parse(source, path).unwrap();
+    let debug = format!("{config:?}");
+    for secret in [
+        "PRIVATE_ACCESS_KEY",
+        "PRIVATE_SECRET_KEY",
+        "PRIVATE_SESSION",
+        "PRIVATE_OLLAMA_KEY",
+    ] {
+        assert!(!debug.contains(secret), "{debug}");
+    }
+    assert_eq!(
+        WorkspaceConfig::parse(&config.to_toml().unwrap(), path).unwrap(),
+        config
+    );
+    let BackendConfig::Ollama(local) = &config.authoring.as_ref().unwrap().configs["local"].backend
+    else {
+        panic!("wrong backend");
+    };
+    assert_eq!(
+        local.api_key_from(|_| None).unwrap().as_deref(),
+        Some("PRIVATE_OLLAMA_KEY")
+    );
+    for invalid_source in [
+        "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = ['PRIVATE_OLLAMA_KEY']\n",
+        "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY' unexpected\n",
+        "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\ncredentials = 'PRIVATE_SECRET_KEY'\n",
+        "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 123456789\n",
+    ] {
+        for error in [
+            WorkspaceConfig::parse(invalid_source, path).unwrap_err(),
+            UserConfig::parse(invalid_source, path).unwrap_err(),
+        ] {
+            let error = error.to_string();
+            assert!(error.contains("habeas.toml"), "{error}");
+            assert!(!error.contains("PRIVATE_"), "{error}");
+            assert!(!error.contains("123456789"), "{error}");
+        }
+    }
+    for invalid_source in [
+        source.replace(
+            "model = 'm'\n[authoring.configs.cloud.credentials]",
+            "model = 'm'\naws_profile = 'p'\n[authoring.configs.cloud.credentials]",
+        ),
+        source.replace(
+            "api_key = 'PRIVATE_OLLAMA_KEY'",
+            "api_key = 'PRIVATE_OLLAMA_KEY'\napi_key_env = 'KEY'",
+        ),
+        source.replace(
+            "secret_access_key = 'PRIVATE_SECRET_KEY'",
+            "secret_access_key = ''",
+        ),
+        source.replace("session_token = 'PRIVATE_SESSION'", "session_token = ''"),
+        source.replace("api_key = 'PRIVATE_OLLAMA_KEY'", "api_key = ''"),
+    ] {
+        assert!(WorkspaceConfig::parse(&invalid_source, path).is_err());
+    }
 }

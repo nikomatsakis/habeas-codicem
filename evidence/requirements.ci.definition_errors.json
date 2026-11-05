@@ -1,7 +1,7 @@
 {
   "requirement": "Validation MUST report a requirement or example with a missing closing fence or an empty body. Full names of `{req}` and `{example}` definitions MUST be unique across requirements, examples, and named definitions. Habeas MUST report every duplicate full name, including collisions involving named definitions, and identify both the duplicate declaration and the first declaration.",
   "determination": true,
-  "rationale": "**Verdict:** `requirements.ci.definition_errors` is implemented and tested. I did not run the tests; this rests on reading the code and test assertions.\n\n**Implementation.** `collect_definitions` in `src/evidence.rs` is tagged `{impl}` for this requirement. It processes every parsed block of every kind (requirement, example, named definition) in one pass.\n- **Missing closing fence:** when `!block.closed`, it pushes `\"{source}: {noun} {name} is missing a closing colon fence\"`.\n- **Empty body:** when the trimmed body is empty, it pushes `\"{source}: {noun} {name} has no text\"`. This applies to both requirements and examples.\n- **Duplicates:** all kinds go into one `BTreeMap` keyed by full name, so collisions across requirements, examples and named definitions are all detected. The `Entry::Occupied` branch pushes `\"{source}: duplicate {noun} {name}; first declared at {previous.source}\"`. That names the duplicate declaration (`file:line`) and the first declaration.\n- **Error propagation:** `load_definitions` returns all collected errors as `InvalidData`. A duplicate is reported every time it occurs, not just once.\n\n**Tests.**\n- `collects_missing_orphan_format_false_and_changed_line_errors` has a duplicate requirement and an empty requirement. It asserts `duplicate requirement requirements.one; first declared at md/requirements.md:3` and `requirement requirements.empty has no text`.\n- `reports_a_missing_closing_colon_fence` asserts the exact message for a requirement, including file and line.\n- `example_errors_include_duplicates_invalid_bodies_and_missing_tests` covers:\n  - a requirement and an example sharing a name, which gives a cross-kind duplicate with the first-declaration location;\n  - a duplicate example;\n  - an empty example;\n  - an unclosed example.\n- `tests/definitions.rs`, `invalid_declarations_and_reference_targets_are_reported`, covers a requirement and a named definition colliding (`duplicate definition bad.x`). It also covers an unclosed named definition.\n- `tests/authoring_batch.rs`, `discovery_errors_fail_before_configuration_or_inference`, checks that an unclosed requirement fails the CLI run with the file location and the diagnostic.\n\n**Minor gap.** The named-definition collision test does not assert the \"first declared at\" suffix. That message is built by the same code path the other tests do assert, so I don't count this as a real gap.\n\nNo FIXMEs or acknowledged gaps appear in the supplied sources.",
+  "rationale": "**Verdict:** The requirement is implemented and the tests cover its main cases.\n\n**Implementation** (`collect_definitions` in `src/evidence.rs`, fed by `definition_blocks` in `src/lib.rs`, and surfaced by `load_definitions`):\n- **Missing closing fence:**\n  - `definition_blocks` marks a block `closed = false` when it finds no closing colon fence. Such a block runs to the end of the file.\n  - `collect_definitions` then reports `<file>:<line>: <kind> <name> is missing a closing colon fence`.\n  - This applies to `req`, `example` and `definition` blocks.\n- **Empty body:** the body text is trimmed. If nothing is left, the error is `<kind> <name> has no text`.\n- **Duplicate full names:**\n  - All kinds share one `BTreeMap` keyed by the full name (namespace plus name). That covers requirements, examples and named definitions.\n  - On a collision it reports `<source>: duplicate <kind> <name>; first declared at <first source>`. This identifies both the duplicate declaration and the first one.\n  - Every duplicate is reported, because the loop continues after each error.\n- **Surfacing:** `load_definitions` joins all collected errors into one `InvalidData` error. `validate_repository` also reports them in `report.errors`.\n\n**Tests:**\n- `reports_a_missing_closing_colon_fence` checks the exact message `md/requirements.md:1: requirement requirements.ready is missing a closing colon fence`.\n- `collects_missing_orphan_format_false_and_changed_line_errors` checks all three of these:\n  - a duplicate requirement, with the message `duplicate requirement requirements.one; first declared at md/requirements.md:3`;\n  - an empty requirement (`requirement requirements.empty has no text`);\n  - several other validation errors.\n- `example_errors_include_duplicates_invalid_bodies_and_missing_tests` covers these cases:\n  - a requirement and an example sharing a full name (`duplicate example rules.repeated; first declared at md/rules.md:1`);\n  - a duplicate example with the first declaration's line number;\n  - an empty example body;\n  - an unclosed example.\n- `tests/definitions.rs`, `invalid_declarations_and_reference_targets_are_reported`, covers:\n  - an unclosed `{definition}`;\n  - a requirement and a named definition colliding (`duplicate definition bad.x`).\n- `tests/authoring_batch.rs`, `discovery_errors_fail_before_configuration_or_inference`, covers the end-to-end CLI case. An unclosed requirement makes `author --all` fail with the file location and the \"missing a closing colon fence\" diagnostic.\n\n**Minor gaps:**\n- The definition-collision test checks the \"duplicate definition bad.x\" text but not the \"first declared at\" suffix. The code path is the same one the other tests exercise.\n- An empty named definition body has no direct test. It uses the same empty-text check as requirements and examples.\n- I found no FIXME or TODO markers relating to this requirement.",
   "inputs": [
     {
       "requirements": "requirements.ci.definition_errors",
@@ -183,7 +183,7 @@
         "                        \"text\": [\"changed line\"]",
         "                    },",
         "                    {",
-        "                        \"file\": \"../outside\",",
+        "                        \"file\": \"\",",
         "                        \"line_start\": 0,",
         "                        \"line_end\": 2,",
         "                        \"text\": [1]",
@@ -227,7 +227,7 @@
         "            \"requirement must be a string\",",
         "            \"missing field \\\"determination\\\"\",",
         "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
+        "            \"file must be a nonempty path\",",
         "            \"line_start must be a positive integer\",",
         "            \"text[0] must be a string\",",
         "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
@@ -354,16 +354,6 @@
       "line_start": 1390,
       "line_end": 1464,
       "text": [
-        "}",
-        "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use std::fs;",
-        "",
-        "    use serde_json::json;",
-        "    use tempfile::TempDir;",
-        "",
-        "    use super::validate_repository;",
         "",
         "    // {test}`requirements.integration.report_api`",
         "    fn fixture() -> TempDir {",
@@ -428,7 +418,17 @@
         "            super::book_source_dir(root, &mut errors);",
         "            assert!(",
         "                errors.iter().any(|error| error.contains(expected)),",
-        "                \"{configuration:?}: {errors:?}\""
+        "                \"{configuration:?}: {errors:?}\"",
+        "            );",
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.inputs`",
+        "    #[test]"
       ]
     },
     {
@@ -436,16 +436,6 @@
       "line_start": 1591,
       "line_end": 1620,
       "text": [
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let implementation = [\"{\", \"impl}`foo.bar.ready`\"].concat();",
-        "        let citation = [\"{\", \"cite}`foo.bar.ready`\"].concat();",
-        "        let test = [\"{\", \"test}`foo.bar.ready`\"].concat();",
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
-        "        let source = format!(\"// {implementation}\\n// {citation}\\n\");",
-        "        let notes = format!(\"# Notes\\n\\n{test}\\n\\n`{example}`\\n\\n```text\\n{example}\\n```\\n\");",
         "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
         "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();",
         "        fs::write(",
@@ -465,7 +455,17 @@
         "                        \"file\": \"md/notes.md\",",
         "                        \"line_start\": 3,",
         "                        \"line_end\": 3,",
-        "                        \"text\": [test]"
+        "                        \"text\": [test]",
+        "                    }",
+        "                ]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
       ]
     },
     {
@@ -473,16 +473,6 @@
       "line_start": 1839,
       "line_end": 1871,
       "text": [
-        "                        {",
-        "                            \"rust_file\": \"src/main.rs\",",
-        "                            \"rust_item\": \"fn[checks_case]\",",
-        "                            \"text\": test_source.lines().collect::<Vec<_>>()",
-        "                        },",
-        "                        {",
-        "                            \"requirements\": \"rules.*\",",
-        "                            \"matches\": [\"rules.case\", \"rules.ready\"],",
-        "                            \"text\": [",
-        "                                chapter.lines().nth(6).unwrap(),",
         "                                chapter.lines().nth(7).unwrap(),",
         "                                chapter.lines().nth(8).unwrap(),",
         "                                \"\",",
@@ -505,7 +495,17 @@
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "",
         "        let rust_original = fs::read_to_string(&rust_evidence).unwrap();",
-        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();"
+        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
+        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);",
+        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"citation set changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"citations must not be empty\"), \"{errors}\");",
+        "        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
+        "        let copy = duplicate[\"functions\"][0].clone();",
+        "        duplicate[\"functions\"].as_array_mut().unwrap().push(copy);",
+        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
       ]
     },
     {
@@ -541,13 +541,13 @@
       "line_start": 19,
       "line_end": 25,
       "text": [
+        "}",
         "",
         "impl AssessmentKind {",
         "    // {impl}`requirements.authoring.function_attestations`",
         "    // {impl}`requirements.authoring.usage_storage`",
         "    // {impl}`requirements.authoring.initial_prompt`",
-        "    pub(crate) fn noun(&self) -> &'static str {",
-        "        match self {"
+        "    pub(crate) fn noun(&self) -> &'static str {"
       ]
     },
     {
@@ -555,13 +555,13 @@
       "line_start": 1493,
       "line_end": 1499,
       "text": [
-        "                }]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
+        "    }",
         "",
-        "        let report = validate_repository(temp.path()).unwrap();"
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.errors`",
+        "    // {test}`requirements.ci.diagnostics`",
+        "    // {test}`requirements.ci.input_containment`",
+        "    // {test}`requirements.ci.definition_errors`"
       ]
     },
     {
@@ -569,15 +569,15 @@
       "line_start": 1894,
       "line_end": 1902,
       "text": [
-        "        fs::write(&orphan, \"{}\").unwrap();",
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"orphaned Rust attestation file\"),",
-        "            \"{errors}\"",
-        "        );",
-        "        fs::remove_file(orphan).unwrap();",
-        "",
-        "        let old = fs::read_to_string(&example_path).unwrap();"
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            test_source.replace(\"assert!(true)\", \"assert!(false)\"),"
       ]
     },
     {
@@ -627,7 +627,7 @@
       "line_start": 260,
       "line_end": 260,
       "text": [
-        "                    \"{source}: {} {name} has no text\","
+        "                ));"
       ]
     },
     {
@@ -635,7 +635,7 @@
       "line_start": 1496,
       "line_end": 1496,
       "text": [
-        "        )"
+        "    // {test}`requirements.ci.errors`"
       ]
     },
     {
@@ -643,9 +643,9 @@
       "line_start": 1897,
       "line_end": 1899,
       "text": [
-        "            errors.contains(\"orphaned Rust attestation file\"),",
-        "            \"{errors}\"",
-        "        );"
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();"
       ]
     },
     {
@@ -792,6 +792,241 @@
         "        }",
         "    }",
         ""
+      ]
+    },
+    {
+      "rust_file": "src/lib.rs",
+      "rust_item": "fn[definition_blocks]",
+      "text": [
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.identifiers`",
+        "// {impl}`requirements.references.markdown_literals`",
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`",
+        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
+        "    let code_ranges = Parser::new(content)",
+        "        .into_offset_iter()",
+        "        .filter_map(|(event, range)| {",
+        "            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)",
+        "        })",
+        "        .collect::<Vec<_>>();",
+        "    let mut lines = Vec::new();",
+        "    let mut position = 0;",
+        "    for segment in content.split_inclusive('\\n') {",
+        "        let end = position + segment.len();",
+        "        lines.push((",
+        "            position,",
+        "            end,",
+        "            segment.trim_end_matches('\\n').trim_end_matches('\\r'),",
+        "        ));",
+        "        position = end;",
+        "    }",
+        "",
+        "    let mut blocks = Vec::new();",
+        "    let mut index = 0;",
+        "    while index < lines.len() {",
+        "        let (start, body_start, line) = lines[index];",
+        "        let Some((suffix, fence_length)) = colon_fence(line) else {",
+        "            index += 1;",
+        "            continue;",
+        "        };",
+        "        let (kind, rest) = if let Some(rest) = suffix.strip_prefix(\"{req}\") {",
+        "            (DefinitionKind::Requirement, rest)",
+        "        } else if let Some(rest) = suffix.strip_prefix(\"{example}\") {",
+        "            (DefinitionKind::Example, rest)",
+        "        } else if let Some(rest) = suffix.strip_prefix(\"{definition}\") {",
+        "            (DefinitionKind::Term, rest)",
+        "        } else {",
+        "            index += 1;",
+        "            continue;",
+        "        };",
+        "        if overlaps_protected(start, body_start, &code_ranges)",
+        "            || !rest.chars().next().is_some_and(char::is_whitespace)",
+        "            || !valid_name(rest.trim())",
+        "        {",
+        "            index += 1;",
+        "            continue;",
+        "        }",
+        "        let name = rest.trim();",
+        "",
+        "        let close_index = (index + 1..lines.len()).find(|&candidate| {",
+        "            !overlaps_protected(lines[candidate].0, lines[candidate].1, &code_ranges)",
+        "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {",
+        "                    count >= fence_length && suffix.trim().is_empty()",
+        "                })",
+        "        });",
+        "        let (end, body_end, closed) = if let Some(close_index) = close_index {",
+        "            (lines[close_index].1, lines[close_index].0, true)",
+        "        } else {",
+        "            (content.len(), content.len(), false)",
+        "        };",
+        "        blocks.push(DefinitionBlock {",
+        "            start,",
+        "            end,",
+        "            body_start,",
+        "            body_end,",
+        "            name: name.to_owned(),",
+        "            kind,",
+        "            closed,",
+        "        });",
+        "        index += 1;",
+        "    }",
+        "    blocks",
+        "}"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 422,
+      "line_end": 424,
+      "text": [
+        "    } else {",
+        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 606,
+      "line_end": 608,
+      "text": [
+        "        let state = tempfile::tempdir().unwrap();",
+        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
+        "            let mut sources ="
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 395,
+      "line_end": 397,
+      "text": [
+        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
+        "        log.record.determination = Some(\"FIXME\".into());",
+        "        log.record.evidence_written = true;"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 402,
+      "line_end": 404,
+      "text": [
+        "        assert_eq!(sent[\"outcome\"], \"completed\");",
+        "        assert_eq!(sent[\"determination\"], \"FIXME\");",
+        "        assert_eq!(sent[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 49,
+      "line_end": 51,
+      "text": [
+        "",
+        "        let mut output = String::from(\"\\n## FIXME judgments\\n\\n\");",
+        "        for (issue, judgments) in &groups {"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 59,
+      "line_end": 61,
+      "text": [
+        "            output.push_str(&format!(",
+        "                \"- {} {} marked FIXME without an issue\\n\",",
+        "                without_issue.len(),"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 74,
+      "line_end": 76,
+      "text": [
+        "            if !without_issue.is_empty() {",
+        "                output.push_str(\"\\n### FIXME without an issue\\n\\n\");",
+        "                render_judgments(&mut output, &without_issue);"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 232,
+      "line_end": 234,
+      "text": [
+        "            Self::DeterminationFalse => \"Determination false\",",
+        "            Self::Fixme => \"FIXME\",",
+        "            Self::Invalid => \"Invalid\","
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 504,
+      "line_end": 506,
+      "text": [
+        "    if !detail_evidence.fixme_entries.is_empty() {",
+        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
+        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 17,
+      "line_end": 23,
+      "text": [
+        "            Value::Bool(false) => Ok(Self::False),",
+        "            Value::Object(object) if object.len() == 1 && object.contains_key(\"FIXME\") => {",
+        "                let entries = object[\"FIXME\"]",
+        "                    .as_array()",
+        "                    .filter(|entries| !entries.is_empty())",
+        "                    .ok_or(\"FIXME must be a nonempty array of nonempty strings\")?;",
+        "                let entries = entries"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 29,
+      "line_end": 31,
+      "text": [
+        "                            .map(str::to_owned)",
+        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")",
+        "                    })"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 35,
+      "line_end": 37,
+      "text": [
+        "            _ => Err(",
+        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\"",
+        "                    .to_owned(),"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 47,
+      "line_end": 49,
+      "text": [
+        "            Self::False => Value::Bool(false),",
+        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 56,
+      "line_end": 58,
+      "text": [
+        "            Self::False => \"false\",",
+        "            Self::Fixme(_) => \"FIXME\",",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 30,
+      "line_end": 32,
+      "text": [
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]"
       ]
     }
   ]

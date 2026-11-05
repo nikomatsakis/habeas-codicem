@@ -1,7 +1,7 @@
 {
-  "requirement": "An operation MUST load user configuration only when its requirements call for\nuser settings. A missing user file MUST represent absent user configuration;\nwhether the operation can proceed MUST be defined by the feature. Loading MUST\nNOT create a file, repair malformed input, or supply an undocumented selection.\n\nWhen loading configuration, Habeas MUST report unreadable files, invalid TOML,\nunsupported user-file versions, unknown common keys, and invalid common field\ntypes. It MUST validate the feature sections used by that operation and report\ninvalid feature settings with the file and setting identified. Unknown keys in\nan explicitly documented provider-owned options map MUST follow that feature's\nvalidation rules.\n\nAn operation MUST NOT require or semantically validate configuration for a\nfeature it does not use. This isolation MUST NOT suppress TOML syntax errors in\na shared file that the operation otherwise needs to parse. In particular,\nordinary validation still requires a parseable `book.toml` while remaining\nindependent of authoring settings and the user configuration file.",
+  "requirement": "An operation MUST load user configuration only when its requirements call for\nuser settings. A missing user file MUST represent absent user configuration;\nwhether the operation can proceed MUST be defined by the feature. Loading MUST\nNOT create a file, repair malformed input, or supply an undocumented selection.\n\nWhen loading configuration, Habeas MUST report unreadable files, invalid TOML,\nunsupported user-file versions, unknown common keys, and invalid common field\ntypes. It MUST validate the feature sections used by that operation and report\ninvalid feature settings with the file and setting identified. Unknown keys in\nan explicitly documented provider-owned options map MUST follow that feature's\nvalidation rules.\n\nAn operation MUST NOT require or semantically validate configuration for a\nfeature it does not use. This isolation MUST NOT suppress TOML syntax errors in\na shared file that the operation otherwise needs to parse. In particular,\nordinary validation still requires a parseable `book.toml` while remaining\nindependent of authoring settings and the user configuration file. It MUST apply\nthe selected workspace's evidence path policy without loading its model clients\nor credentials.",
   "determination": true,
-  "rationale": "**Verdict.** The loading requirement is implemented as stated. The tests cover its main design points. There are a few small test gaps, listed at the end, but none of them is a requirement violation.\n\n**Implementation**\n- **Missing file.** `load_user_config` (src/config.rs ~L424) returns `Ok(None)` on `NotFound`. It never creates or rewrites the file, and it does not repair malformed input. Other read errors are reported with the file path.\n- **Parse and schema errors.** `UserConfig::parse` runs `toml::from_str` and then `validate`.\n  - `UserConfig` and the nested config structs use `deny_unknown_fields`, so unknown common keys are rejected.\n  - Field types are enforced by serde.\n  - `validate` requires `version == 1`.\n  - All parse and validation errors go through `invalid()`, which formats `path: setting: message`.\n- **Feature validation.**\n  - `UserAuthoringConfig::validate` checks name syntax and that project keys are canonical absolute paths.\n  - `BackendConfig::validate` checks the model ID is nonempty and `api_key_env` has no `=` or NUL.\n  - It rejects `options` keys that would override the model, prompt or tools.\n  - It validates option values, including finite floats.\n  - Every error carries a setting path such as `authoring.configs.X.options.Y`.\n- **Loading only when needed.**\n  - `resolve_authoring` is the only caller that loads the user file. It is called from `author` and `author-evidence` (src/authoring/batch.rs:63, mod.rs:244).\n  - Ordinary validation and status never touch the user file.\n  - `evidence::book_source_dir` reads only `book.toml`. It still reports invalid TOML, a missing file, and wrongly typed `book.src`.\n  - `resolve_authoring` first parses `book.toml` through `ProjectConfig::from_book_toml`. That function reports TOML syntax errors and an invalid `[habeas]` table.\n\n**Tests**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` (tests/configuration.rs) covers four points:\n  - A missing file gives `None`.\n  - The load does not create the file.\n  - A minimal file is loaded unchanged, comments included.\n  - `from_book_toml` handles an absent `[habeas]` table, an empty one, and an invalid one.\n- `invalid_schema_and_feature_values_report_the_configuration_path` runs about 13 invalid inputs and checks that each error names the file. They cover:\n  - an unsupported version (`2`) and a wrongly typed version;\n  - a missing version, and an unknown top-level key;\n  - an invalid `[authoring]` table;\n  - a bad name, an empty model, and an unknown backend field or backend;\n  - a bad `api_key_env`, a NaN option, and a model override in `options`;\n  - a relative project path.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` covers invalid `concurrency` values, with the path and setting named.\n- Isolation is tested end to end:\n  - `ordinary_status_ignores_invalid_user_authoring_configuration` (tests/authoring_cli.rs): a garbage user file does not affect `status`.\n  - tests/authoring_batch.rs ~L325: an author no-op succeeds with an invalid or absent user file.\n  - tests/authoring_batch.rs `discovery_errors_fail_before_configuration_or_inference`: discovery errors come before configuration is consulted.\n  - `book_source_defaults_only_when_absent_and_reports_invalid_configuration` (src/evidence.rs): ordinary validation still requires a parseable `book.toml`.\n- Resolution errors for no authoring section, no selection, and unknown config name are tested.\n\n**Minor test gaps (not requirement violations)**\n- No test makes the user file unreadable, for example by putting a directory at the config path.\n- User-file TOML syntax errors are exercised directly only in the live_bedrock test.\n- `invalid_schema_and_feature_values_report_the_configuration_path` asserts only that the file path appears, not the setting name. The setting is produced by the same `invalid()` helper in the implementation.\n- Syntax errors in `book.toml` on the authoring path are not tested.\n\nThese share code paths with the tested cases and are simple, so I do not treat them as failures. No FIXME markers are present.",
+  "rationale": "**Verdict:** the code implements `requirements.configuration.loading`, and the tests cover its main points. One minor gap, below, does not change the verdict.\n\n**User configuration (`src/config.rs`)**\n- `load_user_config` treats `NotFound` as `Ok(None)`. It only reads, so it never creates or repairs a file. Other I/O errors are reported with the path.\n- `UserConfig::parse` runs `parse_document`, which reports TOML syntax errors with file, line and column. It then calls `decode`, where `deny_unknown_fields` rejects unknown keys and wrongly typed fields. Finally `validate` rejects `version != 1`, then validates the feature sections.\n- Feature validation names the file and the setting, for example `authoring.configs.X.model`, `api_key_env`, `credentials.*`, `options.*` and `projects.*`. All errors go through `invalid(path, setting, msg)`.\n- Provider-owned `options` entries are validated: the model, prompt and tool keys are rejected, and non-finite floats are rejected.\n- `decode` redacts secrets from diagnostics.\n\n**Workspace file**\n- `workspace_document` finds the nearest `habeas.toml`. It reports read and TOML syntax errors, then `validate_workspace_common` checks the version and rejects unknown top-level keys. This runs even when the operation does not use authoring, so syntax errors in the shared file are not suppressed.\n- `load_workspace_evidence` decodes and validates only `[evidence]`. It does not validate authoring settings or build clients. It only detects whether credentials are present.\n- `main` calls `load_workspace_evidence` for non-`supports` commands. `resolve_authoring` loads and validates the full workspace and user configuration only when authoring needs it.\n\n**`book.toml`**\n- `book_source_dir` requires a parseable `book.toml`. It reports read errors, invalid TOML, a wrong type for `book` or `book.src`, and an out-of-tree `book.src`.\n- `inspect_repository` does not touch the user configuration or the authoring settings.\n\n**Test coverage**\n- `tests/configuration.rs`:\n  - `absent_and_minimal_configuration_are_distinct_and_read_only`: absent user file, no file created, file unchanged.\n  - `invalid_schema_and_feature_values_report_the_configuration_path`: wrong version, wrong version type, empty file, unknown key, bad names, empty model, unknown backend, bad `api_key_env`, NaN option, reserved option key, relative project path. Each error is checked for the file path.\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it`: invalid TOML in the workspace file reports the file.\n  - `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials`: invalid or unused authoring settings do not block evidence loading, while version, unknown-key and evidence-field errors do.\n  - `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`: credential validation and redaction.\n- `tests/commands.rs` (`status_loads_nearest_workspace_file_without_validating_authoring`) and `tests/evidence_boundaries.rs` (`validation_checks_workspace_common_config_without_loading_unused_authoring_settings`) cover:\n  - bad version, unknown key and TOML syntax error in the workspace file all produce errors;\n  - invalid authoring settings are ignored by status and validation.\n- `tests/authoring_cli.rs` (`ordinary_status_ignores_invalid_user_authoring_configuration`) shows that malformed user configuration does not affect `status`, and that nothing is created.\n- `src/evidence.rs` (`book_source_defaults_only_when_absent_and_reports_invalid_configuration`) covers an unreadable or missing `book.toml`, invalid TOML and bad types.\n- A missing user file combined with no workspace authoring configuration gives a \"no authoring configuration\" error, which is tested.\n\n**Gap:** there is no direct test of an unreadable (permission-denied) user file. The code path is simple, and portable testing is impractical. Syntax errors in the user file share the `parse_document` path that the workspace test exercises. The gap is not acknowledged by a FIXME, but it is minor.",
   "inputs": [
     {
       "requirements": "requirements.configuration.loading",
@@ -26,7 +26,9 @@
         "feature it does not use. This isolation MUST NOT suppress TOML syntax errors in",
         "a shared file that the operation otherwise needs to parse. In particular,",
         "ordinary validation still requires a parseable `book.toml` while remaining",
-        "independent of authoring settings and the user configuration file.",
+        "independent of authoring settings and the user configuration file. It MUST apply",
+        "the selected workspace's evidence path policy without loading its model clients",
+        "or credentials.",
         ":::"
       ]
     },
@@ -59,8 +61,9 @@
         "    // {impl}`requirements.authoring.configuration_storage`",
         "    // {impl}`requirements.authoring.configuration_serialization`",
         "    // {impl}`requirements.authoring.concurrency`",
+        "    // {impl}`requirements.authoring.credentials`",
         "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
-        "        let config: Self = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;",
+        "        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, \"\")?;",
         "        config.validate(path)?;",
         "        Ok(config)",
         "    }"
@@ -79,6 +82,73 @@
         "        }",
         "        if let Some(authoring) = &self.authoring {",
         "            authoring.validate(path)?;",
+        "        }",
+        "        Ok(())",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[WorkspaceConfig]/fn[parse]",
+      "text": [
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let table = parse_document(text, path)?;",
+        "        validate_workspace_common(&table, path)?;",
+        "        let config: Self = decode(toml::Value::Table(table), path, \"\")?;",
+        "        config.validate(path)?;",
+        "        Ok(config)",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[WorkspaceConfig]/fn[validate]",
+      "text": [
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {",
+        "            return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "        }",
+        "        if let Some(authoring) = &self.authoring {",
+        "            if let Some(name) = &authoring.default {",
+        "                validate_name(path, \"authoring.default\", name)?;",
+        "            }",
+        "            for (name, config) in &authoring.configs {",
+        "                let setting = format!(\"authoring.configs.{name}\");",
+        "                validate_name(path, &setting, name)?;",
+        "                config.backend.validate(path, &setting)?;",
+        "            }",
+        "        }",
+        "        if let Some(evidence) = &self.evidence {",
+        "            evidence.validate(path)?;",
+        "        }",
+        "        Ok(())",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[EvidenceConfig]/fn[validate]",
+      "text": [
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        for (field, paths) in [(\"allow\", &self.allow), (\"disallow\", &self.disallow)] {",
+        "            for (index, entry) in paths.iter().enumerate() {",
+        "                if entry.as_os_str().is_empty() || entry.to_string_lossy().contains('\\0') {",
+        "                    return Err(invalid(",
+        "                        path,",
+        "                        &format!(\"evidence.{field}[{index}]\"),",
+        "                        \"expected a nonempty path without NUL\",",
+        "                    ));",
+        "                }",
+        "            }",
         "        }",
         "        Ok(())",
         "    }"
@@ -144,6 +214,7 @@
       "text": [
         "    // {impl}`requirements.authoring.configuration_storage`",
         "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
         "    fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {",
         "        if self.model_ref().model.is_empty() {",
         "            return Err(invalid(",
@@ -161,6 +232,50 @@
         "                &format!(\"{setting}.api_key_env\"),",
         "                \"expected a nonempty environment variable name without '=' or NUL\",",
         "            ));",
+        "        }",
+        "        match self {",
+        "            Self::Bedrock(config) => {",
+        "                if let Some(credentials) = &config.credentials {",
+        "                    if config.aws_profile.is_some() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.credentials\"),",
+        "                            \"credentials and aws_profile cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    for (field, value) in [",
+        "                        (\"access_key_id\", Some(&credentials.access_key_id)),",
+        "                        (\"secret_access_key\", Some(&credentials.secret_access_key)),",
+        "                        (\"session_token\", credentials.session_token.as_ref()),",
+        "                    ] {",
+        "                        if value.is_some_and(|value| value.expose_secret().is_empty()) {",
+        "                            return Err(invalid(",
+        "                                path,",
+        "                                &format!(\"{setting}.credentials.{field}\"),",
+        "                                \"credential values must be nonempty\",",
+        "                            ));",
+        "                        }",
+        "                    }",
+        "                }",
+        "            }",
+        "            Self::Ollama(config) => {",
+        "                if let Some(key) = &config.api_key {",
+        "                    if config.api_key_env.is_some() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"api_key and api_key_env cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    if key.expose_secret().is_empty() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"credential values must be nonempty\",",
+        "                        ));",
+        "                    }",
+        "                }",
+        "            }",
         "        }",
         "        for (key, value) in self.options() {",
         "            let field = format!(\"{setting}.options.{key}\");",
@@ -211,6 +326,173 @@
     },
     {
       "rust_file": "src/config.rs",
+      "rust_item": "fn[load_workspace_config]",
+      "text": [
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {",
+        "    let Some((path, table)) = workspace_document(root)? else {",
+        "        return Ok(None);",
+        "    };",
+        "    let config: WorkspaceConfig = decode(toml::Value::Table(table), &path, \"\")?;",
+        "    config.validate(&path)?;",
+        "    Ok(Some(LoadedWorkspaceConfig {",
+        "        root: path",
+        "            .parent()",
+        "            .expect(\"configuration has a parent\")",
+        "            .to_owned(),",
+        "        path,",
+        "        config,",
+        "    }))",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "fn[load_workspace_evidence]",
+      "text": [
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.authoring.credentials`",
+        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
+        "    let Some((path, table)) = workspace_document(root)? else {",
+        "        return Ok(None);",
+        "    };",
+        "    let evidence: EvidenceConfig = table",
+        "        .get(\"evidence\")",
+        "        .map(|value| decode(value.clone(), &path, \"evidence\"))",
+        "        .transpose()?",
+        "        .unwrap_or_default();",
+        "    evidence.validate(&path)?;",
+        "    let contains_credentials = table",
+        "        .get(\"authoring\")",
+        "        .and_then(|value| value.get(\"configs\"))",
+        "        .and_then(toml::Value::as_table)",
+        "        .is_some_and(|configs| {",
+        "            configs.values().any(|config| {",
+        "                config.get(\"credentials\").is_some() || config.get(\"api_key\").is_some()",
+        "            })",
+        "        });",
+        "    Ok(Some(WorkspaceEvidenceConfig {",
+        "        root: path",
+        "            .parent()",
+        "            .expect(\"configuration has a parent\")",
+        "            .to_owned(),",
+        "        path,",
+        "        evidence,",
+        "        contains_credentials,",
+        "    }))",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "fn[workspace_document]",
+      "text": [
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.loading`",
+        "fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let start = std::env::current_dir()",
+        "        .and_then(fs::canonicalize)",
+        "        .ok()",
+        "        .filter(|cwd| cwd.starts_with(&root))",
+        "        .unwrap_or(root);",
+        "    for directory in start.ancestors() {",
+        "        let path = directory.join(\"habeas.toml\");",
+        "        match fs::symlink_metadata(&path) {",
+        "            Ok(_) => {",
+        "                let text = fs::read_to_string(&path).map_err(|error| {",
+        "                    io::Error::new(error.kind(), format!(\"{}: {error}\", path.display()))",
+        "                })?;",
+        "                let table = parse_document(&text, &path)?;",
+        "                validate_workspace_common(&table, &path)?;",
+        "                return Ok(Some((path, table)));",
+        "            }",
+        "            Err(error) if error.kind() == io::ErrorKind::NotFound => {}",
+        "            Err(error) => {",
+        "                return Err(io::Error::new(",
+        "                    error.kind(),",
+        "                    format!(\"{}: {error}\", path.display()),",
+        "                ));",
+        "            }",
+        "        }",
+        "    }",
+        "    Ok(None)",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "fn[validate_workspace_common]",
+      "text": [
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()> {",
+        "    if table.get(\"version\").and_then(toml::Value::as_integer) != Some(1) {",
+        "        return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "    }",
+        "    if let Some(key) = table",
+        "        .keys()",
+        "        .find(|key| !matches!(key.as_str(), \"version\" | \"authoring\" | \"evidence\"))",
+        "    {",
+        "        return Err(invalid(path, key, \"unknown workspace configuration field\"));",
+        "    }",
+        "    Ok(())",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "fn[parse_document]",
+      "text": [
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.authoring.credentials`",
+        "fn parse_document(text: &str, path: &Path) -> io::Result<toml::Table> {",
+        "    toml::from_str(text).map_err(|error: toml::de::Error| {",
+        "        let position = error",
+        "            .span()",
+        "            .map(|span| {",
+        "                let prefix = text.get(..span.start).unwrap_or(text);",
+        "                let line = prefix.bytes().filter(|byte| *byte == b'\\n').count() + 1;",
+        "                let column = prefix.rsplit('\\n').next().unwrap_or(\"\").chars().count() + 1;",
+        "                format!(\" at line {line}, column {column}\")",
+        "            })",
+        "            .unwrap_or_default();",
+        "        invalid(path, \"\", format!(\"invalid TOML syntax{position}\"))",
+        "    })",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "fn[decode]",
+      "text": [
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.authoring.credentials`",
+        "fn decode<T: DeserializeOwned>(value: toml::Value, path: &Path, setting: &str) -> io::Result<T> {",
+        "    let mut secrets = Vec::new();",
+        "    credential_values(&value, false, &mut secrets);",
+        "    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));",
+        "    value.try_into().map_err(|mut error: toml::de::Error| {",
+        "        error.set_input(None);",
+        "        let mut message = error.to_string();",
+        "        for secret in secrets {",
+        "            if !secret.is_empty() {",
+        "                message = message",
+        "                    .replace(&format!(\"{secret:?}\"), \"<redacted>\")",
+        "                    .replace(&secret, \"<redacted>\");",
+        "            }",
+        "        }",
+        "        invalid(path, setting, message)",
+        "    })",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
       "rust_item": "fn[resolve_authoring]",
       "text": [
         "// {impl}`requirements.authoring.configuration`",
@@ -222,14 +504,16 @@
         "    root: &Path,",
         "    explicit: Option<&str>,",
         ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_path = root.join(\"book.toml\");",
-        "    let project_text = fs::read_to_string(&project_path).map_err(|error| {",
-        "        io::Error::new(error.kind(), format!(\"{}: {error}\", project_path.display()))",
-        "    })?;",
-        "    ProjectConfig::from_book_toml(&project_text, &project_path)?;",
+        "    let workspace = load_workspace_config(root)?;",
         "    let path = user_config_path()?;",
         "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)",
+        "    resolve_authoring_with_workspace_from(",
+        "        &path,",
+        "        config.as_ref(),",
+        "        workspace.as_ref(),",
+        "        root,",
+        "        explicit,",
+        "    )",
         "}"
       ]
     },
@@ -249,6 +533,25 @@
         "    root: &Path,",
         "    explicit: Option<&str>,",
         ") -> io::Result<ResolvedAuthoringConfig> {",
+        "    resolve_authoring_with_workspace_from(path, user, None, root, explicit)",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "fn[resolve_authoring_with_workspace_from]",
+      "text": [
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring_with_workspace_from(",
+        "    path: &Path,",
+        "    user: Option<&UserConfig>,",
+        "    workspace: Option<&LoadedWorkspaceConfig>,",
+        "    root: &Path,",
+        "    explicit: Option<&str>,",
+        ") -> io::Result<ResolvedAuthoringConfig> {",
         "    let project_root = fs::canonicalize(root).map_err(|error| {",
         "        io::Error::new(",
         "            error.kind(),",
@@ -258,39 +561,60 @@
         "    if let Some(user) = user {",
         "        user.validate(path)?;",
         "    }",
-        "    let authoring = user",
-        "        .and_then(|config| config.authoring.as_ref())",
-        "        .ok_or_else(|| {",
-        "            invalid(",
-        "                path,",
-        "                \"authoring\",",
-        "                format!(\"no authoring configuration; {CONFIG_EXAMPLES}\"),",
-        "            )",
-        "        })?;",
+        "    if let Some(workspace) = workspace {",
+        "        workspace.config.validate(&workspace.path)?;",
+        "    }",
+        "    let authoring = user.and_then(|config| config.authoring.as_ref());",
+        "    let local = workspace.and_then(|workspace| workspace.config.authoring.as_ref());",
+        "    let diagnostic_path = workspace.map_or(path, |workspace| workspace.path.as_path());",
+        "    if authoring.is_none() && local.is_none() {",
+        "        return Err(invalid(",
+        "            diagnostic_path,",
+        "            \"authoring\",",
+        "            format!(\"no authoring configuration; {CONFIG_EXAMPLES}\"),",
+        "        ));",
+        "    }",
         "    let selected = explicit",
         "        .or_else(|| {",
-        "            authoring",
+        "            authoring?",
         "                .projects",
         "                .get(&project_root)",
         "                .map(|selection| selection.config.as_str())",
         "        })",
-        "        .or(authoring.default.as_deref())",
+        "        .or_else(|| local.and_then(|local| local.default.as_deref()))",
+        "        .or_else(|| authoring.and_then(|authoring| authoring.default.as_deref()))",
         "        .ok_or_else(|| {",
         "            invalid(",
-        "                path,",
+        "                diagnostic_path,",
         "                \"authoring\",",
         "                format!(\"no configuration selected; {CONFIG_EXAMPLES}\"),",
         "            )",
         "        })?;",
-        "    let config = authoring.configs.get(selected).ok_or_else(|| {",
+        "    let configured = local",
+        "        .and_then(|local| local.configs.get(selected))",
+        "        .map(|config| {",
+        "            (",
+        "                workspace",
+        "                    .expect(\"local configuration has a file\")",
+        "                    .path",
+        "                    .as_path(),",
+        "                config,",
+        "            )",
+        "        })",
+        "        .or_else(|| {",
+        "            authoring",
+        "                .and_then(|authoring| authoring.configs.get(selected))",
+        "                .map(|config| (path, config))",
+        "        });",
+        "    let (source_path, config) = configured.ok_or_else(|| {",
         "        invalid(",
-        "            path,",
+        "            diagnostic_path,",
         "            \"authoring\",",
         "            format!(\"unknown configuration {selected:?}; {CONFIG_EXAMPLES}\"),",
         "        )",
         "    })?;",
         "    Ok(ResolvedAuthoringConfig {",
-        "        config_path: path.to_owned(),",
+        "        config_path: source_path.to_owned(),",
         "        project_root,",
         "        name: selected.to_owned(),",
         "        concurrency: config.concurrency,",
@@ -309,6 +633,105 @@
         "        io::ErrorKind::InvalidInput,",
         "        format!(\"{}: {setting}: {message}\", path.display()),",
         "    )",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/evidence.rs",
+      "rust_item": "fn[inspect_repository]",
+      "text": [
+        "// {impl}`requirements.integration.report_api`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();",
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
+        "        errors.push(error.to_string());",
+        "    }",
+        "    let md_root = book_source_dir(&root, &mut errors);",
+        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
+        "    let mut discovery_errors = errors.clone();",
+        "    let evidence_root = root.join(\"evidence\");",
+        "    let evidence_files = if evidence_root.is_dir() {",
+        "        files_with_extension(&root, &evidence_root, \"json\", &mut errors)",
+        "    } else {",
+        "        Vec::new()",
+        "    };",
+        "    let mut present = BTreeSet::new();",
+        "",
+        "    // {impl}`requirements.ci.orphans`",
+        "    for file in &evidence_files {",
+        "        let relative = file",
+        "            .strip_prefix(&evidence_root)",
+        "            .expect(\"evidence file is inside evidence directory\");",
+        "        if relative.starts_with(\"rust\") && relative.to_string_lossy().ends_with(\".rs.json\") {",
+        "            continue;",
+        "        }",
+        "        let label = display_path(&root, file);",
+        "        let name = if relative.components().count() == 1 {",
+        "            relative",
+        "                .file_name()",
+        "                .and_then(|part| part.to_str())",
+        "                .and_then(|part| part.strip_suffix(\".json\"))",
+        "        } else {",
+        "            None",
+        "        };",
+        "        let expected = name",
+        "            .and_then(|name| definitions.get(name))",
+        "            .filter(|d| d.kind != DefinitionKind::Term);",
+        "",
+        "        if let Some(name) = name.filter(|_| expected.is_some()) {",
+        "            present.insert(name.to_owned());",
+        "        } else {",
+        "            errors.push(format!(\"{label}: no matching requirement or example\"));",
+        "        }",
+        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
+        "    }",
+        "",
+        "    // {impl}`requirements.ci.coverage`",
+        "    for (name, definition) in &definitions {",
+        "        if definition.kind != DefinitionKind::Term && !present.contains(name) {",
+        "            errors.push(format!(",
+        "                \"evidence/{name}.json: missing for {} at {}\",",
+        "                definition.kind.noun(),",
+        "                definition.source",
+        "            ));",
+        "        }",
+        "    }",
+        "",
+        "    validate_references(&root, &definitions, &mut errors);",
+        "    // {impl}`requirements.references.rust_function_coverage`",
+        "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);",
+        "    // {impl}`requirements.references.rust_function_attestations`",
+        "    let rust_functions =",
+        "        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);",
+        "",
+        "    let examples = definitions",
+        "        .values()",
+        "        .filter(|definition| definition.kind == DefinitionKind::Example)",
+        "        .count();",
+        "    let requirements = definitions",
+        "        .values()",
+        "        .filter(|definition| definition.kind == DefinitionKind::Requirement)",
+        "        .count();",
+        "    Ok(RepositoryInspection {",
+        "        report: EvidenceReport {",
+        "            requirements,",
+        "            examples,",
+        "            evidence_files: evidence_files.len(),",
+        "            errors,",
+        "        },",
+        "        definitions,",
+        "        rust_functions,",
+        "        discovery_errors,",
+        "    })",
         "}"
       ]
     },
@@ -371,6 +794,164 @@
       ]
     },
     {
+      "rust_file": "src/main.rs",
+      "rust_item": "fn[main]",
+      "text": [
+        "fn main() -> Result<(), Box<dyn Error>> {",
+        "    // {impl}`requirements.cli.clap`",
+        "    let cli = Cli::parse();",
+        "    // {impl}`requirements.configuration.workspace_location`",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    if !matches!(",
+        "        cli.command,",
+        "        Command::Mdbook {",
+        "            command: Some(MdbookCommand::Supports { .. })",
+        "        }",
+        "    ) {",
+        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
+        "    }",
+        "    match cli.command {",
+        "        // {impl}`requirements.cli.mdbook`",
+        "        Command::Mdbook { command: None } => {",
+        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
+        "            habeas::preprocess_book(&mut book, &context.root)?;",
+        "            serde_json::to_writer(io::stdout().lock(), &book)?;",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.cli.invocation`",
+        "        Command::Mdbook {",
+        "            command: Some(MdbookCommand::Supports { renderer }),",
+        "        } => {",
+        "            if renderer == \"html\" {",
+        "                Ok(())",
+        "            } else {",
+        "                std::process::exit(1)",
+        "            }",
+        "        }",
+        "        // {impl}`requirements.cli.setup`",
+        "        Command::Setup { path } => setup::run(path.as_deref()),",
+        "        // {impl}`requirements.cli.status`",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status { all, glob, verbose } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout().lock().write_all(",
+        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                    .as_bytes(),",
+        "            )?;",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.cli.info`",
+        "        Command::Info { selector } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout()",
+        "                .lock()",
+        "                .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.authoring.invocation`",
+        "        // {impl}`requirements.authoring.batch`",
+        "        // {impl}`requirements.authoring.concurrency`",
+        "        Command::Author {",
+        "            subject,",
+        "            all,",
+        "            config,",
+        "            stdout,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            // Tokio's fixed worker pool is shared by all async assessments.",
+        "            let runtime = tokio::runtime::Runtime::new()?;",
+        "            if all {",
+        "                let outcome =",
+        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;",
+        "                println!(",
+        "                    \"{} authored; {} unchanged; {} failed\",",
+        "                    outcome.completed.len(),",
+        "                    outcome.unchanged,",
+        "                    outcome.failures.len()",
+        "                );",
+        "                if !outcome.failures.is_empty() {",
+        "                    return Err(io::Error::other(",
+        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
+        "                    )",
+        "                    .into());",
+        "                }",
+        "                return Ok(());",
+        "            }",
+        "            let output = if stdout {",
+        "                habeas::authoring::EvidenceOutput::Stdout",
+        "            } else {",
+        "                habeas::authoring::EvidenceOutput::File",
+        "            };",
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
+        "                &root,",
+        "                &subject.expect(\"clap requires a subject or --all\"),",
+        "                config.as_deref(),",
+        "                output,",
+        "            ))?;",
+        "            let summary = format!(",
+        "                \"{}: {} / {} — {}\",",
+        "                outcome.subject,",
+        "                outcome.backend,",
+        "                outcome.model,",
+        "                outcome.determination.kind(),",
+        "            );",
+        "            if let Some(path) = outcome.evidence_path {",
+        "                println!(",
+        "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
+        "                    path.display(),",
+        "                    outcome.usage_path.display()",
+        "                );",
+        "            } else {",
+        "                eprintln!(",
+        "                    \"{summary}\\nEvidence: stdout\\nUsage: {}\",",
+        "                    outcome.usage_path.display()",
+        "                );",
+        "            }",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.integration.symposium_setup_hook`",
+        "        Command::Hook {",
+        "            command: HookCommand::SessionStart,",
+        "        } => hook::session_start(),",
+        "        // {impl}`requirements.cli.add_input`",
+        "        Command::AddInput {",
+        "            for_requirement,",
+        "            for_example,",
+        "            for_rust_item,",
+        "            file_range,",
+        "            rust_item,",
+        "            requirements,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            let target = if let Some(name) = for_requirement {",
+        "                habeas::InputTarget::Requirement(name)",
+        "            } else if let Some(name) = for_example {",
+        "                habeas::InputTarget::Example(name)",
+        "            } else {",
+        "                let parts = for_rust_item.expect(\"clap requires a target\");",
+        "                habeas::InputTarget::RustFunction {",
+        "                    rust_file: parts[0].clone(),",
+        "                    rust_item: parts[1].clone(),",
+        "                }",
+        "            };",
+        "            let mode = if let Some(specification) = file_range {",
+        "                habeas::InputMode::FileRange(specification)",
+        "            } else if let Some(specification) = rust_item {",
+        "                habeas::InputMode::RustItemsAtLine(specification)",
+        "            } else {",
+        "                habeas::InputMode::Requirements(requirements.expect(\"clap requires an input mode\"))",
+        "            };",
+        "            io::stdout()",
+        "                .lock()",
+        "                .write_all(habeas::add_input(&root, target, mode)?.as_bytes())?;",
+        "            Ok(())",
+        "        }",
+        "    }",
+        "}"
+      ]
+    },
+    {
       "rust_file": "tests/authoring_cli.rs",
       "rust_item": "fn[ordinary_status_ignores_invalid_user_authoring_configuration]",
       "text": [
@@ -395,6 +976,48 @@
         "    assert_eq!(",
         "        fs::read_to_string(&fixture.evidence).unwrap(),",
         "        fixture.original",
+        "    );",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/commands.rs",
+      "rust_item": "fn[status_loads_nearest_workspace_file_without_validating_authoring]",
+      "text": [
+        "// {test}`requirements.configuration.workspace_location`",
+        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.authoring.deterministic_validation`",
+        "// {test}`requirements.cli.status`",
+        "#[test]",
+        "fn status_loads_nearest_workspace_file_without_validating_authoring() {",
+        "    let temp = fixture();",
+        "    let nested = temp.path().join(\"src/nested\");",
+        "    fs::write(temp.path().join(\"habeas.toml\"), \"version = 99\\n\").unwrap();",
+        "    fs::write(",
+        "        nested.join(\"habeas.toml\"),",
+        "        \"version = 1\\n[authoring]\\nconfigs = 'invalid but unused'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    let output = habeas(&nested, &[\"status\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");",
+        "",
+        "    let output = habeas(temp.path(), &[\"status\"]);",
+        "    assert!(!output.status.success(), \"{output:?}\");",
+        "    let error = String::from_utf8_lossy(&output.stderr);",
+        "    assert!(",
+        "        error.contains(\"habeas.toml\") && error.contains(\"version\"),",
+        "        \"{error}\"",
+        "    );",
+        "",
+        "    fs::write(temp.path().join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "    fs::write(nested.join(\"habeas.toml\"), \"version = [\\n\").unwrap();",
+        "    let output = habeas(&nested, &[\"status\"]);",
+        "    assert!(!output.status.success(), \"{output:?}\");",
+        "    assert!(",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "            .contains(&nested.join(\"habeas.toml\").display().to_string()),",
+        "        \"{output:?}\"",
         "    );",
         "}"
       ]
@@ -521,22 +1144,229 @@
       ]
     },
     {
+      "rust_file": "tests/configuration.rs",
+      "rust_item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
+      "text": [
+        "// {test}`requirements.configuration.workspace_location`",
+        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let project = temp.path().join(\"project\");",
+        "    let nested = project.join(\"nested/deep\");",
+        "    fs::create_dir_all(&nested).unwrap();",
+        "    let outer = temp.path().join(\"habeas.toml\");",
+        "    fs::write(&outer, \"version = 1\\n[evidence]\\nallow = ['outer']\\n\").unwrap();",
+        "    let inherited = load_workspace_config(&project).unwrap().unwrap();",
+        "    assert_eq!(inherited.path, outer);",
+        "    assert_eq!(inherited.root, temp.path().canonicalize().unwrap());",
+        "    let path = project.join(\"nested/habeas.toml\");",
+        "    let text = \"# preserved\\nversion = 1\\n[authoring]\\ndefault = 'cloud'\\n[evidence]\\ndisallow = ['private']\\n\";",
+        "    fs::write(&path, text).unwrap();",
+        "    let closest = load_workspace_config(&nested).unwrap().unwrap();",
+        "    assert_eq!(closest.path, path);",
+        "    assert_eq!(closest.root, path.parent().unwrap());",
+        "    assert!(",
+        "        closest",
+        "            .config",
+        "            .authoring",
+        "            .as_ref()",
+        "            .unwrap()",
+        "            .configs",
+        "            .is_empty()",
+        "    );",
+        "    assert!(closest.config.evidence.as_ref().unwrap().allow.is_empty());",
+        "    assert_eq!(",
+        "        closest.config.evidence.as_ref().unwrap().disallow,",
+        "        vec![Path::new(\"private\")]",
+        "    );",
+        "    assert_eq!(fs::read_to_string(&path).unwrap(), text);",
+        "    let serialized = closest.config.to_toml().unwrap();",
+        "    assert!(!serialized.contains(\"configs\"));",
+        "    assert_eq!(",
+        "        WorkspaceConfig::parse(&serialized, &path).unwrap(),",
+        "        closest.config",
+        "    );",
+        "",
+        "    fs::write(&path, \"version = 1\\n[evidence\\n\").unwrap();",
+        "    let error = load_workspace_config(&nested).unwrap_err().to_string();",
+        "    assert!(error.contains(path.to_str().unwrap()), \"{error}\");",
+        "    assert!(error.contains(\"invalid TOML\"), \"{error}\");",
+        "    fs::remove_file(path).unwrap();",
+        "    fs::remove_file(outer).unwrap();",
+        "    assert!(load_workspace_config(&nested).unwrap().is_none());",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/configuration.rs",
+      "rust_item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
+      "text": [
+        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.configuration.evidence_paths`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.authoring.credentials`",
+        "#[test]",
+        "fn evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let path = temp.path().join(\"habeas.toml\");",
+        "    fs::write(&path, \"version = 1\\n[evidence]\\nallow = ['generated', '../shared']\\ndisallow = ['generated/private']\\n[authoring.configs.cloud]\\nbackend = 'unknown'\\ncredentials = 'DO_NOT_PRINT_THIS_CREDENTIAL'\\n\").unwrap();",
+        "    let policy = load_workspace_evidence(temp.path()).unwrap().unwrap();",
+        "    assert_eq!(policy.path, path);",
+        "    assert_eq!(policy.root, temp.path().canonicalize().unwrap());",
+        "    assert_eq!(",
+        "        policy.evidence.allow,",
+        "        vec![Path::new(\"generated\"), Path::new(\"../shared\")]",
+        "    );",
+        "    assert!(policy.contains_credentials);",
+        "    let error = load_workspace_config(temp.path()).unwrap_err().to_string();",
+        "    assert!(!error.contains(\"DO_NOT_PRINT_THIS_CREDENTIAL\"), \"{error}\");",
+        "",
+        "    fs::write(&path, \"version = 1\\n[authoring]\\ndefault = 123\\n\").unwrap();",
+        "    assert!(",
+        "        !load_workspace_evidence(temp.path())",
+        "            .unwrap()",
+        "            .unwrap()",
+        "            .contains_credentials",
+        "    );",
+        "    assert!(load_workspace_config(temp.path()).is_err());",
+        "    for source in [",
+        "        \"version = 2\",",
+        "        \"version = 1\\nunknown = true\",",
+        "        \"version = 1\\n[evidence]\\nallow = ['']\",",
+        "        \"version = 1\\n[evidence]\\ndisallow = [42]\",",
+        "        \"version = 1\\n[evidence]\\nunknown = []\",",
+        "    ] {",
+        "        fs::write(&path, source).unwrap();",
+        "        let error = load_workspace_evidence(temp.path())",
+        "            .unwrap_err()",
+        "            .to_string();",
+        "        assert!(error.contains(path.to_str().unwrap()), \"{error}\");",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/configuration.rs",
+      "rust_item": "fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]",
+      "text": [
+        "// {test}`requirements.authoring.credentials`",
+        "// {test}`requirements.authoring.configuration_serialization`",
+        "// {test}`requirements.configuration.serialization`",
+        "// {test}`requirements.configuration.loading`",
+        "#[test]",
+        "fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {",
+        "    let path = Path::new(\"habeas.toml\");",
+        "    let source = \"version = 1\\n[authoring.configs.cloud]\\nbackend = 'bedrock'\\nmodel = 'm'\\n[authoring.configs.cloud.credentials]\\naccess_key_id = 'PRIVATE_ACCESS_KEY'\\nsecret_access_key = 'PRIVATE_SECRET_KEY'\\nsession_token = 'PRIVATE_SESSION'\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 'PRIVATE_OLLAMA_KEY'\\n\";",
+        "    let config = WorkspaceConfig::parse(source, path).unwrap();",
+        "    let debug = format!(\"{config:?}\");",
+        "    for secret in [",
+        "        \"PRIVATE_ACCESS_KEY\",",
+        "        \"PRIVATE_SECRET_KEY\",",
+        "        \"PRIVATE_SESSION\",",
+        "        \"PRIVATE_OLLAMA_KEY\",",
+        "    ] {",
+        "        assert!(!debug.contains(secret), \"{debug}\");",
+        "    }",
+        "    assert_eq!(",
+        "        WorkspaceConfig::parse(&config.to_toml().unwrap(), path).unwrap(),",
+        "        config",
+        "    );",
+        "    let BackendConfig::Ollama(local) = &config.authoring.as_ref().unwrap().configs[\"local\"].backend",
+        "    else {",
+        "        panic!(\"wrong backend\");",
+        "    };",
+        "    assert_eq!(",
+        "        local.api_key_from(|_| None).unwrap().as_deref(),",
+        "        Some(\"PRIVATE_OLLAMA_KEY\")",
+        "    );",
+        "    for invalid_source in [",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = ['PRIVATE_OLLAMA_KEY']\\n\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 'PRIVATE_OLLAMA_KEY' unexpected\\n\",",
+        "        \"version = 1\\n[authoring.configs.cloud]\\nbackend = 'bedrock'\\nmodel = 'm'\\ncredentials = 'PRIVATE_SECRET_KEY'\\n\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 123456789\\n\",",
+        "    ] {",
+        "        for error in [",
+        "            WorkspaceConfig::parse(invalid_source, path).unwrap_err(),",
+        "            UserConfig::parse(invalid_source, path).unwrap_err(),",
+        "        ] {",
+        "            let error = error.to_string();",
+        "            assert!(error.contains(\"habeas.toml\"), \"{error}\");",
+        "            assert!(!error.contains(\"PRIVATE_\"), \"{error}\");",
+        "            assert!(!error.contains(\"123456789\"), \"{error}\");",
+        "        }",
+        "    }",
+        "    for invalid_source in [",
+        "        source.replace(",
+        "            \"model = 'm'\\n[authoring.configs.cloud.credentials]\",",
+        "            \"model = 'm'\\naws_profile = 'p'\\n[authoring.configs.cloud.credentials]\",",
+        "        ),",
+        "        source.replace(",
+        "            \"api_key = 'PRIVATE_OLLAMA_KEY'\",",
+        "            \"api_key = 'PRIVATE_OLLAMA_KEY'\\napi_key_env = 'KEY'\",",
+        "        ),",
+        "        source.replace(",
+        "            \"secret_access_key = 'PRIVATE_SECRET_KEY'\",",
+        "            \"secret_access_key = ''\",",
+        "        ),",
+        "        source.replace(\"session_token = 'PRIVATE_SESSION'\", \"session_token = ''\"),",
+        "        source.replace(\"api_key = 'PRIVATE_OLLAMA_KEY'\", \"api_key = ''\"),",
+        "    ] {",
+        "        assert!(WorkspaceConfig::parse(&invalid_source, path).is_err());",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
+      "text": [
+        "// {test}`requirements.configuration.workspace_location`",
+        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.authoring.deterministic_validation`",
+        "#[test]",
+        "fn validation_checks_workspace_common_config_without_loading_unused_authoring_settings() {",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    for text in [",
+        "        \"version = 2\\n\",",
+        "        \"version = 1\\nunknown = true\\n\",",
+        "        \"version = [\\n\",",
+        "    ] {",
+        "        fs::write(root.join(\"habeas.toml\"), text).unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"habeas.toml\"), \"{text:?}: {errors}\");",
+        "    }",
+        "    fs::write(",
+        "        root.join(\"habeas.toml\"),",
+        "        \"version = 1\\n[authoring]\\nconfigs = 'invalid unused authoring settings'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    let report = validate_repository(&root).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "}"
+      ]
+    },
+    {
       "file": "md/requirements/authoring.md",
       "line_start": 286,
       "line_end": 297,
       "text": [
+        "For a requirement, check that the cited code implements it as stated and that",
+        "tests cover the interesting points in the design space. If there are no tests,",
+        "assess whether simplicity or impracticality justifies their absence, and explain.",
+        "For an example, assess whether test setup and assertions cover its scenario and",
+        "expected outcomes. A true judgment needs at least one {test} reference to the",
+        "example in the supplied inputs. Explain the coverage.",
         "",
-        "Choose true only when the function cites every applicable requirement or",
-        "example. Choose false for missing citations or insufficient information.",
-        "Explain how you identified the applicable set and how the cited declarations",
-        "account for the function's behavior, with source locations, and why the reviewed",
-        "requirements inputs cover that set. The determination",
-        "must be boolean; FIXME is not a function-attestation outcome.",
-        "",
-        "Call submit_judgment exactly once with determination and a nonempty Markdown",
-        "rationale. That tool call is your final answer.",
-        "",
-        "Mandatory inputs:"
+        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+        "the remaining gaps are explicitly acknowledged in source comments or tests;",
+        "list their issue references or other identifying content. The usual convention",
+        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+        "Choose false for other gaps or insufficient evidence. Explain your judgment in"
       ]
     },
     {
@@ -544,11 +1374,11 @@
       "line_start": 61,
       "line_end": 65,
       "text": [
+        "    };",
+        "    if subjects.is_empty() {",
         "        return Ok(outcome);",
         "    }",
-        "    let config = config::resolve_authoring(&root, selection)?;",
-        "    let concurrency = config.effective_concurrency();",
-        "    eprintln!("
+        "    let config = config::resolve_authoring(&root, selection)?;"
       ]
     },
     {
@@ -556,11 +1386,11 @@
       "line_start": 238,
       "line_end": 242,
       "text": [
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
-        "    usage: &mut UsageLog,"
+        "        }",
+        "        Err(error) => {",
+        "            let outcome = if error.kind() == io::ErrorKind::Interrupted {",
+        "                \"cancelled\"",
+        "            } else {"
       ]
     },
     {
@@ -568,11 +1398,11 @@
       "line_start": 167,
       "line_end": 171,
       "text": [
-        "impl ProjectConfig {",
-        "    // {impl}`requirements.configuration.structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {",
-        "        let book: toml::Table = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;"
+        "",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(rename_all = \"lowercase\")]",
+        "pub enum BackendKind {",
+        "    Bedrock,"
       ]
     },
     {
@@ -580,16 +1410,16 @@
       "line_start": 357,
       "line_end": 366,
       "text": [
+        "        Ok(())",
+        "    }",
         "}",
         "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path() -> io::Result<PathBuf> {",
-        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path_from(",
-        "    platform: ConfigPlatform,"
+        "impl BackendConfig {",
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    pub fn model_ref(&self) -> ModelRef {",
+        "        match self {",
+        "            Self::Bedrock(config) => ModelRef {",
+        "                backend: BackendKind::Bedrock,"
       ]
     },
     {
@@ -597,11 +1427,11 @@
       "line_start": 421,
       "line_end": 425,
       "text": [
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {"
+        "                            \"credentials and aws_profile cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    for (field, value) in [",
+        "                        (\"access_key_id\", Some(&credentials.access_key_id)),"
       ]
     },
     {
@@ -609,11 +1439,11 @@
       "line_start": 437,
       "line_end": 441,
       "text": [
-        "// {impl}`requirements.authoring.rig_configuration_mapping`",
-        "// {impl}`requirements.configuration.structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub fn resolve_authoring(",
-        "    root: &Path,"
+        "                }",
+        "            }",
+        "            Self::Ollama(config) => {",
+        "                if let Some(key) = &config.api_key {",
+        "                    if config.api_key_env.is_some() {"
       ]
     },
     {
@@ -621,13 +1451,13 @@
       "line_start": 445,
       "line_end": 451,
       "text": [
-        "    let project_text = fs::read_to_string(&project_path).map_err(|error| {",
-        "        io::Error::new(error.kind(), format!(\"{}: {error}\", project_path.display()))",
-        "    })?;",
-        "    ProjectConfig::from_book_toml(&project_text, &project_path)?;",
-        "    let path = user_config_path()?;",
-        "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)"
+        "                            \"api_key and api_key_env cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    if key.expose_secret().is_empty() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),"
       ]
     },
     {
@@ -637,10 +1467,10 @@
       "text": [
         "",
         "use habeas::config::{",
-        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, load_user_config,",
-        "    resolve_authoring_from, state_root_from, user_config_path_from,",
-        "};",
-        ""
+        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,",
+        "    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,",
+        "    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,",
+        "};"
       ]
     },
     {
@@ -648,11 +1478,11 @@
       "line_start": 24,
       "line_end": 28,
       "text": [
+        "    ]);",
         "    let lookup = |name: &str| vars.get(name).cloned();",
         "    assert_eq!(",
         "        user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );"
+        "        config.join(\"habeas/config.toml\")"
       ]
     },
     {
@@ -660,11 +1490,11 @@
       "line_start": 40,
       "line_end": 44,
       "text": [
+        "            })",
         "        };",
         "        assert_eq!(",
         "            user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".config/habeas/config.toml\")",
-        "        );"
+        "            home.join(\".config/habeas/config.toml\")"
       ]
     },
     {
@@ -672,11 +1502,11 @@
       "line_start": 54,
       "line_end": 58,
       "text": [
+        "        _ => None,",
         "    };",
         "    assert_eq!(",
         "        user_config_path_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );"
+        "        config.join(\"habeas/config.toml\")"
       ]
     },
     {
@@ -684,11 +1514,11 @@
       "line_start": 61,
       "line_end": 65,
       "text": [
+        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
         "        state.join(\"habeas/state\")",
         "    );",
         "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}"
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());"
       ]
     },
     {
@@ -696,6 +1526,7 @@
       "line_start": 72,
       "line_end": 80,
       "text": [
+        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
         "    let dir = tempfile::tempdir().unwrap();",
         "    let path = dir.path().join(\"user.toml\");",
         "    assert!(load_user_config(&path).unwrap().is_none());",
@@ -703,8 +1534,7 @@
         "    let original = \"# keep this comment\\nversion = 1\\n\";",
         "    fs::write(&path, original).unwrap();",
         "    let config = load_user_config(&path).unwrap().unwrap();",
-        "    assert!(config.authoring.is_none());",
-        "    assert_eq!(fs::read_to_string(&path).unwrap(), original);"
+        "    assert!(config.authoring.is_none());"
       ]
     },
     {
@@ -712,6 +1542,7 @@
       "line_start": 85,
       "line_end": 97,
       "text": [
+        "    );",
         "    let book = \"[book]\\nsrc = 'docs'\\n\";",
         "    assert!(",
         "        ProjectConfig::from_book_toml(book, &path)",
@@ -723,8 +1554,7 @@
         "        Some(ProjectConfig {})",
         "    );",
         "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
-        "}",
-        ""
+        "}"
       ]
     },
     {
@@ -749,12 +1579,13 @@
         "",
         "use std::collections::BTreeMap;",
         "use std::ffi::OsString;",
+        "use std::fmt;",
         "use std::fs;",
         "use std::io;",
         "use std::num::NonZeroUsize;",
         "use std::path::{Component, Path, PathBuf};",
         "",
-        "use serde::{Deserialize, Serialize};",
+        "use serde::{Deserialize, Serialize, de::DeserializeOwned};",
         "",
         "const CONFIG_EXAMPLES: &str = \"see md/requirements/authoring.md#editing-the-file\";",
         "",
@@ -769,6 +1600,77 @@
         "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]",
         "#[serde(deny_unknown_fields)]",
         "pub struct ProjectConfig {}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct WorkspaceConfig {",
+        "    pub version: u32,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub authoring: Option<WorkspaceAuthoringConfig>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub evidence: Option<EvidenceConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct WorkspaceAuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub default: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub configs: BTreeMap<String, AuthoringConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct EvidenceConfig {",
+        "    #[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+        "    pub allow: Vec<PathBuf>,",
+        "    #[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+        "    pub disallow: Vec<PathBuf>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug)]",
+        "pub struct LoadedWorkspaceConfig {",
+        "    pub path: PathBuf,",
+        "    pub root: PathBuf,",
+        "    pub config: WorkspaceConfig,",
+        "}",
+        "",
+        "#[derive(Clone, Debug)]",
+        "pub struct WorkspaceEvidenceConfig {",
+        "    pub path: PathBuf,",
+        "    pub root: PathBuf,",
+        "    pub evidence: EvidenceConfig,",
+        "    pub contains_credentials: bool,",
+        "}",
+        "",
+        "/// A user-supplied credential value. Serialization preserves it; diagnostics do not.",
+        "#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(transparent)]",
+        "pub struct SecretString(String);",
+        "",
+        "impl SecretString {",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub fn expose_secret(&self) -> &str {",
+        "        &self.0",
+        "    }",
+        "}",
+        "",
+        "impl fmt::Debug for SecretString {",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {",
+        "        formatter.write_str(\"<redacted>\")",
+        "    }",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct BedrockCredentials {",
+        "    pub access_key_id: SecretString,",
+        "    pub secret_access_key: SecretString,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub session_token: Option<SecretString>,",
+        "}",
         "",
         "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
         "#[serde(deny_unknown_fields)]",
@@ -809,82 +1711,10 @@
         "    pub aws_profile: Option<String>,",
         "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
         "    pub region: Option<String>,",
-        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
-        "    pub options: BTreeMap<String, OptionValue>,",
-        "}",
-        "",
-        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
-        "#[serde(deny_unknown_fields)]",
-        "pub struct OllamaConfig {",
-        "    pub model: String,",
         "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
-        "    pub endpoint: Option<String>,",
-        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
-        "    pub api_key_env: Option<String>,",
+        "    pub credentials: Option<BedrockCredentials>,",
         "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
-        "    pub options: BTreeMap<String, OptionValue>,",
-        "}",
-        "",
-        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
-        "#[serde(untagged)]",
-        "pub enum OptionValue {",
-        "    String(String),",
-        "    Boolean(bool),",
-        "    Integer(i64),",
-        "    Float(f64),",
-        "    Array(Vec<OptionValue>),",
-        "    Map(BTreeMap<String, OptionValue>),",
-        "}",
-        "",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
-        "#[serde(rename_all = \"lowercase\")]",
-        "pub enum BackendKind {",
-        "    Bedrock,",
-        "    Ollama,",
-        "}",
-        "",
-        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]",
-        "pub struct ModelRef {",
-        "    pub backend: BackendKind,",
-        "    pub model: String,",
-        "}",
-        "",
-        "/// The selected saved values together with their source, without resolved secrets.",
-        "#[derive(Clone, Debug)]",
-        "pub struct ResolvedAuthoringConfig {",
-        "    pub config_path: PathBuf,",
-        "    pub project_root: PathBuf,",
-        "    pub name: String,",
-        "    pub concurrency: Option<NonZeroUsize>,",
-        "    pub backend: BackendConfig,",
-        "}",
-        "",
-        "#[derive(Clone, Copy, Debug)]",
-        "pub enum ConfigPlatform {",
-        "    Unix,",
-        "    Windows,",
-        "}",
-        "",
-        "impl ConfigPlatform {",
-        "    // {impl}`requirements.configuration.user_location`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub fn current() -> Self {",
-        "        if cfg!(windows) {",
-        "            Self::Windows",
-        "        } else {",
-        "            Self::Unix",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "impl UserConfig {",
-        "    // {impl}`requirements.configuration.structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.configuration_serialization`",
-        "    // {impl}`requirements.authoring.concurrency`",
-        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
-        "        let config: Self = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;"
+        "    pub options: BTreeMap<String, OptionValue>,"
       ]
     },
     {
@@ -892,11 +1722,11 @@
       "line_start": 423,
       "line_end": 427,
       "text": [
-        "",
-        "#[cfg(test)]",
-        "pub(super) mod tests {",
-        "    use super::*;",
-        "    use crate::authoring::access::tests::git;"
+        "                    item.line_end - item.line_start,",
+        "                    item.byte_end - item.byte_start,",
+        "                )",
+        "            })",
+        "        {"
       ]
     },
     {
@@ -906,9 +1736,9 @@
       "text": [
         "use rig_core::message::{Message, ToolResultContent, turn_failure};",
         "use serde_json::{Value, json};",
+        "use tokio::sync::watch;",
         "",
-        "use crate::config::{self, BackendKind, ResolvedAuthoringConfig};",
-        "use crate::judgment::Judgment;"
+        "use crate::config::{self, BackendKind, ResolvedAuthoringConfig};"
       ]
     },
     {
@@ -916,11 +1746,11 @@
       "line_start": 120,
       "line_end": 124,
       "text": [
-        "    root: &Path,",
         "    subject: &str,",
         "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
-        ") -> io::Result<AuthoringOutcome> {"
+        ") -> io::Result<AuthoringOutcome> {",
+        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
+        "}"
       ]
     },
     {
@@ -928,11 +1758,11 @@
       "line_start": 172,
       "line_end": 176,
       "text": [
-        "pub(crate) async fn prepare_assessment(",
-        "    root: &Path,",
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,",
-        ") -> io::Result<PendingAssessment> {"
+        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
+        "                usage.path.display(),",
+        "                usage.record.evidence_written",
+        "            ),",
+        "        )"
       ]
     },
     {
@@ -942,7 +1772,7 @@
       "text": [
         "use serde_json::{Map, Value};",
         "",
-        "use crate::config::BackendConfig;",
+        "use crate::config::{BackendConfig, BedrockConfig};",
         "",
         "pub(super) trait CompletionProvider {"
       ]
@@ -952,17 +1782,17 @@
       "line_start": 29,
       "line_end": 39,
       "text": [
-        "                // Keep each provider attempt visible to the usage ledger. An SDK",
-        "                // retry would otherwise be hidden inside one recorded request.",
-        "                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
-        "                    .retry_config(aws_config::retry::RetryConfig::disabled());",
-        "                if let Some(profile) = &config.aws_profile {",
-        "                    loader = loader.profile_name(profile);",
-        "                }",
-        "                if let Some(region) = &config.region {",
-        "                    loader = loader.region(aws_config::Region::new(region.clone()));",
-        "                }",
-        "                let sdk = aws_sdk_bedrockruntime::Client::new(&loader.load().await);"
+        "            BackendConfig::Bedrock(config) => {",
+        "                let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);",
+        "                rig_bedrock::client::BedrockRuntime::from(sdk)",
+        "                    .completion(&config.model)",
+        "                    .erase()",
+        "            }",
+        "            BackendConfig::Ollama(config) => {",
+        "                let mut provider = rig_core::providers::ollama::OllamaConfig::new()",
+        "                    .with_base_url(config.endpoint());",
+        "                if let Some(key) = config.api_key()? {",
+        "                    provider = provider.with_api_key(key);"
       ]
     },
     {
@@ -970,11 +1800,11 @@
       "line_start": 441,
       "line_end": 445,
       "text": [
-        "    root: &Path,",
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_path = root.join(\"book.toml\");",
-        "    let project_text = fs::read_to_string(&project_path).map_err(|error| {"
+        "                    if config.api_key_env.is_some() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"api_key and api_key_env cannot both be set\","
       ]
     },
     {
@@ -982,11 +1812,11 @@
       "line_start": 149,
       "line_end": 153,
       "text": [
-        "        discovery_errors,",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.ci.book_source`"
+        "            examples,",
+        "            evidence_files: evidence_files.len(),",
+        "            errors,",
+        "        },",
+        "        definitions,"
       ]
     },
     {
@@ -994,11 +1824,11 @@
       "line_start": 157,
       "line_end": 161,
       "text": [
-        "    let path = root.join(\"book.toml\");",
-        "    let source = match fs::read_to_string(&path) {",
-        "        Ok(content) => match content.parse::<DocumentMut>() {",
-        "            Ok(book) => {",
-        "                let table = match book.get(\"book\") {"
+        "}",
+        "",
+        "// {impl}`requirements.ci.book_source`",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.ci.diagnostics`"
       ]
     },
     {
@@ -1006,17 +1836,29 @@
       "line_start": 167,
       "line_end": 171,
       "text": [
-        "                        }",
-        "                    },",
-        "                    None => None,",
-        "                };",
-        "                match table.and_then(|table| table.get(\"src\")) {"
+        "                let table = match book.get(\"book\") {",
+        "                    Some(item) => match item.as_table_like() {",
+        "                        Some(table) => Some(table),",
+        "                        None => {",
+        "                            errors.push(\"book.toml: book must be a table\".to_owned());"
       ]
     },
     {
       "file": "src/evidence.rs",
       "line_start": 175,
       "line_end": 179,
+      "text": [
+        "                    None => None,",
+        "                };",
+        "                match table.and_then(|table| table.get(\"src\")) {",
+        "                    Some(item) => match item.as_str() {",
+        "                        Some(source) => source.to_owned(),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 181,
+      "line_end": 185,
       "text": [
         "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
         "                            return root.join(\"md\");",
@@ -1027,26 +1869,14 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 181,
-      "line_end": 185,
-      "text": [
-        "            }",
-        "            Err(error) => {",
-        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
-        "                return root.join(\"md\");",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
       "line_start": 192,
       "line_end": 196,
       "text": [
-        "        }",
-        "    };",
-        "    let relative = Path::new(&source);",
-        "    if source.is_empty()",
-        "        || !relative"
+        "        },",
+        "        Err(error) => {",
+        "            errors.push(format!(",
+        "                \"book.toml: cannot read book configuration: {error}\"",
+        "            ));"
       ]
     },
     {
@@ -1054,11 +1884,11 @@
       "line_start": 1396,
       "line_end": 1400,
       "text": [
-        "    use serde_json::json;",
-        "    use tempfile::TempDir;",
-        "",
-        "    use super::validate_repository;",
-        ""
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            \"// first line\\n// second line\\n\","
       ]
     },
     {
@@ -1066,11 +1896,11 @@
       "line_start": 1410,
       "line_end": 1414,
       "text": [
-        "            \"// first line\\n// second line\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        temp",
-        "    }"
+        "        let root = temp.path();",
+        "        let path = root.join(\"book.toml\");",
+        "        for (configuration, expected) in [",
+        "            (\"\", \"src\"),",
+        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),"
       ]
     },
     {
@@ -1078,11 +1908,11 @@
       "line_start": 1431,
       "line_end": 1435,
       "text": [
-        "                super::book_source_dir(root, &mut errors),",
-        "                root.join(expected)",
-        "            );",
-        "            assert!(errors.is_empty(), \"{errors:?}\");",
-        "        }"
+        "                .iter()",
+        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
+        "        );",
+        "        for (configuration, expected) in [",
+        "            (\"[book\", \"invalid TOML\"),"
       ]
     },
     {
@@ -1234,7 +2064,84 @@
       "line_start": 140,
       "line_end": 360,
       "text": [
-        "        let config: Self = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;",
+        "    pub options: BTreeMap<String, OptionValue>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct OllamaConfig {",
+        "    pub model: String,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub endpoint: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub api_key_env: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub api_key: Option<SecretString>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub options: BTreeMap<String, OptionValue>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(untagged)]",
+        "pub enum OptionValue {",
+        "    String(String),",
+        "    Boolean(bool),",
+        "    Integer(i64),",
+        "    Float(f64),",
+        "    Array(Vec<OptionValue>),",
+        "    Map(BTreeMap<String, OptionValue>),",
+        "}",
+        "",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(rename_all = \"lowercase\")]",
+        "pub enum BackendKind {",
+        "    Bedrock,",
+        "    Ollama,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "pub struct ModelRef {",
+        "    pub backend: BackendKind,",
+        "    pub model: String,",
+        "}",
+        "",
+        "/// The selected saved values together with their source, without resolved secrets.",
+        "#[derive(Clone, Debug)]",
+        "pub struct ResolvedAuthoringConfig {",
+        "    pub config_path: PathBuf,",
+        "    pub project_root: PathBuf,",
+        "    pub name: String,",
+        "    pub concurrency: Option<NonZeroUsize>,",
+        "    pub backend: BackendConfig,",
+        "}",
+        "",
+        "#[derive(Clone, Copy, Debug)]",
+        "pub enum ConfigPlatform {",
+        "    Unix,",
+        "    Windows,",
+        "}",
+        "",
+        "impl ConfigPlatform {",
+        "    // {impl}`requirements.configuration.user_location`",
+        "    // {impl}`requirements.configuration.state_location`",
+        "    pub fn current() -> Self {",
+        "        if cfg!(windows) {",
+        "            Self::Windows",
+        "        } else {",
+        "            Self::Unix",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "impl UserConfig {",
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.authoring.concurrency`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, \"\")?;",
         "        config.validate(path)?;",
         "        Ok(config)",
         "    }",
@@ -1256,6 +2163,75 @@
         "        }",
         "        if let Some(authoring) = &self.authoring {",
         "            authoring.validate(path)?;",
+        "        }",
+        "        Ok(())",
+        "    }",
+        "}",
+        "",
+        "impl WorkspaceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let table = parse_document(text, path)?;",
+        "        validate_workspace_common(&table, path)?;",
+        "        let config: Self = decode(toml::Value::Table(table), path, \"\")?;",
+        "        config.validate(path)?;",
+        "        Ok(config)",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn to_toml(&self) -> io::Result<String> {",
+        "        self.validate(Path::new(\"workspace configuration\"))?;",
+        "        toml::to_string_pretty(self).map_err(|_| {",
+        "            invalid(",
+        "                Path::new(\"workspace configuration\"),",
+        "                \"\",",
+        "                \"cannot serialize configuration\",",
+        "            )",
+        "        })",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {",
+        "            return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "        }",
+        "        if let Some(authoring) = &self.authoring {",
+        "            if let Some(name) = &authoring.default {",
+        "                validate_name(path, \"authoring.default\", name)?;",
+        "            }",
+        "            for (name, config) in &authoring.configs {",
+        "                let setting = format!(\"authoring.configs.{name}\");",
+        "                validate_name(path, &setting, name)?;",
+        "                config.backend.validate(path, &setting)?;",
+        "            }",
+        "        }",
+        "        if let Some(evidence) = &self.evidence {",
+        "            evidence.validate(path)?;",
+        "        }",
+        "        Ok(())",
+        "    }",
+        "}",
+        "",
+        "impl EvidenceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        for (field, paths) in [(\"allow\", &self.allow), (\"disallow\", &self.disallow)] {",
+        "            for (index, entry) in paths.iter().enumerate() {",
+        "                if entry.as_os_str().is_empty() || entry.to_string_lossy().contains('\\0') {",
+        "                    return Err(invalid(",
+        "                        path,",
+        "                        &format!(\"evidence.{field}[{index}]\"),",
+        "                        \"expected a nonempty path without NUL\",",
+        "                    ));",
+        "                }",
+        "            }",
         "        }",
         "        Ok(())",
         "    }",
@@ -1308,41 +2284,15 @@
         "        Ok(())",
         "    }",
         "}",
-        "",
-        "impl BackendConfig {",
-        "    // {impl}`requirements.authoring.configuration_structure`",
-        "    pub fn model_ref(&self) -> ModelRef {",
-        "        match self {",
-        "            Self::Bedrock(config) => ModelRef {",
-        "                backend: BackendKind::Bedrock,",
-        "                model: config.model.clone(),",
-        "            },",
-        "            Self::Ollama(config) => ModelRef {",
-        "                backend: BackendKind::Ollama,",
-        "                model: config.model.clone(),",
-        "            },",
-        "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    pub fn options(&self) -> &BTreeMap<String, OptionValue> {",
-        "        match self {",
-        "            Self::Bedrock(config) => &config.options,",
-        "            Self::Ollama(config) => &config.options,",
-        "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    pub fn options_json(&self) -> io::Result<serde_json::Value> {",
-        "        for value in self.options().values() {",
-        "            value.validate()?;",
-        "        }",
-        "        serde_json::to_value(self.options()).map_err(io::Error::other)",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.configuration.loading`",
+        ""
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 395,
+      "line_end": 537,
+      "text": [
+        "    // {impl}`requirements.authoring.credentials`",
         "    fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {",
         "        if self.model_ref().model.is_empty() {",
         "            return Err(invalid(",
@@ -1360,6 +2310,50 @@
         "                &format!(\"{setting}.api_key_env\"),",
         "                \"expected a nonempty environment variable name without '=' or NUL\",",
         "            ));",
+        "        }",
+        "        match self {",
+        "            Self::Bedrock(config) => {",
+        "                if let Some(credentials) = &config.credentials {",
+        "                    if config.aws_profile.is_some() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.credentials\"),",
+        "                            \"credentials and aws_profile cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    for (field, value) in [",
+        "                        (\"access_key_id\", Some(&credentials.access_key_id)),",
+        "                        (\"secret_access_key\", Some(&credentials.secret_access_key)),",
+        "                        (\"session_token\", credentials.session_token.as_ref()),",
+        "                    ] {",
+        "                        if value.is_some_and(|value| value.expose_secret().is_empty()) {",
+        "                            return Err(invalid(",
+        "                                path,",
+        "                                &format!(\"{setting}.credentials.{field}\"),",
+        "                                \"credential values must be nonempty\",",
+        "                            ));",
+        "                        }",
+        "                    }",
+        "                }",
+        "            }",
+        "            Self::Ollama(config) => {",
+        "                if let Some(key) = &config.api_key {",
+        "                    if config.api_key_env.is_some() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"api_key and api_key_env cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    if key.expose_secret().is_empty() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"credential values must be nonempty\",",
+        "                        ));",
+        "                    }",
+        "                }",
+        "            }",
         "        }",
         "        for (key, value) in self.options() {",
         "            let field = format!(\"{setting}.options.{key}\");",
@@ -1414,16 +2408,21 @@
         "",
         "    // {impl}`requirements.authoring.configuration_precedence`",
         "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.credentials`",
         "    pub fn api_key(&self) -> io::Result<Option<String>> {",
         "        self.api_key_from(|name| std::env::var_os(name))",
         "    }",
         "",
         "    // {impl}`requirements.authoring.configuration_precedence`",
         "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.credentials`",
         "    pub fn api_key_from(",
         "        &self,",
         "        lookup: impl Fn(&str) -> Option<OsString>,",
         "    ) -> io::Result<Option<String>> {",
+        "        if let Some(key) = &self.api_key {",
+        "            return Ok(Some(key.expose_secret().to_owned()));",
+        "        }",
         "        self.api_key_env.as_ref().map(|name| {",
         "            lookup(name)",
         "                .filter(|value| !value.is_empty())",
@@ -1435,176 +2434,7 @@
         "}",
         "",
         "impl ResolvedAuthoringConfig {",
-        "    // {impl}`requirements.authoring.configuration_structure`",
-        "    pub fn model_ref(&self) -> ModelRef {",
-        "        self.backend.model_ref()",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.concurrency`",
-        "    pub fn effective_concurrency(&self) -> usize {",
-        "        self.concurrency",
-        "            .map(NonZeroUsize::get)",
-        "            .unwrap_or_else(|| match &self.backend {",
-        "                BackendConfig::Bedrock(_) => std::thread::available_parallelism()",
-        "                    .map(NonZeroUsize::get)",
-        "                    .unwrap_or(1),",
-        "                BackendConfig::Ollama(_) => 1,",
-        "            })",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path() -> io::Result<PathBuf> {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 395,
-      "line_end": 537,
-      "text": [
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),",
-        "        }),",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "// {impl}`requirements.configuration.state_location`",
-        "fn absolute_directory(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {",
-        "    lookup(name)",
-        "        .map(PathBuf::from)",
-        "        .filter(|path| path.is_absolute())",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "// {impl}`requirements.configuration.state_location`",
-        "fn required_directory(",
-        "    lookup: &impl Fn(&str) -> Option<OsString>,",
-        "    name: &str,",
-        ") -> io::Result<PathBuf> {",
-        "    absolute_directory(lookup, name).ok_or_else(|| {",
-        "        io::Error::new(",
-        "            io::ErrorKind::NotFound,",
-        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
-        "        )",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(text) => UserConfig::parse(&text, path).map(Some),",
-        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),",
-        "        Err(error) => Err(io::Error::new(",
-        "            error.kind(),",
-        "            format!(\"{}: {error}\", path.display()),",
-        "        )),",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.configuration`",
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.rig_configuration_mapping`",
-        "// {impl}`requirements.configuration.structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub fn resolve_authoring(",
-        "    root: &Path,",
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_path = root.join(\"book.toml\");",
-        "    let project_text = fs::read_to_string(&project_path).map_err(|error| {",
-        "        io::Error::new(error.kind(), format!(\"{}: {error}\", project_path.display()))",
-        "    })?;",
-        "    ProjectConfig::from_book_toml(&project_text, &project_path)?;",
-        "    let path = user_config_path()?;",
-        "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.configuration_storage`",
-        "// {impl}`requirements.configuration.serialization`",
-        "// {impl}`requirements.authoring.concurrency`",
-        "// {impl}`requirements.authoring.configuration`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub fn resolve_authoring_from(",
-        "    path: &Path,",
-        "    user: Option<&UserConfig>,",
-        "    root: &Path,",
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_root = fs::canonicalize(root).map_err(|error| {",
-        "        io::Error::new(",
-        "            error.kind(),",
-        "            format!(\"cannot resolve project root {}: {error}\", root.display()),",
-        "        )",
-        "    })?;",
-        "    if let Some(user) = user {",
-        "        user.validate(path)?;",
-        "    }",
-        "    let authoring = user",
-        "        .and_then(|config| config.authoring.as_ref())",
-        "        .ok_or_else(|| {",
-        "            invalid(",
-        "                path,",
-        "                \"authoring\",",
-        "                format!(\"no authoring configuration; {CONFIG_EXAMPLES}\"),",
-        "            )",
-        "        })?;",
-        "    let selected = explicit",
-        "        .or_else(|| {",
-        "            authoring",
-        "                .projects",
-        "                .get(&project_root)",
-        "                .map(|selection| selection.config.as_str())",
-        "        })",
-        "        .or(authoring.default.as_deref())",
-        "        .ok_or_else(|| {",
-        "            invalid(",
-        "                path,",
-        "                \"authoring\",",
-        "                format!(\"no configuration selected; {CONFIG_EXAMPLES}\"),",
-        "            )",
-        "        })?;",
-        "    let config = authoring.configs.get(selected).ok_or_else(|| {",
-        "        invalid(",
-        "            path,",
-        "            \"authoring\",",
-        "            format!(\"unknown configuration {selected:?}; {CONFIG_EXAMPLES}\"),",
-        "        )",
-        "    })?;",
-        "    Ok(ResolvedAuthoringConfig {",
-        "        config_path: path.to_owned(),",
-        "        project_root,",
-        "        name: selected.to_owned(),",
-        "        concurrency: config.concurrency,",
-        "        backend: config.backend.clone(),",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.configuration_storage`",
-        "fn validate_name(path: &Path, setting: &str, name: &str) -> io::Result<()> {",
-        "    if name",
-        "        .as_bytes()",
-        "        .first()",
-        "        .is_none_or(|first| !first.is_ascii_alphanumeric())",
-        "        || !name",
-        "            .bytes()",
-        "            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')",
-        "    {",
-        "        return Err(invalid(",
-        "            path,",
-        "            setting,",
-        "            \"configuration names must match [A-Za-z0-9][A-Za-z0-9_-]*\",",
-        "        ));",
-        "    }",
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "fn invalid(path: &Path, setting: &str, message: impl std::fmt::Display) -> io::Error {",
-        "    io::Error::new(",
-        "        io::ErrorKind::InvalidInput,"
+        "    // {impl}`requirements.authoring.configuration_structure`"
       ]
     },
     {
@@ -1612,13 +2442,13 @@
       "line_start": 466,
       "line_end": 472,
       "text": [
-        "        let stderr = String::from_utf8_lossy(&output.stderr);",
-        "        assert!(stderr.contains(location), \"{stderr}\");",
-        "        assert!(stderr.contains(diagnostic), \"{stderr}\");",
-        "        assert!(!stderr.contains(\"no authoring configuration\"), \"{stderr}\");",
-        "        assert!(!fixture.state.exists());",
-        "        assert!(!fixture.project.join(\"evidence\").exists());",
-        "    }"
+        "        fixture.evidence(\"rust/src/lib.rs\")[\"functions\"]",
+        "            .as_array()",
+        "            .unwrap()",
+        "            .len(),",
+        "        3",
+        "    );",
+        "    let usage = fixture.usage();"
       ]
     },
     {
@@ -1626,13 +2456,13 @@
       "line_start": 579,
       "line_end": 585,
       "text": [
-        "}",
-        "",
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");"
+        "        (json!(true), \"true\", true),",
+        "        (json!(false), \"false\", true),",
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
+        "        (json!(true), \"true\", false),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call("
       ]
     },
     {
@@ -1640,13 +2470,13 @@
       "line_start": 809,
       "line_end": 815,
       "text": [
-        "    let output = fixture.run(&[\"author-evidence\", SUBJECT]);",
-        "    assert!(!output.status.success());",
-        "    assert_eq!(server.finish().len(), 1);",
-        "    assert!(fixture.evidence.is_dir());",
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage[\"outcome\"], \"failed\");",
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");"
+        "                .headers",
+        "                .contains(\"/us-west-2/bedrock/aws4_request\")",
+        "        );",
+        "        assert!(!requests[0].headers.contains(\"WRONG_DEFAULT_ACCESS_KEY\"));",
+        "        let body = &requests[0].body;",
+        "        assert_eq!(",
+        "            body[\"inferenceConfig\"],"
       ]
     },
     {
@@ -1654,13 +2484,13 @@
       "line_start": 65,
       "line_end": 71,
       "text": [
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
         "}",
         "",
         "// {test}`requirements.configuration.structure`",
         "// {test}`requirements.configuration.loading`",
         "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {"
+        "#[test]"
       ]
     },
     {
@@ -1668,13 +2498,13 @@
       "line_start": 149,
       "line_end": 155,
       "text": [
+        "",
         "// {test}`requirements.authoring.concurrency`",
         "// {test}`requirements.authoring.configuration_structure`",
         "// {test}`requirements.authoring.configuration_serialization`",
         "// {test}`requirements.authoring.configuration_precedence`",
         "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.configuration.serialization`"
+        "// {test}`requirements.configuration.loading`"
       ]
     },
     {
@@ -1682,6 +2512,7 @@
       "line_start": 256,
       "line_end": 266,
       "text": [
+        "    assert!(error.contains(\"DEFAULT\"));",
         "    assert!(error.contains(\"config.toml\"));",
         "    assert!(error.contains(\"editing-the-file\"));",
         "    assert!(",
@@ -1691,8 +2522,7 @@
         "            .contains(\"no authoring configuration\")",
         "    );",
         "}",
-        "",
-        "// {test}`requirements.configuration.loading`"
+        ""
       ]
     },
     {
@@ -1700,13 +2530,13 @@
       "line_start": 132,
       "line_end": 138,
       "text": [
-        "",
-        "impl UserConfig {",
-        "    // {impl}`requirements.configuration.structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.configuration_serialization`",
-        "    // {impl}`requirements.authoring.concurrency`"
+        "    pub model: String,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub aws_profile: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub region: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub credentials: Option<BedrockCredentials>,"
       ]
     },
     {
@@ -1714,13 +2544,13 @@
       "line_start": 150,
       "line_end": 156,
       "text": [
-        "            .map_err(|error| invalid(Path::new(\"user configuration\"), \"\", error))",
-        "    }",
-        "",
-        "    // {impl}`requirements.configuration.structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    pub fn validate(&self, path: &Path) -> io::Result<()> {"
+        "    pub api_key_env: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub api_key: Option<SecretString>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub options: BTreeMap<String, OptionValue>,",
+        "}",
+        ""
       ]
     },
     {
@@ -1728,13 +2558,13 @@
       "line_start": 165,
       "line_end": 171,
       "text": [
+        "    Map(BTreeMap<String, OptionValue>),",
         "}",
         "",
-        "impl ProjectConfig {",
-        "    // {impl}`requirements.configuration.structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {",
-        "        let book: toml::Table = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(rename_all = \"lowercase\")]",
+        "pub enum BackendKind {",
+        "    Bedrock,"
       ]
     },
     {
@@ -1742,13 +2572,13 @@
       "line_start": 181,
       "line_end": 187,
       "text": [
-        "}",
-        "",
-        "impl UserAuthoringConfig {",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
-        "        if let Some(name) = &self.default {"
+        "/// The selected saved values together with their source, without resolved secrets.",
+        "#[derive(Clone, Debug)]",
+        "pub struct ResolvedAuthoringConfig {",
+        "    pub config_path: PathBuf,",
+        "    pub project_root: PathBuf,",
+        "    pub name: String,",
+        "    pub concurrency: Option<NonZeroUsize>,"
       ]
     },
     {
@@ -1756,13 +2586,13 @@
       "line_start": 244,
       "line_end": 250,
       "text": [
-        "        serde_json::to_value(self.options()).map_err(io::Error::other)",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
+        "impl WorkspaceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
         "    // {impl}`requirements.configuration.loading`",
-        "    fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {",
-        "        if self.model_ref().model.is_empty() {"
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let table = parse_document(text, path)?;",
+        "        validate_workspace_common(&table, path)?;"
       ]
     },
     {
@@ -1770,13 +2600,13 @@
       "line_start": 418,
       "line_end": 424,
       "text": [
-        "        )",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {"
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.credentials\"),",
+        "                            \"credentials and aws_profile cannot both be set\",",
+        "                        ));",
+        "                    }",
+        "                    for (field, value) in ["
       ]
     },
     {
@@ -1784,13 +2614,13 @@
       "line_start": 435,
       "line_end": 441,
       "text": [
-        "// {impl}`requirements.authoring.configuration`",
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.rig_configuration_mapping`",
-        "// {impl}`requirements.configuration.structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub fn resolve_authoring(",
-        "    root: &Path,"
+        "                        }",
+        "                    }",
+        "                }",
+        "            }",
+        "            Self::Ollama(config) => {",
+        "                if let Some(key) = &config.api_key {",
+        "                    if config.api_key_env.is_some() {"
       ]
     },
     {
@@ -1798,13 +2628,13 @@
       "line_start": 528,
       "line_end": 534,
       "text": [
-        "            \"configuration names must match [A-Za-z0-9][A-Za-z0-9_-]*\",",
-        "        ));",
+        "                .filter(|value| !value.is_empty())",
+        "                .and_then(|value| value.into_string().ok())",
+        "                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,",
+        "                    format!(\"authoring api_key_env {name:?} must name a set, nonempty UTF-8 environment variable\")))",
+        "        }).transpose()",
         "    }",
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`"
+        "}"
       ]
     },
     {
@@ -1812,6 +2642,7 @@
       "line_start": 225,
       "line_end": 262,
       "text": [
+        "    .unwrap();",
         "    assert_eq!(",
         "        resolve_authoring_from(&config_path, Some(&config), &root, None)",
         "            .unwrap()",
@@ -1848,8 +2679,7 @@
         "    assert!(",
         "        resolve_authoring_from(&config_path, None, &root, None)",
         "            .unwrap_err()",
-        "            .to_string()",
-        "            .contains(\"no authoring configuration\")"
+        "            .to_string()"
       ]
     },
     {
@@ -1857,65 +2687,65 @@
       "line_start": 415,
       "line_end": 473,
       "text": [
-        "    assert_eq!(",
-        "        usage",
-        "            .iter()",
-        "            .filter(|run| run[\"outcome\"] == \"completed\")",
-        "            .count(),",
-        "        5",
+        "        updated.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&updated.stderr)",
         "    );",
-        "    let diagnostics = format!(",
-        "        \"{}{}\",",
-        "        String::from_utf8_lossy(&output.stdout),",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert!(diagnostics.contains(\"requirements.alpha\"), \"{diagnostics}\");",
-        "    assert!(",
-        "        diagnostics.contains(\"fixture model rejected\"),",
-        "        \"{diagnostics}\"",
-        "    );",
+        "    assert_eq!(server.subjects().len(), 8);",
+        "    assert_eq!(fixture.usage().len(), 8);",
+        "    assert_eq!(fixture.evidence(\"requirements.beta\"), beta);",
+        "    assert_eq!(fixture.evidence(\"requirements.alpha_case\"), example);",
+        "    assert_eq!(fixture.function(\"fn[beta]\"), beta_function);",
+        "    assert_eq!(fixture.function(\"fn[alpha_case]\"), test_function);",
+        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "}",
         "",
+        "// {test}`requirements.authoring.concurrency`",
         "// {test}`requirements.authoring.batch`",
         "#[test]",
-        "fn batch_stdout_is_rejected_before_authoring() {",
+        "fn ollama_batches_are_serial_by_default() {",
         "    let server = Server::start(false, None);",
         "    let fixture = Fixture::new(&server.endpoint, None);",
-        "    let output = fixture.run(&[\"author\", \"--all\", \"--stdout\"]);",
-        "    assert!(!output.status.success());",
-        "    assert!(String::from_utf8_lossy(&output.stderr).contains(\"--stdout\"));",
-        "    assert!(server.subjects().is_empty());",
-        "    assert!(!fixture.project.join(\"evidence\").exists());",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    assert_eq!(server.requests.0.lock().unwrap().peak, 1);",
         "}",
         "",
         "// {test}`requirements.authoring.batch`",
-        "// {test}`requirements.ci.definition_errors`",
-        "// {test}`requirements.references.rust_function_coverage`",
+        "// {test}`requirements.authoring.usage_storage`",
         "#[test]",
-        "fn discovery_errors_fail_before_configuration_or_inference() {",
-        "    for (declarations, source, location, diagnostic) in [",
-        "        (\"\", \"fn broken(\", \"src/lib.rs\", \"cannot parse Rust source\"),",
-        "        (",
-        "            \":::{req} unclosed\\nThis MUST be valid.\\n\",",
-        "            \"\",",
-        "            \"md/requirements.md\",",
-        "            \"missing a closing colon fence\",",
-        "        ),",
-        "    ] {",
-        "        let fixture = Fixture::new(\"http://127.0.0.1:9\", None);",
-        "        fs::write(fixture.project.join(\"md/requirements.md\"), declarations).unwrap();",
-        "        fs::write(fixture.project.join(\"src/lib.rs\"), source).unwrap();",
-        "        fs::remove_file(&fixture.config).unwrap();",
-        "        let output = fixture.run(&[\"author\", \"--all\"]);",
-        "        assert!(!output.status.success());",
-        "        let stderr = String::from_utf8_lossy(&output.stderr);",
-        "        assert!(stderr.contains(location), \"{stderr}\");",
-        "        assert!(stderr.contains(diagnostic), \"{stderr}\");",
-        "        assert!(!stderr.contains(\"no authoring configuration\"), \"{stderr}\");",
-        "        assert!(!fixture.state.exists());",
-        "        assert!(!fixture.project.join(\"evidence\").exists());",
-        "    }",
-        "}"
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
+        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(!output.status.success());",
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    assert!(",
+        "        !fixture",
+        "            .project",
+        "            .join(\"evidence/requirements.alpha.json\")",
+        "            .exists()",
+        "    );",
+        "    assert_eq!(fixture.evidence(\"requirements.beta\")[\"determination\"], true);",
+        "    assert_eq!(",
+        "        fixture.evidence(\"requirements.alpha_case\")[\"determination\"],",
+        "        true",
+        "    );",
+        "    assert_eq!(",
+        "        fixture.evidence(\"rust/src/lib.rs\")[\"functions\"]",
+        "            .as_array()",
+        "            .unwrap()",
+        "            .len(),",
+        "        3",
+        "    );",
+        "    let usage = fixture.usage();",
+        "    assert_eq!(usage.len(), 6);"
       ]
     },
     {
@@ -1923,16 +2753,6 @@
       "line_start": 1400,
       "line_end": 1470,
       "text": [
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    fn fixture() -> TempDir {",
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
         "            \"// first line\\n// second line\\n\",",
         "        )",
         "        .unwrap();",
@@ -1993,7 +2813,17 @@
         "    }",
         "",
         "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`"
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.inputs`",
+        "    #[test]",
+        "    fn validates_full_names_requirement_text_and_input_lines() {",
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
+        "        )"
       ]
     },
     {
@@ -2001,19 +2831,19 @@
       "line_start": 185,
       "line_end": 197,
       "text": [
-        "        }",
-        "        fs::write(",
-        "            project.join(\"Cargo.toml\"),",
-        "            \"[package]\\nname = 'batch-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),",
-        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"md/requirements.md\"), \":::{req} alpha\\nalpha MUST return one.\\n:::\\n\\n:::{req} beta\\nbeta MUST return two.\\n:::\\n\\n:::{example} alpha_case\\nCalling alpha returns one. CITE`requirements.alpha`\\n:::\\n\".replace(\"CITE\", \"{cite}\")).unwrap();"
+        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
+        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
+        "                \"id\":\"denied-read\", \"type\":\"function\", \"function\":{",
+        "                    \"name\":\"habeas\", \"arguments\":{\"file\":\"evidence/private.txt\", \"line_start\":1}",
+        "                }",
+        "            }]},",
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
+        "        })",
+        "    } else {",
+        "        json!({",
+        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
+        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
+        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{"
       ]
     },
     {
@@ -2021,19 +2851,19 @@
       "line_start": 319,
       "line_end": 331,
       "text": [
-        "        assert!(",
-        "            requests.first_pair_overlapped,",
-        "            \"a second assessment must start before the first model response\"",
-        "        );",
+        "    fn usage(&self) -> Vec<Value> {",
+        "        let path = self.state.join(if cfg!(windows) {",
+        "            \"habeas/state/authoring/usage\"",
+        "        } else {",
+        "            \"habeas/authoring/usage\"",
+        "        });",
+        "        fs::read_dir(path)",
+        "            .unwrap()",
+        "            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())",
+        "            .collect()",
         "    }",
-        "",
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
-        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        no_op.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&no_op.stderr)",
-        "    );"
+        "}",
+        ""
       ]
     },
     {
@@ -2061,19 +2891,19 @@
       "line_start": 582,
       "line_end": 594,
       "text": [
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\","
+        "        (json!(true), \"true\", false),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {",
+        "            fs::remove_dir_all(fixture.project.join(\"evidence\")).unwrap();",
+        "        }",
+        "        let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--stdout\"]);"
       ]
     },
     {
@@ -2101,19 +2931,19 @@
       "line_start": 343,
       "line_end": 355,
       "text": [
-        "    let names = [",
-        "        \"absent\",",
-        "        \"malformed\",",
-        "        \"pending\",",
-        "        \"ready\",",
-        "        \"stale\",",
-        "        \"stale_input\",",
-        "        \"uncovered\",",
-        "        \"xready\",",
-        "    ];",
-        "    let positions = names",
-        "        .map(|name| all.find(&format!(\"| `requirements.{name}`\")).unwrap())",
-        "        .to_vec();"
+        "        \"rules.alpha\",",
+        "        \"rules.beta\",",
+        "        \"rules.unlinked\",",
+        "        \"#123\",",
+        "        \"rust-lang/rust\",",
+        "    ] {",
+        "        assert!(!filtered.contains(excluded), \"{filtered}\");",
+        "    }",
+        "",
+        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\", \"rules.unlinked\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");",
+        "    let unlinked = String::from_utf8(output.stdout).unwrap();",
+        "    assert!(unlinked.contains(\"rules.unlinked\"), \"{unlinked}\");"
       ]
     },
     {
@@ -2162,18 +2992,18 @@
       "line_end": 141,
       "text": [
         "    }",
+        "    report(format!(",
+        "        \"live Bedrock test: configuration {:?}, model {:?}\",",
+        "        selected.name, backend.model",
+        "    ));",
+        "",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let project = temp.path().join(\"project\");",
+        "    for directory in [project.join(\"md\"), project.join(\"src\")] {",
+        "        fs::create_dir_all(directory).unwrap();",
+        "    }",
         "    fs::write(",
-        "        project.join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = 'live-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write(",
-        "        project.join(\"md/SUMMARY.md\"),",
-        "        \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write("
+        "        project.join(\"Cargo.toml\"),"
       ]
     },
     {
@@ -2181,19 +3011,19 @@
       "line_start": 221,
       "line_end": 233,
       "text": [
+        "        .env(\"XDG_STATE_HOME\", root.join(\"state\"))",
+        "        .env(\"LOCALAPPDATA\", root.join(\"state\"))",
+        "        .env(\"AWS_CONFIG_FILE\", root.join(\"aws-config\"))",
+        "        .env(\"AWS_SHARED_CREDENTIALS_FILE\", root.join(\"aws-credentials\"))",
+        "        .env(\"AWS_EC2_METADATA_DISABLED\", \"true\")",
+        "        .env(\"AWS_ENDPOINT_URL_BEDROCK_RUNTIME\", \"http://127.0.0.1:9\");",
+        "    command",
+        "}",
+        "",
+        "// {test}`requirements.integration.live_bedrock_test`",
         "#[test]",
         "fn live_test_prerequisites_are_checked_without_inference() {",
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let root = temp.path();",
-        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
-        "    let config_path = root.join(\"config/habeas/config.toml\");",
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
-        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();",
-        "    assert!(",
-        "        ci.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&ci.stderr)",
-        "    );"
+        "    let temp = tempfile::tempdir().unwrap();"
       ]
     },
     {
@@ -2386,7 +3216,7 @@
       "line_start": 397,
       "line_end": 397,
       "text": [
-        "usage record. Provider errors, including throttling, MUST be reported through"
+        "    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty"
       ]
     },
     {
@@ -2394,7 +3224,7 @@
       "line_start": 135,
       "line_end": 135,
       "text": [
-        "    // {impl}`requirements.configuration.loading`"
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]"
       ]
     },
     {
@@ -2402,7 +3232,7 @@
       "line_start": 154,
       "line_end": 154,
       "text": [
-        "    // {impl}`requirements.configuration.loading`"
+        "    pub options: BTreeMap<String, OptionValue>,"
       ]
     },
     {
@@ -2410,7 +3240,7 @@
       "line_start": 169,
       "line_end": 169,
       "text": [
-        "    // {impl}`requirements.configuration.loading`"
+        "#[serde(rename_all = \"lowercase\")]"
       ]
     },
     {
@@ -2418,7 +3248,7 @@
       "line_start": 185,
       "line_end": 185,
       "text": [
-        "    // {impl}`requirements.configuration.loading`"
+        "    pub project_root: PathBuf,"
       ]
     },
     {
@@ -2426,7 +3256,7 @@
       "line_start": 248,
       "line_end": 248,
       "text": [
-        "    // {impl}`requirements.configuration.loading`"
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {"
       ]
     },
     {
@@ -2434,7 +3264,7 @@
       "line_start": 422,
       "line_end": 422,
       "text": [
-        "// {impl}`requirements.configuration.loading`"
+        "                        ));"
       ]
     },
     {
@@ -2442,7 +3272,7 @@
       "line_start": 439,
       "line_end": 439,
       "text": [
-        "// {impl}`requirements.configuration.loading`"
+        "            Self::Ollama(config) => {"
       ]
     },
     {
@@ -2450,7 +3280,7 @@
       "line_start": 459,
       "line_end": 459,
       "text": [
-        "// {impl}`requirements.configuration.loading`"
+        "            let field = format!(\"{setting}.options.{key}\");"
       ]
     },
     {
@@ -2458,7 +3288,7 @@
       "line_start": 534,
       "line_end": 534,
       "text": [
-        "// {impl}`requirements.configuration.loading`"
+        "}"
       ]
     },
     {
@@ -2466,7 +3296,7 @@
       "line_start": 154,
       "line_end": 154,
       "text": [
-        "// {impl}`requirements.configuration.loading`"
+        "        rust_functions,"
       ]
     },
     {
@@ -2474,7 +3304,7 @@
       "line_start": 582,
       "line_end": 582,
       "text": [
-        "// {test}`requirements.configuration.loading`"
+        "        (json!(true), \"true\", false),"
       ]
     },
     {
@@ -2482,7 +3312,7 @@
       "line_start": 68,
       "line_end": 68,
       "text": [
-        "// {test}`requirements.configuration.loading`"
+        "// {test}`requirements.configuration.structure`"
       ]
     },
     {
@@ -2490,7 +3320,7 @@
       "line_start": 154,
       "line_end": 154,
       "text": [
-        "// {test}`requirements.configuration.loading`"
+        "// {test}`requirements.authoring.configuration_storage`"
       ]
     },
     {
@@ -2498,7 +3328,7 @@
       "line_start": 266,
       "line_end": 266,
       "text": [
-        "// {test}`requirements.configuration.loading`"
+        ""
       ]
     },
     {
@@ -2506,11 +3336,11 @@
       "line_start": 803,
       "line_end": 807,
       "text": [
-        "    );",
-        "    let config_path = fixture.config.join(\"habeas/config.toml\");",
-        "    let config = fs::read_to_string(&config_path)",
-        "        .unwrap()",
-        "        .replace(\"http://unconfigured\", &server.endpoint);"
+        "            requests[0]",
+        "                .headers",
+        "                .contains(\"Credential=FAKE_PROFILE_ACCESS_KEY/\")",
+        "        );",
+        "        assert!("
       ]
     },
     {
@@ -2518,11 +3348,11 @@
       "line_start": 810,
       "line_end": 814,
       "text": [
-        "    assert!(!output.status.success());",
-        "    assert_eq!(server.finish().len(), 1);",
-        "    assert!(fixture.evidence.is_dir());",
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage[\"outcome\"], \"failed\");"
+        "                .contains(\"/us-west-2/bedrock/aws4_request\")",
+        "        );",
+        "        assert!(!requests[0].headers.contains(\"WRONG_DEFAULT_ACCESS_KEY\"));",
+        "        let body = &requests[0].body;",
+        "        assert_eq!("
       ]
     },
     {
@@ -2530,6 +3360,7 @@
       "line_start": 262,
       "line_end": 318,
       "text": [
+        "            .to_string()",
         "            .contains(\"no authoring configuration\")",
         "    );",
         "}",
@@ -2585,8 +3416,7 @@
         "    );",
         "    let serialized = config.to_toml().unwrap();",
         "    assert!(serialized.contains(\"MODEL_KEY\"));",
-        "    assert!(!serialized.contains(\"private-value\"));",
-        "}"
+        "    assert!(!serialized.contains(\"private-value\"));"
       ]
     },
     {
@@ -2594,13 +3424,13 @@
       "line_start": 188,
       "line_end": 194,
       "text": [
-        "            \"[package]\\nname = 'batch-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),",
-        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\","
+        "                    \"name\":\"habeas\", \"arguments\":{\"file\":\"evidence/private.txt\", \"line_start\":1}",
+        "                }",
+        "            }]},",
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
+        "        })",
+        "    } else {",
+        "        json!({"
       ]
     },
     {
@@ -2608,13 +3438,13 @@
       "line_start": 322,
       "line_end": 328,
       "text": [
-        "        );",
-        "    }",
-        "",
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
-        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        no_op.status.success(),"
+        "        } else {",
+        "            \"habeas/authoring/usage\"",
+        "        });",
+        "        fs::read_dir(path)",
+        "            .unwrap()",
+        "            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())",
+        "            .collect()"
       ]
     },
     {
@@ -2636,13 +3466,13 @@
       "line_start": 585,
       "line_end": 591,
       "text": [
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);"
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {"
       ]
     },
     {
@@ -2664,13 +3494,13 @@
       "line_start": 346,
       "line_end": 352,
       "text": [
-        "        \"pending\",",
-        "        \"ready\",",
-        "        \"stale\",",
-        "        \"stale_input\",",
-        "        \"uncovered\",",
-        "        \"xready\",",
-        "    ];"
+        "        \"#123\",",
+        "        \"rust-lang/rust\",",
+        "    ] {",
+        "        assert!(!filtered.contains(excluded), \"{filtered}\");",
+        "    }",
+        "",
+        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\", \"rules.unlinked\"]);"
       ]
     },
     {
@@ -2681,10 +3511,10 @@
         "use std::path::Path;",
         "",
         "use habeas::config::{",
-        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, load_user_config,",
-        "    resolve_authoring_from, state_root_from, user_config_path_from,",
-        "};",
-        ""
+        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,",
+        "    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,",
+        "    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,",
+        "};"
       ]
     },
     {
@@ -2692,6 +3522,7 @@
       "line_start": 71,
       "line_end": 81,
       "text": [
+        "#[test]",
         "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
         "    let dir = tempfile::tempdir().unwrap();",
         "    let path = dir.path().join(\"user.toml\");",
@@ -2701,8 +3532,7 @@
         "    fs::write(&path, original).unwrap();",
         "    let config = load_user_config(&path).unwrap().unwrap();",
         "    assert!(config.authoring.is_none());",
-        "    assert_eq!(fs::read_to_string(&path).unwrap(), original);",
-        "    assert_eq!("
+        "    assert_eq!(fs::read_to_string(&path).unwrap(), original);"
       ]
     },
     {
@@ -2752,13 +3582,13 @@
       "line_start": 132,
       "line_end": 138,
       "text": [
-        "        \"[package]\\nname = 'live-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write(",
-        "        project.join(\"md/SUMMARY.md\"),",
-        "        \"# Summary\\n\\n- [Requirements](requirements.md)\\n\","
+        "        selected.name, backend.model",
+        "    ));",
+        "",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let project = temp.path().join(\"project\");",
+        "    for directory in [project.join(\"md\"), project.join(\"src\")] {",
+        "        fs::create_dir_all(directory).unwrap();"
       ]
     },
     {
@@ -2766,13 +3596,13 @@
       "line_start": 224,
       "line_end": 230,
       "text": [
-        "    let root = temp.path();",
-        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
-        "    let config_path = root.join(\"config/habeas/config.toml\");",
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
-        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();",
-        "    assert!(",
-        "        ci.status.success(),"
+        "        .env(\"AWS_SHARED_CREDENTIALS_FILE\", root.join(\"aws-credentials\"))",
+        "        .env(\"AWS_EC2_METADATA_DISABLED\", \"true\")",
+        "        .env(\"AWS_ENDPOINT_URL_BEDROCK_RUNTIME\", \"http://127.0.0.1:9\");",
+        "    command",
+        "}",
+        "",
+        "// {test}`requirements.integration.live_bedrock_test`"
       ]
     },
     {
@@ -2822,13 +3652,13 @@
       "line_start": 77,
       "line_end": 83,
       "text": [
+        "    let original = \"# keep this comment\\nversion = 1\\n\";",
         "    fs::write(&path, original).unwrap();",
         "    let config = load_user_config(&path).unwrap().unwrap();",
         "    assert!(config.authoring.is_none());",
         "    assert_eq!(fs::read_to_string(&path).unwrap(), original);",
         "    assert_eq!(",
-        "        UserConfig::parse(&config.to_toml().unwrap(), &path).unwrap(),",
-        "        config"
+        "        UserConfig::parse(&config.to_toml().unwrap(), &path).unwrap(),"
       ]
     },
     {
@@ -2976,11 +3806,11 @@
       "line_start": 242,
       "line_end": 246,
       "text": [
-        "    usage: &mut UsageLog,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let config = config::resolve_authoring(root, selection)?;",
-        "    let (determination, evidence) = configured_record(",
-        "        root,"
+        "            } else {",
+        "                \"failed\"",
+        "            };",
+        "            usage.finish(outcome).map_err(|usage_error| {",
+        "                io::Error::new("
       ]
     },
     {
@@ -2988,11 +3818,11 @@
       "line_start": 168,
       "line_end": 172,
       "text": [
-        "    // {impl}`requirements.configuration.structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {",
-        "        let book: toml::Table = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;",
-        "        book.get(\"habeas\")"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(rename_all = \"lowercase\")]",
+        "pub enum BackendKind {",
+        "    Bedrock,",
+        "    Ollama,"
       ]
     },
     {
@@ -3000,11 +3830,11 @@
       "line_start": 422,
       "line_end": 426,
       "text": [
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(text) => UserConfig::parse(&text, path).map(Some),"
+        "                        ));",
+        "                    }",
+        "                    for (field, value) in [",
+        "                        (\"access_key_id\", Some(&credentials.access_key_id)),",
+        "                        (\"secret_access_key\", Some(&credentials.secret_access_key)),"
       ]
     },
     {
@@ -3012,11 +3842,11 @@
       "line_start": 438,
       "line_end": 442,
       "text": [
-        "// {impl}`requirements.configuration.structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub fn resolve_authoring(",
-        "    root: &Path,",
-        "    explicit: Option<&str>,"
+        "            }",
+        "            Self::Ollama(config) => {",
+        "                if let Some(key) = &config.api_key {",
+        "                    if config.api_key_env.is_some() {",
+        "                        return Err(invalid("
       ]
     },
     {
@@ -3024,13 +3854,13 @@
       "line_start": 446,
       "line_end": 452,
       "text": [
-        "        io::Error::new(error.kind(), format!(\"{}: {error}\", project_path.display()))",
-        "    })?;",
-        "    ProjectConfig::from_book_toml(&project_text, &project_path)?;",
-        "    let path = user_config_path()?;",
-        "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)",
-        "}"
+        "                        ));",
+        "                    }",
+        "                    if key.expose_secret().is_empty() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"credential values must be nonempty\","
       ]
     },
     {
@@ -3058,19 +3888,19 @@
       "line_start": 581,
       "line_end": 593,
       "text": [
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),"
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
+        "        (json!(true), \"true\", false),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {",
+        "            fs::remove_dir_all(fixture.project.join(\"evidence\")).unwrap();",
+        "        }"
       ]
     },
     {
@@ -3078,19 +3908,19 @@
       "line_start": 641,
       "line_end": 653,
       "text": [
-        "        ]);",
-        "        let fixture = Fixture::new(&server.endpoint);",
-        "        let credentials = fixture.temp.path().join(\"aws-credentials\");",
-        "        let aws_config = fixture.temp.path().join(\"aws-config\");",
-        "        fs::write(&credentials, \"[default]\\naws_access_key_id = WRONG_DEFAULT_ACCESS_KEY\\naws_secret_access_key = wrong-default-secret\\n[habeas-test]\\naws_access_key_id = FAKE_PROFILE_ACCESS_KEY\\naws_secret_access_key = fake-profile-secret-for-local-test-only\\n\").unwrap();",
-        "        fs::write(&aws_config, \"[profile habeas-test]\\nregion = eu-west-1\\n\").unwrap();",
-        "        fs::write(fixture.config.join(\"habeas/config.toml\"), \"version = 1\\n[authoring]\\ndefault = 'cloud'\\n[authoring.configs.cloud]\\nbackend = 'bedrock'\\nmodel = 'fixture-bedrock-model'\\naws_profile = 'habeas-test'\\nregion = 'us-west-2'\\n[authoring.configs.cloud.options]\\ntemperature = 0.25\\nmaxTokens = 321\\ntopP = 0.75\\nstopSequences = ['END']\\ntop_k = 12\\n\").unwrap();",
-        "        let mut command = fixture.command();",
-        "        for key in [",
-        "            \"AWS_ACCESS_KEY_ID\",",
-        "            \"AWS_SECRET_ACCESS_KEY\",",
-        "            \"AWS_SESSION_TOKEN\",",
-        "            \"AWS_SECURITY_TOKEN\","
+        "",
+        "// {test}`requirements.authoring.submission_count`",
+        "// {test}`requirements.authoring.submission`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {",
+        "    let valid =",
+        "        json!({\"determination\":true,\"rationale\":\"The reviewed sources support the subject.\"});",
+        "    for calls in [",
+        "        vec![],",
+        "        vec![",
+        "            call(\"one\", \"submit_judgment\", valid.clone()),",
+        "            call(\"two\", \"submit_judgment\", valid),"
       ]
     },
     {
@@ -3098,19 +3928,19 @@
       "line_start": 798,
       "line_end": 810,
       "text": [
-        "        )])],",
-        "        move || {",
-        "            fs::remove_file(&evidence_path).unwrap();",
-        "            fs::create_dir(&evidence_path).unwrap();",
-        "        },",
-        "    );",
-        "    let config_path = fixture.config.join(\"habeas/config.toml\");",
-        "    let config = fs::read_to_string(&config_path)",
-        "        .unwrap()",
-        "        .replace(\"http://unconfigured\", &server.endpoint);",
-        "    fs::write(config_path, config).unwrap();",
-        "    let output = fixture.run(&[\"author-evidence\", SUBJECT]);",
-        "    assert!(!output.status.success());"
+        "            requests[0]",
+        "                .headers",
+        "                .starts_with(\"POST /model/fixture-bedrock-model/converse HTTP/1.1\\r\\n\")",
+        "        );",
+        "        assert!(",
+        "            requests[0]",
+        "                .headers",
+        "                .contains(\"Credential=FAKE_PROFILE_ACCESS_KEY/\")",
+        "        );",
+        "        assert!(",
+        "            requests[0]",
+        "                .headers",
+        "                .contains(\"/us-west-2/bedrock/aws4_request\")"
       ]
     },
     {
@@ -3118,15 +3948,15 @@
       "line_start": 201,
       "line_end": 209,
       "text": [
-        "        );",
-        "        if let Some(concurrency) = concurrency {",
-        "            config_text.push_str(&format!(\"concurrency = {concurrency}\\n\"));",
-        "        }",
-        "        let config = config_root.join(\"habeas/config.toml\");",
-        "        fs::write(&config, &config_text).unwrap();",
-        "        Self {",
-        "            _temp: temp,",
-        "            project,"
+        "                    }",
+        "                }",
+        "            }]},",
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
+        "        })",
+        "    };",
+        "    let body = response.to_string();",
+        "    let status = if failed { \"400 Bad Request\" } else { \"200 OK\" };",
+        "    let mut state = lock.lock().unwrap();"
       ]
     },
     {
@@ -3134,22 +3964,22 @@
       "line_start": 321,
       "line_end": 336,
       "text": [
-        "            \"a second assessment must start before the first model response\"",
-        "        );",
+        "            \"habeas/state/authoring/usage\"",
+        "        } else {",
+        "            \"habeas/authoring/usage\"",
+        "        });",
+        "        fs::read_dir(path)",
+        "            .unwrap()",
+        "            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())",
+        "            .collect()",
         "    }",
+        "}",
         "",
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
-        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        no_op.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&no_op.stderr)",
-        "    );",
-        "    fs::remove_file(&fixture.config).unwrap();",
-        "    let no_config = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        no_config.status.success(),",
-        "        \"{}\","
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.function_attestations`",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.ci.determination`"
       ]
     },
     {
@@ -3157,15 +3987,15 @@
       "line_start": 338,
       "line_end": 346,
       "text": [
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    assert_eq!(fixture.usage().len(), 6);",
-        "",
-        "    fs::write(&fixture.config, &fixture.config_text).unwrap();",
-        "    let changed = fs::read_to_string(&source)",
-        "        .unwrap()",
-        "        .replace(\"-> u8 { 1 }\", \"-> u8 { 1_u8 }\");",
-        "    fs::write(source, changed).unwrap();"
+        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {",
+        "    let server = Server::start(true, None);",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let source = fixture.project.join(\"src/lib.rs\");",
+        "    fs::write(",
+        "        &source,",
+        "        fs::read_to_string(&source).unwrap().replace(",
+        "            \"pub fn beta()\",",
+        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\","
       ]
     },
     {
@@ -3173,15 +4003,15 @@
       "line_start": 459,
       "line_end": 467,
       "text": [
-        "    ] {",
-        "        let fixture = Fixture::new(\"http://127.0.0.1:9\", None);",
-        "        fs::write(fixture.project.join(\"md/requirements.md\"), declarations).unwrap();",
-        "        fs::write(fixture.project.join(\"src/lib.rs\"), source).unwrap();",
-        "        fs::remove_file(&fixture.config).unwrap();",
-        "        let output = fixture.run(&[\"author\", \"--all\"]);",
-        "        assert!(!output.status.success());",
-        "        let stderr = String::from_utf8_lossy(&output.stderr);",
-        "        assert!(stderr.contains(location), \"{stderr}\");"
+        "    );",
+        "    assert_eq!(fixture.evidence(\"requirements.beta\")[\"determination\"], true);",
+        "    assert_eq!(",
+        "        fixture.evidence(\"requirements.alpha_case\")[\"determination\"],",
+        "        true",
+        "    );",
+        "    assert_eq!(",
+        "        fixture.evidence(\"rust/src/lib.rs\")[\"functions\"]",
+        "            .as_array()"
       ]
     },
     {
@@ -3205,15 +4035,15 @@
       "line_start": 583,
       "line_end": 591,
       "text": [
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);"
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {"
       ]
     },
     {
@@ -3221,15 +4051,15 @@
       "line_start": 643,
       "line_end": 651,
       "text": [
-        "        let credentials = fixture.temp.path().join(\"aws-credentials\");",
-        "        let aws_config = fixture.temp.path().join(\"aws-config\");",
-        "        fs::write(&credentials, \"[default]\\naws_access_key_id = WRONG_DEFAULT_ACCESS_KEY\\naws_secret_access_key = wrong-default-secret\\n[habeas-test]\\naws_access_key_id = FAKE_PROFILE_ACCESS_KEY\\naws_secret_access_key = fake-profile-secret-for-local-test-only\\n\").unwrap();",
-        "        fs::write(&aws_config, \"[profile habeas-test]\\nregion = eu-west-1\\n\").unwrap();",
-        "        fs::write(fixture.config.join(\"habeas/config.toml\"), \"version = 1\\n[authoring]\\ndefault = 'cloud'\\n[authoring.configs.cloud]\\nbackend = 'bedrock'\\nmodel = 'fixture-bedrock-model'\\naws_profile = 'habeas-test'\\nregion = 'us-west-2'\\n[authoring.configs.cloud.options]\\ntemperature = 0.25\\nmaxTokens = 321\\ntopP = 0.75\\nstopSequences = ['END']\\ntop_k = 12\\n\").unwrap();",
-        "        let mut command = fixture.command();",
-        "        for key in [",
-        "            \"AWS_ACCESS_KEY_ID\",",
-        "            \"AWS_SECRET_ACCESS_KEY\","
+        "// {test}`requirements.authoring.submission`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {",
+        "    let valid =",
+        "        json!({\"determination\":true,\"rationale\":\"The reviewed sources support the subject.\"});",
+        "    for calls in [",
+        "        vec![],",
+        "        vec!["
       ]
     },
     {
@@ -3237,15 +4067,15 @@
       "line_start": 800,
       "line_end": 808,
       "text": [
-        "            fs::remove_file(&evidence_path).unwrap();",
-        "            fs::create_dir(&evidence_path).unwrap();",
-        "        },",
-        "    );",
-        "    let config_path = fixture.config.join(\"habeas/config.toml\");",
-        "    let config = fs::read_to_string(&config_path)",
-        "        .unwrap()",
-        "        .replace(\"http://unconfigured\", &server.endpoint);",
-        "    fs::write(config_path, config).unwrap();"
+        "                .starts_with(\"POST /model/fixture-bedrock-model/converse HTTP/1.1\\r\\n\")",
+        "        );",
+        "        assert!(",
+        "            requests[0]",
+        "                .headers",
+        "                .contains(\"Credential=FAKE_PROFILE_ACCESS_KEY/\")",
+        "        );",
+        "        assert!(",
+        "            requests[0]"
       ]
     },
     {
@@ -3253,6 +4083,7 @@
       "line_start": 23,
       "line_end": 31,
       "text": [
+        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),",
         "    ]);",
         "    let lookup = |name: &str| vars.get(name).cloned();",
         "    assert_eq!(",
@@ -3260,8 +4091,7 @@
         "        config.join(\"habeas/config.toml\")",
         "    );",
         "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        state.join(\"habeas\")"
+        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),"
       ]
     },
     {
@@ -3269,6 +4099,7 @@
       "line_start": 39,
       "line_end": 47,
       "text": [
+        "                OsString::from(invalid_xdg)",
         "            })",
         "        };",
         "        assert_eq!(",
@@ -3276,8 +4107,7 @@
         "            home.join(\".config/habeas/config.toml\")",
         "        );",
         "        assert_eq!(",
-        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".local/state/habeas\")"
+        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),"
       ]
     },
     {
@@ -3285,6 +4115,7 @@
       "line_start": 53,
       "line_end": 61,
       "text": [
+        "        \"LOCALAPPDATA\" => Some(state.as_os_str().to_owned()),",
         "        _ => None,",
         "    };",
         "    assert_eq!(",
@@ -3292,8 +4123,7 @@
         "        config.join(\"habeas/config.toml\")",
         "    );",
         "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")"
+        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),"
       ]
     },
     {
@@ -3301,6 +4131,7 @@
       "line_start": 266,
       "line_end": 274,
       "text": [
+        "",
         "// {test}`requirements.configuration.loading`",
         "// {test}`requirements.authoring.configuration_storage`",
         "#[test]",
@@ -3308,8 +4139,7 @@
         "    let path = Path::new(\"/settings/habeas/config.toml\");",
         "    for source in [",
         "        \"version = 2\",",
-        "        \"version = '1'\",",
-        "        \"\","
+        "        \"version = '1'\","
       ]
     },
     {
@@ -3317,6 +4147,7 @@
       "line_start": 283,
       "line_end": 291,
       "text": [
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
         "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
         "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
         "    ] {",
@@ -3324,8 +4155,7 @@
         "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
         "    }",
         "    let valid = UserConfig::parse(\"version = 1\\n[authoring]\\nconfigs = {}\", path).unwrap();",
-        "    assert!(valid.authoring.unwrap().configs.is_empty());",
-        "}"
+        "    assert!(valid.authoring.unwrap().configs.is_empty());"
       ]
     },
     {
@@ -3333,15 +4163,15 @@
       "line_start": 222,
       "line_end": 230,
       "text": [
-        "fn live_test_prerequisites_are_checked_without_inference() {",
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let root = temp.path();",
-        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
-        "    let config_path = root.join(\"config/habeas/config.toml\");",
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
-        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();",
-        "    assert!(",
-        "        ci.status.success(),"
+        "        .env(\"LOCALAPPDATA\", root.join(\"state\"))",
+        "        .env(\"AWS_CONFIG_FILE\", root.join(\"aws-config\"))",
+        "        .env(\"AWS_SHARED_CREDENTIALS_FILE\", root.join(\"aws-credentials\"))",
+        "        .env(\"AWS_EC2_METADATA_DISABLED\", \"true\")",
+        "        .env(\"AWS_ENDPOINT_URL_BEDROCK_RUNTIME\", \"http://127.0.0.1:9\");",
+        "    command",
+        "}",
+        "",
+        "// {test}`requirements.integration.live_bedrock_test`"
       ]
     },
     {
@@ -3349,17 +4179,17 @@
       "line_start": 581,
       "line_end": 591,
       "text": [
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);"
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
+        "        (json!(true), \"true\", false),",
+        "    ] {",
+        "        let rationale = \"The supplied sources explain this judgment.\";",
+        "        let server = Server::start(vec![reply(vec![call(",
+        "            \"submit\",",
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":determination,\"rationale\":rationale}),",
+        "        )])]);",
+        "        let fixture = Fixture::new(&server.endpoint);",
+        "        if !existing_evidence {"
       ]
     },
     {
@@ -3395,13 +4225,13 @@
       "line_start": 313,
       "line_end": 319,
       "text": [
+        "    let temp = fixme_fixture();",
+        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");",
         "    let text = String::from_utf8(output.stdout).unwrap();",
-        "    for (name, state) in [",
-        "        (\"absent\", \"Missing\"),",
-        "        (\"malformed\", \"Invalid\"),",
-        "        (\"pending\", \"Determination false\"),",
-        "        (\"stale\", \"Invalid\"),",
-        "        (\"stale_input\", \"Invalid\"),"
+        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
+        "        assert!(text.contains(&format!(\"rules.{name}\")), \"{text}\");",
+        "    }"
       ]
     },
     {
@@ -3409,13 +4239,13 @@
       "line_start": 342,
       "line_end": 348,
       "text": [
-        "    assert!(all.contains(\"| `requirements.case` (example)\"), \"{all}\");",
-        "    let names = [",
-        "        \"absent\",",
-        "        \"malformed\",",
-        "        \"pending\",",
-        "        \"ready\",",
-        "        \"stale\","
+        "    for excluded in [",
+        "        \"rules.alpha\",",
+        "        \"rules.beta\",",
+        "        \"rules.unlinked\",",
+        "        \"#123\",",
+        "        \"rust-lang/rust\",",
+        "    ] {"
       ]
     },
     {
@@ -3423,20 +4253,20 @@
       "line_start": 454,
       "line_end": 467,
       "text": [
-        "    assert!(missing.contains(\"No rationale recorded.\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");",
-        "",
-        "    let malformed = habeas(temp.path(), &[\"info\", \"requirements.malformed\"]);",
-        "    assert!(malformed.status.success(), \"{:?}\", malformed);",
-        "    let malformed = String::from_utf8(malformed.stdout).unwrap();",
-        "    assert!(",
-        "        malformed.contains(\"## Unreadable evidence record\"),",
-        "        \"{malformed}\"",
-        "    );",
-        "    assert!(malformed.contains(\"```json\\n{broken\\n```\"), \"{malformed}\");",
+        "            assert!(",
+        "                text.contains(\"src/main.rs:1 fn[main]: missing Rust function attestation file\"),",
+        "                \"{args:?}: {text}\"",
+        "            );",
+        "        }",
+        "    }",
         "}",
         "",
-        "// {test}`requirements.cli.status`"
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.cli.definition_glob_search`",
+        "#[test]",
+        "fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {",
+        "    let temp = fixture();",
+        "    let output = habeas(temp.path(), &[\"info\", \"requirements.ready\"]);"
       ]
     },
     {
@@ -3444,16 +4274,16 @@
       "line_start": 232,
       "line_end": 241,
       "text": [
-        "        String::from_utf8_lossy(&ci.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&ci.stderr).contains(\"skipping live Bedrock test: CI is set\"));",
-        "    let malformed = skip_probe(root).output().unwrap();",
-        "    assert!(!malformed.status.success());",
+        "fn live_test_prerequisites_are_checked_without_inference() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let root = temp.path();",
+        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
+        "    let config_path = root.join(\"config/habeas/config.toml\");",
+        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
+        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();",
         "    assert!(",
-        "        String::from_utf8_lossy(&malformed.stdout)",
-        "            .contains(\"cannot select live Bedrock configuration\")",
-        "    );",
-        ""
+        "        ci.status.success(),",
+        "        \"{}\","
       ]
     },
     {
@@ -3475,7 +4305,7 @@
       "line_start": 63,
       "line_end": 63,
       "text": [
-        "    let config = config::resolve_authoring(&root, selection)?;"
+        "        return Ok(outcome);"
       ]
     },
     {
@@ -3483,7 +4313,7 @@
       "line_start": 244,
       "line_end": 244,
       "text": [
-        "    let config = config::resolve_authoring(root, selection)?;"
+        "            };"
       ]
     },
     {
@@ -3491,8 +4321,8 @@
       "line_start": 360,
       "line_end": 361,
       "text": [
-        "pub fn user_config_path() -> io::Result<PathBuf> {",
-        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))"
+        "",
+        "impl BackendConfig {"
       ]
     },
     {
@@ -3500,7 +4330,7 @@
       "line_start": 365,
       "line_end": 365,
       "text": [
-        "pub fn user_config_path_from("
+        "            Self::Bedrock(config) => ModelRef {"
       ]
     },
     {
@@ -3508,7 +4338,7 @@
       "line_start": 424,
       "line_end": 424,
       "text": [
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {"
+        "                    for (field, value) in ["
       ]
     },
     {
@@ -3516,7 +4346,7 @@
       "line_start": 440,
       "line_end": 440,
       "text": [
-        "pub fn resolve_authoring("
+        "                if let Some(key) = &config.api_key {"
       ]
     },
     {
@@ -3524,9 +4354,9 @@
       "line_start": 449,
       "line_end": 451,
       "text": [
-        "    let path = user_config_path()?;",
-        "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)"
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),"
       ]
     },
     {
@@ -3534,7 +4364,7 @@
       "line_start": 460,
       "line_end": 460,
       "text": [
-        "pub fn resolve_authoring_from("
+        "            if matches!("
       ]
     }
   ]

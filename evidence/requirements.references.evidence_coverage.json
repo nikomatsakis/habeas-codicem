@@ -1,7 +1,7 @@
 {
   "requirement": "For every `{impl}`, `{cite}`, and `{test}` reference in a project source file, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements it as stated, and the tests cover the main cases. I judged this from the supplied excerpts only. I did not read the rest of `src/evidence.rs` or run the tests.\n\n**Implementation**\n- `validate_references` in `src/evidence.rs` (the code cited at roughly lines 920–984) calls `collect_references` to scan the repository's text files.\n  - The scan skips only root-level `.git`, `target`, `book` and `evidence`.\n  - It takes the line number from the byte offset of each match.\n  - It extracts `{impl}`, `{cite}` and `{test}` roles via `reference_roles` in `src/lib.rs`, which skips Markdown literals (inline code and fenced blocks).\n- Each non-term reference is grouped under its target requirement or example.\n- For each target, `evidence/<name>.json` is loaded through `evidence_input_ranges`.\n  - That function resolves every input with `InputSelector::resolve`. It covers file/line, `rust_file`/`rust_item` and requirements-glob inputs.\n  - It returns canonicalized file paths with `line_start`/`line_end`, which is the `SourceRange` shape in `src/inputs.rs`.\n- A reference counts as covered only if some input has the same file and `line_start <= line <= line_end`.\n- Otherwise the code pushes `\"<evidence file>: no input covers {<role>}`<full name>` at <file>:<line>\"`. That reports the role, full name, source file and line, as required.\n- A missing or unparsable evidence file gives an empty range list, so all of its references are reported as uncovered. That is the safe behavior.\n- References to unknown targets are reported separately.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` is the positive case. `{impl}` and `{cite}` in `src/main.rs` and `{test}` in `md/notes.md` are each covered by file-range inputs.\n  - Inline-code and fenced `{cite}` references to a missing name are correctly ignored. This confirms the references that count are real ones.\n- `reports_unknown_references_and_uncovered_lines` is the negative case. Two `{test}` references sit on lines 1 and 2, and the evidence covers only line 1.\n  - It asserts the error `no input covers {test}`foo.bar.ready` at src/main.rs:2`, which includes role, name, file and line.\n  - It asserts exactly two errors, so the covered line 1 is not reported.\n- `cited_example_with_a_test_and_matching_evidence_validates` runs end to end with Rust-item and requirements-glob inputs. It passes with full coverage.\n  - It then empties the example's inputs and asserts `no input covers` and `src/main.rs:1`.\n\n**Gaps:** none are acknowledged and none material. Symlink and canonicalization edge cases are handled by canonicalizing both sides, though not specifically tested.",
+  "rationale": "**Verdict:** the requirement is met. `validate_references` and `evidence_input_ranges` in `src/evidence.rs` implement it, and the tests cover the main cases. I judged this from the supplied excerpts and did not run the tests.\n\n**Implementation**\n- `collect_references` (`src/evidence.rs` ~978–1060) scans every project file. It skips only the root-level `.git`, `target`, `book` and `evidence` directories, and it skips binary and non-UTF-8 files. Each `{impl}`, `{cite}` and `{test}` reference gets its file and a 1-based line number. `Term` references are handled separately.\n- `validate_references` groups references by the definition they name. For each requirement or example it loads `evidence/<name>.json` and builds the input ranges with `evidence_input_ranges`.\n- `evidence_input_ranges` resolves every input selector in the evidence file to concrete source ranges. This covers file ranges, Rust items, requirements globs and definitions. It canonicalizes each range's file so it compares correctly with the reference's path.\n- A reference counts as covered only if some range has the same file and `line_start <= line <= line_end`.\n- An uncovered reference produces the error `<evidence file>: no input covers {<role>}`<name>` at <file>:<line>``. That message contains the role, the full name, the source file and the line, as the requirement demands.\n- A missing or unparsable evidence file yields no ranges, so every reference to that definition is reported as uncovered. Nothing slips through silently.\n- `SourceRange` in `src/inputs.rs` is annotated as the shared range type used for this.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` is the positive case. `{impl}` and `{cite}` references in source and a `{test}` reference in markdown are covered by inputs and give no errors. It also confirms that references inside inline code spans and fenced code blocks are ignored.\n- `reports_unknown_references_and_uncovered_lines` is the negative case. Evidence covers only line 1 of a file with references on lines 1 and 2. The test asserts the exact message `no input covers {test}`foo.bar.ready` at src/main.rs:2`, which checks the role, name, file and line. It also checks that an unknown target is reported.\n- `cited_example_with_a_test_and_matching_evidence_validates` empties an example's inputs and asserts `no input covers` and `src/main.rs:1`. It also covers Rust-item and requirements-glob inputs counting as coverage.\n\n**Gaps**\n- None are acknowledged, and I saw no significant ones. The test cases are thin on multi-range evidence files and on the file-path canonicalization edge cases.",
   "inputs": [
     {
       "requirements": "requirements.references.evidence_coverage",
@@ -395,16 +395,6 @@
       "line_start": 1467,
       "line_end": 1513,
       "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.requirement_text`",
-        "    // {test}`requirements.ci.inputs`",
-        "    #[test]",
-        "    fn validates_full_names_requirement_text_and_input_lines() {",
-        "        let temp = fixture();",
         "        fs::write(",
         "            temp.path().join(\"md/reqs/foo/bar.md\"),",
         "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
@@ -441,7 +431,17 @@
         "    #[test]",
         "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
         "        let temp = fixture();",
-        "        fs::write("
+        "        fs::write(",
+        "            temp.path().join(\"md/requirements.md\"),",
+        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/requirements.one.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Old text.\",",
+        "                \"determination\": false,",
+        "                \"rationale\": \"Work remains.\","
       ]
     },
     {
@@ -449,13 +449,13 @@
       "line_start": 318,
       "line_end": 324,
       "text": [
-        "        rust_file: file, ..",
-        "    } = selector",
-        "    {",
-        "        access.file(root, Path::new(file))?;",
-        "    }",
-        "    let resolved = selector.resolve(root, definitions)?;",
-        "    for range in &resolved.ranges {"
+        "pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {",
+        "    let path = root.join(path);",
+        "    let evidence = root.join(\"evidence\");",
+        "    path.starts_with(&evidence)",
+        "        || fs::canonicalize(&path)",
+        "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
+        "}"
       ]
     },
     {
@@ -463,13 +463,13 @@
       "line_start": 965,
       "line_end": 971,
       "text": [
-        "        }",
-        "        let inputs = evidence_input_ranges(root, &evidence_file, definitions);",
-        "        for reference in references {",
-        "            if !inputs.iter().any(|input| {",
-        "                input.file == reference.file",
-        "                    && input.line_start <= reference.line",
-        "                    && reference.line <= input.line_end"
+        "                    display_path(root, &evidence_file),",
+        "                    reference.kind.label(),",
+        "                    name,",
+        "                    display_path(root, &reference.file),",
+        "                    reference.line",
+        "                ));",
+        "            }"
       ]
     },
     {
@@ -477,13 +477,13 @@
       "line_start": 978,
       "line_end": 984,
       "text": [
-        "                    display_path(root, &reference.file),",
-        "                    reference.line",
-        "                ));",
-        "            }",
-        "        }",
-        "    }",
-        "}"
+        "    let mut stack = vec![root.to_path_buf()];",
+        "    let mut files = Vec::new();",
+        "    while let Some(directory) = stack.pop() {",
+        "        let entries = match fs::read_dir(&directory) {",
+        "            Ok(entries) => entries,",
+        "            Err(error) => {",
+        "                errors.push(format!("
       ]
     },
     {
@@ -491,13 +491,13 @@
       "line_start": 1660,
       "line_end": 1666,
       "text": [
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
+        "        );",
         "        assert!(",
-        "            errors.contains(&format!("
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\"",
+        "        );",
+        "    }",
+        ""
       ]
     },
     {
@@ -505,13 +505,13 @@
       "line_start": 1894,
       "line_end": 1900,
       "text": [
-        "        fs::write(&orphan, \"{}\").unwrap();",
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"orphaned Rust attestation file\"),",
-        "            \"{errors}\"",
-        "        );",
-        "        fs::remove_file(orphan).unwrap();"
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write("
       ]
     },
     {
@@ -533,16 +533,6 @@
       "line_start": 1600,
       "line_end": 1666,
       "text": [
-        "        let notes = format!(\"# Notes\\n\\n{test}\\n\\n`{example}`\\n\\n```text\\n{example}\\n```\\n\");",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ready.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"The source and notes were examined.\",",
-        "                \"inputs\": [",
         "                    {",
         "                        \"file\": \"src/main.rs\",",
         "                        \"line_start\": 1,",
@@ -599,7 +589,17 @@
         "        let errors = report.errors.join(\"\\n\");",
         "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
         "        assert!(",
-        "            errors.contains(&format!("
+        "            errors.contains(&format!(",
+        "                \"src/main.rs:3: {unknown} has no matching requirement\"",
+        "            )),",
+        "            \"{errors}\"",
+        "        );",
+        "        assert!(",
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\"",
+        "        );",
+        "    }",
+        ""
       ]
     },
     {
@@ -607,16 +607,6 @@
       "line_start": 978,
       "line_end": 1050,
       "text": [
-        "                    display_path(root, &reference.file),",
-        "                    reference.line",
-        "                ));",
-        "            }",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.references.targets`",
-        "pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {",
         "    let mut stack = vec![root.to_path_buf()];",
         "    let mut files = Vec::new();",
         "    while let Some(directory) = stack.pop() {",
@@ -679,7 +669,17 @@
         "                    display_path(root, &file)",
         "                ));",
         "                continue;",
-        "            }"
+        "            }",
+        "        };",
+        "        if content.contains('\\0') {",
+        "            continue;",
+        "        }",
+        "        let markdown = file.extension().is_some_and(|extension| extension == \"md\");",
+        "        for role in reference_roles(&content, markdown) {",
+        "            let line = content[..role.start]",
+        "                .bytes()",
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()"
       ]
     },
     {
@@ -687,16 +687,6 @@
       "line_start": 1660,
       "line_end": 1700,
       "text": [
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
-        "        assert!(",
-        "            errors.contains(&format!(",
-        "                \"src/main.rs:3: {unknown} has no matching requirement\"",
-        "            )),",
-        "            \"{errors}\"",
         "        );",
         "        assert!(",
         "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
@@ -727,7 +717,17 @@
         "                    \"rationale\": \"The fixture records the current requirement body.\",",
         "                    \"inputs\": []",
         "                })",
-        "                .to_string(),"
+        "                .to_string(),",
+        "            )",
+        "            .unwrap();",
+        "        }",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 2);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.ci.span`"
       ]
     },
     {
@@ -735,16 +735,6 @@
       "line_start": 1050,
       "line_end": 1100,
       "text": [
-        "            }",
-        "        };",
-        "        if content.contains('\\0') {",
-        "            continue;",
-        "        }",
-        "        let markdown = file.extension().is_some_and(|extension| extension == \"md\");",
-        "        for role in reference_roles(&content, markdown) {",
-        "            let line = content[..role.start]",
-        "                .bytes()",
-        "                .filter(|byte| *byte == b'\\n')",
         "                .count()",
         "                + 1;",
         "            references.push(SourceReference {",
@@ -785,7 +775,17 @@
         "                        line_start: range.line_start,",
         "                        line_end: range.line_end,",
         "                    })",
-        "                })"
+        "                })",
+        "                .collect::<Vec<_>>()",
+        "        })",
+        "        .collect()",
+        "}",
+        "",
+        "// {impl}`requirements.references.rust_function_attestations`",
+        "// {impl}`requirements.ci.orphans`",
+        "// {impl}`requirements.authoring.batch`",
+        "fn validate_rust_attestations(",
+        "    root: &Path,"
       ]
     },
     {
@@ -805,11 +805,11 @@
       "line_start": 22,
       "line_end": 26,
       "text": [
+        "// {impl}`requirements.authoring.concurrency`",
         "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.read_denial`",
         "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    if !inspection.discovery_errors.is_empty() {"
+        "    let root = fs::canonicalize(root)?;"
       ]
     },
     {
@@ -817,11 +817,11 @@
       "line_start": 47,
       "line_end": 51,
       "text": [
+        "    // {impl}`requirements.examples.authoring_inputs`",
         "    // {impl}`requirements.references.authoring_inputs`",
         "    // {impl}`requirements.definitions.authoring_inputs`",
         "    // {impl}`requirements.ci.authoring_inputs`",
-        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {",
-        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;"
+        "    // {impl}`requirements.authoring.source_tools`"
       ]
     },
     {
@@ -829,11 +829,11 @@
       "line_start": 152,
       "line_end": 156,
       "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.function_attestations`",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.ci.authoring_inputs`"
+        "        for input in dependencies {",
+        "            if !mandatory.contains(&input) {",
+        "                mandatory.push(input);",
+        "            }",
+        "        }"
       ]
     },
     {
@@ -841,12 +841,12 @@
       "line_start": 275,
       "line_end": 280,
       "text": [
-        "                .collect(),",
-        "        )",
+        "        &self.mandatory",
         "    }",
-        "}",
         "",
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "    // {impl}`requirements.authoring.delivered_inputs`",
+        "    pub(crate) fn recorded_inputs(&self) -> &[Value] {",
+        "        &self.recorded"
       ]
     },
     {
@@ -854,14 +854,14 @@
       "line_start": 122,
       "line_end": 129,
       "text": [
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
         ") -> io::Result<AuthoringOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;",
-        "    fs::create_dir_all(&state)?;",
-        "    if fs::canonicalize(&state)?.starts_with(&root) {",
-        "        return Err(io::Error::other("
+        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.invocation`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.configuration.state_location`",
+        "// {impl}`requirements.authoring.read_denial`"
       ]
     },
     {
@@ -869,14 +869,14 @@
       "line_start": 174,
       "line_end": 181,
       "text": [
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,",
-        ") -> io::Result<PendingAssessment> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;",
-        "    fs::create_dir_all(&state)?;",
-        "    if fs::canonicalize(&state)?.starts_with(&root) {",
-        "        return Err(io::Error::other("
+        "                usage.record.evidence_written",
+        "            ),",
+        "        )",
+        "    })?;",
+        "    result.map_err(|error| {",
+        "        io::Error::new(",
+        "            error.kind(),",
+        "            format!(\"{error}; usage: {}\", usage.path.display()),"
       ]
     },
     {
@@ -884,11 +884,11 @@
       "line_start": 291,
       "line_end": 295,
       "text": [
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`",
-        "fn relative_path(root: &Path, path: &Path) -> Result<String, String> {",
-        "    path.strip_prefix(root)",
-        "        .map_err(|_| \"path is outside the project\".to_owned())?"
+        "        }",
+        "        for (line_start, line_end) in windows {",
+        "            inputs.push(sources.read_selector(&InputSelector::FileRange {",
+        "                file: file.clone(),",
+        "                line_start,"
       ]
     },
     {
@@ -896,11 +896,11 @@
       "line_start": 199,
       "line_end": 203,
       "text": [
-        "                    .components()",
-        "                    .any(|part| matches!(part, Component::CurDir | Component::ParentDir))",
-        "                || fs::canonicalize(root).is_ok_and(|canonical| canonical != *root)",
-        "            {",
-        "                return Err(invalid("
+        "    // {impl}`requirements.configuration.state_location`",
+        "    pub fn current() -> Self {",
+        "        if cfg!(windows) {",
+        "            Self::Windows",
+        "        } else {"
       ]
     },
     {
@@ -908,11 +908,11 @@
       "line_start": 464,
       "line_end": 468,
       "text": [
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_root = fs::canonicalize(root).map_err(|error| {",
-        "        io::Error::new(",
-        "            error.kind(),"
+        "                    | \"model_id\"",
+        "                    | \"prompt\"",
+        "                    | \"messages\"",
+        "                    | \"system\"",
+        "                    | \"tools\""
       ]
     },
     {
@@ -933,10 +933,10 @@
       "line_end": 74,
       "text": [
         "// {impl}`requirements.examples.evidence`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);"
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {"
       ]
     },
     {
@@ -944,11 +944,11 @@
       "line_start": 714,
       "line_end": 718,
       "text": [
+        "    label: &str,",
         "    errors: &mut Vec<String>,",
         ") {",
-        "    let path = match fs::canonicalize(root.join(file)) {",
-        "        Ok(path) => path,",
-        "        Err(error) => {"
+        "    let (_, content) = match crate::inputs::read_project_file(root, file) {",
+        "        Ok(source) => source,"
       ]
     },
     {
@@ -956,11 +956,11 @@
       "line_start": 1094,
       "line_end": 1098,
       "text": [
-        "                .filter_map(|range| {",
-        "                    Some(InputRange {",
-        "                        file: fs::canonicalize(root.join(range.file)).ok()?,",
-        "                        line_start: range.line_start,",
-        "                        line_end: range.line_end,"
+        "}",
+        "",
+        "// {impl}`requirements.references.rust_function_attestations`",
+        "// {impl}`requirements.ci.orphans`",
+        "// {impl}`requirements.authoring.batch`"
       ]
     },
     {
@@ -968,12 +968,12 @@
       "line_start": 243,
       "line_end": 248,
       "text": [
-        "    }",
-        "    let root =",
-        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
-        "    let path = fs::canonicalize(root.join(relative))",
-        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
-        "    if !path.starts_with(root) {"
+        "    Ok((path, content))",
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "fn raw_lines(content: &str) -> Vec<String> {",
+        "    content"
       ]
     },
     {

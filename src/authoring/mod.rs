@@ -1,6 +1,6 @@
 //! Model-assisted evidence authoring, invoked explicitly and never by validation.
 
-mod access;
+pub(crate) mod access;
 mod batch;
 mod inputs;
 mod providers;
@@ -17,6 +17,7 @@ use std::time::Instant;
 use rig_core::completion::{CompletionRequest, ToolDefinition};
 use rig_core::message::{Message, ToolResultContent, turn_failure};
 use serde_json::{Value, json};
+use tokio::sync::watch;
 
 use crate::config::{self, BackendKind, ResolvedAuthoringConfig};
 use crate::judgment::Judgment;
@@ -84,16 +85,25 @@ impl PendingAssessment {
     // {impl}`requirements.authoring.batch`
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.configuration.state_location`
+    // {impl}`requirements.authoring.read_denial`
     pub(crate) fn failed(mut self, error: io::Error) -> io::Error {
-        match self.usage.finish("failed") {
+        let outcome = if error.kind() == io::ErrorKind::Interrupted {
+            "cancelled"
+        } else {
+            "failed"
+        };
+        match self.usage.finish(outcome) {
             Ok(()) => io::Error::new(
                 error.kind(),
                 format!("{error}; usage: {}", self.usage.path.display()),
             ),
-            Err(usage_error) => io::Error::other(format!(
-                "{error}; cannot record failed usage at {}: {usage_error}",
-                self.usage.path.display()
-            )),
+            Err(usage_error) => io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; cannot record failed usage at {}: {usage_error}",
+                    self.usage.path.display()
+                ),
+            ),
         }
     }
 }
@@ -116,6 +126,7 @@ pub async fn author_evidence(
 // {impl}`requirements.authoring.invocation`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
+// {impl}`requirements.authoring.read_denial`
 pub async fn author_evidence_with_output(
     root: &Path,
     subject: &str,
@@ -151,11 +162,18 @@ pub async fn author_evidence_with_output(
         Err(_) => "failed",
     };
     usage.finish(outcome).map_err(|error| {
-        io::Error::other(format!(
-            "cannot record usage at {} (evidence written: {}): {error}",
-            usage.path.display(),
-            usage.record.evidence_written
-        ))
+        let cause = result
+            .as_ref()
+            .err()
+            .map_or(String::new(), |cause| format!("{cause}; "));
+        io::Error::new(
+            result.as_ref().err().map_or(error.kind(), io::Error::kind),
+            format!(
+                "{cause}cannot record usage at {} (evidence written: {}): {error}",
+                usage.path.display(),
+                usage.record.evidence_written
+            ),
+        )
     })?;
     result.map_err(|error| {
         io::Error::new(
@@ -169,10 +187,12 @@ pub async fn author_evidence_with_output(
 // {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
+// {impl}`requirements.authoring.read_denial`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
+    mut cancellation: watch::Receiver<Option<&'static str>>,
 ) -> io::Result<PendingAssessment> {
     let root = fs::canonicalize(root)?;
     let state = config::state_root()?;
@@ -184,6 +204,13 @@ pub(crate) async fn prepare_assessment(
     }
     let mut usage = UsageLog::start(&state, &root, &subject.label())?;
     let result = tokio::select! {
+        biased;
+        _ = cancellation.changed() => {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                cancellation.borrow().unwrap_or("evidence authoring cancelled"),
+            ))
+        }
         result = configured_record(&root, subject, config, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
@@ -216,10 +243,13 @@ pub(crate) async fn prepare_assessment(
                 "failed"
             };
             usage.finish(outcome).map_err(|usage_error| {
-                io::Error::other(format!(
-                    "{error}; cannot record usage at {}: {usage_error}",
-                    usage.path.display()
-                ))
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{error}; cannot record usage at {}: {usage_error}",
+                        usage.path.display()
+                    ),
+                )
             })?;
             Err(io::Error::new(
                 error.kind(),
@@ -284,6 +314,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.provider`
+// {impl}`requirements.authoring.read_denial`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
@@ -303,8 +334,7 @@ async fn configured_record(
             rust_file,
             rust_item,
         } => AssessmentSources::prepare_function(root, rust_file, rust_item),
-    }
-    .map_err(io::Error::other)?;
+    }?;
     usage.record.subject_kind = Some(sources.subject_kind.noun().into());
     usage.prepared("mandatory", sources.mandatory_inputs());
     usage.save()?;
@@ -411,6 +441,7 @@ fn tool_definitions(function: bool) -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.authoring.read_denial`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -506,7 +537,11 @@ async fn assess(
                 }
                 Err(error) => {
                     usage.tool(call.function.name.as_str(), true);
-                    results.push(call.error_result(vec![ToolResultContent::text(error)]));
+                    if error.kind() == io::ErrorKind::PermissionDenied {
+                        return Err(error);
+                    }
+                    results
+                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));
                 }
             }
         }

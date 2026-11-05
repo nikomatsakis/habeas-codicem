@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas::validate_repository(root)` MUST return a report with the number of discovered requirements, the number of evidence files, and all validation errors for the supplied project. Ordinary invalid evidence MUST be reported in that report; an inaccessible project root MUST return an I/O error.",
   "determination": false,
-  "rationale": "**Implementation.** The code matches the requirement.\n- `EvidenceReport` (`src/evidence.rs:16-23`) exposes `requirements`, `examples`, `evidence_files` and `errors`.\n- `validate_repository` (`src/evidence.rs:35-38`) returns `inspect_repository(root)?.report`.\n- `inspect_repository` starts with `fs::canonicalize(root)?`, so an inaccessible root produces an `io::Error`.\n- Every other problem is pushed into `errors`. That covers orphaned or missing evidence, invalid JSON, stale text, a false determination, bad `book.toml`, and duplicate definitions. These come back in the report rather than as `Err`.\n- The counts are computed from the discovered definitions and the evidence file list.\n\n**Tests for the report and ordinary invalid evidence.** These are covered well.\n- `validates_full_names_requirement_text_and_input_lines` (`src/evidence.rs:~1469-1502`) asserts `requirements == 1`, `evidence_files == 1` and empty errors.\n- `collects_missing_orphan_format_false_and_changed_line_errors` (`~1505-1600`) checks that many kinds of invalid evidence come back as `Ok` with strings in `errors`.\n- Other tests in `src/evidence.rs` check `examples` and `evidence_files == 3`, and multi-requirement counts.\n- Integration tests in `tests/definitions.rs`, `tests/outcomes.rs` and `tests/evidence_boundaries.rs` call `validate_repository(...).unwrap()` and inspect `errors`.\n\n**Gap.** I found no test for the inaccessible-root half of the requirement: \"an inaccessible project root MUST return an I/O error\". I searched `tests/` and `src/evidence.rs` for `validate_repository` called on a missing or nonexistent path, and for `unwrap_err()` or `is_err()` on its result. Nothing does this. The `is_err()` and `unwrap_err()` hits in `tests/` cover config parsing and judgments, not this API. The only reference to the I/O error behaviour is the audit table in `audits/initial-requirements-coverage.md:118`, which is documentation and not a test. A test would be trivial: call `validate_repository` on a nonexistent temp subdirectory and assert `is_err()`. So the absence is not justified by simplicity or impracticality. No FIXME in the source acknowledges the gap either.\n\nThe requirement's explicit I/O-error clause is therefore untested.",
+  "rationale": "**Implementation: satisfied.**\n- `EvidenceReport` (src/evidence.rs) exposes `requirements`, `examples`, `evidence_files` and `errors`.\n- `validate_repository` returns `inspect_repository(root)?.report`.\n- `inspect_repository` begins with `fs::canonicalize(root)?`, so an inaccessible or nonexistent root returns an `io::Error`.\n- After that, ordinary invalid evidence is only pushed into `errors`. This covers config errors, orphan and missing files, invalid JSON, stale text, and reference errors. It does not abort with an I/O error.\n- `evidence_files` is the count of discovered JSON files, and the requirement count comes from the discovered definitions.\n\n**Tests: partly covered, with one gap.**\n- `validates_full_names_requirement_text_and_input_lines` asserts the exact `requirements` and `evidence_files` counts and an empty `errors` list.\n- `collects_missing_orphan_format_false_and_changed_line_errors` asserts that many kinds of invalid evidence come back as report errors, with `validate_repository(...).unwrap()` succeeding.\n- Other tests also check the report. These are tests/evidence_boundaries.rs, tests/outcomes.rs, tests/definitions.rs, and further tests in src/evidence.rs (for example `report.requirements` and `report.examples` at about lines 1852–1857).\n- I found no test that calls `validate_repository` on a nonexistent or inaccessible root and asserts `Err`. I searched `tests/` and `src/` for `is_err`/`unwrap_err` on `validate_repository`, and for nonexistent-root, `NotFound`, and \"No such file\" patterns.\n- The requirement explicitly states \"an inaccessible project root MUST return an I/O error\".\n- `audits/initial-requirements-coverage.md` lists this branch (\"inaccessible root returns an I/O error\") as covered. I found no test behind that claim.\n- The gap is not acknowledged by a FIXME or any other marker.\n\nThe error-return branch is simple to test, for example by passing a missing temp subdirectory. Its absence is a real gap in the design-space coverage, so the subject does not fully meet the criteria.",
   "inputs": [
     {
       "requirements": "requirements.integration.report_api",
@@ -48,9 +48,15 @@
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
         "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
         "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
         "    let mut errors = Vec::new();",
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
+        "        errors.push(error.to_string());",
+        "    }",
         "    let md_root = book_source_dir(&root, &mut errors);",
         "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
         "    let mut discovery_errors = errors.clone();",
@@ -223,7 +229,7 @@
         "                        \"text\": [\"changed line\"]",
         "                    },",
         "                    {",
-        "                        \"file\": \"../outside\",",
+        "                        \"file\": \"\",",
         "                        \"line_start\": 0,",
         "                        \"line_end\": 2,",
         "                        \"text\": [1]",
@@ -267,7 +273,7 @@
         "            \"requirement must be a string\",",
         "            \"missing field \\\"determination\\\"\",",
         "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
+        "            \"file must be a nonempty path\",",
         "            \"line_start must be a positive integer\",",
         "            \"text[0] must be a string\",",
         "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
@@ -364,166 +370,72 @@
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1335,
-      "line_end": 1349,
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
       "text": [
-        "        let mut self_inputs = 0;",
-        "        let mut definition_inputs = 0;",
-        "        let mut matched_definitions = BTreeSet::new();",
-        "        for (input_index, input) in inputs.iter().enumerate() {",
-        "            let input_label = format!(\"{entry_label}: inputs[{input_index}]\");",
-        "            let input_selector = InputSelector::from_input(input);",
-        "            let resolved = validate_input(root, definitions, input, &input_label, errors);",
-        "            match input_selector {",
-        "                Some(InputSelector::RustItem {",
-        "                    rust_file: selected_file,",
-        "                    rust_item,",
-        "                }) if selected_file == rust_file && rust_item == selector => {",
-        "                    self_inputs += 1;",
-        "                }",
-        "                Some(InputSelector::Requirements { .. }) => {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1350,
-      "line_end": 1383,
-      "text": [
-        "                    definition_inputs += 1;",
-        "                    if let Some(resolved) = resolved {",
-        "                        matched_definitions.extend(resolved.matches);",
-        "                    }",
-        "                }",
-        "                _ => {}",
-        "            }",
-        "        }",
-        "        if self_inputs != 1 {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: expected exactly one Rust-item input selecting this function, found {self_inputs}\"",
-        "            ));",
-        "        }",
-        "        if definition_inputs == 0 {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: expected at least one requirements input\"",
-        "            ));",
-        "        }",
-        "        if let Some((_, citations)) = current {",
-        "            for (_, name) in citations.iter() {",
-        "                if !matched_definitions.contains(name) {",
-        "                    errors.push(format!(",
-        "                        \"{entry_label}: requirements inputs do not cover citation {name}\"",
-        "                    ));",
-        "                }",
-        "            }",
-        "        }",
-        "        if valid_header && errors.len() == initial_errors {",
-        "            valid.insert(selector.to_owned());",
-        "        }",
-        "    }",
-        "    for (selector, (function, _)) in expected {",
-        "        if !present.contains(selector) {",
-        "            errors.push(format!("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1386,
-      "line_end": 1464,
-      "text": [
-        "            ));",
-        "        }",
-        "    }",
-        "    valid",
-        "}",
-        "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use std::fs;",
-        "",
-        "    use serde_json::json;",
-        "    use tempfile::TempDir;",
-        "",
-        "    use super::validate_repository;",
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    fn fixture() -> TempDir {",
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "// {test}`requirements.authoring.generated_inputs`",
+        "// {test}`requirements.configuration.evidence_paths`",
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.rust_item_inputs`",
+        "// {test}`requirements.integration.report_api`",
+        "#[test]",
+        "fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    fs::write(",
+        "        root.join(\"Cargo.toml\"),",
+        "        \"[package]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(",
+        "        root.join(\"Cargo.lock\"),",
+        "        \"version = 4\\n\\n[[package]]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(root.join(\"src/lib.rs\"), \"\").unwrap();",
+        "    fs::create_dir(root.join(\".cargo\")).unwrap();",
+        "    let build = temp.path().join(\"external-build\");",
+        "    let target = temp.path().join(\"external-target\");",
+        "    fs::write(",
+        "        root.join(\".cargo/config.toml\"),",
+        "        format!(",
+        "            \"[build]\\nbuild-dir = {}\\ntarget-dir = {}\\n\",",
+        "            toml::Value::String(build.display().to_string()),",
+        "            toml::Value::String(target.display().to_string()),",
+        "        ),",
+        "    )",
+        "    .unwrap();",
+        "    let out = build.join(\"debug/build/fixture-hash/out\");",
+        "    fs::create_dir_all(&out).unwrap();",
+        "    fs::write(",
+        "        out.parent().unwrap().join(\"root-output\"),",
+        "        out.to_str().unwrap(),",
+        "    )",
+        "    .unwrap();",
+        "    let generated = out.join(\"generated.rs\");",
+        "    fs::write(&generated, \"pub fn generated() {}\\n\").unwrap();",
+        "    for input in [",
+        "        json!({\"file\":generated, \"line_start\":1, \"line_end\":1, \"text\":[\"pub fn generated() {}\"]}),",
+        "        json!({\"rust_file\":generated, \"rust_item\":\"fn[generated]\", \"text\":[\"pub fn generated() {}\"]}),",
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "        fs::write(&generated, \"pub fn generated() { /* changed */ }\\n\").unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"input text changed\"), \"{errors}\");",
+        "        fs::write(&generated, \"pub fn generated() {}\\n\").unwrap();",
         "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
-        "            \"// first line\\n// second line\\n\",",
+        "            root.join(\"habeas.toml\"),",
+        "            \"version = 1\\n[evidence]\\ndisallow = ['../external-build']\\n\",",
         "        )",
         "        .unwrap();",
-        "        temp",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"disallowed\"), \"{errors}\");",
         "    }",
-        "",
-        "    // {test}`requirements.ci.book_source`",
-        "    #[test]",
-        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
-        "        let temp = TempDir::new().unwrap();",
-        "        let root = temp.path();",
-        "        let path = root.join(\"book.toml\");",
-        "        for (configuration, expected) in [",
-        "            (\"\", \"src\"),",
-        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),",
-        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),",
-        "            (\"book = { src = 'docs' }\\n\", \"docs\"),",
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            assert_eq!(",
-        "                super::book_source_dir(root, &mut errors),",
-        "                root.join(expected)",
-        "            );",
-        "            assert!(errors.is_empty(), \"{errors:?}\");",
-        "        }",
-        "        fs::remove_file(&path).unwrap();",
-        "        let mut errors = Vec::new();",
-        "        super::book_source_dir(root, &mut errors);",
-        "        assert!(",
-        "            errors",
-        "                .iter()",
-        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
-        "        );",
-        "        for (configuration, expected) in [",
-        "            (\"[book\", \"invalid TOML\"),",
-        "            (\"book = 'wrong'\", \"book must be a table\"),",
-        "            (\"[book]\\nsrc = 7\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
-        "            (\"[book.src]\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
-        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),",
-        "            (\"[book]\\nsrc = '../outside'\", \"book.src must be a directory\"),",
-        "            (",
-        "                \"[book]\\nsrc = 'md/../outside'\",",
-        "                \"book.src must be a directory\",",
-        "            ),",
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!(",
-        "                errors.iter().any(|error| error.contains(expected)),",
-        "                \"{configuration:?}: {errors:?}\""
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 16,
-      "line_end": 23,
-      "text": [
-        "// {impl}`requirements.integration.report_api`",
-        "#[derive(Debug)]",
-        "pub struct EvidenceReport {",
-        "    pub requirements: usize,",
-        "    pub examples: usize,",
-        "    pub evidence_files: usize,",
-        "    pub errors: Vec<String>,",
+        "    assert!(!target.exists(), \"metadata must not run a build\");",
         "}"
       ]
     },
@@ -542,24 +454,40 @@
       ]
     },
     {
-      "file": "md/reference.md",
-      "line_start": 74,
-      "line_end": 80,
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 78,
+      "line_end": 85,
       "text": [
-        "```sh",
-        "habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20",
-        "habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26",
-        "habeas add-input --for-rust-item src/evidence.rs 'fn[validate_repository]' --requirements 'requirements.ci.*'",
-        "```",
         "",
-        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`"
+        "| Test | Requirement IDs |",
+        "| --- | --- |",
+        "| `src/evidence.rs:755` `validates_full_names_requirement_text_and_input_lines` | `requirements.integration.report_api`, `requirements.ci.book_source`, `requirements.ci.coverage`, `requirements.ci.requirement_text`, `requirements.ci.inputs` |",
+        "| `src/evidence.rs:791` `collects_missing_orphan_format_false_and_changed_line_errors` | `requirements.integration.report_api`, `requirements.ci.errors`, `requirements.ci.diagnostics`, `requirements.ci.input_containment`, `requirements.ci.definition_errors` |",
+        "| `src/evidence.rs:868` `source_references_are_covered_by_evidence_inputs` | `requirements.references.evidence_coverage` |",
+        "| `src/evidence.rs:914` `reports_unknown_references_and_uncovered_lines` | `requirements.references.targets` |",
+        "| `src/evidence.rs:959` `colon_requirement_span_includes_markdown_and_excludes_following_text` | `requirements.ci.span` |"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 115,
+      "line_end": 121,
+      "text": [
+        "",
+        "| Branch location | Observable behavior | Requirement IDs |",
+        "| --- | --- | --- |",
+        "| `src/evidence.rs:28` | inaccessible root returns an I/O error | `requirements.integration.report_api` |",
+        "| `src/evidence.rs:41` | orphan evidence file | `requirements.ci.orphans` |",
+        "| `src/evidence.rs:65` | missing evidence file | `requirements.ci.coverage` |",
+        "| `src/evidence.rs:84` | invalid book configuration or source path | `requirements.ci.book_source` |"
       ]
     },
     {
       "file": "md/requirements/integration.md",
-      "line_start": 63,
+      "line_start": 62,
       "line_end": 67,
       "text": [
+        "A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to create release pull requests and publish approved versions. Publishing MUST require a merged release-plz pull request. The release job MUST request an OIDC token for crates.io trusted publishing, and both jobs MUST use a GitHub token from a repository secret so release pull requests can trigger the normal pull request checks.",
         ":::",
         "",
         ":::{req} report_api",
@@ -568,73 +496,60 @@
       ]
     },
     {
-      "file": "src/add_input.rs",
-      "line_start": 6,
-      "line_end": 12,
+      "file": "src/authoring/access.rs",
+      "line_start": 472,
+      "line_end": 479,
       "text": [
-        "use serde_json::{Value, json};",
-        "",
-        "use crate::DefinitionKind;",
-        "use crate::evidence::{Declaration, inspect_repository};",
-        "use crate::inputs::{InputSelector, read_project_file};",
-        "use crate::rust_items::{function_citations, parse_items};",
-        ""
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 33,
-      "line_end": 39,
-      "text": [
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    let definitions = &inspection.definitions;",
-        "    let selectors = selectors_for_mode(&root, mode)?;",
-        "    let mut inputs = Vec::new();"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 8,
-      "line_end": 14,
-      "text": [
-        "use super::{AuthoringOutcome, AuthoringSubject, PendingAssessment, prepare_assessment};",
-        "use crate::DefinitionKind;",
-        "use crate::config;",
-        "use crate::evidence::inspect_repository;",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence};",
-        "",
-        "pub struct BatchOutcome {"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 22,
-      "line_end": 28,
-      "text": [
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    if !inspection.discovery_errors.is_empty() {",
-        "        return Err(io::Error::other(inspection.discovery_errors.join(\"\\n\")));",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 546,
-      "line_end": 552,
-      "text": [
+        "        let root = fs::canonicalize(root).unwrap();",
+        "        let access = SourceAccess::load(&root).unwrap();",
+        "        assert!(access.file(&root, Path::new(\"./inside.txt\")).is_ok());",
+        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());",
+        "        assert!(access.file(&root, Path::new(\"outside.txt\")).is_err());",
         "    }",
         "",
-        "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    // {test}`requirements.ci.authoring_inputs`",
-        "    #[test]",
-        "    fn unresolved_existing_selector_fails_before_inference() {",
-        "        let root = project();"
+        "    // {test}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 503,
+      "line_end": 509,
+      "text": [
+        "        let access = SourceAccess::load(&root).unwrap();",
+        "        assert!(access.tracked.is_none());",
+        "        assert!(access.file(&root, Path::new(\"source.txt\")).is_ok());",
+        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 552,
+      "line_end": 558,
+      "text": [
+        "            .file(&root, Path::new(\"generated/private/secret.txt\"))",
+        "            .unwrap_err();",
+        "        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);",
+        "        assert!(resolve_evidence_file(&root, \"generated/private/secret.txt\").is_err());",
+        "        #[cfg(unix)]",
+        "        {",
+        "            std::os::unix::fs::symlink("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 713,
+      "line_end": 719,
+      "text": [
+        "                    .kind(),",
+        "                io::ErrorKind::PermissionDenied",
+        "            );",
+        "            assert!(resolve_evidence_file(root.path(), denied).is_err());",
+        "        }",
+        "        assert!(",
+        "            access"
       ]
     },
     {
@@ -642,33 +557,47 @@
       "line_start": 627,
       "line_end": 633,
       "text": [
-        "                .iter()",
-        "                .filter(|input| input[\"rust_item\"] == \"fn[ready]\")",
-        "                .count(),",
-        "            1",
+        "                .to_string()",
+        "                .contains(\"missing.txt\")",
         "        );",
-        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == \"*\"",
-        "            && input[\"matches\"] == json!([\"requirements.ready\", \"requirements.uncited\"])));"
+        "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.function_attestations`"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 709,
+      "line_end": 715,
+      "text": [
+        "                .contains(\"OLD_PRIVATE_RATIONALE\")",
+        "        );",
+        "        assert!(",
+        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[missing]\").is_err()",
+        "        );",
+        "    }",
+        ""
       ]
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 452,
-      "line_end": 458,
+      "line_start": 493,
+      "line_end": 499,
       "text": [
-        "            }",
-        "            if submissions.len() != 1 {",
-        "                for _ in &submissions {",
-        "                    usage.tool(\"submit_judgment\", true);",
-        "                }",
-        "                return Err(io::Error::other(",
-        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\","
+        "                &Value::Object(submissions[0].function.arguments.clone()),",
+        "                function,",
+        "            );",
+        "            usage.tool(\"submit_judgment\", result.is_err());",
+        "            let (judgment, rationale) = result?;",
+        "            usage.record.determination = Some(judgment.kind().into());",
+        "            usage.save()?;"
       ]
     },
     {
       "file": "src/authoring/providers.rs",
-      "line_start": 198,
-      "line_end": 204,
+      "line_start": 239,
+      "line_end": 245,
       "text": [
         "        ] {",
         "            let mut options = value.as_object().unwrap().clone();",
@@ -681,8 +610,8 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "line_start": 298,
-      "line_end": 304,
+      "line_start": 339,
+      "line_end": 345,
       "text": [
         "                Origin::new(\"bedrock.converse\", \"aws_bedrock\", \"model\"),",
         "                Value::Null,",
@@ -695,95 +624,161 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 365,
-      "line_end": 371,
+      "line_start": 137,
+      "line_end": 143,
       "text": [
-        "            json!({\"line_start\":1}),",
-        "            json!({\"rust_file\":\"src/lib.rs\"}),",
-        "            json!({\"rust_item\":\"fn[work]\"}),",
-        "            json!({\"file\":\"src/lib.rs\",\"line_start\":1,\"definition\":\"terms.value\"}),",
-        "            json!({\"rust_file\":\"src/lib.rs\",\"rust_item\":\"fn[work]\",\"requirements\":\"requirements.*\"}),",
-        "            json!({\"requirements\":\"requirements.*\",\"definition\":\"terms.value\"}),",
-        "            json!({\"definition\":\"terms.value\",\"extra\":true}),"
+        "        if sources",
+        "            .access",
+        "            .path(&sources.root, Path::new(&relative))",
+        "            .is_err()",
+        "        {",
+        "            continue;",
+        "        }"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 381,
-      "line_end": 387,
+      "line_start": 158,
+      "line_end": 164,
+      "text": [
+        "    }",
+        "    if directory == sources.root {",
+        "        for extra in sources.access.extra_roots() {",
+        "            if sources.access.path(&sources.root, extra).is_err() {",
+        "                continue;",
+        "            }",
+        "            let kind = if extra.is_dir() {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 257,
+      "line_end": 263,
+      "text": [
+        "        let file = event[\"data\"][\"path\"][\"text\"]",
+        "            .as_str()",
+        "            .ok_or_else(|| io::Error::other(\"ripgrep found a non-UTF-8 path\"))?;",
+        "        if sources.access.file(&sources.root, Path::new(file)).is_err() {",
+        "            continue;",
+        "        }",
+        "        let number = event[\"data\"][\"line_number\"]"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 422,
+      "line_end": 428,
       "text": [
         "                \"habeas\",",
-        "                &json!({\"requirements\":\"requirements.*\"})",
+        "                &json!({\"file\":\"src/lib.rs\",\"line_start\":0})",
         "            )",
-        "            .is_ok()",
+        "            .is_err()",
         "        );",
-        "        assert!(dispatch(&sources, \"habeas\", &json!({\"definition\":\"terms.value\"})).is_ok());",
-        "    }"
+        "        // The provider-facing schema leaves selector fields optional; the",
+        "        // harness still rejects incomplete, mixed, and unknown request forms."
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 433,
-      "line_end": 448,
+      "line_start": 438,
+      "line_end": 444,
       "text": [
+        "            json!({\"definition\":\"terms.value\",\"extra\":true}),",
+        "        ] {",
+        "            assert!(",
+        "                dispatch(&sources, \"habeas\", &arguments).is_err(),",
+        "                \"unexpectedly accepted {arguments}\"",
+        "            );",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 491,
+      "line_end": 506,
+      "text": [
+        "        assert_eq!(exact.inputs[0][\"line_end\"], 2);",
+        "        let absent = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"NEEDLE\"})).unwrap();",
+        "        assert_eq!(absent.result, json!({\"inputs\":[],\"definitions\":[]}));",
+        "        assert!(dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"[\"})).is_err());",
+        "        assert!(",
+        "            dispatch(",
+        "                &sources,",
+        "                \"ripgrep\",",
+        "                &json!({\"pattern\":\"needle\",\"context\":-1})",
         "            )",
         "            .is_err()",
         "        );",
         "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"../\"})).is_err());",
         "    }",
         "",
-        "    // {test}`requirements.authoring.source_tools`",
-        "    // {test}`requirements.authoring.file_discovery`",
-        "    // {test}`requirements.authoring.text_search`",
-        "    #[test]",
-        "    fn generated_evidence_is_excluded_from_reads_search_and_discovery() {",
-        "        let root = project();",
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir(root.path().join(\"src/evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/old.json\"),"
+        "    // {test}`requirements.authoring.source_tools`"
       ]
     },
     {
-      "file": "src/commands.rs",
-      "line_start": 4,
-      "line_end": 10,
+      "file": "src/authoring/tools.rs",
+      "line_start": 657,
+      "line_end": 663,
       "text": [
-        "",
-        "use crate::definition_glob;",
-        "use crate::escape_html;",
-        "use crate::evidence::inspect_repository;",
-        "use crate::fixme::FixmeSummary;",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};",
-        "use crate::markdown::render_evidence_table;"
+        "                json!({\"file\":path, \"line_start\":1, \"line_end\":1}),",
+        "                json!({\"rust_file\":path, \"rust_item\":\"fn[outside_needle]\"}),",
+        "            ] {",
+        "                assert!(dispatch(&sources, \"habeas\", &arguments).is_err());",
+        "            }",
+        "            assert!(",
+        "                dispatch("
       ]
     },
     {
-      "file": "src/commands.rs",
-      "line_start": 16,
-      "line_end": 22,
+      "file": "src/authoring/tools.rs",
+      "line_start": 665,
+      "line_end": 674,
       "text": [
-        "}",
-        "",
-        "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "// {impl}`requirements.definitions.selection`",
-        "pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {",
-        "    status_markdown_with_options(root, all, glob, false)"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 108,
-      "line_end": 114,
-      "text": [
-        "        output.push_str(&findings);",
+        "                    \"ripgrep\",",
+        "                    &json!({\"path\":path, \"pattern\":\"needle\"})",
+        "                )",
+        "                .is_err()",
+        "            );",
+        "        }",
+        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"outside\"})).is_err());",
         "    }",
-        "    if !other_findings.is_empty() {",
-        "        output.push_str(\"\\n## Other validation findings\\n\\n<pre><code>\");",
-        "        output.push_str(&escape_html(",
-        "            &other_findings",
-        "                .into_iter()"
+        "",
+        "    // {test}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 726,
+      "line_end": 739,
+      "text": [
+        "            let error = dispatch(&sources, \"habeas\", &arguments).err().unwrap();",
+        "            assert!(error.to_string().contains(\"git add\"), \"{error}\");",
+        "        }",
+        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"untracked-dir\"})).is_err());",
+        "        assert!(",
+        "            dispatch(",
+        "                &sources,",
+        "                \"ripgrep\",",
+        "                &json!({\"path\":\"untracked.rs\", \"pattern\":\"needle\"})",
+        "            )",
+        "            .is_err()",
+        "        );",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 788,
+      "line_end": 794,
+      "text": [
+        "                    \"ripgrep\",",
+        "                    &json!({\"path\":alias, \"pattern\":\"needle\"})",
+        "                )",
+        "                .is_err()",
+        "            );",
+        "        }",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();"
       ]
     },
     {
@@ -802,324 +797,86 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 33,
-      "line_end": 40,
+      "line_start": 13,
+      "line_end": 19,
       "text": [
+        "    reference_roles, valid_name,",
+        "};",
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "#[derive(Debug)]",
+        "pub struct EvidenceReport {",
+        "    pub requirements: usize,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 32,
+      "line_end": 38,
+      "text": [
+        "    pub(crate) raw_lines: Vec<String>,",
         "}",
         "",
         "// {impl}`requirements.integration.report_api`",
         "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
         "    Ok(inspect_repository(root)?.report)",
-        "}",
-        "",
-        "pub(crate) struct RepositoryInspection {"
+        "}"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 64,
-      "line_end": 70,
+      "line_start": 62,
+      "line_end": 68,
       "text": [
+        "    }",
+        "}",
         "",
         "// {impl}`requirements.integration.report_api`",
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`"
+        "// {impl}`requirements.ci.errors`"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1387,
-      "line_end": 1393,
+      "line_start": 1388,
+      "line_end": 1394,
+      "text": [
+        "",
+        "    use super::validate_repository;",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    fn fixture() -> TempDir {",
+        "        let temp = TempDir::new().unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1456,
+      "line_end": 1462,
       "text": [
         "        }",
         "    }",
-        "    valid",
-        "}",
         "",
-        "#[cfg(test)]",
-        "mod tests {"
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1487,
-      "line_end": 1493,
+      "line_start": 1492,
+      "line_end": 1498,
       "text": [
-        "                \"rationale\": \"The inspected file has the expected lines.\",",
-        "                \"inputs\": [{",
-        "                    \"file\": \"src/main.rs\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 2,",
-        "                    \"text\": [\"// first line\", \"// second line\"]",
-        "                }]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1548,
-      "line_end": 1554,
-      "text": [
-        "            temp.path().join(\"evidence/ghost.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ghost.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"A valid but orphaned file.\",",
-        "                \"inputs\": []",
-        "            })"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1616,
-      "line_end": 1622,
-      "text": [
-        "                    {",
-        "                        \"file\": \"md/notes.md\",",
-        "                        \"line_start\": 3,",
-        "                        \"line_end\": 3,",
-        "                        \"text\": [test]",
-        "                    }",
-        "                ]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1650,
-      "line_end": 1656,
-      "text": [
-        "                \"rationale\": \"Only the first line was examined.\",",
-        "                \"inputs\": [{",
-        "                    \"file\": \"src/main.rs\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 1,",
-        "                    \"text\": [source.lines().next().unwrap()]",
-        "                }]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1692,
-      "line_end": 1698,
-      "text": [
-        "                temp.path()",
-        "                    .join(format!(\"evidence/requirements.{name}.json\")),",
-        "                json!({",
-        "                    \"requirement\": requirement,",
-        "                    \"determination\": true,",
-        "                    \"rationale\": \"The fixture records the current requirement body.\",",
-        "                    \"inputs\": []"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1719,
-      "line_end": 1725,
-      "text": [
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.ready.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ready.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"The current body was examined.\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1755,
-      "line_end": 1761,
-      "text": [
-        "            .unwrap();",
-        "            fs::write(",
-        "                temp.path().join(\"evidence/requirements.ready.json\"),",
-        "                json!({",
-        "                    \"requirement\": body,",
-        "                    \"determination\": true,",
-        "                    \"rationale\": \"The entire fenced body was examined.\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1851,
-      "line_end": 1857,
-      "text": [
-        "                                \"\",",
-        "                                chapter.lines().nth(2).unwrap(),",
-        "                                chapter.lines().nth(3).unwrap(),",
-        "                                chapter.lines().nth(4).unwrap()",
-        "                            ]",
-        "                        }",
-        "                    ]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1861,
-      "line_end": 1880,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 1);",
-        "        assert_eq!(report.examples, 1);",
-        "        assert_eq!(report.evidence_files, 3);",
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
         "",
-        "        let rust_original = fs::read_to_string(&rust_evidence).unwrap();",
-        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
-        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);",
-        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"citation set changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"citations must not be empty\"), \"{errors}\");",
-        "        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
-        "        let copy = duplicate[\"functions\"][0].clone();",
-        "        duplicate[\"functions\"].as_array_mut().unwrap().push(copy);",
-        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1882,
-      "line_end": 1888,
-      "text": [
-        "        assert!(",
-        "            errors.contains(\"duplicate Rust function attestation\"),",
-        "            \"{errors}\"",
-        "        );",
-        "        fs::remove_file(&rust_evidence).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1893,
-      "line_end": 1899,
-      "text": [
-        "        let orphan = temp.path().join(\"evidence/rust/src/removed.rs.json\");",
-        "        fs::write(&orphan, \"{}\").unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"orphaned Rust attestation file\"),",
-        "            \"{errors}\"",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1902,
-      "line_end": 1908,
-      "text": [
-        "        let old = fs::read_to_string(&example_path).unwrap();",
-        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        uncovered[\"inputs\"] = json!([]);",
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
-        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1913,
-      "line_end": 1919,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"input text changed for RustItem\"),",
-        "            \"{errors}\"",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1922,
-      "line_end": 1928,
-      "text": [
-        "            temp.path().join(\"md/rules.md\"),",
-        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"requirements glob matches changed\"),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1934,
-      "line_end": 1940,
-      "text": [
-        "        fs::write(&example_path, evidence.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
-        "",
-        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        let example_text = wrong_field"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1942,
-      "line_end": 1948,
-      "text": [
-        "            .unwrap()",
-        "            .remove(\"example\")",
-        "            .unwrap();",
-        "        wrong_field[\"requirement\"] = example_text;",
-        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1966,
-      "line_end": 1972,
-      "text": [
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/rules.case.json\"),",
-        "            json!({",
-        "                \"example\": \"Given ready. CITE`rules.repeated`\".replace(\"CITE\", \"{cite}\"),",
-        "                \"determination\": true,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 8,
-      "line_end": 14,
-      "text": [
-        "use mdbook_preprocessor::config::Config;",
-        "use serde_json::Value;",
-        "",
-        "use crate::evidence::{Declaration, inspect_repository};",
-        "use crate::inputs::{InputSelector, SourceRange};",
-        "use crate::markdown::render_evidence_table;",
-        "use crate::{"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 312,
-      "line_end": 318,
-      "text": [
-        "    ) -> io::Result<()> {",
-        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
-        "        let source_links = SourceLinks::from_config(&config)?;",
-        "        let inspection = inspect_repository(root)?;",
-        "        let report = &inspection.report;",
-        "        let mut rows = Vec::new();",
-        "        let mut pages = Vec::new();"
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.errors`",
+        "    // {test}`requirements.ci.diagnostics`",
+        "    // {test}`requirements.ci.input_containment`"
       ]
     },
     {
@@ -1138,6 +895,1052 @@
       ]
     },
     {
+      "file": "tests/commands.rs",
+      "line_start": 118,
+      "line_end": 124,
+      "text": [
+        "// {test}`requirements.ci.outcomes`",
+        "// {test}`requirements.ci.determination`",
+        "// {test}`requirements.ci.schema`",
+        "// {test}`requirements.integration.report_api`",
+        "fn fixme_fixture() -> TempDir {",
+        "    let temp = TempDir::new().unwrap();",
+        "    fs::create_dir(temp.path().join(\"md\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 61,
+      "line_end": 68,
+      "text": [
+        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
+        "        state.join(\"habeas/state\")",
+        "    );",
+        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
+        "}",
+        "",
+        "// {test}`requirements.configuration.structure`"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 93,
+      "line_end": 99,
+      "text": [
+        "        ProjectConfig::from_book_toml(&format!(\"{book}\\n[habeas]\\n\"), &path).unwrap(),",
+        "        Some(ProjectConfig {})",
+        "    );",
+        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
+        "}",
+        "",
+        "// {test}`requirements.authoring.configuration_structure`"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 304,
+      "line_end": 311,
+      "text": [
+        "    else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert!(ollama.api_key_from(|_| None).is_err());",
+        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
+        "    assert_eq!(",
+        "        ollama",
+        "            .api_key_from(|name| (name == \"MODEL_KEY\").then(|| OsString::from(\"private-value\")))"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 397,
+      "line_end": 403,
+      "text": [
+        "            .unwrap()",
+        "            .contains_credentials",
+        "    );",
+        "    assert!(load_workspace_config(temp.path()).is_err());",
+        "    for source in [",
+        "        \"version = 2\",",
+        "        \"version = 1\\nunknown = true\","
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 582,
+      "line_end": 587,
+      "text": [
+        "        source.replace(\"session_token = 'PRIVATE_SESSION'\", \"session_token = ''\"),",
+        "        source.replace(\"api_key = 'PRIVATE_OLLAMA_KEY'\", \"api_key = ''\"),",
+        "    ] {",
+        "        assert!(WorkspaceConfig::parse(&invalid_source, path).is_err());",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 301,
+      "line_end": 307,
+      "text": [
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.rust_item_inputs`",
+        "// {test}`requirements.integration.report_api`",
+        "#[test]",
+        "fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 106,
+      "line_end": 112,
+      "text": [
+        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
+        "        json!({ \"fixme\": [\"#125\"] }),",
+        "    ] {",
+        "        assert!(Judgment::from_value(&invalid).is_err(), \"{invalid}\");",
+        "    }",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 351,
+      "line_end": 355,
+      "text": [
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 419,
+      "line_end": 423,
+      "text": [
+        "    assert_eq!(server.subjects().len(), 8);",
+        "    assert_eq!(fixture.usage().len(), 8);",
+        "    assert_eq!(fixture.evidence(\"requirements.beta\"), beta);",
+        "    assert_eq!(fixture.evidence(\"requirements.alpha_case\"), example);",
+        "    assert_eq!(fixture.function(\"fn[beta]\"), beta_function);"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 190,
+      "line_end": 194,
+      "text": [
+        "        .unwrap();",
+        "    }",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    temp"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 2,
+      "line_end": 6,
+      "text": [
+        "use std::path::Path;",
+        "",
+        "use habeas::{InputMode, InputTarget, add_input, validate_repository};",
+        "use mdbook_preprocessor::book::{Book, Chapter};",
+        "use serde_json::{Value, json};"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 62,
+      "line_end": 66,
+      "text": [
+        "    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
+        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    let before = fs::read(&path).unwrap();",
+        "    capture(root);"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 70,
+      "line_end": 74,
+      "text": [
+        "    let original = fs::read_to_string(&glossary).unwrap();",
+        "    fs::write(&glossary, format!(\"\\n\\n{original}\")).unwrap();",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    for changed in [",
+        "        original.replace(\":phrase: beta\", \":phrase: new beta\"),"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 78,
+      "line_end": 82,
+      "text": [
+        "    ] {",
+        "        fs::write(&glossary, changed).unwrap();",
+        "        let report = validate_repository(root).unwrap();",
+        "        assert!(",
+        "            report"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 94,
+      "line_end": 98,
+      "text": [
+        "    assert_eq!(refreshed[\"inputs\"].as_array().unwrap().len(), 3);",
+        "    approve(&path);",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "",
+        "    let mut missing = refreshed.clone();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 103,
+      "line_end": 107,
+      "text": [
+        "    fs::write(&path, missing.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 114,
+      "line_end": 118,
+      "text": [
+        "    fs::write(&path, duplicate.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 163,
+      "line_end": 167,
+      "text": [
+        "        .unwrap();",
+        "        assert!(",
+        "            validate_repository(temp.path())",
+        "                .unwrap()",
+        "                .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 177,
+      "line_end": 181,
+      "text": [
+        "    .unwrap();",
+        "    assert!(",
+        "        validate_repository(temp.path())",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 184,
+      "line_end": 188,
+      "text": [
+        "    );",
+        "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();",
+        "    let errors = validate_repository(temp.path()).unwrap().errors;",
+        "    assert!(",
+        "        errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 288,
+      "line_end": 292,
+      "text": [
+        "    .unwrap();",
+        "    approve(&root.join(\"evidence/rules.ready.json\"));",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    let glossary = root.join(\"md/glossary.md\");",
+        "    fs::write("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 297,
+      "line_end": 301,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    let errors = validate_repository(root).unwrap().errors;",
+        "    for label in [\"evidence/rules.ready.json\", \"evidence/rust/src/lib.rs.json\"] {",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 312,
+      "line_end": 316,
+      "text": [
+        "    .unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 335,
+      "line_end": 339,
+      "text": [
+        "    fs::write(&path, invalid.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 344,
+      "line_end": 348,
+      "text": [
+        "    fs::remove_file(root.join(\"md/glossary.md\")).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 363,
+      "line_end": 367,
+      "text": [
+        "    capture(root);",
+        "    approve(&root.join(\"evidence/rules.ready.json\"));",
+        "    let report = validate_repository(root).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    let record: Value ="
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 2,
+      "line_end": 6,
+      "text": [
+        "use std::path::Path;",
+        "",
+        "use habeas::validate_repository;",
+        "use serde_json::{Value, json};",
+        "use tempfile::TempDir;"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 52,
+      "line_end": 56,
+      "text": [
+        "        vec![json!({\"file\":\"data.txt\", \"line_start\":2, \"line_end\":2, \"text\":[\"second\"]})],",
+        "    );",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    for (input, expected) in ["
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 73,
+      "line_end": 77,
+      "text": [
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(expected), \"missing {expected:?}: {errors}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 95,
+      "line_end": 99,
+      "text": [
+        "        ],",
+        "    );",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    let sibling = temp.path().join(\"project-sibling\");"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 106,
+      "line_end": 110,
+      "text": [
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"escape.rs resolves outside the repository\"),"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 119,
+      "line_end": 123,
+      "text": [
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "    let record = fs::read(root.join(\"evidence/rules.ready.json\")).unwrap();",
+        "    for directory in [\"evidence/nested\", \"evidence/rust\"] {"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 126,
+      "line_end": 130,
+      "text": [
+        "    fs::write(root.join(\"evidence/nested/rules.ready.json\"), &record).unwrap();",
+        "    fs::write(root.join(\"evidence/rust/other.json\"), &record).unwrap();",
+        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "    assert!(",
+        "        errors.contains(\"evidence/nested/rules.ready.json: no matching requirement or example\"),"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 164,
+      "line_end": 168,
+      "text": [
+        "    let mut sidecar = json!({\"rust_file\":\"src/lib.rs\", \"functions\":[entry.clone()]});",
+        "    fs::write(&path, sidecar.to_string()).unwrap();",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    let mut removed = entry;"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 170,
+      "line_end": 174,
+      "text": [
+        "    sidecar[\"functions\"].as_array_mut().unwrap().push(removed);",
+        "    fs::write(&path, sidecar.to_string()).unwrap();",
+        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "    assert!(",
+        "        errors.contains(\"orphaned Rust function attestation\") && errors.contains(\"fn[removed]\"),"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 198,
+      "line_end": 202,
+      "text": [
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)",
+        "                .unwrap()",
+        "                .errors"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 205,
+      "line_end": 213,
+      "text": [
+        "        );",
+        "        fs::write(root.join(\"habeas.toml\"), &config).unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "        fs::write(&source, \"pub fn generated() { /* changed */ }\\n\").unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)",
+        "                .unwrap()",
+        "                .errors"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 222,
+      "line_end": 226,
+      "text": [
+        "        .unwrap();",
+        "        assert!(",
+        "            validate_repository(&root)",
+        "                .unwrap()",
+        "                .errors"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 260,
+      "line_end": 264,
+      "text": [
+        "        ] {",
+        "            write_inputs(&root, vec![input]);",
+        "            let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "            if file == \"public/source.rs\" {",
+        "                assert!(errors.is_empty(), \"{errors}\");"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 285,
+      "line_end": 289,
+      "text": [
+        "    ] {",
+        "        fs::write(root.join(\"habeas.toml\"), text).unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"habeas.toml\"), \"{text:?}: {errors}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 293,
+      "line_end": 297,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    let report = validate_repository(&root).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 345,
+      "line_end": 352,
+      "text": [
+        "        write_inputs(&root, vec![input]);",
+        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "        fs::write(&generated, \"pub fn generated() { /* changed */ }\\n\").unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"input text changed\"), \"{errors}\");",
+        "        fs::write(&generated, \"pub fn generated() {}\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 356,
+      "line_end": 360,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"disallowed\"), \"{errors}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 118,
+      "line_end": 122,
+      "text": [
+        "    let temp = fixture();",
+        "    assert!(",
+        "        habeas::validate_repository(temp.path())",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 124,
+      "line_end": 128,
+      "text": [
+        "    );",
+        "    replace_judgment(temp.path(), \"timeout\", json!(true));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 132,
+      "line_end": 136,
+      "text": [
+        "    );",
+        "    replace_judgment(temp.path(), \"timeout\", json!(false));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 169,
+      "line_end": 173,
+      "text": [
+        "        }));",
+        "        write_record(temp.path(), \"ready\", record);",
+        "        let report = habeas::validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 181,
+      "line_end": 185,
+      "text": [
+        "    let temp = fixture();",
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 206,
+      "line_end": 210,
+      "text": [
+        "    let temp = fixture();",
+        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 226,
+      "line_end": 230,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 273,
+      "line_end": 277,
+      "text": [
+        "    });",
+        "    fs::write(&attestation_path, attestation.to_string()).unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 282,
+      "line_end": 286,
+      "text": [
+        "    attestation[\"functions\"][0][\"determination\"] = json!(true);",
+        "    fs::write(attestation_path, attestation.to_string()).unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1182,
+      "line_end": 1192,
+      "text": [
+        "    let label = display_path(root, path);",
+        "    let purpose =",
+        "        \"review each function and confirm it cites every applicable requirement or named example\";",
+        "    let source = match fs::read_to_string(path) {",
+        "        Ok(source) => source,",
+        "        Err(error) if error.kind() == io::ErrorKind::NotFound => {",
+        "            for (function, _) in functions {",
+        "                errors.push(format!(",
+        "                    \"{label}: {rust_file}:{} {}: missing Rust function attestation file; {purpose}\",",
+        "                    function.declaration_line, function.selector",
+        "                ));"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 511,
+      "line_end": 520,
+      "text": [
+        "        Some(&workspace),",
+        "        &root,",
+        "        Some(\"missing\"),",
+        "    )",
+        "    .unwrap_err()",
+        "    .to_string();",
+        "    assert!(",
+        "        error.contains(path.to_str().unwrap()) && error.contains(\"missing\"),",
+        "        \"{error}\"",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 273,
+      "line_end": 277,
+      "text": [
+        "    fs::remove_file(&config_path).unwrap();",
+        "    let explicit_missing = skip_probe(root)",
+        "        .env(\"HABEAS_LIVE_CONFIG\", \"missing\")",
+        "        .output()",
+        "        .unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1861,
+      "line_end": 1880,
+      "text": [
+        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
+        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);",
+        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"citation set changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"citations must not be empty\"), \"{errors}\");",
+        "        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
+        "        let copy = duplicate[\"functions\"][0].clone();",
+        "        duplicate[\"functions\"].as_array_mut().unwrap().push(copy);",
+        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"duplicate Rust function attestation\"),",
+        "            \"{errors}\"",
+        "        );",
+        "        fs::remove_file(&rust_evidence).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"missing Rust function attestation file\"),",
+        "            \"{errors}\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1882,
+      "line_end": 1888,
+      "text": [
+        "        fs::write(&rust_evidence, rust_original).unwrap();",
+        "        let orphan = temp.path().join(\"evidence/rust/src/removed.rs.json\");",
+        "        fs::write(&orphan, \"{}\").unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"orphaned Rust attestation file\"),",
+        "            \"{errors}\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1893,
+      "line_end": 1899,
+      "text": [
+        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();",
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1902,
+      "line_end": 1908,
+      "text": [
+        "            test_source.replace(\"assert!(true)\", \"assert!(false)\"),",
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"input text changed for RustItem\"),",
+        "            \"{errors}\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1913,
+      "line_end": 1919,
+      "text": [
+        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"requirements glob matches changed\"),",
+        "            \"{errors}\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1922,
+      "line_end": 1928,
+      "text": [
+        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
+        "        evidence[\"example\"] = \"Outdated.\".into();",
+        "        fs::write(&example_path, evidence.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1934,
+      "line_end": 1940,
+      "text": [
+        "            .unwrap();",
+        "        wrong_field[\"requirement\"] = example_text;",
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");",
+        "        assert!(",
+        "            errors.contains(\"unexpected field \\\"requirement\\\"\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1942,
+      "line_end": 1948,
+      "text": [
+        "        );",
+        "",
+        "        fs::remove_file(&example_path).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1966,
+      "line_end": 1972,
+      "text": [
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        for detail in [",
+        "            \"duplicate requirement rules.repeated; first declared at md/rules.md:1\",",
+        "            \"duplicate example rules.repeated; first declared at md/rules.md:1\","
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 62,
+      "line_end": 67,
+      "text": [
+        "        state.join(\"habeas/state\")",
+        "    );",
+        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 94,
+      "line_end": 98,
+      "text": [
+        "        Some(ProjectConfig {})",
+        "    );",
+        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 305,
+      "line_end": 310,
+      "text": [
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert!(ollama.api_key_from(|_| None).is_err());",
+        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
+        "    assert_eq!(",
+        "        ollama"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 398,
+      "line_end": 402,
+      "text": [
+        "            .contains_credentials",
+        "    );",
+        "    assert!(load_workspace_config(temp.path()).is_err());",
+        "    for source in [",
+        "        \"version = 2\","
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 583,
+      "line_end": 587,
+      "text": [
+        "        source.replace(\"api_key = 'PRIVATE_OLLAMA_KEY'\", \"api_key = ''\"),",
+        "    ] {",
+        "        assert!(WorkspaceConfig::parse(&invalid_source, path).is_err());",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 107,
+      "line_end": 111,
+      "text": [
+        "        json!({ \"fixme\": [\"#125\"] }),",
+        "    ] {",
+        "        assert!(Judgment::from_value(&invalid).is_err(), \"{invalid}\");",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 33,
+      "line_end": 39,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1486,
+      "line_end": 1492,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.evidence_files, 1);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1547,
+      "line_end": 1553,
+      "text": [
+        "        .unwrap();",
+        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        let errors = report.errors.join(\"\\n\");",
+        "        for detail in [",
+        "            \"no matching requirement\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1615,
+      "line_end": 1621,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1649,
+      "line_end": 1655,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        let errors = report.errors.join(\"\\n\");",
+        "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1692,
+      "line_end": 1698,
+      "text": [
+        "            .unwrap();",
+        "        }",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 2);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1719,
+      "line_end": 1725,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert!(",
+        "            report.errors.join(\"\\n\").contains("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1755,
+      "line_end": 1761,
+      "text": [
+        "            )",
+        "            .unwrap();",
+        "",
+        "            let report = validate_repository(temp.path()).unwrap();",
+        "            assert_eq!(report.requirements, 1, \"{opening} ... {closing}\");",
+        "            assert!(",
+        "                report.errors.is_empty(),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1851,
+      "line_end": 1857,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.examples, 1);",
+        "        assert_eq!(report.evidence_files, 3);"
+      ]
+    },
+    {
       "file": "src/index.rs",
       "line_start": 1038,
       "line_end": 1044,
@@ -1153,116 +1956,340 @@
     },
     {
       "file": "src/lib.rs",
-      "line_start": 19,
-      "line_end": 25,
+      "line_start": 34,
+      "line_end": 40,
       "text": [
-        "mod rust_items;",
-        "mod terms;",
-        "",
-        "pub use add_input::{InputMode, InputTarget, add_input};",
-        "pub use evidence::{EvidenceReport, validate_repository};",
-        "",
-        "/// Validate the current Cargo and mdBook project for use in a Cargo test."
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 33,
-      "line_end": 39,
-      "text": [
-        "    let root = cwd",
         "        .ancestors()",
         "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
         "        .expect(\"cannot find Cargo and mdBook project root\");",
         "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
         "    if !report.errors.is_empty() {",
-        "        panic!("
+        "        panic!(",
+        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\","
       ]
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 288,
-      "line_end": 294,
+      "file": "src/add_input.rs",
+      "line_start": 34,
+      "line_end": 38,
       "text": [
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let entries = fixture.evidence(\"rust/src/lib.rs\");",
-        "    assert_eq!(entries[\"functions\"].as_array().unwrap().len(), 3);"
+        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;",
+        "    let definitions = &inspection.definitions;",
+        "    let selectors = selectors_for_mode(&root, mode)?;"
       ]
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 356,
-      "line_end": 362,
+      "file": "src/authoring/batch.rs",
+      "line_start": 25,
+      "line_end": 29,
       "text": [
-        "    assert_eq!(fixture.evidence(\"requirements.alpha_case\"), example);",
-        "    assert_eq!(fixture.function(\"fn[beta]\"), beta_function);",
-        "    assert_eq!(fixture.function(\"fn[alpha_case]\"), test_function);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;",
+        "    if !inspection.discovery_errors.is_empty() {",
+        "        return Err(io::Error::other(inspection.discovery_errors.join(\"\\n\")));"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 34,
+      "line_end": 38,
+      "text": [
+        "    verbose: bool,",
+        ") -> io::Result<String> {",
+        "    let inspection = inspect_repository(root)?;",
+        "    if let Some(glob) = glob {",
+        "        definition_glob::validate(glob)"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 125,
+      "line_end": 129,
+      "text": [
+        "// {impl}`requirements.definitions.selection`",
+        "pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {",
+        "    let inspection = inspect_repository(root)?;",
+        "    definition_glob::validate(selector)",
+        "        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 35,
+      "line_end": 39,
+      "text": [
+        "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
         "}",
         ""
       ]
     },
     {
-      "file": "tests/configuration.rs",
-      "line_start": 60,
-      "line_end": 67,
+      "file": "src/evidence.rs",
+      "line_start": 72,
+      "line_end": 76,
       "text": [
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.configuration.structure`"
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();"
       ]
     },
     {
-      "file": "tests/configuration.rs",
-      "line_start": 92,
-      "line_end": 98,
+      "file": "src/index.rs",
+      "line_start": 313,
+      "line_end": 317,
       "text": [
-        "        ProjectConfig::from_book_toml(&format!(\"{book}\\n[habeas]\\n\"), &path).unwrap(),",
-        "        Some(ProjectConfig {})",
-        "    );",
-        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.authoring.configuration_structure`"
+        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
+        "        let source_links = SourceLinks::from_config(&config)?;",
+        "        let inspection = inspect_repository(root)?;",
+        "        let report = &inspection.report;",
+        "        let mut rows = Vec::new();"
       ]
     },
     {
-      "file": "tests/configuration.rs",
-      "line_start": 300,
-      "line_end": 307,
+      "file": "src/evidence.rs",
+      "line_start": 34,
+      "line_end": 38,
       "text": [
-        "    ).unwrap();",
-        "    let BackendConfig::Ollama(ollama) =",
-        "        &config.authoring.as_ref().unwrap().configs[\"remote\"].backend",
-        "    else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert!(ollama.api_key_from(|_| None).is_err());",
-        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());"
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
+        "}"
       ]
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 1,
-      "line_end": 7,
+      "file": "src/evidence.rs",
+      "line_start": 1487,
+      "line_end": 1491,
       "text": [
-        "use std::fs;",
-        "use std::path::Path;",
+        "        .unwrap();",
         "",
-        "use habeas::{InputMode, InputTarget, add_input, validate_repository};",
-        "use mdbook_preprocessor::book::{Book, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;"
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.evidence_files, 1);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1548,
+      "line_end": 1552,
+      "text": [
+        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        let errors = report.errors.join(\"\\n\");",
+        "        for detail in ["
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1616,
+      "line_end": 1620,
+      "text": [
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1650,
+      "line_end": 1654,
+      "text": [
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        let errors = report.errors.join(\"\\n\");",
+        "        assert_eq!(report.errors.len(), 2, \"{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1693,
+      "line_end": 1697,
+      "text": [
+        "        }",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 2);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1720,
+      "line_end": 1724,
+      "text": [
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1756,
+      "line_end": 1760,
+      "text": [
+        "            .unwrap();",
+        "",
+        "            let report = validate_repository(temp.path()).unwrap();",
+        "            assert_eq!(report.requirements, 1, \"{opening} ... {closing}\");",
+        "            assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1852,
+      "line_end": 1856,
+      "text": [
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.examples, 1);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1862,
+      "line_end": 1866,
+      "text": [
+        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);",
+        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"citation set changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"citations must not be empty\"), \"{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1869,
+      "line_end": 1873,
+      "text": [
+        "        duplicate[\"functions\"].as_array_mut().unwrap().push(copy);",
+        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"duplicate Rust function attestation\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1875,
+      "line_end": 1879,
+      "text": [
+        "        );",
+        "        fs::remove_file(&rust_evidence).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"missing Rust function attestation file\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1883,
+      "line_end": 1887,
+      "text": [
+        "        let orphan = temp.path().join(\"evidence/rust/src/removed.rs.json\");",
+        "        fs::write(&orphan, \"{}\").unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"orphaned Rust attestation file\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1894,
+      "line_end": 1898,
+      "text": [
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1903,
+      "line_end": 1907,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"input text changed for RustItem\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1914,
+      "line_end": 1918,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"requirements glob matches changed\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1923,
+      "line_end": 1927,
+      "text": [
+        "        evidence[\"example\"] = \"Outdated.\".into();",
+        "        fs::write(&example_path, evidence.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1935,
+      "line_end": 1939,
+      "text": [
+        "        wrong_field[\"requirement\"] = example_text;",
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1943,
+      "line_end": 1947,
+      "text": [
+        "",
+        "        fs::remove_file(&example_path).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1967,
+      "line_end": 1971,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        for detail in [",
+        "            \"duplicate requirement rules.repeated; first declared at md/rules.md:1\","
       ]
     },
     {
@@ -1295,20 +2322,6 @@
     },
     {
       "file": "tests/definitions.rs",
-      "line_start": 77,
-      "line_end": 83,
-      "text": [
-        "            .replace(\"See {term}\", \"Read {term}\"),",
-        "    ] {",
-        "        fs::write(&glossary, changed).unwrap();",
-        "        let report = validate_repository(root).unwrap();",
-        "        assert!(",
-        "            report",
-        "                .errors"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
       "line_start": 93,
       "line_end": 99,
       "text": [
@@ -1323,58 +2336,9 @@
     },
     {
       "file": "tests/definitions.rs",
-      "line_start": 102,
-      "line_end": 108,
-      "text": [
-        "        .retain(|i| i.get(\"definition\") != Some(&json!(\"glossary.b\")));",
-        "    fs::write(&path, missing.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 113,
-      "line_end": 119,
-      "text": [
-        "    duplicate[\"inputs\"].as_array_mut().unwrap().push(input);",
-        "    fs::write(&path, duplicate.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 162,
-      "line_end": 168,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        assert!(",
-        "            validate_repository(temp.path())",
-        "                .unwrap()",
-        "                .errors",
-        "                .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 176,
+      "line_start": 183,
       "line_end": 189,
       "text": [
-        "    )",
-        "    .unwrap();",
-        "    assert!(",
-        "        validate_repository(temp.path())",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()",
         "            .any(|e| e.contains(\"missing a closing colon fence\"))",
         "    );",
         "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();",
@@ -1410,76 +2374,6 @@
         "    for label in [\"evidence/rules.ready.json\", \"evidence/rust/src/lib.rs.json\"] {",
         "        assert!(",
         "            errors.iter().any(|e| e.contains(label)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 311,
-      "line_end": 317,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 334,
-      "line_end": 340,
-      "text": [
-        "    invalid[\"inputs\"][1][\"unexpected\"] = json!(true);",
-        "    fs::write(&path, invalid.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 343,
-      "line_end": 349,
-      "text": [
-        "    fs::write(&path, original.to_string()).unwrap();",
-        "    fs::remove_file(root.join(\"md/glossary.md\")).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 362,
-      "line_end": 368,
-      "text": [
-        "    .unwrap();",
-        "    capture(root);",
-        "    approve(&root.join(\"evidence/rules.ready.json\"));",
-        "    let report = validate_repository(root).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let record: Value =",
-        "        serde_json::from_str(&fs::read_to_string(root.join(\"evidence/rules.ready.json\")).unwrap())"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 1,
-      "line_end": 7,
-      "text": [
-        "use std::fs;",
-        "use std::path::Path;",
-        "",
-        "use habeas::validate_repository;",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        ""
       ]
     },
     {
@@ -1580,1093 +2474,143 @@
       ]
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 106,
-      "line_end": 112,
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 259,
+      "line_end": 265,
       "text": [
-        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
-        "        json!({ \"fixme\": [\"#125\"] }),",
+        "            json!({\"rust_file\":file, \"rust_item\":\"struct[Source]\", \"text\":[\"pub struct Source;\"]}),",
+        "        ] {",
+        "            write_inputs(&root, vec![input]);",
+        "            let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "            if file == \"public/source.rs\" {",
+        "                assert!(errors.is_empty(), \"{errors}\");",
+        "            } else {"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 284,
+      "line_end": 290,
+      "text": [
+        "        \"version = [\\n\",",
         "    ] {",
-        "        assert!(Judgment::from_value(&invalid).is_err(), \"{invalid}\");",
+        "        fs::write(root.join(\"habeas.toml\"), text).unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"habeas.toml\"), \"{text:?}: {errors}\");",
         "    }",
-        "}",
-        ""
+        "    fs::write("
       ]
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 117,
-      "line_end": 129,
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 347,
+      "line_end": 353,
       "text": [
-        "fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {",
-        "    let temp = fixture();",
-        "    assert!(",
-        "        habeas::validate_repository(temp.path())",
-        "            .unwrap()",
-        "            .errors",
-        "            .is_empty()",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(true));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 131,
-      "line_end": 137,
-      "text": [
-        "            .any(|error| error.contains(\"no {test} reference\"))",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(false));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 168,
-      "line_end": 174,
-      "text": [
-        "            \"file\": \"reviewed.txt\", \"line_start\": 1, \"line_end\": 1, \"text\": [comment]",
-        "        }));",
-        "        write_record(temp.path(), \"ready\", record);",
-        "        let report = habeas::validate_repository(temp.path()).unwrap();",
+        "        let report = validate_repository(&root).unwrap();",
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "}"
+        "        fs::write(&generated, \"pub fn generated() { /* changed */ }\\n\").unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"input text changed\"), \"{errors}\");",
+        "        fs::write(&generated, \"pub fn generated() {}\\n\").unwrap();",
+        "        fs::write("
       ]
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 179,
-      "line_end": 185,
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 355,
+      "line_end": 361,
       "text": [
-        "#[test]",
-        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {",
-        "    let temp = fixture();",
-        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report"
+        "            \"version = 1\\n[evidence]\\ndisallow = ['../external-build']\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"disallowed\"), \"{errors}\");",
+        "    }",
+        "    assert!(!target.exists(), \"metadata must not run a build\");"
       ]
     },
     {
-      "file": "tests/outcomes.rs",
+      "file": "tests/commands.rs",
+      "line_start": 640,
+      "line_end": 646,
+      "text": [
+        "    let external = TempDir::new().unwrap();",
+        "    let source = external.path().join(\"source.rs\");",
+        "    fs::write(&source, \"pub fn external() {}\\n\").unwrap();",
+        "    let source = fs::canonicalize(source).unwrap();",
+        "    let allowed = toml::Value::String(external.path().display().to_string());",
+        "    let config = format!(\"version = 1\\n[evidence]\\nallow = [{allowed}]\\n\");",
+        "    fs::write(temp.path().join(\"habeas.toml\"), &config).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
       "line_start": 201,
       "line_end": 207,
       "text": [
-        "// {test}`requirements.ci.fixme_stale_input`",
-        "// {test}`requirements.index.state`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 219,
-      "line_end": 225,
-      "text": [
-        "        .unwrap();",
-        "    assert!(row.contains(\"Invalid\"), \"{row}\");",
-        "    assert!(status.contains(\"#125\"), \"{status}\");",
-        "    assert!(status.contains(\"input text changed\"), \"{status}\");",
-        "    fs::write(",
-        "        temp.path().join(\"other.txt\"),",
-        "        \"CITE`requirements.timeout`\".replace(\"CITE\", \"{cite}\"),"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 266,
-      "line_end": 272,
-      "text": [
-        "            \"rationale\": \"The function's citations were reviewed.\",",
-        "            \"inputs\": [function, {",
-        "                \"requirements\": \"requirements.ready\",",
-        "                \"matches\": [\"requirements.ready\"],",
-        "                \"text\": [\":::{req} ready\", \"The behavior MUST work.\", \":::\"]",
-        "            }]",
-        "        }]"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 275,
-      "line_end": 281,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"determination must be a boolean\"))",
-        "    );"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 114,
-      "line_end": 122,
-      "text": [
-        "These are the distinct user-visible decisions found while reading the source. **24 of 24 branch groups are mapped.**",
-        "",
-        "| Branch location | Observable behavior | Requirement IDs |",
-        "| --- | --- | --- |",
-        "| `src/evidence.rs:28` | inaccessible root returns an I/O error | `requirements.integration.report_api` |",
-        "| `src/evidence.rs:41` | orphan evidence file | `requirements.ci.orphans` |",
-        "| `src/evidence.rs:65` | missing evidence file | `requirements.ci.coverage` |",
-        "| `src/evidence.rs:84` | invalid book configuration or source path | `requirements.ci.book_source` |",
-        "| `src/evidence.rs:141` | unclosed, empty, or duplicate definition | `requirements.ci.definition_errors` |"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 62,
-      "line_end": 67,
-      "text": [
-        "A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to create release pull requests and publish approved versions. Publishing MUST require a merged release-plz pull request. The release job MUST request an OIDC token for crates.io trusted publishing, and both jobs MUST use a GitHub token from a repository secret so release pull requests can trigger the normal pull request checks.",
-        ":::",
-        "",
-        ":::{req} report_api",
-        "`habeas::validate_repository(root)` MUST return a report with the number of discovered requirements, the number of evidence files, and all validation errors for the supplied project. Ordinary invalid evidence MUST be reported in that report; an inaccessible project root MUST return an I/O error.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 335,
-      "line_end": 343,
-      "text": [
-        "fn read_or_new(path: &Path, fallback: Value) -> io::Result<Value> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(source) => serde_json::from_str(&source)",
-        "            .map_err(|error| invalid_input(format!(\"{}: invalid JSON: {error}\", path.display()))),",
-        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(fallback),",
-        "        Err(error) => Err(error),",
-        "    }",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 158,
-      "line_end": 166,
-      "text": [
-        "                            ))",
-        "                        })?",
-        "                        .clone()",
-        "                }",
-        "                Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),",
-        "                Err(error) => return Err(error),",
-        "            };",
-        "            entries",
-        "                .retain(|entry| entry.get(\"rust_item\").and_then(Value::as_str) != Some(rust_item));"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 113,
-      "line_end": 121,
-      "text": [
-        "                        format!(",
-        "                            \"{}: inputs[{index}] has no resolvable selector\",",
-        "                            evidence_path.display()",
-        "                        )",
-        "                    })?;",
-        "                    insert_selector(&mut selectors, selector);",
-        "                }",
-        "            }",
-        "            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 195,
-      "line_end": 203,
-      "text": [
-        "                    let inputs = entry[\"inputs\"].as_array().ok_or_else(|| {",
-        "                        format!(\"{}: existing inputs must be an array\", path.display())",
-        "                    })?;",
-        "                    for (index, input) in inputs.iter().enumerate() {",
-        "                        let selector = InputSelector::from_input(input).ok_or_else(|| {",
-        "                            format!(",
-        "                                \"{}: inputs[{index}] has no resolvable selector\",",
-        "                                path.display()",
-        "                            )"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 585,
-      "line_end": 593,
-      "text": [
-        "            assert!(!project.path().join(\"evidence\").exists());",
-        "            assert!(!usage.record.evidence_written);",
-        "            if value.is_boolean() {",
-        "                let (judgment, record) = result.unwrap();",
-        "                assert_eq!(judgment.to_value(), value);",
-        "                assert_eq!(record[\"determination\"], value);",
-        "                assert_eq!(record[\"rust_item\"], \"fn[ready]\");",
-        "                assert_eq!(",
-        "                    record[\"citations\"],"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 23,
-      "line_end": 31,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "pub fn status_markdown_with_options(",
-        "    root: &Path,"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 134,
-      "line_end": 142,
-      "text": [
-        "        }",
-        "        if !definition_glob::matches(selector, name) {",
-        "            continue;",
-        "        }",
-        "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);",
-        "        pages.push(render_cli_detail_page(",
-        "            name,",
-        "            &definition.source,",
-        "            &definition.text,"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 411,
-      "line_end": 419,
-      "text": [
-        "    lookup: &impl Fn(&str) -> Option<OsString>,",
-        "    name: &str,",
-        ") -> io::Result<PathBuf> {",
-        "    absolute_directory(lookup, name).ok_or_else(|| {",
-        "        io::Error::new(",
-        "            io::ErrorKind::NotFound,",
-        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
-        "        )",
-        "    })"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 422,
-      "line_end": 430,
-      "text": [
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(text) => UserConfig::parse(&text, path).map(Some),",
-        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),",
-        "        Err(error) => Err(io::Error::new(",
-        "            error.kind(),",
-        "            format!(\"{}: {error}\", path.display()),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1184,
-      "line_end": 1192,
-      "text": [
-        "    path: &Path,",
-        "    rust_file: &str,",
-        "    functions: &[(crate::rust_items::RustItem, BTreeSet<(String, String)>)],",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        ") -> BTreeSet<String> {",
-        "    let mut valid = BTreeSet::new();",
-        "    let initial_errors = errors.len();",
-        "    let label = display_path(root, path);"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 151,
-      "line_end": 159,
-      "text": [
-        "            .collect::<Vec<_>>();",
-        "        // {impl}`requirements.index.invalid_detail`",
-        "        let record = match fs::read_to_string(&evidence_path) {",
-        "            Ok(record) => Some(record),",
-        "            Err(error) if error.kind() == io::ErrorKind::NotFound => None,",
-        "            Err(error) => {",
-        "                errors.push(format!(\"{prefix} cannot read evidence: {error}\"));",
-        "                None",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1101,
-      "line_end": 1109,
-      "text": [
-        "                path,",
-        "                Vec::new(),",
-        "            ));",
-        "        }",
-        "        let error = preprocess_book(&mut book, Path::new(\".\")).unwrap_err();",
-        "        assert!(error.to_string().contains(\"only one\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.index.path_conflicts`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 182,
-      "line_end": 190,
-      "text": [
-        "        let serialized = configured.to_toml().unwrap();",
-        "        assert!(serialized.contains(\"concurrency = 7\"));",
-        "        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);",
-        "        assert!(resolved.backend.options().is_empty());",
-        "",
-        "        for invalid in [\"0\", \"-1\", \"1.5\", \"'2'\"] {",
-        "            let error = UserConfig::parse(&format!(\"{base}concurrency = {invalid}\\n\"), &path)",
-        "                .unwrap_err()",
-        "                .to_string();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 246,
-      "line_end": 261,
-      "text": [
-        "        resolve_authoring_from(&config_path, Some(&config), &root, Some(\"explicit\")).unwrap();",
-        "    let BackendConfig::Ollama(ollama) = explicit.backend else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert_eq!(ollama.model, \"explicit:tag\");",
-        "    assert_eq!(ollama.endpoint, None);",
-        "    let error = resolve_authoring_from(&config_path, Some(&config), &root, Some(\"DEFAULT\"))",
-        "        .unwrap_err()",
-        "        .to_string();",
-        "    assert!(error.contains(\"DEFAULT\"));",
-        "    assert!(error.contains(\"config.toml\"));",
-        "    assert!(error.contains(\"editing-the-file\"));",
-        "    assert!(",
-        "        resolve_authoring_from(&config_path, None, &root, None)",
-        "            .unwrap_err()",
-        "            .to_string()"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 279,
-      "line_end": 287,
-      "text": [
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\nunknown = true\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'unsupported'\\nmodel = 'm'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'BAD=KEY'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
-        "    ] {",
-        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
-        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1398,
-      "line_end": 1404,
-      "text": [
-        "",
-        "    use super::validate_repository;",
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    fn fixture() -> TempDir {",
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1466,
-      "line_end": 1472,
-      "text": [
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.requirement_text`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1502,
-      "line_end": 1508,
-      "text": [
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.errors`",
-        "    // {test}`requirements.ci.diagnostics`",
-        "    // {test}`requirements.ci.input_containment`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 199,
-      "line_end": 207,
-      "text": [
-        "// {test}`requirements.authoring.rig_configuration_mapping`",
         "#[test]",
         "fn explicit_project_and_default_selections_choose_whole_configs() {",
         "    let dir = tempfile::tempdir().unwrap();",
         "    let root = dir.path().canonicalize().unwrap();",
         "    let config_path = root.join(\"config.toml\");",
         "    let mut config = UserConfig::parse(",
-        "        r#\"",
-        "version = 1"
+        "        r#\""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 332,
+      "line_end": 338,
+      "text": [
+        "    fs::write(&outer, \"version = 1\\n[evidence]\\nallow = ['outer']\\n\").unwrap();",
+        "    let inherited = load_workspace_config(&project).unwrap().unwrap();",
+        "    assert_eq!(inherited.path, outer);",
+        "    assert_eq!(inherited.root, temp.path().canonicalize().unwrap());",
+        "    let path = project.join(\"nested/habeas.toml\");",
+        "    let text = \"# preserved\\nversion = 1\\n[authoring]\\ndefault = 'cloud'\\n[evidence]\\ndisallow = ['private']\\n\";",
+        "    fs::write(&path, text).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 381,
+      "line_end": 387,
+      "text": [
+        "    fs::write(&path, \"version = 1\\n[evidence]\\nallow = ['generated', '../shared']\\ndisallow = ['generated/private']\\n[authoring.configs.cloud]\\nbackend = 'unknown'\\ncredentials = 'DO_NOT_PRINT_THIS_CREDENTIAL'\\n\").unwrap();",
+        "    let policy = load_workspace_evidence(temp.path()).unwrap().unwrap();",
+        "    assert_eq!(policy.path, path);",
+        "    assert_eq!(policy.root, temp.path().canonicalize().unwrap());",
+        "    assert_eq!(",
+        "        policy.evidence.allow,",
+        "        vec![Path::new(\"generated\"), Path::new(\"../shared\")]"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 420,
+      "line_end": 426,
+      "text": [
+        "#[test]",
+        "fn workspace_defaults_and_configs_combine_with_existing_user_selections() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let root = temp.path().canonicalize().unwrap();",
+        "    let user_path = root.join(\"user.toml\");",
+        "    let mut user = UserConfig::parse(\"version = 1\\n[authoring]\\ndefault = 'user'\\n[authoring.configs.user]\\nbackend = 'bedrock'\\nmodel = 'user-model'\\naws_profile = 'user-profile'\\n[authoring.configs.shared]\\nbackend = 'bedrock'\\nmodel = 'old-model'\\nregion = 'us-west-2'\\nconcurrency = 7\\n\", &user_path).unwrap();",
+        "    let path = root.join(\"habeas.toml\");"
       ]
     },
     {
       "file": "tests/live_bedrock.rs",
-      "line_start": 19,
-      "line_end": 27,
+      "line_start": 20,
+      "line_end": 26,
       "text": [
-        "",
         "// {test}`requirements.integration.live_bedrock_test`",
         "// {test}`requirements.authoring.configuration_precedence`",
         "fn selected_config() -> Result<Option<ResolvedAuthoringConfig>, Box<dyn Error>> {",
         "    let root = fs::canonicalize(env!(\"CARGO_MANIFEST_DIR\"))?;",
         "    let path = config::user_config_path()?;",
         "    let user = config::load_user_config(&path)?;",
-        "    let explicit = match std::env::var(\"HABEAS_LIVE_CONFIG\") {",
-        "        Ok(name) => Some(name),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 32,
-      "line_end": 40,
-      "text": [
-        "    pub(crate) raw_lines: Vec<String>,",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
-        "    Ok(inspect_repository(root)?.report)",
-        "}",
-        "",
-        "pub(crate) struct RepositoryInspection {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1495,
-      "line_end": 1503,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 1);",
-        "        assert_eq!(report.evidence_files, 1);",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1556,
-      "line_end": 1564,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1624,
-      "line_end": 1632,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "",
-        "    // {test}`requirements.references.targets`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1658,
-      "line_end": 1666,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
-        "        assert!(",
-        "            errors.contains(&format!("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1701,
-      "line_end": 1709,
-      "text": [
-        "            )",
-        "            .unwrap();",
-        "        }",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 2);",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1728,
-      "line_end": 1736,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 1);",
-        "        assert!(",
-        "            report.errors.join(\"\\n\").contains(",
-        "                \"md/requirements.md:1: requirement requirements.ready is missing a closing colon fence\""
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1764,
-      "line_end": 1772,
-      "text": [
-        "                .to_string(),",
-        "            )",
-        "            .unwrap();",
-        "",
-        "            let report = validate_repository(temp.path()).unwrap();",
-        "            assert_eq!(report.requirements, 1, \"{opening} ... {closing}\");",
-        "            assert!(",
-        "                report.errors.is_empty(),",
-        "                \"{opening} ... {closing}: {:?}\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1860,
-      "line_end": 1868,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 1);",
-        "        assert_eq!(report.examples, 1);",
-        "        assert_eq!(report.evidence_files, 3);",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1870,
-      "line_end": 1899,
-      "text": [
-        "        let rust_original = fs::read_to_string(&rust_evidence).unwrap();",
-        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
-        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);",
-        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"citation set changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"citations must not be empty\"), \"{errors}\");",
-        "        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
-        "        let copy = duplicate[\"functions\"][0].clone();",
-        "        duplicate[\"functions\"].as_array_mut().unwrap().push(copy);",
-        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"duplicate Rust function attestation\"),",
-        "            \"{errors}\"",
-        "        );",
-        "        fs::remove_file(&rust_evidence).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"missing Rust function attestation file\"),",
-        "            \"{errors}\"",
-        "        );",
-        "        fs::write(&rust_evidence, rust_original).unwrap();",
-        "        let orphan = temp.path().join(\"evidence/rust/src/removed.rs.json\");",
-        "        fs::write(&orphan, \"{}\").unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"orphaned Rust attestation file\"),",
-        "            \"{errors}\"",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1902,
-      "line_end": 1919,
-      "text": [
-        "        let old = fs::read_to_string(&example_path).unwrap();",
-        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        uncovered[\"inputs\"] = json!([]);",
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
-        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
-        "        fs::write(&example_path, &old).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
-        "            test_source.replace(\"assert!(true)\", \"assert!(false)\"),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"input text changed for RustItem\"),",
-        "            \"{errors}\"",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1922,
-      "line_end": 1939,
-      "text": [
-        "            temp.path().join(\"md/rules.md\"),",
-        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"requirements glob matches changed\"),",
-        "            \"{errors}\"",
-        "        );",
-        "",
-        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        evidence[\"example\"] = \"Outdated.\".into();",
-        "        fs::write(&example_path, evidence.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
-        "",
-        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1943,
-      "line_end": 1959,
-      "text": [
-        "            .remove(\"example\")",
-        "            .unwrap();",
-        "        wrong_field[\"requirement\"] = example_text;",
-        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");",
-        "        assert!(",
-        "            errors.contains(\"unexpected field \\\"requirement\\\"\"),",
-        "            \"{errors}\"",
-        "        );",
-        "",
-        "        fs::remove_file(&example_path).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
-        "    }",
-        "",
-        "    // {test}`requirements.ci.definition_errors`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1975,
-      "line_end": 1983,
-      "text": [
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"duplicate requirement rules.repeated; first declared at md/rules.md:1\",",
-        "            \"duplicate example rules.repeated; first declared at md/rules.md:1\",",
-        "            \"duplicate example rules.case; first declared at md/rules.md:13\","
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 48,
-      "line_end": 52,
-      "text": [
-        "                        }));",
-        "                    }",
-        "                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {",
-        "                        thread::sleep(Duration::from_millis(5));",
-        "                    }"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 48,
-      "line_end": 52,
-      "text": [
-        "                    match listener.accept() {",
-        "                        Ok((stream, _)) => break stream,",
-        "                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {",
-        "                            assert!(",
-        "                                Instant::now() < deadline,"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 61,
-      "line_end": 66,
-      "text": [
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 93,
-      "line_end": 97,
-      "text": [
-        "        Some(ProjectConfig {})",
-        "    );",
-        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 187,
-      "line_end": 191,
-      "text": [
-        "        for invalid in [\"0\", \"-1\", \"1.5\", \"'2'\"] {",
-        "            let error = UserConfig::parse(&format!(\"{base}concurrency = {invalid}\\n\"), &path)",
-        "                .unwrap_err()",
-        "                .to_string();",
-        "            assert!(error.contains(&path.display().to_string()), \"{error}\");"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 251,
-      "line_end": 255,
-      "text": [
-        "    assert_eq!(ollama.endpoint, None);",
-        "    let error = resolve_authoring_from(&config_path, Some(&config), &root, Some(\"DEFAULT\"))",
-        "        .unwrap_err()",
-        "        .to_string();",
-        "    assert!(error.contains(\"DEFAULT\"));"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 258,
-      "line_end": 262,
-      "text": [
-        "    assert!(",
-        "        resolve_authoring_from(&config_path, None, &root, None)",
-        "            .unwrap_err()",
-        "            .to_string()",
-        "            .contains(\"no authoring configuration\")"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 284,
-      "line_end": 288,
-      "text": [
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
-        "    ] {",
-        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
-        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 304,
-      "line_end": 309,
-      "text": [
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert!(ollama.api_key_from(|_| None).is_err());",
-        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
-        "    assert_eq!(",
-        "        ollama"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 107,
-      "line_end": 111,
-      "text": [
-        "        json!({ \"fixme\": [\"#125\"] }),",
-        "    ] {",
-        "        assert!(Judgment::from_value(&invalid).is_err(), \"{invalid}\");",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 551,
-      "line_end": 555,
-      "text": [
-        "    fn unresolved_existing_selector_fails_before_inference() {",
-        "        let root = project();",
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/requirements.ready.json\"),"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 35,
-      "line_end": 35,
-      "text": [
-        "| `src/evidence.rs:28` `validate_repository` | `requirements.integration.report_api`, `requirements.ci.coverage`, `requirements.ci.orphans`, `requirements.references.targets`, `requirements.references.evidence_coverage` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 81,
-      "line_end": 82,
-      "text": [
-        "| `src/evidence.rs:755` `validates_full_names_requirement_text_and_input_lines` | `requirements.integration.report_api`, `requirements.ci.book_source`, `requirements.ci.coverage`, `requirements.ci.requirement_text`, `requirements.ci.inputs` |",
-        "| `src/evidence.rs:791` `collects_missing_orphan_format_false_and_changed_line_errors` | `requirements.integration.report_api`, `requirements.ci.errors`, `requirements.ci.diagnostics`, `requirements.ci.input_containment`, `requirements.ci.definition_errors` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 118,
-      "line_end": 118,
-      "text": [
-        "| `src/evidence.rs:28` | inaccessible root returns an I/O error | `requirements.integration.report_api` |"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 65,
-      "line_end": 65,
-      "text": [
-        ":::{req} report_api"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 16,
-      "line_end": 16,
-      "text": [
-        "// {impl}`requirements.integration.report_api`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 35,
-      "line_end": 35,
-      "text": [
-        "// {impl}`requirements.integration.report_api`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 65,
-      "line_end": 65,
-      "text": [
-        "// {impl}`requirements.integration.report_api`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1401,
-      "line_end": 1401,
-      "text": [
-        "    // {test}`requirements.integration.report_api`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1469,
-      "line_end": 1469,
-      "text": [
-        "    // {test}`requirements.integration.report_api`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1505,
-      "line_end": 1505,
-      "text": [
-        "    // {test}`requirements.integration.report_api`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 59,
-      "line_end": 68,
-      "text": [
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.configuration.structure`",
-        "// {test}`requirements.configuration.loading`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 91,
-      "line_end": 99,
-      "text": [
-        "    assert_eq!(",
-        "        ProjectConfig::from_book_toml(&format!(\"{book}\\n[habeas]\\n\"), &path).unwrap(),",
-        "        Some(ProjectConfig {})",
-        "    );",
-        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.authoring.configuration_structure`",
-        "// {test}`requirements.authoring.configuration_serialization`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 302,
-      "line_end": 311,
-      "text": [
-        "        &config.authoring.as_ref().unwrap().configs[\"remote\"].backend",
-        "    else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert!(ollama.api_key_from(|_| None).is_err());",
-        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
-        "    assert_eq!(",
-        "        ollama",
-        "            .api_key_from(|name| (name == \"MODEL_KEY\").then(|| OsString::from(\"private-value\")))",
-        "            .unwrap()"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 105,
-      "line_end": 113,
-      "text": [
-        "        json!({ \"FIXME\": \"#125\" }),",
-        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
-        "        json!({ \"fixme\": [\"#125\"] }),",
-        "    ] {",
-        "        assert!(Judgment::from_value(&invalid).is_err(), \"{invalid}\");",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 115,
-      "line_end": 121,
-      "text": [
-        "",
-        "| Branch location | Observable behavior | Requirement IDs |",
-        "| --- | --- | --- |",
-        "| `src/evidence.rs:28` | inaccessible root returns an I/O error | `requirements.integration.report_api` |",
-        "| `src/evidence.rs:41` | orphan evidence file | `requirements.ci.orphans` |",
-        "| `src/evidence.rs:65` | missing evidence file | `requirements.ci.coverage` |",
-        "| `src/evidence.rs:84` | invalid book configuration or source path | `requirements.ci.book_source` |"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 34,
-      "line_end": 40,
-      "text": [
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
-        "    Ok(inspect_repository(root)?.report)",
-        "}",
-        "",
-        "pub(crate) struct RepositoryInspection {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 68,
-      "line_end": 74,
-      "text": [
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1194,
-      "line_end": 1200,
-      "text": [
-        "        \"review each function and confirm it cites every applicable requirement or named example\";",
-        "    let source = match fs::read_to_string(path) {",
-        "        Ok(source) => source,",
-        "        Err(error) if error.kind() == io::ErrorKind::NotFound => {",
-        "            for (function, _) in functions {",
-        "                errors.push(format!(",
-        "                    \"{label}: {rust_file}:{} {}: missing Rust function attestation file; {purpose}\","
+        "    let explicit = match std::env::var(\"HABEAS_LIVE_CONFIG\") {"
       ]
     }
   ]

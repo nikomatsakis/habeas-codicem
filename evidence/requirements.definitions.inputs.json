@@ -1,7 +1,7 @@
 {
   "requirement": "Evidence inputs MAY have a definition form containing exactly `definition` and `text`. `definition` MUST identify one named definition; `text` MUST contain its complete raw fenced declaration as source lines, including its phrase option and explanatory body.\n\nValidation MUST reject missing definitions and changed snapshot text, identifying the definition and showing a compact diff when available. Moving an unchanged definition within its chapter MUST NOT invalidate its snapshot. Evidence displays MUST show the definition name, current source location, and recorded text.",
   "determination": true,
-  "rationale": "The sources satisfy `requirements.definitions.inputs`. Two small gaps do not change that: the compact diff and the exact-key check are not asserted for definition inputs specifically.\n\n**Schema.** `validate_input` in `src/evidence.rs` accepts the definition form when a `definition` key is present. It calls `check_keys(object, [\"definition\", \"text\"])`, so any extra field is rejected. It requires string `definition` and `text` fields. `InputSelector::from_input` and `to_input` in `src/inputs.rs` round-trip exactly `{definition, text}`.\n\n**Snapshot content.** `InputSelector::Definition` in `resolve` (`src/inputs.rs`) looks up a named term definition. It returns `target.raw_lines`, the raw declaration lines, and the validator compares the recorded text against them. A missing definition gives the error `\"{definition}: no matching named definition\"`.\n\n**Changed text.** `validate_resolved_input` (`src/evidence.rs` ~650–700) reports `input text changed for Definition { definition: \"...\" }`. It appends `compact_diff(...)`, which gives `-`/`+` lines capped at 8 lines per side. The error therefore names the definition and shows a compact diff.\n\n**Moves.** Only the raw text is compared, not the line numbers. Moving an unchanged definition therefore does not invalidate the snapshot.\n\n**Display.** `render_input` in `src/index.rs` shows `definition <name>`, the current source location through `render_source_location`, including the definition name, and the recorded text.\n\n**Tests.** `tests/definitions.rs::cyclic_dependencies_are_captured_once_and_changes_require_review`:\n- It prepends blank lines to the glossary, which moves the definitions, and validation still passes.\n- It changes the phrase and the body, and each change yields an \"input text changed … glossary.\" error.\n- Recorded evidence is left unmodified, and `capture` refreshes the inputs and sets the determination to false.\n- It removes a definition input and duplicates another, and both are reported.\n\n`definition_schema_deletion_and_literal_references_are_checked` adds an unexpected field, which gives an \"unexpected field\" error. It also deletes the glossary file, which gives \"glossary.a … no matching named definition\". The display test near `tests/definitions.rs:393` checks that `info_markdown` output contains `definition glossary.a`, `md/glossary.md` and `:phrase: alpha`. The `compact_diff` output (`- `/`+ ` lines) is asserted in the general `src/evidence.rs` tests, for example around lines 1565–1573.\n\n**Gaps.** No test asserts the compact diff for a definition input specifically. No test asserts the exact-key check against a missing `text` field. Both paths share generic, tested code, so I do not count them as gaps.",
+  "rationale": "**Verdict:** the requirement is implemented and tested. I judged this from the supplied inputs and did not run the tests.\n\n**Implementation**\n- **Form and schema:** `validate_input` in `src/evidence.rs` accepts a definition form. It calls `check_keys` with only `definition` and `text`, so extra fields are rejected. It reads both fields through `string_field` and `text_field`, then calls `validate_resolved_input`.\n- **Resolution:** `InputSelector::resolve` in `src/inputs.rs` handles the `Definition` variant.\n  - It looks up the named definition, restricted to `DefinitionKind::Term`.\n  - A missing definition returns `\"{definition}: no matching named definition\"`.\n  - On success it uses `target.raw_lines` as the text. Those lines are the complete raw block source, including the phrase option and body, taken from `content[block.start..block.end]` in `src/evidence.rs`.\n  - It also records the file and line range, with the definition name attached.\n- **Changed text:** `validate_resolved_input` compares the recorded text with the resolved text. A mismatch produces `input text changed for Definition { definition: … }` followed by `compact_diff`, which shows `-` and `+` lines.\n- **Moves:** the snapshot holds only the raw text, not line numbers. A definition that moves within its chapter therefore still validates.\n- **Round-tripping:** `from_input` and `to_input` in `src/inputs.rs` carry the `{definition, text}` shape through unchanged.\n- **Display:** `render_input` in `src/index.rs` shows `definition <name>` in the heading. `render_source_location` shows the name, the current file and the line range. The recorded text is rendered as a code block.\n\n**Tests**\n- **`cyclic_dependencies_are_captured_once_and_changes_require_review`** (`tests/definitions.rs`) covers three behaviors.\n  - Moving the definition: prepending blank lines to the glossary leaves validation error-free.\n  - Changed phrase or body: either edit produces `input text changed` and names `glossary.`, and the record on disk is not modified.\n  - Re-capture: `capture` (the `add-input` path) afterwards refreshes the record and sets determination to false.\n  - The test also checks that a missing definition input and a duplicated one are reported.\n- **`definition_schema_deletion_and_literal_references_are_checked`** (`tests/definitions.rs`) covers three behaviors.\n  - An unexpected field is reported as `unexpected field`.\n  - Deleting `md/glossary.md` yields an error naming `glossary.a` and `no matching named definition`.\n  - Literal `{term}` references inside code are not treated as dependencies.\n- **Display:** a test around lines 393–399 of `tests/definitions.rs` calls `info_markdown` and asserts it contains `definition glossary.a`, `md/glossary.md` and `:phrase: alpha`. That covers the name, the source location and the recorded text.\n- **Diff format:** unit tests in `src/evidence.rs` (around lines 1558 and 1904) check the compact `-`/`+` diff output for file-range and Rust-item inputs. `compact_diff` is shared by every input kind.\n\n**Minor gap:** no definition-specific test asserts the diff lines themselves. `compact_diff` is shared and covered by the other unit tests, so I do not consider this a gap in satisfying the requirement.\n\nThe related examples `transitive_cycle` and `reassessment` are covered by the first test above, which carries `{test}` references to them.",
   "inputs": [
     {
       "requirements": "requirements.definitions.inputs",
@@ -36,15 +36,18 @@
         "Rust file and selector arguments MUST use the syntax defined by",
         "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
         "project working tree, including unstaged changes to tracked files and staged new",
-        "files. All source inputs, including mandatory inputs, MUST stay within the",
-        "project root after resolving symlinks. In a Git worktree, both the requested file",
-        "and its resolved target MUST be present in the Git index. Untracked mandatory",
-        "inputs and explicit reads MUST fail with guidance to stage the file using",
-        "`git add`. Projects outside Git MUST use the same project-root and generated-output",
-        "boundaries without requiring an index; failure to read an existing repository's",
-        "index MUST be reported as an error.",
-        "The project-root `evidence/` directory contains generated output and MUST be",
-        "excluded from source reads, including paths that resolve there through symlinks.",
+        "files. By default, source inputs MUST stay within the project root after",
+        "resolving symlinks; in a Git worktree, both the requested file and its resolved",
+        "target MUST be present in the Git index. Projects outside Git MUST use the same",
+        "containment rules without requiring an index. Failure to read an existing",
+        "repository's index MUST be reported as an error.",
+        "The project-root `evidence/` directory and an active workspace configuration",
+        "containing literal credentials MUST be excluded from model reads by default,",
+        "including symlink aliases. Generated build outputs MUST follow",
+        "{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST",
+        "follow {cite}`requirements.configuration.evidence_paths`, including explicit",
+        "permission for otherwise excluded inputs. A denied mandatory input or explicit",
+        "read MUST abort under {cite}`requirements.authoring.read_denial`.",
         "",
         "File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read",
         "through EOF; the returned evidence input MUST contain the actual numeric ending",
@@ -67,8 +70,9 @@
         "```",
         "",
         "`definitions` MUST be empty when no additional terminology is required. The",
-        "harness MUST record inputs supplied to the model in the assessment's evidence. A failed",
-        "read MUST return an explanatory tool error and add no evidence input.",
+        "harness MUST record inputs supplied to the model in the assessment's evidence.",
+        "A failed read MUST add no evidence input. Access-policy denials MUST abort;",
+        "other failed reads MUST return an explanatory tool error.",
         ":::"
       ]
     },
@@ -646,13 +650,13 @@
       "line_start": 418,
       "line_end": 424,
       "text": [
-        "        if text.trim().is_empty() {",
-        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
-        "        }",
-        "        if let Some(expected) = expected",
-        "            && text != expected.text",
-        "        {",
-        "            errors.push(format!("
+        "        &label,",
+        "        errors,",
+        "    );",
+        "",
+        "    // {impl}`requirements.ci.requirement_text`",
+        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
+        "        if text.trim().is_empty() {"
       ]
     },
     {
@@ -689,20 +693,20 @@
       "line_start": 746,
       "line_end": 759,
       "text": [
-        "    if text.len() != expected_count {",
-        "        errors.push(format!(",
-        "            \"{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}\",",
-        "            text.len()",
-        "        ));",
-        "    }",
-        "    let actual = &lines[start - 1..end];",
-        "    if text != actual {",
-        "        errors.push(format!(",
-        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
         "            compact_diff(text, actual)",
         "        ));",
         "    }",
-        "}"
+        "}",
+        "",
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn compact_diff(recorded: &[&str], current: &[&str]) -> String {",
+        "    let prefix = recorded",
+        "        .iter()",
+        "        .zip(current.iter())",
+        "        .take_while(|(old, new)| old == new)",
+        "        .count();",
+        "    let suffix = recorded[prefix..]",
+        "        .iter()"
       ]
     },
     {
@@ -710,13 +714,13 @@
       "line_start": 1558,
       "line_end": 1564,
       "text": [
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\","
+        "            \"+ First.\",",
+        "            \"determination is false\",",
+        "            \"input text changed\",",
+        "            \"- changed line\",",
+        "            \"+ // first line\",",
+        "            \"requirement must be a string\",",
+        "            \"missing field \\\"determination\\\"\","
       ]
     },
     {
@@ -724,13 +728,13 @@
       "line_start": 1904,
       "line_end": 1910,
       "text": [
-        "        uncovered[\"inputs\"] = json!([]);",
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        .unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
-        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
-        "        fs::write(&example_path, &old).unwrap();",
-        "        fs::write("
+        "        assert!(",
+        "            errors.contains(\"input text changed for RustItem\"),",
+        "            \"{errors}\"",
+        "        );",
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();"
       ]
     },
     {
@@ -810,13 +814,13 @@
       "line_start": 296,
       "line_end": 302,
       "text": [
-        "        .get_mut(\"inputs\")",
-        "        .and_then(Value::as_array_mut)",
-        "        .unwrap();",
-        "    for definition in required {",
-        "        let selector = InputSelector::Definition {",
-        "            definition: definition.clone(),",
-        "        };"
+        "        }",
+        "        output.push('\\n');",
+        "    }",
+        "    let required =",
+        "        crate::terms::dependencies(definitions, object, subject).map_err(invalid_input)?;",
+        "    let existing = object",
+        "        .get_mut(\"inputs\")"
       ]
     },
     {
@@ -844,13 +848,13 @@
       "line_start": 540,
       "line_end": 546,
       "text": [
-        "                    Some(name) => names.push(name.to_owned()),",
-        "                    None => errors.push(format!(\"{label}: matches[{index}] must be a string\")),",
-        "                }",
-        "            }",
-        "            if names.len() != values.len() {",
-        "                return None;",
-        "            }"
+        "        check_keys(object, &[\"requirements\", \"matches\", \"text\"], label, errors);",
+        "        let requirements = string_field(object, \"requirements\", label, errors);",
+        "        let matches = array_field(object, \"matches\", label, errors).and_then(|values| {",
+        "            let mut names = Vec::new();",
+        "            for (index, value) in values.iter().enumerate() {",
+        "                match value.as_str() {",
+        "                    Some(name) => names.push(name.to_owned()),"
       ]
     },
     {
@@ -898,16 +902,6 @@
       "line_start": 737,
       "line_end": 787,
       "text": [
-        "        .collect();",
-        "    if end > lines.len() {",
-        "        errors.push(format!(",
-        "            \"{label}: {file}:{start}-{end} exceeds the file's {} lines\",",
-        "            lines.len()",
-        "        ));",
-        "        return;",
-        "    }",
-        "    let expected_count = end - start + 1;",
-        "    if text.len() != expected_count {",
         "        errors.push(format!(",
         "            \"{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}\",",
         "            text.len()",
@@ -948,7 +942,17 @@
         "    }",
         "    diff",
         "}",
-        ""
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "fn check_keys(",
+        "    object: &Map<String, Value>,",
+        "    expected: &[&str],",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") {",
+        "    for key in object.keys() {",
+        "        if !expected.contains(&key.as_str()) {",
+        "            errors.push(format!(\"{label}: unexpected field {key:?}\"));"
       ]
     },
     {
@@ -1014,11 +1018,11 @@
       "line_start": 425,
       "line_end": 429,
       "text": [
-        "                \"{label}: {text_field} text changed at {}{}\",",
-        "                expected.source,",
-        "                compact_diff(",
-        "                    &text.split('\\n').collect::<Vec<_>>(),",
-        "                    &expected.text.split('\\n').collect::<Vec<_>>()"
+        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
+        "        }",
+        "        if let Some(expected) = expected",
+        "            && text != expected.text",
+        "        {"
       ]
     },
     {
@@ -1038,11 +1042,11 @@
       "line_start": 754,
       "line_end": 758,
       "text": [
-        "        errors.push(format!(",
-        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
-        "            compact_diff(text, actual)",
-        "        ));",
-        "    }"
+        "        .iter()",
+        "        .zip(current.iter())",
+        "        .take_while(|(old, new)| old == new)",
+        "        .count();",
+        "    let suffix = recorded[prefix..]"
       ]
     },
     {
@@ -1050,11 +1054,11 @@
       "line_start": 760,
       "line_end": 764,
       "text": [
-        "",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn compact_diff(recorded: &[&str], current: &[&str]) -> String {",
-        "    let prefix = recorded",
-        "        .iter()"
+        "        .rev()",
+        "        .zip(current[prefix..].iter().rev())",
+        "        .take_while(|(old, new)| old == new)",
+        "        .count();",
+        "    let removed = &recorded[prefix..recorded.len() - suffix];"
       ]
     },
     {
@@ -1062,15 +1066,15 @@
       "line_start": 1565,
       "line_end": 1573,
       "text": [
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\",",
-        "            \"requirement must be a string\","
+        "            \"inputs must be an array\",",
+        "            \"file must be a nonempty path\",",
+        "            \"line_start must be a positive integer\",",
+        "            \"text[0] must be a string\",",
+        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
+        "            \"requirement requirements.empty has no text\",",
+        "        ] {",
+        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
+        "        }"
       ]
     },
     {
@@ -1078,11 +1082,11 @@
       "line_start": 1935,
       "line_end": 1939,
       "text": [
+        "        wrong_field[\"requirement\"] = example_text;",
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
-        "",
-        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();"
+        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");",
+        "        assert!("
       ]
     },
     {
@@ -1167,6 +1171,133 @@
         "            .replace(\"CITE\", \"{cite}\")",
         "            .replace(\"TERM\", \"{term}\");",
         "    fs::write(path, text).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 29,
+      "line_end": 35,
+      "text": [
+        "    pub(crate) file: String,",
+        "    pub(crate) line_start: usize,",
+        "    pub(crate) line_end: usize,",
+        "    pub(crate) raw_lines: Vec<String>,",
+        "}",
+        "",
+        "// {impl}`requirements.integration.report_api`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 275,
+      "line_end": 281,
+      "text": [
+        "            }",
+        "            match definitions.entry(name.clone()) {",
+        "                Entry::Vacant(slot) => {",
+        "                    let raw_lines = content[block.start..block.end]",
+        "                        .lines()",
+        "                        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
+        "                        .collect::<Vec<_>>();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 285,
+      "line_end": 292,
+      "text": [
+        "                        source,",
+        "                        file: label.clone(),",
+        "                        line_start: line,",
+        "                        line_end: line + raw_lines.len().saturating_sub(1),",
+        "                        raw_lines,",
+        "                    });",
+        "                }",
+        "                Entry::Occupied(previous) => errors.push(format!("
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 124,
+      "line_end": 130,
+      "text": [
+        "                line_end,",
+        "            } => {",
+        "                let (_, content) = read_project_file(root, file)?;",
+        "                let lines = raw_lines(&content);",
+        "                if *line_start == 0 || *line_end < *line_start || *line_end > lines.len() {",
+        "                    return Err(format!(",
+        "                        \"{file}:{line_start}-{line_end} is not an inclusive range within the file's {} lines\","
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 186,
+      "line_end": 192,
+      "text": [
+        "                        line_end: target.line_end,",
+        "                        name: Some(definition.clone()),",
+        "                    }],",
+        "                    text: target.raw_lines.clone(),",
+        "                    matches: Vec::new(),",
+        "                })",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 205,
+      "line_end": 211,
+      "text": [
+        "                    if !text.is_empty() {",
+        "                        text.push(String::new());",
+        "                    }",
+        "                    text.extend(definition.raw_lines.iter().cloned());",
+        "                    ranges.push(SourceRange {",
+        "                        file: definition.file.clone(),",
+        "                        line_start: definition.line_start,"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 244,
+      "line_end": 250,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "fn raw_lines(content: &str) -> Vec<String> {",
+        "    content",
+        "        .lines()",
+        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 390,
+      "line_end": 396,
+      "text": [
+        "                    file: \"md/requirements.md\".to_owned(),",
+        "                    line_start: 1,",
+        "                    line_end: 1,",
+        "                    raw_lines: vec![],",
+        "                },",
+        "            ),",
+        "            ("
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 403,
+      "line_end": 409,
+      "text": [
+        "                    file: \"md/requirements.md\".to_owned(),",
+        "                    line_start: 5,",
+        "                    line_end: 5,",
+        "                    raw_lines: vec![],",
+        "                },",
+        "            ),",
+        "        ])"
       ]
     }
   ]

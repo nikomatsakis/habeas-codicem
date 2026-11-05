@@ -1,7 +1,7 @@
 {
   "requirement": "During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST cite a requirement. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation matches the requirement text, and the tests cover the main cases. I did not run the tests or the repository self-validation; the self-validation point rests on reading the code and a spot-check.\n\n**Wiring.** `inspect_repository` in `src/evidence.rs` calls `crate::rust_coverage::validate_rust_functions` during repository validation. That call carries its own `{impl}` comment.\n\n**Parsing every first-party file.**\n- `rust_files` walks the whole project tree.\n  - It skips `.git` and `target` at any depth.\n  - It skips `book`, `evidence` and `vendor` only at the root, so `src/evidence/check.rs` is still scanned.\n- `validate_rust_functions` reads each file and calls `missing_function_references`, which runs `syn::parse_file`.\n- A parse failure becomes `\"{file}:{line}: cannot parse Rust source: …\"`, and read or directory errors are also reported. Files are never silently skipped.\n\n**Which functions are collected.**\n- `FunctionCollector` visits `ItemFn`, `ImplItemFn`, `TraitItemFn` and `ForeignItemFn`, and recurses into each. That covers free functions, methods, trait methods (including bodiless ones), extern functions, nested functions and test helpers.\n- Functions generated inside macros are not seen. That fits \"explicitly declared\".\n\n**Which comments count.**\n- `comments()` is a lexer that skips string, raw-string, byte-string and char literals, so a reference in a string literal does not count. It also handles nested block comments.\n- `attached_comment_indices` attaches comments that sit directly above a function with at most one blank line and nothing else between them. A comment is not attached if code precedes it on its line, or if it is an inner doc comment (`//!` or `/*!`).\n- A comment inside a function's span goes to the smallest enclosing function, so a comment in a nested function does not credit the outer one.\n- Comments on an enclosing `mod` or `impl` only count if they are directly attached to a function, which in practice excludes them.\n- A reference counts only if its role is not `term` and it names a defined requirement or example. Unknown names do not count.\n- Uncited functions are reported with file, line and name.\n- Citations are not checked by definition kind. A named example that cites no requirement still counts here, but the definition-collection check in `src/evidence.rs` reports that separately (\"example … must cite at least one requirement\").\n\n**Tests in `src/rust_coverage.rs`.**\n- `finds_uncited_functions_without_using_enclosing_or_string_references` covers:\n  - enclosing mod and impl references not counting;\n  - string and raw-string references not counting;\n  - unknown names not counting;\n  - body block comments counting;\n  - a distant comment not counting;\n  - a trailing comment on the previous line not counting;\n  - an inner doc comment not counting;\n  - an outer doc comment counting.\n- `checks_trait_test_helper_and_nested_functions_separately` covers trait methods, nested functions, `{test}` references on a requirement and on a named example, and an uncited test helper.\n- `locates_functions_after_unicode_text` checks byte-offset and line handling.\n- `reports_all_files_and_parse_failures` checks multi-file traversal, nested directories, a parse failure, and the `target` and root `evidence` exclusions.\n\n**Integration tests.**\n- `tests/authoring_batch.rs::discovery_errors_fail_before_configuration_or_inference` checks the parse-failure diagnostic through the CLI.\n- `tests/commands.rs::status_preserves_repository_wide_rust_findings_in_every_form` checks the \"has no requirement or example citation\" message through the CLI.\n- `tests/habeas.rs` runs `habeas::validate()` on the repository itself. The visible sampled functions are cited, e.g. `fn habeas` carries `{test}\\`requirements.integration.self_test\\``.\n\n**Minor observations, not gaps.**\n- No test exercises `ForeignItemFn` specifically.\n- The reported line for a function with attributes is the start of its span, which includes the attributes.\n\nNo FIXME-acknowledged gaps were found in `src/rust_coverage.rs`.",
+  "rationale": "**Verdict:** the requirement is implemented and tested. I found no gaps and no FIXME markers.\n\n**Implementation** (`src/rust_coverage.rs`, called from `inspect_repository` in `src/evidence.rs`):\n- **Entry point:** `inspect_repository` calls `validate_rust_functions` during repository validation.\n- **File discovery:** `rust_files` walks the project for `*.rs` files. It skips `.git` and `target` at any depth. At the project root only, it also skips `book`, `evidence` and `vendor`. Those are the generated, evidence and third-party trees, so the walk covers first-party sources. Directory read errors are reported rather than ignored.\n- **Parsing:** `missing_function_references` parses each file with `syn::parse_file`. A parse failure is reported as `file:line: cannot parse Rust source: …`, so the file is never silently skipped. Read failures are reported too.\n- **Function discovery:** `FunctionCollector` is a `syn` visitor. It records free functions, impl methods, trait methods (with or without a body) and foreign functions. It recurses into bodies, so nested functions and test helpers are found. Byte spans come from proc-macro2's `span-locations` feature, enabled in `Cargo.toml`.\n- **Comments and string literals:** a custom scanner (`comments`, `quoted_end`, `char_end`, `raw_string_end`) extracts only real comments. References inside string, raw-string and char literals therefore do not count.\n- **Attachment:** `attached_comment_indices` attaches contiguous preceding comments to a declaration.\n  - It rejects trailing comments that follow code on the same line.\n  - It rejects comments separated by a blank line.\n  - It stops at `//!` and `/*!` inner doc comments.\n  - Attributes and `///` docs are part of the `syn` item span.\n- **Ownership:** a comment inside a body belongs to the smallest enclosing function. A citation in a nested function therefore does not cover its outer function, and a citation on an enclosing module or impl block does not cover its methods.\n- **Citation validity:** a function counts as cited only if some owned comment has an `{impl}`, `{cite}` or `{test}` role naming a defined requirement or example. `{term}` roles and definitions of kind `Term` are rejected. Unknown names do not count. The rule that a named example must cite a requirement is enforced in `collect_definitions` (`src/evidence.rs`, around lines 298–330).\n- **Reporting:** uncited functions are reported as `file:line: function name has no requirement or example citation`.\n\n**Tests:**\n- **Unit tests** in `src/rust_coverage.rs`, each tagged `{test}`:\n  - `finds_uncited_functions_without_using_enclosing_or_string_references` covers:\n    - citations on a module or impl block;\n    - citations in string and raw-string literals;\n    - unknown requirement names;\n    - body block comments;\n    - a distant comment separated by a blank line;\n    - a trailing comment on the previous function;\n    - inner doc comments;\n    - outer doc comments.\n  - `checks_trait_test_helper_and_nested_functions_separately` covers trait methods, nested functions, `#[test]` functions citing a requirement or a named example, and an uncited helper.\n  - `locates_functions_after_unicode_text` checks the reported line number after non-ASCII text.\n  - `reports_all_files_and_parse_failures` covers:\n    - multiple files and nested directories;\n    - the `target` and `evidence` exclusions;\n    - the file:line:name message format;\n    - a parse failure that is reported rather than skipped.\n- **Integration tests** show the behaviour end to end:\n  - `tests/authoring_batch.rs::discovery_errors_fail_before_configuration_or_inference` checks that a parse failure surfaces through the CLI.\n  - `tests/commands.rs::status_preserves_repository_wide_rust_findings_in_every_form` checks that uncited-function findings appear in `status` output.\n\n**Minor observations**, none of which I count as gaps:\n- Foreign (`extern`) functions have no dedicated test, but they are handled by the same `add` path as the other kinds.\n- The `book` and `vendor` exclusions have no dedicated test.\n- Functions generated inside macro bodies are not discovered. This fits the requirement's wording of \"explicitly declared\".\n\nThe helper functions in the sampled test files, such as `Fixture::run` and `Fixture::command` in `tests/authoring_batch.rs`, carry their own citations. That is consistent with the rule being applied to the project's own code.",
   "inputs": [
     {
       "requirements": "requirements.references.rust_function_coverage",
@@ -24,9 +24,15 @@
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
         "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
         "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
         "    let mut errors = Vec::new();",
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
+        "        errors.push(error.to_string());",
+        "    }",
         "    let md_root = book_source_dir(&root, &mut errors);",
         "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
         "    let mut discovery_errors = errors.clone();",
@@ -849,13 +855,13 @@
       "line_start": 238,
       "line_end": 244,
       "text": [
-        "        )?;",
-        "    }",
-        "    Ok(format!(",
-        "        \"evidence/rust/{rust_file}.json {rust_item}:\\n{output}\\nThis attestation remains pending. Run `habeas author --all` to have the configured model review this function's citation completeness: it identifies applicable requirements and examples, checks that every applicable citation is present, and explains how the cited texts account for the function's behavior. The supervising agent must not write the attestation by hand.\"",
-        "    ))",
-        "}",
-        ""
+        "        if let Some(parent) = path.parent() {",
+        "            fs::create_dir_all(parent)?;",
+        "        }",
+        "        fs::write(",
+        "            &path,",
+        "            format!(\"{}\\n\", serde_json::to_string_pretty(&sidecar)?),",
+        "        )?;"
       ]
     },
     {
@@ -863,13 +869,13 @@
       "line_start": 298,
       "line_end": 304,
       "text": [
-        "                .into_iter()",
-        "                .any(|reference| {",
-        "                    reference.kind == ReferenceKind::Cite",
-        "                        && definitions",
-        "                            .get(reference.name)",
-        "                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)",
-        "                })"
+        "        }",
+        "    }",
+        "",
+        "    for (name, definition) in &definitions {",
+        "        if definition.kind == DefinitionKind::Example",
+        "            && !reference_roles(&definition.text, true)",
+        "                .into_iter()"
       ]
     },
     {
@@ -877,13 +883,13 @@
       "line_start": 1586,
       "line_end": 1592,
       "text": [
-        "    // {test}`requirements.references.evidence_coverage`",
-        "    #[test]",
-        "    fn source_references_are_covered_by_evidence_inputs() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\","
+        "        let citation = [\"{\", \"cite}`foo.bar.ready`\"].concat();",
+        "        let test = [\"{\", \"test}`foo.bar.ready`\"].concat();",
+        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
+        "        let source = format!(\"// {implementation}\\n// {citation}\\n\");",
+        "        let notes = format!(\"# Notes\\n\\n{test}\\n\\n`{example}`\\n\\n```text\\n{example}\\n```\\n\");",
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
+        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();"
       ]
     },
     {
@@ -891,13 +897,13 @@
       "line_start": 1786,
       "line_end": 1792,
       "text": [
-        "    fn cited_example_with_a_test_and_matching_evidence_validates() {",
-        "        let temp = fixture();",
-        "        let chapter = \"# Rules\\n\\n:::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it succeeds. CITE`rules.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();",
-        "        let test_source = \"// TEST`rules.case`\\n#[test]\\nfn checks_case() { assert!(true); }\\n\"",
-        "            .replace(\"TEST\", \"{test}\");"
+        "            json!({",
+        "                \"requirement\": \"Ready.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The example cites this rule.\",",
+        "                \"inputs\": [{",
+        "                    \"file\": \"md/rules.md\",",
+        "                    \"line_start\": 8,"
       ]
     },
     {
@@ -905,13 +911,13 @@
       "line_start": 1801,
       "line_end": 1807,
       "text": [
-        "                    \"file\": \"md/rules.md\",",
-        "                    \"line_start\": 8,",
-        "                    \"line_end\": 8,",
-        "                    \"text\": [chapter.lines().nth(7).unwrap()]",
-        "                }]",
-        "            })",
-        "            .to_string(),"
+        "        fs::write(",
+        "            &example_path,",
+        "            json!({",
+        "                \"example\": \"Given ready, it succeeds. CITE`rules.ready`\".replace(\"CITE\", \"{cite}\"),",
+        "                \"determination\": true,",
+        "                \"rationale\": \"checks_case sets up ready and asserts the result.\",",
+        "                \"inputs\": [{"
       ]
     },
     {
@@ -919,13 +925,13 @@
       "line_start": 1958,
       "line_end": 1964,
       "text": [
-        "",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    // {test}`requirements.examples.definition`",
-        "    // {test}`requirements.examples.evidence`",
-        "    #[test]",
-        "    fn example_errors_include_duplicates_invalid_bodies_and_missing_tests() {",
-        "        let temp = fixture();"
+        "        fs::write(",
+        "            temp.path().join(\"evidence/rules.case.json\"),",
+        "            json!({",
+        "                \"example\": \"Given ready. CITE`rules.repeated`\".replace(\"CITE\", \"{cite}\"),",
+        "                \"determination\": true,",
+        "                \"rationale\": \"No test has been cited yet.\",",
+        "                \"inputs\": []"
       ]
     },
     {
@@ -933,13 +939,13 @@
       "line_start": 1972,
       "line_end": 1978,
       "text": [
-        "                \"determination\": true,",
-        "                \"rationale\": \"No test has been cited yet.\",",
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();"
+        "            \"duplicate example rules.repeated; first declared at md/rules.md:1\",",
+        "            \"duplicate example rules.case; first declared at md/rules.md:13\",",
+        "            \"example rules.empty has no text\",",
+        "            \"example rules.empty must cite at least one requirement\",",
+        "            \"example rules.unclosed is missing a closing colon fence\",",
+        "            \"example rules.case has a true determination but no {test} reference\",",
+        "        ] {"
       ]
     },
     {
@@ -1337,6 +1343,12 @@
       "line_start": 270,
       "line_end": 330,
       "text": [
+        "",
+        "            if block.kind == DefinitionKind::Term",
+        "                && let Err(error) = crate::terms::declaration(&text)",
+        "            {",
+        "                errors.push(format!(\"{source}: definition {name}: {error}\"));",
+        "            }",
         "            match definitions.entry(name.clone()) {",
         "                Entry::Vacant(slot) => {",
         "                    let raw_lines = content[block.start..block.end]",
@@ -1391,13 +1403,7 @@
         "    errors: &mut Vec<String>,",
         ") -> Vec<PathBuf> {",
         "    let mut stack = vec![dir.to_path_buf()];",
-        "    let mut files = Vec::new();",
-        "",
-        "    while let Some(directory) = stack.pop() {",
-        "        let entries = match fs::read_dir(&directory) {",
-        "            Ok(entries) => entries,",
-        "            Err(error) => {",
-        "                errors.push(format!("
+        "    let mut files = Vec::new();"
       ]
     },
     {
@@ -1445,10 +1451,10 @@
       "line_start": 33,
       "line_end": 36,
       "text": [
-        "Use `habeas status [<glob>]` to find requirements and examples needing attention,",
-        "or `--all` to include accepted records. Status groups FIXME judgments by issue;",
-        "use `--verbose` to list the judgments and original FIXME entries in each group.",
-        "Use `habeas info <glob>` to inspect their"
+        "the defaults and disallow wins. A denied explicit read aborts that assessment;",
+        "other batch assessments continue, and the command ultimately reports failure.",
+        "The driving human or agent must decide whether to stage the file or change policy.",
+        "Do not bypass the error by writing evidence yourself."
       ]
     },
     {
@@ -1456,14 +1462,14 @@
       "line_start": 58,
       "line_end": 65,
       "text": [
-        "",
-        "Requirement and example judgments are `true`, `false`, or `{\"FIXME\": [\"#125\"]}`.",
-        "FIXME means source comments or tests explicitly acknowledge every remaining gap;",
-        "the entries identify issues or other source content. The convention is",
-        "`FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but other source locations are allowed.",
-        "The harness records these references; do not invent issue numbers or change a",
-        "judgment to make validation pass. CI accepts true and FIXME only when all schema,",
-        "freshness, and coverage checks also pass. Function attestations remain boolean"
+        "text. Every first-party Rust function or method needs its own applicable",
+        "requirement or example citations, including trait methods and test helpers; an",
+        "enclosing module citation does not cover its functions. When no existing",
+        "requirement explains behavior, propose an appropriate requirement rather than",
+        "waiving the function or inventing evidence.",
+        "Missing evidence or a truthful false judgment is expected while implementation",
+        "is pending; do not write placeholder evidence yourself.",
+        ""
       ]
     },
     {
@@ -1517,9 +1523,9 @@
       "line_start": 164,
       "line_end": 166,
       "text": [
+        "region = \"us-east-1\"",
         "",
-        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
-        "assessment that fails before accepting a valid judgment emits no evidence JSON."
+        "[authoring.configs.local]"
       ]
     },
     {
@@ -1527,9 +1533,9 @@
       "line_start": 281,
       "line_end": 283,
       "text": [
-        "",
-        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
-        ""
+        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing",
+        "Bedrock authoring configuration fails the test. A skip returns successfully, so",
+        "Cargo displays `ok` rather than `ignored`. Once credentials load, provider and"
       ]
     },
     {
@@ -1537,12 +1543,12 @@
       "line_start": 285,
       "line_end": 290,
       "text": [
+        "requests and retain their usage records in the usual user state directory.",
         "",
-        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
+        "Run just these tests with:",
         "",
-        "Run `habeas status [<glob>]` from within the project to list requirements and named",
-        "examples needing attention and their validation findings. FIXME judgments are",
-        "summarized by issue, for example:"
+        "```sh",
+        "cargo test --test live_bedrock"
       ]
     },
     {
@@ -1550,9 +1556,9 @@
       "line_start": 294,
       "line_end": 296,
       "text": [
-        "- #45 — affects 3 judgments",
-        "- 16 judgments marked FIXME without an issue",
-        "```"
+        "falling back to the first named Bedrock configuration in name order. To select",
+        "one explicitly:",
+        ""
       ]
     },
     {
@@ -1560,9 +1566,9 @@
       "line_start": 300,
       "line_end": 302,
       "text": [
-        "no recognized issue reference. References may appear in explanatory text or",
-        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
-        "URLs are also recognized. Groups with the most affected judgments come first."
+        "",
+        "The test uses a temporary project and stdout evidence output, leaving the",
+        "checkout's evidence unchanged. Any set `CI` environment variable disables live"
       ]
     },
     {
@@ -1570,12 +1576,12 @@
       "line_start": 305,
       "line_end": 310,
       "text": [
-        "Use `--verbose` to list the actual judgments in each group, with their full names,",
-        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
-        "evidence state. Stale or invalid FIXME evidence still reports its validation",
-        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
-        "including current texts, rationales, inputs, FIXME references, and findings. Both",
-        "commands match whole full names; `*` can span any number of characters, including"
+        "{cite}`requirements.integration.live_bedrock_test`",
+        "",
+        "## References",
+        "",
+        "Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:",
+        ""
       ]
     },
     {
@@ -1593,12 +1599,12 @@
       "line_start": 168,
       "line_end": 173,
       "text": [
-        "",
-        "Judgment = Boolean | { FIXME: Array<String> }",
-        "```",
-        "",
-        "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
-        "{cite}`requirements.ci.outcomes`."
+        "project-relative paths where possible and absolute paths for permitted external",
+        "files. Its root listing MUST also expose available generated-output directories",
+        "and configured external allow paths. The model can list a returned",
+        "directory in another call to explore further. A failed listing MUST return an",
+        "explanatory tool error unless access was denied, which MUST abort under",
+        "{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs."
       ]
     },
     {
@@ -1606,12 +1612,12 @@
       "line_start": 235,
       "line_end": 240,
       "text": [
+        "A valid single submission MUST finish the assessment; there is no submission",
+        "repair or resubmission loop. An assessment that fails before accepting a valid",
+        "judgment MUST emit no evidence JSON to stdout.",
+        ":::",
         "",
-        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
-        "the remaining gaps are explicitly acknowledged in source comments or tests;",
-        "list their issue references or other identifying content. The usual convention",
-        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
-        "Choose false for other gaps or insufficient evidence. Explain your judgment in"
+        "## Initial prompt"
       ]
     },
     {
@@ -1619,9 +1625,9 @@
       "line_start": 261,
       "line_end": 263,
       "text": [
-        "derive the recorded citations from source and record the inputs it supplies;",
-        "the model MUST supply only the boolean determination and rationale. FIXME MUST",
-        "be rejected for a function attestation."
+        "[terminology](definitions.md#terminology-as-authoring-inputs), and",
+        "[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).",
+        ""
       ]
     },
     {
@@ -1629,9 +1635,9 @@
       "line_start": 291,
       "line_end": 293,
       "text": [
-        "requirements inputs cover that set. The determination",
-        "must be boolean; FIXME is not a function-attestation outcome.",
-        ""
+        "example in the supplied inputs. Explain the coverage.",
+        "",
+        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when"
       ]
     },
     {
@@ -1639,9 +1645,9 @@
       "line_start": 574,
       "line_end": 576,
       "text": [
-        "name, start time, backend and model when known, end time when finished, outcome,",
-        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
-        "whether evidence was written. It MUST record the selected output destination in"
+        "default or configuration table to fall back to the user settings.",
+        "",
+        "For Ollama, this is a complete minimal file; replace `MODEL_TAG` with a model"
       ]
     },
     {
@@ -1649,9 +1655,9 @@
       "line_start": 578,
       "line_end": 580,
       "text": [
-        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
-        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
-        "Failed, cancelled, or unfinished"
+        "",
+        "```toml",
+        "version = 1"
       ]
     },
     {
@@ -1659,13 +1665,13 @@
       "line_start": 659,
       "line_end": 665,
       "text": [
-        "The cited code implements a requirement except for a boundary case explicitly",
-        "documented in a source comment as `FIXME(#125)`. The model finds no other gaps",
-        "and calls `submit_judgment` once with `determination: {\"FIXME\": [\"#125\"]}` and a",
-        "rationale locating the comment and explaining the boundary case. The harness",
-        "saves that judgment and the source inputs, including the comment. CI accepts",
-        "the FIXME judgment when all other evidence checks pass.",
-        "{cite}`requirements.ci.outcomes`"
+        "rerunning `habeas author --all` preserves current accepted results and retries",
+        "records that still need attention.",
+        "",
+        "Backend options belong under",
+        "`[authoring.configs.<name>.options]`. For an authenticated Ollama server, put",
+        "`api_key_env = \"OLLAMA_API_KEY\"` in its configuration table and set that variable",
+        "outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an"
       ]
     },
     {
@@ -1902,9 +1908,9 @@
       "line_start": 392,
       "line_end": 394,
       "text": [
-        "    } else {",
-        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
-        "    };"
+        "        .as_object()",
+        "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;",
+        "    if object.len() != 2"
       ]
     },
     {
@@ -1912,9 +1918,9 @@
       "line_start": 571,
       "line_end": 573,
       "text": [
-        "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
-        "            let mut sources ="
+        "            assert_eq!(",
+        "                submit.parameters[\"properties\"][\"determination\"],",
+        "                json!({\"type\": \"boolean\"})"
       ]
     },
     {
@@ -2056,9 +2062,9 @@
       "line_start": 279,
       "line_end": 281,
       "text": [
-        "            \"pub fn beta()\",",
-        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\",",
-        "        ),"
+        "    fn run(&self, args: &[&str]) -> Output {",
+        "        self.command().args(args).output().unwrap()",
+        "    }"
       ]
     },
     {
@@ -2066,9 +2072,9 @@
       "line_start": 295,
       "line_end": 297,
       "text": [
-        "    let mut beta = fixture.evidence(\"requirements.beta\");",
-        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});",
-        "    beta[\"rationale\"] = \"The source explicitly acknowledges the missing beta test.\".into();"
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.batch`"
       ]
     },
     {
@@ -2116,9 +2122,9 @@
       "line_start": 428,
       "line_end": 430,
       "text": [
-        "        \"submit_judgment\",",
-        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
-        "    )])]);"
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {"
       ]
     },
     {
@@ -2126,9 +2132,9 @@
       "line_start": 432,
       "line_end": 434,
       "text": [
-        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
-        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
-        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);"
+        "        \"submit\",",
+        "        \"submit_judgment\",",
+        "        json!({\"determination\":true,\"rationale\":\"The supplied sources support the subject.\"}),"
       ]
     },
     {
@@ -2136,9 +2142,9 @@
       "line_start": 442,
       "line_end": 444,
       "text": [
-        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
-        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
-        "    assert!(prompt.contains(\"queue[0] = value\"));"
+        "    .unwrap();",
+        "    let nested = fixture.project.join(\"src/nested\");",
+        "    fs::create_dir(&nested).unwrap();"
       ]
     },
     {
@@ -2146,9 +2152,9 @@
       "line_start": 453,
       "line_end": 455,
       "text": [
-        "    );",
-        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
-        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");"
+        "    .unwrap();",
+        "    let output = fixture",
+        "        .command()"
       ]
     },
     {
@@ -2156,9 +2162,9 @@
       "line_start": 467,
       "line_end": 469,
       "text": [
-        "        (json!(false), \"false\", true),",
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
-        "        (json!(true), \"true\", false),"
+        "            .body",
+        "            .to_string()",
+        "            .contains(\"WORKSPACE_LITERAL_KEY\")"
       ]
     },
     {
@@ -2166,9 +2172,9 @@
       "line_start": 549,
       "line_end": 551,
       "text": [
-        "            \"submit_judgment\",",
-        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
-        "        )],"
+        "        output.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&output.stderr)"
       ]
     },
     {
@@ -2176,9 +2182,9 @@
       "line_start": 746,
       "line_end": 748,
       "text": [
-        "            .find(|outcome| outcome[\"type\"] == \"object\")",
-        "            .unwrap()[\"properties\"][\"FIXME\"];",
-        "        assert_eq!(fixme[\"type\"], \"array\");"
+        "                \"metrics\":{\"latencyMs\":1}",
+        "            }),",
+        "            json!({"
       ]
     },
     {
@@ -2186,9 +2192,9 @@
       "line_start": 795,
       "line_end": 797,
       "text": [
-        "            json!({",
-        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\"",
-        "            }),"
+        "        let delivered = result[\"content\"][0][\"text\"].as_str().unwrap();",
+        "        assert!(delivered.contains(\"extra.txt\") && delivered.contains(\"context line 1\"));",
+        "        assert!("
       ]
     },
     {
@@ -2196,9 +2202,9 @@
       "line_start": 814,
       "line_end": 816,
       "text": [
-        "    assert_eq!(usage[\"outcome\"], \"failed\");",
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
-        "    assert_eq!(usage[\"evidence_written\"], false);"
+        "        assert_eq!(",
+        "            body[\"inferenceConfig\"],",
+        "            json!({\"temperature\":0.25,\"maxTokens\":321,\"topP\":0.75,\"stopSequences\":[\"END\"]})"
       ]
     },
     {
@@ -2236,9 +2242,9 @@
       "line_start": 235,
       "line_end": 237,
       "text": [
-        "    let all = String::from_utf8(output.stdout).unwrap();",
-        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
-        "        assert!("
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.authoring.deterministic_validation`"
       ]
     },
     {
@@ -2246,9 +2252,9 @@
       "line_start": 260,
       "line_end": 262,
       "text": [
-        "    }",
-        "    for detail in [",
-        "        \"requirement\","
+        "    let temp = fixme_fixture();",
+        "    let output = habeas(temp.path(), &[\"status\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");"
       ]
     },
     {
@@ -2397,8 +2403,8 @@
       "line_start": 126,
       "line_end": 127,
       "text": [
-        "    // {impl}`requirements.references.rust_function_coverage`",
-        "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);"
+        "                definition.source",
+        "            ));"
       ]
     },
     {
@@ -2599,7 +2605,7 @@
       "line_start": 448,
       "line_end": 448,
       "text": [
-        "// {test}`requirements.references.rust_function_coverage`"
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {"
       ]
     },
     {
@@ -2607,11 +2613,11 @@
       "line_start": 30,
       "line_end": 34,
       "text": [
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {",
-        "        let listener = TcpListener::bind((\"127.0.0.1\", 0)).unwrap();",
-        "        listener.set_nonblocking(true).unwrap();"
+        "    },",
+        "}",
+        "",
+        "struct Server {",
+        "    endpoint: String,"
       ]
     },
     {
@@ -2619,11 +2625,11 @@
       "line_start": 67,
       "line_end": 71,
       "text": [
-        "",
-        "    // {test}`requirements.authoring.batch`",
-        "    fn subjects(&self) -> Vec<String> {",
-        "        self.requests.0.lock().unwrap().subjects.clone()",
-        "    }"
+        "                        }));",
+        "                    }",
+        "                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {",
+        "                        thread::sleep(Duration::from_millis(5));",
+        "                    }"
       ]
     },
     {
@@ -2631,11 +2637,11 @@
       "line_start": 74,
       "line_end": 78,
       "text": [
-        "impl Drop for Server {",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn drop(&mut self) {",
-        "        self.stop.store(true, Ordering::Relaxed);",
-        "        self.thread.take().unwrap().join().unwrap();"
+        "            }",
+        "            for worker in workers {",
+        "                worker.join().unwrap();",
+        "            }",
+        "        });"
       ]
     },
     {
@@ -2643,11 +2649,11 @@
       "line_start": 83,
       "line_end": 87,
       "text": [
-        "// {test}`requirements.authoring.concurrency`",
-        "// {test}`requirements.authoring.function_attestations`",
-        "fn serve(",
-        "    mut stream: TcpStream,",
-        "    requests: Arc<(Mutex<Requests>, Condvar)>,"
+        "            thread: Some(thread),",
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.batch`"
       ]
     },
     {
@@ -2655,11 +2661,11 @@
       "line_start": 172,
       "line_end": 176,
       "text": [
-        "    // {test}`requirements.authoring.function_attestations`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn new(endpoint: &str, concurrency: Option<usize>) -> Self {",
-        "        let temp = tempfile::tempdir().unwrap();",
-        "        let project = temp.path().join(\"project\");"
+        "                .unwrap();",
+        "            state = next;",
+        "        }",
+        "    }",
+        "    // Keep requests in flight long enough for an incorrectly unbounded batch to"
       ]
     },
     {
@@ -2667,11 +2673,11 @@
       "line_start": 217,
       "line_end": 221,
       "text": [
-        "    // {test}`requirements.authoring.batch`",
-        "    // {test}`requirements.authoring.concurrency`",
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "            .current_dir(&self.project)"
+        "    }",
+        "    state.active -= 1;",
+        "}",
+        "",
+        "struct Fixture {"
       ]
     },
     {
@@ -2681,9 +2687,9 @@
       "text": [
         "    // {test}`requirements.authoring.batch`",
         "    // {test}`requirements.authoring.function_attestations`",
-        "    fn evidence(&self, name: &str) -> Value {",
-        "        serde_json::from_slice(",
-        "            &fs::read(self.project.join(format!(\"evidence/{name}.json\"))).unwrap(),"
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn new(endpoint: &str, concurrency: Option<usize>) -> Self {",
+        "        let temp = tempfile::tempdir().unwrap();"
       ]
     },
     {
@@ -2691,11 +2697,11 @@
       "line_start": 239,
       "line_end": 243,
       "text": [
-        "",
-        "    // {test}`requirements.authoring.function_attestations`",
-        "    fn function(&self, selector: &str) -> Value {",
-        "        self.evidence(\"rust/src/lib.rs\")[\"functions\"]",
-        "            .as_array()"
+        "        for directory in [",
+        "            project.join(\"md\"),",
+        "            project.join(\"src\"),",
+        "            config_root.join(\"habeas\"),",
+        "        ] {"
       ]
     },
     {
@@ -2703,11 +2709,11 @@
       "line_start": 251,
       "line_end": 255,
       "text": [
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    // {test}`requirements.authoring.batch`",
-        "    fn usage(&self) -> Vec<Value> {",
-        "        let path = self.state.join(if cfg!(windows) {",
-        "            \"habeas/state/authoring/usage\""
+        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "        fs::write(",
+        "            project.join(\"md/SUMMARY.md\"),",
+        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
+        "        )"
       ]
     },
     {
@@ -2715,11 +2721,11 @@
       "line_start": 270,
       "line_end": 274,
       "text": [
-        "// {test}`requirements.ci.determination`",
-        "#[test]",
-        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {",
-        "    let server = Server::start(true, None);",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));"
+        "            config_root,",
+        "            state,",
+        "            config,",
+        "            config_text,",
+        "        }"
       ]
     },
     {
@@ -2727,11 +2733,11 @@
       "line_start": 364,
       "line_end": 368,
       "text": [
-        "// {test}`requirements.authoring.batch`",
-        "#[test]",
-        "fn ollama_batches_are_serial_by_default() {",
-        "    let server = Server::start(false, None);",
-        "    let fixture = Fixture::new(&server.endpoint, None);"
+        "    fs::write(",
+        "        fixture.project.join(\"evidence/requirements.beta.json\"),",
+        "        serde_json::to_vec_pretty(&beta).unwrap(),",
+        "    )",
+        "    .unwrap();"
       ]
     },
     {
@@ -2739,11 +2745,11 @@
       "line_start": 380,
       "line_end": 384,
       "text": [
-        "// {test}`requirements.authoring.usage_storage`",
-        "#[test]",
-        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
-        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));"
+        "        let requests = server.requests.0.lock().unwrap();",
+        "        assert_eq!(",
+        "            requests.peak, 2,",
+        "            \"the configured concurrency bounds in-flight requests\"",
+        "        );"
       ]
     },
     {
@@ -2751,11 +2757,11 @@
       "line_start": 434,
       "line_end": 438,
       "text": [
-        "// {test}`requirements.authoring.batch`",
-        "#[test]",
-        "fn batch_stdout_is_rejected_before_authoring() {",
-        "    let server = Server::start(false, None);",
-        "    let fixture = Fixture::new(&server.endpoint, None);"
+        "    let fixture = Fixture::new(&server.endpoint, None);",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\","
       ]
     },
     {
@@ -2763,11 +2769,11 @@
       "line_start": 448,
       "line_end": 452,
       "text": [
-        "// {test}`requirements.references.rust_function_coverage`",
-        "#[test]",
-        "fn discovery_errors_fail_before_configuration_or_inference() {",
-        "    for (declarations, source, location, diagnostic) in [",
-        "        (\"\", \"fn broken(\", \"src/lib.rs\", \"cannot parse Rust source\"),"
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
+        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(!output.status.success());"
       ]
     },
     {
@@ -2804,7 +2810,7 @@
         ":::",
         "",
         ":::{req} rust_item_selectors",
-        "Habeas MUST identify a Rust item by the pair of its repository-relative `rust_file` and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.",
+        "Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.",
         ":::",
         ""
       ]
@@ -2814,11 +2820,11 @@
       "line_start": 289,
       "line_end": 293,
       "text": [
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let entries = fixture.evidence(\"rust/src/lib.rs\");"
+        "            .current_dir(&self.project)",
+        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
+        "            .env(\"APPDATA\", &self.config_root)",
+        "            .env(\"XDG_STATE_HOME\", &self.state)",
+        "            .env(\"LOCALAPPDATA\", &self.state);"
       ]
     },
     {
@@ -2826,11 +2832,11 @@
       "line_start": 357,
       "line_end": 361,
       "text": [
-        "    assert_eq!(fixture.function(\"fn[beta]\"), beta_function);",
-        "    assert_eq!(fixture.function(\"fn[alpha_case]\"), test_function);",
         "    let report = habeas::validate_repository(&fixture.project).unwrap();",
         "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "}"
+        "    let entries = fixture.evidence(\"rust/src/lib.rs\");",
+        "    assert_eq!(entries[\"functions\"].as_array().unwrap().len(), 3);",
+        "    let mut beta = fixture.evidence(\"requirements.beta\");"
       ]
     },
     {
@@ -3262,6 +3268,40 @@
         "fn habeas() {",
         "    habeas::validate();",
         "}"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 274,
+      "line_end": 300,
+      "text": [
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn run(&self, args: &[&str]) -> Output {",
+        "        self.command().args(args).output().unwrap()",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    // {test}`requirements.authoring.read_denial`",
+        "    fn command(&self) -> Command {",
+        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
+        "        command",
+        "            .current_dir(&self.project)",
+        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
+        "            .env(\"APPDATA\", &self.config_root)",
+        "            .env(\"XDG_STATE_HOME\", &self.state)",
+        "            .env(\"LOCALAPPDATA\", &self.state);",
+        "        command",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    fn evidence(&self, name: &str) -> Value {",
+        "        serde_json::from_slice("
       ]
     }
   ]

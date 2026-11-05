@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -230,28 +230,9 @@ impl InputSelector {
 }
 
 // {impl}`requirements.ci.input_containment`
+// {impl}`requirements.configuration.evidence_paths`
 fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
-    let relative = Path::new(file);
-    if file.is_empty()
-        || !relative
-            .components()
-            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(format!(
-            "{file:?}: file must be a path relative to the repository"
-        ));
-    }
-    let root =
-        fs::canonicalize(root).map_err(|error| format!("cannot open repository root: {error}"))?;
-    let path = fs::canonicalize(root.join(relative))
-        .map_err(|error| format!("cannot open {file}: {error}"))?;
-    if !path.starts_with(root) {
-        return Err(format!("{file} resolves outside the repository"));
-    }
-    if !path.is_file() {
-        return Err(format!("{file} is not a project file"));
-    }
-    Ok(path)
+    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
 }
 
 // {impl}`requirements.ci.input_containment`

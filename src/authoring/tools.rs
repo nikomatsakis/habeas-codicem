@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -16,13 +17,17 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.generated_inputs`
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.credentials`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Read only project-local sources; in Git worktrees, files and their resolved symlink targets must be tracked. Generated evidence under evidence/ is excluded.",
+            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -34,11 +39,11 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible project-local sources are listed; Git worktrees omit untracked files and directories without tracked source descendants. Generated evidence under evidence/ is excluded.",
+            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible project-local sources, tracked in Git worktrees. Generated evidence under evidence/ is excluded.",
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
     ]
@@ -51,22 +56,23 @@ pub(crate) fn dispatch(
     sources: &AssessmentSources,
     name: &str,
     arguments: &Value,
-) -> Result<ToolDelivery, String> {
+) -> io::Result<ToolDelivery> {
     let arguments = arguments
         .as_object()
-        .ok_or_else(|| "tool arguments must be an object".to_owned())?;
+        .ok_or_else(|| io::Error::other("tool arguments must be an object"))?;
     match name {
         "habeas" => read(sources, arguments),
         "list_files" => list_files(sources, arguments),
         "ripgrep" => search(sources, arguments),
-        _ => Err(format!("unknown read tool {name:?}")),
+        _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
 }
 
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
-fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDelivery, String> {
+// {impl}`requirements.authoring.read_denial`
+fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
     let selector = if args.contains_key("file") {
         check_keys(args, &["file", "line_start", "line_end"])?;
         let file = string(args, "file")?.to_owned();
@@ -75,7 +81,11 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDe
         let line_end = if args.contains_key("line_end") {
             integer(args, "line_end")?
         } else {
-            read_project_file(&sources.root, &file)?.1.lines().count()
+            read_project_file(&sources.root, &file)
+                .map_err(io::Error::other)?
+                .1
+                .lines()
+                .count()
         };
         InputSelector::FileRange {
             file,
@@ -109,16 +119,20 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDe
 
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.source_tools`
-fn list_files(
-    sources: &AssessmentSources,
-    args: &Map<String, Value>,
-) -> Result<ToolDelivery, String> {
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.generated_inputs`
+// {impl}`requirements.authoring.read_denial`
+fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
     check_keys(args, &["path"])?;
     let path = optional_path(args)?;
     let directory = project_path(sources, path)?;
     let mut entries = Vec::new();
-    for entry in fs::read_dir(&directory).map_err(|error| format!("cannot list {path}: {error}"))? {
-        let entry = entry.map_err(|error| format!("cannot list {path}: {error}"))?;
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| io::Error::new(error.kind(), format!("cannot list {path}: {error}")))?
+    {
+        let entry = entry.map_err(|error| {
+            io::Error::new(error.kind(), format!("cannot list {path}: {error}"))
+        })?;
         let relative = relative_path(&sources.root, &entry.path())?;
         if sources
             .access
@@ -127,8 +141,12 @@ fn list_files(
         {
             continue;
         }
-        let metadata = fs::metadata(entry.path())
-            .map_err(|error| format!("cannot inspect {}: {error}", entry.path().display()))?;
+        let metadata = fs::metadata(entry.path()).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("cannot inspect {}: {error}", entry.path().display()),
+            )
+        })?;
         let kind = if metadata.is_dir() {
             "directory"
         } else if metadata.is_file() {
@@ -138,7 +156,23 @@ fn list_files(
         };
         entries.push((relative, kind));
     }
+    if directory == sources.root {
+        for extra in sources.access.extra_roots() {
+            if sources.access.path(&sources.root, extra).is_err() {
+                continue;
+            }
+            let kind = if extra.is_dir() {
+                "directory"
+            } else if extra.is_file() {
+                "file"
+            } else {
+                continue;
+            };
+            entries.push((relative_path(&sources.root, extra)?, kind));
+        }
+    }
     entries.sort();
+    entries.dedup();
     Ok(ToolDelivery {
         result: Value::Array(
             entries
@@ -152,70 +186,98 @@ fn list_files(
 
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.authoring.source_tools`
-fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDelivery, String> {
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.generated_inputs`
+// {impl}`requirements.authoring.read_denial`
+fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
     check_keys(args, &["pattern", "path", "context"])?;
     let pattern = string(args, "pattern")?;
     let path = optional_path(args)?;
-    project_path(sources, path)?;
+    let requested = project_path(sources, path)?;
     let context = if args.contains_key("context") {
         integer(args, "context")?
     } else {
         5
     };
-    let output = Command::new("rg")
-        .current_dir(&sources.root)
-        .args([
+    let mut searches = vec![(requested.clone(), false)];
+    for extra in sources.access.extra_roots() {
+        let Ok(extra) = sources.access.path(&sources.root, extra) else {
+            continue;
+        };
+        let candidate = if requested.starts_with(&extra) {
+            requested.clone()
+        } else if extra.starts_with(&requested) || requested == sources.root {
+            extra.clone()
+        } else {
+            continue;
+        };
+        if sources.access.path(&sources.root, &candidate).is_ok() {
+            searches.push((candidate, true));
+        }
+    }
+    searches.sort();
+    searches.dedup();
+    let mut outputs = Vec::new();
+    for (path, include_ignored) in searches {
+        let mut command = Command::new("rg");
+        command.current_dir(&sources.root).args([
             "--json",
             "--no-config",
             "--case-sensitive",
             "--color=never",
-            "--glob",
-            "!/evidence/**",
-            "--",
-            pattern,
-            path,
-        ])
-        .output()
-        .map_err(|error| format!("cannot run ripgrep: {error}"))?;
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Err(format!(
-            "ripgrep failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        ]);
+        if include_ignored {
+            command.args(["--no-ignore", "--hidden"]);
+        }
+        let output = command
+            .arg("--")
+            .arg(pattern)
+            .arg(path)
+            .output()
+            .map_err(|error| io::Error::other(format!("cannot run ripgrep: {error}")))?;
+        if !output.status.success() && output.status.code() != Some(1) {
+            return Err(io::Error::other(format!(
+                "ripgrep failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        outputs.push(output.stdout);
     }
     let mut matches: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for line in output
-        .stdout
-        .split(|byte| *byte == b'\n')
+    for line in outputs
+        .iter()
+        .flat_map(|output| output.split(|byte| *byte == b'\n'))
         .filter(|line| !line.is_empty())
     {
         let event: Value = serde_json::from_slice(line)
-            .map_err(|error| format!("invalid ripgrep output: {error}"))?;
+            .map_err(|error| io::Error::other(format!("invalid ripgrep output: {error}")))?;
         if event["type"] != "match" {
             continue;
         }
         let file = event["data"]["path"]["text"]
             .as_str()
-            .ok_or_else(|| "ripgrep found a non-UTF-8 path".to_owned())?;
+            .ok_or_else(|| io::Error::other("ripgrep found a non-UTF-8 path"))?;
         if sources.access.file(&sources.root, Path::new(file)).is_err() {
             continue;
         }
         let number = event["data"]["line_number"]
             .as_u64()
             .and_then(|number| usize::try_from(number).ok())
-            .ok_or_else(|| "ripgrep returned an invalid line number".to_owned())?;
+            .ok_or_else(|| io::Error::other("ripgrep returned an invalid line number"))?;
         let file = relative_path(&sources.root, &sources.root.join(file))?;
         matches.entry(file).or_default().push(number);
     }
     let mut inputs = Vec::new();
     for (file, mut lines) in matches {
-        let (_, source) = read_project_file(&sources.root, &file)?;
+        let (_, source) = read_project_file(&sources.root, &file).map_err(io::Error::other)?;
         let count = source.lines().count();
         lines.sort_unstable();
         let mut windows: Vec<(usize, usize)> = Vec::new();
         for line in lines {
             if line == 0 || line > count {
-                return Err(format!("{file}: ripgrep returned an out-of-range match"));
+                return Err(io::Error::other(format!(
+                    "{file}: ripgrep returned an out-of-range match"
+                )));
             }
             let start = line.saturating_sub(context).max(1);
             let end = line.saturating_add(context).min(count);
@@ -244,10 +306,12 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<Tool
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
-fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
+fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {
     for key in args.keys() {
         if !allowed.contains(&key.as_str()) {
-            return Err(format!("unexpected tool argument {key:?}"));
+            return Err(io::Error::other(format!(
+                "unexpected tool argument {key:?}"
+            )));
         }
     }
     Ok(())
@@ -255,24 +319,24 @@ fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> Result<(), String>
 
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.text_search`
-fn string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
+fn string<'a>(args: &'a Map<String, Value>, key: &str) -> io::Result<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("{key} must be a string"))
+        .ok_or_else(|| io::Error::other(format!("{key} must be a string")))
 }
 
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.text_search`
-fn integer(args: &Map<String, Value>, key: &str) -> Result<usize, String> {
+fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {
     args.get(key)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(|| format!("{key} must be a nonnegative integer"))
+        .ok_or_else(|| io::Error::other(format!("{key} must be a nonnegative integer")))
 }
 
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
-fn optional_path(args: &Map<String, Value>) -> Result<&str, String> {
+fn optional_path(args: &Map<String, Value>) -> io::Result<&str> {
     if args.contains_key("path") {
         string(args, "path")
     } else {
@@ -284,21 +348,24 @@ fn optional_path(args: &Map<String, Value>) -> Result<&str, String> {
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.authoring.source_tools`
-fn project_path(sources: &AssessmentSources, relative: &str) -> Result<PathBuf, String> {
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.read_denial`
+fn project_path(sources: &AssessmentSources, relative: &str) -> io::Result<PathBuf> {
     sources.access.path(&sources.root, Path::new(relative))
 }
 
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
-fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
+// {impl}`requirements.configuration.evidence_paths`
+fn relative_path(root: &Path, path: &Path) -> io::Result<String> {
     path.strip_prefix(root)
-        .map_err(|_| "path is outside the project".to_owned())?
+        .unwrap_or(path)
         .components()
         .filter(|part| *part != Component::CurDir)
         .collect::<PathBuf>()
         .to_str()
         .map(str::to_owned)
-        .ok_or_else(|| "path is not UTF-8".to_owned())
+        .ok_or_else(|| io::Error::other("path is not UTF-8"))
 }
 
 #[cfg(test)]
@@ -497,6 +564,7 @@ mod tests {
                 dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
                     .err()
                     .unwrap()
+                    .to_string()
                     .contains("generated evidence")
             );
         }
@@ -508,12 +576,14 @@ mod tests {
             )
             .err()
             .unwrap()
+            .to_string()
             .contains("generated evidence")
         );
         assert!(
             dispatch(&sources, "list_files", &json!({"path":"evidence"}))
                 .err()
                 .unwrap()
+                .to_string()
                 .contains("generated evidence")
         );
         assert!(
@@ -524,6 +594,7 @@ mod tests {
             )
             .err()
             .unwrap()
+            .to_string()
             .contains("generated evidence")
         );
         #[cfg(unix)]
@@ -533,6 +604,7 @@ mod tests {
                     dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
                         .err()
                         .unwrap()
+                        .to_string()
                         .contains("generated evidence")
                 );
                 assert!(
@@ -543,6 +615,7 @@ mod tests {
                     )
                     .err()
                     .unwrap()
+                    .to_string()
                     .contains("generated evidence")
                 );
             }
@@ -550,6 +623,7 @@ mod tests {
                 dispatch(&sources, "list_files", &json!({"path":"old-output"}))
                     .err()
                     .unwrap()
+                    .to_string()
                     .contains("generated evidence")
             );
         }
@@ -650,7 +724,7 @@ mod tests {
             json!({"rust_file":"untracked.rs", "rust_item":"fn[needle]"}),
         ] {
             let error = dispatch(&sources, "habeas", &arguments).err().unwrap();
-            assert!(error.contains("git add"), "{error}");
+            assert!(error.to_string().contains("git add"), "{error}");
         }
         assert!(dispatch(&sources, "list_files", &json!({"path":"untracked-dir"})).is_err());
         assert!(
@@ -705,6 +779,7 @@ mod tests {
                 dispatch(&sources, "habeas", &json!({"file":alias, "line_start":1}))
                     .err()
                     .unwrap()
+                    .to_string()
                     .contains("git add")
             );
             assert!(
@@ -728,5 +803,212 @@ mod tests {
         assert!(!paths.contains(&"untracked-target.txt"));
         assert!(!paths.contains(&"untracked-alias.txt"));
         assert!(!paths.contains(&"untracked.txt"));
+    }
+
+    // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.read_denial`
+    #[test]
+    fn allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not() {
+        let root = project();
+        let external = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("generated/private")).unwrap();
+        fs::write(
+            root.path().join("generated/visible.txt"),
+            "needle allowed\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("generated/private/hidden.txt"),
+            "needle denied\n",
+        )
+        .unwrap();
+        fs::write(external.path().join("outside.txt"), "needle external\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "generated/\n").unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        let external_toml = toml::Value::String(external.path().display().to_string());
+        fs::write(root.path().join("habeas.toml"), format!(
+            "version = 1\n[evidence]\nallow = ['generated', {external_toml}]\ndisallow = ['generated/private']\n"
+        )).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        let paths = listing
+            .result
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"generated"));
+        assert!(paths.contains(&external.path().to_str().unwrap()));
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle", "context":0}),
+        )
+        .unwrap();
+        assert_eq!(search.inputs.len(), 2);
+        assert!(
+            search
+                .inputs
+                .iter()
+                .any(|input| input["file"] == "generated/visible.txt")
+        );
+        assert!(search.inputs.iter().any(|input| input["file"] == external.path().join("outside.txt").to_str().unwrap()));
+        let read = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":external.path().join("outside.txt"), "line_start":1}),
+        )
+        .unwrap();
+        assert_eq!(read.result["input"]["text"], json!(["needle external"]));
+        for (name, args) in [
+            (
+                "habeas",
+                json!({"file":"generated/private/hidden.txt", "line_start":1}),
+            ),
+            ("list_files", json!({"path":"generated/private"})),
+            (
+                "ripgrep",
+                json!({"path":"generated/private", "pattern":"needle"}),
+            ),
+        ] {
+            assert_eq!(
+                dispatch(&sources, name, &args).err().unwrap().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.generated_inputs`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.read_denial`
+    #[test]
+    fn cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files() {
+        let root = project();
+        fs::write(root.path().join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
+        fs::write(
+            root.path().join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = 'fixture'\nversion = '0.1.0'\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        let unbuilt = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            dispatch(
+                &unbuilt,
+                "habeas",
+                &json!({"file":"src/lib.rs", "line_start":1})
+            )
+            .is_ok()
+        );
+        assert!(!root.path().join("target").exists());
+        let out = root.path().join("target/debug/build/fixture-hash/out");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(out.join("generated.rs"), "pub fn generated_needle() {}\n").unwrap();
+        fs::write(
+            out.parent().unwrap().join("root-output"),
+            out.to_str().unwrap(),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        assert!(
+            listing
+                .result
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "target/debug/build/fixture-hash/out")
+        );
+        let search = dispatch(&sources, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap();
+        assert_eq!(search.inputs.len(), 1);
+        let read = dispatch(&sources, "habeas", &json!({"rust_file":"target/debug/build/fixture-hash/out/generated.rs", "rust_item":"fn[generated_needle]"})).unwrap();
+        assert_eq!(
+            read.result["input"]["text"],
+            json!(["pub fn generated_needle() {}"])
+        );
+        assert_eq!(
+            dispatch(
+                &sources,
+                "habeas",
+                &json!({"file":"target/debug/build/fixture-hash/root-output", "line_start":1})
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['target/debug/build/fixture-hash/out']\n",
+        )
+        .unwrap();
+        let denied = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let listing = dispatch(&denied, "list_files", &json!({})).unwrap();
+        assert!(
+            !listing
+                .result
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "target/debug/build/fixture-hash/out")
+        );
+        assert!(
+            dispatch(&denied, "ripgrep", &json!({"pattern":"generated_needle"}))
+                .unwrap()
+                .inputs
+                .is_empty()
+        );
+        for (name, arguments) in [
+            (
+                "habeas",
+                json!({"file":"target/debug/build/fixture-hash/out/generated.rs", "line_start":1}),
+            ),
+            (
+                "list_files",
+                json!({"path":"target/debug/build/fixture-hash/out"}),
+            ),
+            (
+                "ripgrep",
+                json!({"path":"target/debug/build/fixture-hash/out", "pattern":"generated_needle"}),
+            ),
+        ] {
+            let error = dispatch(&denied, name, &arguments).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(error.to_string().contains("disallowed"), "{error}");
+        }
+    }
+
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.ci.input_containment`
+    #[cfg(unix)]
+    #[test]
+    fn search_uses_the_validated_target_when_symlinks_precede_parent_components() {
+        let root = project();
+        fs::create_dir_all(root.path().join("actual/nested")).unwrap();
+        fs::write(root.path().join("actual/needle.txt"), "actual needle\n").unwrap();
+        fs::write(root.path().join("needle.txt"), "wrong needle\n").unwrap();
+        std::os::unix::fs::symlink(root.path().join("actual/nested"), root.path().join("alias"))
+            .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let result = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"path":"alias/../needle.txt", "pattern":"needle", "context":0}),
+        )
+        .unwrap();
+        assert_eq!(result.inputs.len(), 1);
+        assert_eq!(result.inputs[0]["file"], "actual/needle.txt");
+        assert_eq!(result.inputs[0]["text"], json!(["actual needle"]));
     }
 }

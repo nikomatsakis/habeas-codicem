@@ -5,7 +5,7 @@ use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};
 use rig_core::{DynModel, operation::Completion};
 use serde_json::{Map, Value};
 
-use crate::config::BackendConfig;
+use crate::config::{BackendConfig, BedrockConfig};
 
 pub(super) trait CompletionProvider {
     // {impl}`requirements.authoring.provider`
@@ -23,20 +23,11 @@ impl RigProvider {
     // {impl}`requirements.authoring.rig_configuration_mapping`
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.authoring.usage_requests`
+    // {impl}`requirements.authoring.credentials`
     pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let model = match config {
             BackendConfig::Bedrock(config) => {
-                // Keep each provider attempt visible to the usage ledger. An SDK
-                // retry would otherwise be hidden inside one recorded request.
-                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-                    .retry_config(aws_config::retry::RetryConfig::disabled());
-                if let Some(profile) = &config.aws_profile {
-                    loader = loader.profile_name(profile);
-                }
-                if let Some(region) = &config.region {
-                    loader = loader.region(aws_config::Region::new(region.clone()));
-                }
-                let sdk = aws_sdk_bedrockruntime::Client::new(&loader.load().await);
+                let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);
                 rig_bedrock::client::BedrockRuntime::from(sdk)
                     .completion(&config.model)
                     .erase()
@@ -56,6 +47,36 @@ impl RigProvider {
             bedrock: matches!(config, BackendConfig::Bedrock(_)),
         })
     }
+}
+
+// {impl}`requirements.authoring.rig_configuration_mapping`
+// {impl}`requirements.authoring.configuration_precedence`
+// {impl}`requirements.authoring.credentials`
+// {impl}`requirements.authoring.usage_requests`
+async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
+    // Keep each provider attempt visible to the usage ledger. An SDK retry
+    // would otherwise be hidden inside one recorded request.
+    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .retry_config(aws_config::retry::RetryConfig::disabled());
+    if let Some(profile) = &config.aws_profile {
+        loader = loader.profile_name(profile);
+    }
+    if let Some(region) = &config.region {
+        loader = loader.region(aws_config::Region::new(region.clone()));
+    }
+    if let Some(credentials) = &config.credentials {
+        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(
+            credentials.access_key_id.expose_secret(),
+            credentials.secret_access_key.expose_secret(),
+            credentials
+                .session_token
+                .as_ref()
+                .map(|value| value.expose_secret().to_owned()),
+            None,
+            "Habeas configuration",
+        ));
+    }
+    loader.load().await
 }
 
 impl CompletionProvider for RigProvider {
@@ -173,9 +194,29 @@ fn option_type(name: &str, expected: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws_sdk_bedrockruntime::config::ProvideCredentials;
     use rig_core::completion::{FinishReason, Usage};
     use rig_core::message::{Opaque, Origin, Reasoning, Text};
     use serde_json::json;
+
+    // {test}`requirements.authoring.credentials`
+    // {test}`requirements.authoring.rig_configuration_mapping`
+    // {test}`requirements.authoring.configuration_precedence`
+    #[tokio::test]
+    async fn explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain() {
+        let config: BedrockConfig = toml::from_str("model = 'test'\nregion = 'us-west-2'\n[credentials]\naccess_key_id = 'TEST_ACCESS'\nsecret_access_key = 'test-secret'\nsession_token = 'test-session'\n").unwrap();
+        let sdk = bedrock_sdk_config(&config).await;
+        let credentials = sdk
+            .credentials_provider()
+            .unwrap()
+            .provide_credentials()
+            .await
+            .unwrap();
+        assert_eq!(credentials.access_key_id(), "TEST_ACCESS");
+        assert_eq!(credentials.secret_access_key(), "test-secret");
+        assert_eq!(credentials.session_token(), Some("test-session"));
+        assert_eq!(sdk.region().unwrap().as_ref(), "us-west-2");
+    }
 
     // {test}`requirements.authoring.configuration_storage`
     // {test}`requirements.authoring.rig_configuration_mapping`

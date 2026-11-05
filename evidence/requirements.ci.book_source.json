@@ -1,7 +1,7 @@
 {
   "requirement": "Validation MUST read the mdBook source directory from `[book].src` in `book.toml`, using `src` when the setting is absent. It MUST report an unreadable or malformed book configuration and reject an empty, absolute, or parent-traversing source path.",
   "determination": true,
-  "rationale": "**Verdict:** `requirements.ci.book_source` is met. The code implements each clause of the requirement, and the tests cover the interesting cases.\n\n**Implementation** (`book_source_dir`, `src/evidence.rs` ~L153–200, cited with `{impl}` for this requirement):\n- **Reading `[book].src`:** it parses `book.toml` with `toml_edit` and reads `book.src`.\n  - It accepts both `[book]` tables and inline `book = { src = … }` through `as_table_like`.\n- **Default:** it returns `\"src\"` only when the `book` table or the `src` key is absent.\n- **Unreadable or malformed configuration:** it pushes an error for each of these cases.\n  - `book.toml: cannot read book configuration` when the file cannot be read.\n  - `book.toml: invalid TOML` when parsing fails.\n  - `book.toml: book must be a table` when `book` is not a table.\n  - `book.toml: book.src must be a string` when `src` has the wrong type.\n- **Path rejection:** the path is rejected when it is empty or when any component is not `Normal` or `CurDir`.\n  - That rejects absolute paths (`RootDir` or `Prefix` components) and parent-traversing paths (`ParentDir` components), including `md/../outside`.\n  - It reports `book.src must be a directory inside the repository`.\n- **Use in validation:** `load_definitions` and `inspect_repository` both call `book_source_dir` and carry the `{impl}` citation. The errors are merged into the validation report, and `load_definitions` returns them as `InvalidData`.\n\n**Tests:**\n- `book_source_dir_defaults_only_when_absent_and_reports_invalid_configuration` (`src/evidence.rs`, tagged `{test}` for this requirement) covers:\n  - **Defaults and valid settings:** an empty file, `[book]` without `src`, `src = 'docs'`, and the inline-table form all return the expected path with no errors.\n  - **Missing file:** it reports a read error.\n  - **Malformed TOML:** `[book` is reported as invalid TOML.\n  - **Wrong types:** `book = 'wrong'`, and `src` given as an integer, bool, array, or table.\n  - **Rejected paths:** the empty path, `/outside`, `../outside`, and `md/../outside`.\n- `validates_full_names_requirement_text_and_input_lines` also cites the requirement. It exercises the end-to-end path through `validate_repository` with a valid configuration.\n- `tests/setup.rs` has related checks for an invalid `book.src` (`src = 7`, `''`, `/outside`, and so on) at the CLI level.\n\n**Gaps:** I found no explicit gaps or FIXMEs. The one case the tests skip is a Windows drive-prefix path, but the same component check handles it.",
+  "rationale": "**Verdict:** `requirements.ci.book_source` is met by `book_source_dir` in `src/evidence.rs`, and the tests cover the cases the requirement names. I read the code and tests but did not run them.\n\n**Implementation**\n- **Callers:** `load_definitions` and `inspect_repository` both call `book_source_dir(&root, &mut errors)`, so validation and definition loading use the same source directory.\n- **Source setting:** `book_source_dir` parses `book.toml` with `toml_edit`. It reads `[book].src`, and it accepts `book` as an inline table (`book = { src = 'docs' }`) as well as a standard table.\n- **Default:** when `[book]` or `src` is absent, it uses `\"src\"`. A non-table `book` or a non-string `src` is an error, not a silent default.\n- **Unreadable or malformed configuration:** a read failure pushes `book.toml: cannot read book configuration: …`. A TOML parse failure pushes `book.toml: invalid TOML: …`. A wrong-shaped `book` or `src` pushes its own error.\n- **Path rejection:** an empty string is rejected. Any path with a component other than `Normal` or `CurDir` is also rejected, which covers absolute paths (`RootDir`/`Prefix`) and `..` (`ParentDir`), including `md/../outside`. The error is `book.src must be a directory inside the repository`.\n- **After an error:** the function returns a placeholder `md` path so validation can continue and report the error.\n\n**Tests**\n- `book_source_defaults_only_when_absent_and_reports_invalid_configuration` in `src/evidence.rs` carries `{test}` for this requirement. It checks:\n  - The default `src` for an empty file and for `[book]` without `src`.\n  - Explicit `src = 'docs'` in both table forms.\n  - An unreadable configuration, by deleting `book.toml`.\n  - Invalid TOML.\n  - A non-table `book`.\n  - `src` as an integer, boolean, array, or table.\n  - An empty, absolute, `../outside`, or `md/../outside` source.\n- `validates_full_names_requirement_text_and_input_lines` also cites the requirement. It checks end-to-end validation against a `src = \"md\"` fixture.\n- `tests/setup.rs` checks the same error classes through the setup flow. Its `src/setup.rs` parser is a separate implementation with its own checks, so it is supporting evidence only.\n\n**Gaps:** I found no TODO or FIXME markers on this requirement. `src = \".\"` and symlink escapes are not mentioned in the requirement.",
   "inputs": [
     {
       "requirements": "requirements.ci.book_source",
@@ -199,6 +199,12 @@
       "line_start": 143,
       "line_end": 171,
       "text": [
+        "        .values()",
+        "        .filter(|definition| definition.kind == DefinitionKind::Requirement)",
+        "        .count();",
+        "    Ok(RepositoryInspection {",
+        "        report: EvidenceReport {",
+        "            requirements,",
         "            examples,",
         "            evidence_files: evidence_files.len(),",
         "            errors,",
@@ -221,13 +227,7 @@
         "                    Some(item) => match item.as_table_like() {",
         "                        Some(table) => Some(table),",
         "                        None => {",
-        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }",
-        "                    },",
-        "                    None => None,",
-        "                };",
-        "                match table.and_then(|table| table.get(\"src\")) {"
+        "                            errors.push(\"book.toml: book must be a table\".to_owned());"
       ]
     },
     {
@@ -235,16 +235,6 @@
       "line_start": 1351,
       "line_end": 1383,
       "text": [
-        "                    if let Some(resolved) = resolved {",
-        "                        matched_definitions.extend(resolved.matches);",
-        "                    }",
-        "                }",
-        "                _ => {}",
-        "            }",
-        "        }",
-        "        if self_inputs != 1 {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: expected exactly one Rust-item input selecting this function, found {self_inputs}\"",
         "            ));",
         "        }",
         "        if definition_inputs == 0 {",
@@ -267,7 +257,17 @@
         "    }",
         "    for (selector, (function, _)) in expected {",
         "        if !present.contains(selector) {",
-        "            errors.push(format!("
+        "            errors.push(format!(",
+        "                \"{label}: {rust_file}:{} {selector}: missing Rust function attestation\",",
+        "                function.declaration_line",
+        "            ));",
+        "        }",
+        "    }",
+        "    valid",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {"
       ]
     },
     {
@@ -312,7 +312,7 @@
       "line_end": 54,
       "text": [
         "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\"] }",
+        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\"] }",
         "toml = \"1.2.0\""
       ]
     },
@@ -420,7 +420,7 @@
       "text": [
         "# Configuration",
         "",
-        "Habeas uses a shared user configuration file and project settings in `book.toml`.",
+        "Habeas uses a shared user configuration file and workspace settings in `habeas.toml`.",
         "This chapter defines their locations, common structure, and loading rules. Each",
         "configurable feature defines its own section, data structures, defaults, and"
       ]
@@ -431,10 +431,10 @@
       "line_end": 27,
       "text": [
         "NOT be selected relative to the current project or changed by project settings.",
-        "User-local preferences for a project MUST remain in the user configuration;",
-        "shared project settings MUST remain in the project's `book.toml`.",
-        ":::",
-        ""
+        "User-local preferences for a project MAY remain in the user configuration;",
+        "workspace settings MUST use `habeas.toml` under",
+        "{cite}`requirements.configuration.workspace_location`.",
+        ":::"
       ]
     },
     {
@@ -442,11 +442,11 @@
       "line_start": 63,
       "line_end": 67,
       "text": [
+        "requirements; the current feature is [evidence authoring](authoring.md).",
         "",
-        "`UserConfig` is the root of the user file. `ProjectConfig` is the `[habeas]` table",
-        "within `book.toml`; the rest of the book configuration retains its existing",
-        "meaning. Adding a configurable feature adds a named, typed optional field to the",
-        "applicable structure. These are explicitly defined fields, not an unrestricted"
+        "```text",
+        "UserConfig {",
+        "    version: Integer,                         // exactly 1"
       ]
     },
     {
@@ -455,12 +455,12 @@
       "line_end": 82,
       "text": [
         "",
-        "Shared project configuration MUST serialize ProjectConfig under `[habeas]` in",
-        "`book.toml`, with each feature in `[habeas.<feature>]`. The `[habeas]` table and",
-        "its feature tables MAY be absent. The user-file version MUST NOT be required in",
-        "`book.toml`. The absence of an optional feature section MUST be distinguishable",
-        "from that feature's explicit settings and interpreted according to its own",
-        "requirements."
+        "EvidenceConfig {",
+        "    allow: Array<Path>,                            // omitted means empty",
+        "    disallow: Array<Path>,                         // omitted means empty",
+        "}",
+        "```",
+        ""
       ]
     },
     {
@@ -468,11 +468,11 @@
       "line_start": 141,
       "line_end": 145,
       "text": [
-        "feature it does not use. This isolation MUST NOT suppress TOML syntax errors in",
-        "a shared file that the operation otherwise needs to parse. In particular,",
-        "ordinary validation still requires a parseable `book.toml` while remaining",
-        "independent of authoring settings and the user configuration file.",
-        ":::"
+        "examples and the definitions of their authoring structures appear in",
+        "[Authoring evidence](authoring.md#serialized-configuration-data-model).",
+        "",
+        "A workspace file can select a model configuration saved in the user file and",
+        "permit generated sources while excluding one subtree:"
       ]
     },
     {
@@ -480,11 +480,11 @@
       "line_start": 371,
       "line_end": 375,
       "text": [
-        "            });",
-        "        }",
-        "    }",
-        "    if reference",
-        "        .file"
+        "                    && crate::definition_glob::matches(requirements, name)",
+        "                {",
+        "                    access.file(root, Path::new(&definition.file))?;",
+        "                }",
+        "            }"
       ]
     },
     {
@@ -492,11 +492,11 @@
       "line_start": 441,
       "line_end": 445,
       "text": [
-        "    root: &Path,",
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_path = root.join(\"book.toml\");",
-        "    let project_text = fs::read_to_string(&project_path).map_err(|error| {"
+        "                    if config.api_key_env.is_some() {",
+        "                        return Err(invalid(",
+        "                            path,",
+        "                            &format!(\"{setting}.api_key\"),",
+        "                            \"api_key and api_key_env cannot both be set\","
       ]
     },
     {
@@ -536,8 +536,8 @@
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
         "// {impl}`requirements.examples.evidence`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
-        "    let root = fs::canonicalize(root)?;"
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`"
       ]
     },
     {
@@ -545,13 +545,25 @@
       "line_start": 147,
       "line_end": 158,
       "text": [
+        "        report: EvidenceReport {",
+        "            requirements,",
+        "            examples,",
+        "            evidence_files: evidence_files.len(),",
+        "            errors,",
+        "        },",
         "        definitions,",
         "        rust_functions,",
         "        discovery_errors,",
         "    })",
         "}",
-        "",
-        "// {impl}`requirements.ci.book_source`",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 160,
+      "line_end": 164,
+      "text": [
         "// {impl}`requirements.configuration.loading`",
         "// {impl}`requirements.ci.diagnostics`",
         "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
@@ -561,26 +573,14 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 160,
-      "line_end": 164,
-      "text": [
-        "            Ok(book) => {",
-        "                let table = match book.get(\"book\") {",
-        "                    Some(item) => match item.as_table_like() {",
-        "                        Some(table) => Some(table),",
-        "                        None => {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
       "line_start": 171,
       "line_end": 175,
       "text": [
-        "                match table.and_then(|table| table.get(\"src\")) {",
-        "                    Some(item) => match item.as_str() {",
-        "                        Some(source) => source.to_owned(),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());"
+        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
+        "                            return root.join(\"md\");",
+        "                        }",
+        "                    },",
+        "                    None => None,"
       ]
     },
     {
@@ -588,11 +588,11 @@
       "line_start": 1375,
       "line_end": 1379,
       "text": [
-        "            }",
+        "                function.declaration_line",
+        "            ));",
         "        }",
-        "        if valid_header && errors.len() == initial_errors {",
-        "            valid.insert(selector.to_owned());",
-        "        }"
+        "    }",
+        "    valid"
       ]
     },
     {
@@ -600,11 +600,11 @@
       "line_start": 1385,
       "line_end": 1389,
       "text": [
-        "                function.declaration_line",
-        "            ));",
-        "        }",
-        "    }",
-        "    valid"
+        "",
+        "    use serde_json::json;",
+        "    use tempfile::TempDir;",
+        "",
+        "    use super::validate_repository;"
       ]
     },
     {
@@ -744,11 +744,11 @@
       "line_start": 189,
       "line_end": 193,
       "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),"
+        "                }",
+        "            }]},",
+        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
+        "        })",
+        "    } else {"
       ]
     },
     {
@@ -780,11 +780,11 @@
       "line_start": 347,
       "line_end": 351,
       "text": [
-        "        \"ready\",",
-        "        \"stale\",",
-        "        \"stale_input\",",
-        "        \"uncovered\",",
-        "        \"xready\","
+        "        \"rust-lang/rust\",",
+        "    ] {",
+        "        assert!(!filtered.contains(excluded), \"{filtered}\");",
+        "    }",
+        ""
       ]
     },
     {
@@ -804,11 +804,11 @@
       "line_start": 133,
       "line_end": 137,
       "text": [
-        "    )",
-        "    .unwrap();",
-        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write(",
-        "        project.join(\"md/SUMMARY.md\"),"
+        "    ));",
+        "",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let project = temp.path().join(\"project\");",
+        "    for directory in [project.join(\"md\"), project.join(\"src\")] {"
       ]
     },
     {
@@ -928,7 +928,7 @@
       "line_start": 156,
       "line_end": 156,
       "text": [
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {"
+        "    })"
       ]
     },
     {
@@ -936,7 +936,7 @@
       "line_start": 162,
       "line_end": 162,
       "text": [
-        "                    Some(item) => match item.as_table_like() {"
+        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {"
       ]
     },
     {
@@ -944,7 +944,7 @@
       "line_start": 173,
       "line_end": 173,
       "text": [
-        "                        Some(source) => source.to_owned(),"
+        "                        }"
       ]
     },
     {
@@ -960,7 +960,7 @@
       "line_start": 325,
       "line_end": 325,
       "text": [
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();"
+        "        fs::read_dir(path)"
       ]
     },
     {
@@ -968,7 +968,7 @@
       "line_start": 227,
       "line_end": 227,
       "text": [
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();"
+        "    command"
       ]
     },
     {
@@ -1012,15 +1012,15 @@
       "line_start": 71,
       "line_end": 79,
       "text": [
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
         "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
         "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    let mut discovery_errors = errors.clone();",
-        "    let evidence_root = root.join(\"evidence\");",
-        "    let evidence_files = if evidence_root.is_dir() {",
-        "        files_with_extension(&root, &evidence_root, \"json\", &mut errors)"
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
+        "        errors.push(error.to_string());",
+        "    }"
       ]
     },
     {
@@ -1028,13 +1028,13 @@
       "line_start": 127,
       "line_end": 133,
       "text": [
-        "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);",
-        "    // {impl}`requirements.references.rust_function_attestations`",
-        "    let rust_functions =",
-        "        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);",
+        "            ));",
+        "        }",
+        "    }",
         "",
-        "    let examples = definitions",
-        "        .values()"
+        "    validate_references(&root, &definitions, &mut errors);",
+        "    // {impl}`requirements.references.rust_function_coverage`",
+        "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);"
       ]
     },
     {
@@ -1042,6 +1042,12 @@
       "line_start": 146,
       "line_end": 159,
       "text": [
+        "    Ok(RepositoryInspection {",
+        "        report: EvidenceReport {",
+        "            requirements,",
+        "            examples,",
+        "            evidence_files: evidence_files.len(),",
+        "            errors,",
         "        },",
         "        definitions,",
         "        rust_functions,",
@@ -1049,13 +1055,7 @@
         "    })",
         "}",
         "",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
-        "    let path = root.join(\"book.toml\");",
-        "    let source = match fs::read_to_string(&path) {",
-        "        Ok(content) => match content.parse::<DocumentMut>() {"
+        "// {impl}`requirements.ci.book_source`"
       ]
     },
     {
@@ -1063,16 +1063,6 @@
       "line_start": 1110,
       "line_end": 1129,
       "text": [
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        "    discovery_errors: &mut Vec<String>,",
-        ") -> Vec<(String, String, bool)> {",
-        "    let mut inspected = Vec::new();",
-        "    let mut expected_files = BTreeSet::new();",
-        "    let initial_errors = errors.len();",
-        "    let files = crate::rust_coverage::rust_files(root, errors);",
-        "    discovery_errors.extend(errors[initial_errors..].iter().cloned());",
         "    for file in files {",
         "        let rust_file = display_path(root, &file);",
         "        let source = match fs::read_to_string(&file) {",
@@ -1082,7 +1072,17 @@
         "                discovery_errors.push(error.clone());",
         "                errors.push(error);",
         "                continue;",
-        "            }"
+        "            }",
+        "        };",
+        "        let functions = match crate::rust_items::function_citations(&source, definitions) {",
+        "            Ok(functions) => functions,",
+        "            Err(error) => {",
+        "                // The citation check also includes this in the validation report.",
+        "                discovery_errors.push(format!(\"{rust_file}: cannot parse Rust source: {error}\"));",
+        "                continue;",
+        "            }",
+        "        };",
+        "        if functions.is_empty() {"
       ]
     },
     {
@@ -1090,13 +1090,13 @@
       "line_start": 1132,
       "line_end": 1138,
       "text": [
-        "            Ok(functions) => functions,",
-        "            Err(error) => {",
-        "                // The citation check also includes this in the validation report.",
-        "                discovery_errors.push(format!(\"{rust_file}: cannot parse Rust source: {error}\"));",
-        "                continue;",
-        "            }",
-        "        };"
+        "        let evidence_path = root.join(\"evidence/rust\").join(format!(\"{rust_file}.json\"));",
+        "        expected_files.insert(evidence_path.clone());",
+        "        let valid = validate_rust_attestation_file(",
+        "            root,",
+        "            &evidence_path,",
+        "            &rust_file,",
+        "            &functions,"
       ]
     },
     {
@@ -1104,20 +1104,20 @@
       "line_start": 1428,
       "line_end": 1441,
       "text": [
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            assert_eq!(",
-        "                super::book_source_dir(root, &mut errors),",
-        "                root.join(expected)",
-        "            );",
-        "            assert!(errors.is_empty(), \"{errors:?}\");",
-        "        }",
-        "        fs::remove_file(&path).unwrap();",
-        "        let mut errors = Vec::new();",
         "        super::book_source_dir(root, &mut errors);",
         "        assert!(",
         "            errors",
-        "                .iter()"
+        "                .iter()",
+        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
+        "        );",
+        "        for (configuration, expected) in [",
+        "            (\"[book\", \"invalid TOML\"),",
+        "            (\"book = 'wrong'\", \"book must be a table\"),",
+        "            (\"[book]\\nsrc = 7\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
+        "            (\"[book.src]\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),"
       ]
     },
     {
@@ -1125,13 +1125,13 @@
       "line_start": 1458,
       "line_end": 1464,
       "text": [
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!(",
-        "                errors.iter().any(|error| error.contains(expected)),",
-        "                \"{configuration:?}: {errors:?}\""
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.inputs`",
+        "    #[test]"
       ]
     },
     {
@@ -1144,9 +1144,15 @@
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
         "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
         "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
         "    let mut errors = Vec::new();",
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
+        "        errors.push(error.to_string());",
+        "    }",
         "    let md_root = book_source_dir(&root, &mut errors);",
         "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
         "    let mut discovery_errors = errors.clone();",
@@ -1225,6 +1231,198 @@
         "        discovery_errors,",
         "    })",
         "}"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 498,
+      "line_end": 500,
+      "text": [
+        "        fs::create_dir_all(root.path().join(\"md\")).unwrap();",
+        "        fs::create_dir_all(root.path().join(\"src\")).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 52,
+      "line_end": 54,
+      "text": [
+        "    let mut errors = Vec::new();",
+        "    let md_root = book_source_dir(&root, &mut errors);",
+        "    let definitions = collect_definitions(&root, &md_root, &mut errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 79,
+      "line_end": 81,
+      "text": [
+        "    }",
+        "    let md_root = book_source_dir(&root, &mut errors);",
+        "    let definitions = collect_definitions(&root, &md_root, &mut errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 161,
+      "line_end": 163,
+      "text": [
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
+        "    let path = root.join(\"book.toml\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 176,
+      "line_end": 178,
+      "text": [
+        "                };",
+        "                match table.and_then(|table| table.get(\"src\")) {",
+        "                    Some(item) => match item.as_str() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 180,
+      "line_end": 182,
+      "text": [
+        "                        None => {",
+        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
+        "                            return root.join(\"md\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 205,
+      "line_end": 207,
+      "text": [
+        "    {",
+        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
+        "        return root.join(\"md\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1395,
+      "line_end": 1397,
+      "text": [
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1412,
+      "line_end": 1415,
+      "text": [
+        "        for (configuration, expected) in [",
+        "            (\"\", \"src\"),",
+        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),",
+        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1420,
+      "line_end": 1422,
+      "text": [
+        "            assert_eq!(",
+        "                super::book_source_dir(root, &mut errors),",
+        "                root.join(expected)"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1427,
+      "line_end": 1429,
+      "text": [
+        "        let mut errors = Vec::new();",
+        "        super::book_source_dir(root, &mut errors);",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1436,
+      "line_end": 1447,
+      "text": [
+        "            (\"book = 'wrong'\", \"book must be a table\"),",
+        "            (\"[book]\\nsrc = 7\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
+        "            (\"[book.src]\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '../outside'\", \"book.src must be a directory\"),",
+        "            (",
+        "                \"[book]\\nsrc = 'md/../outside'\",",
+        "                \"book.src must be a directory\",",
+        "            ),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1450,
+      "line_end": 1452,
+      "text": [
+        "            let mut errors = Vec::new();",
+        "            super::book_source_dir(root, &mut errors);",
+        "            assert!("
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 343,
+      "line_end": 345,
+      "text": [
+        "            let source_path = if evidence_path.exists() {",
+        "                evidence_edit_path(&config.book.src, name)",
+        "            } else {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 781,
+      "line_end": 783,
+      "text": [
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 531,
+      "line_end": 533,
+      "text": [
+        "        let project = TempDir::new().unwrap();",
+        "        fs::create_dir_all(project.path().join(\"src\")).unwrap();",
+        "        fs::create_dir_all(project.path().join(\"src/evidence\")).unwrap();"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 41,
+      "line_end": 45,
+      "text": [
+        "        .transpose()?;",
+        "    match table.and_then(|table| table.get(\"src\")) {",
+        "        Some(item) => item.as_str().ok_or(\"book.src must be a string\"),",
+        "        None => Ok(\"src\"),",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 104,
+      "line_end": 106,
+      "text": [
+        "    {",
+        "        return Err(\"book.src must be a directory inside this project\".into());",
+        "    }"
       ]
     }
   ]
