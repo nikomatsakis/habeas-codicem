@@ -31,9 +31,26 @@ Add `evidence/requirements.check.json` for a requirement or `evidence/reference.
 | Field | Meaning |
 | --- | --- |
 | `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |
-| `determination` | `true` when you judge the requirement or example met. Validation fails if it is `false`. |
+| `determination` | `true`, `false`, or `{"FIXME": ["#125"]}` for explicitly documented gaps. |
 | `rationale` | A Markdown explanation of that judgment. |
 | `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or glob of definitions. |
+
+For a requirement, review whether the cited code implements its stated obligations
+and whether tests cover the interesting design cases. If there are no tests,
+explain why the logic is simple enough to need none or testing is impractical.
+For an example, review whether tests cover its scenario and expected outcomes;
+a true judgment requires a covered `{test}` reference. Assess the named subject,
+using its referenced requirements and definitions as context.
+{cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`
+
+Use `true` when that review supports the subject. Use FIXME when source comments
+or tests explicitly acknowledge the remaining implementation or testing gaps;
+otherwise use `false` for gaps or missing information. Record the acknowledged
+gaps' issue references or other identifying source content in the FIXME array,
+and explain each gap and source location in the rationale. The expected comment
+convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may
+appear elsewhere in the comment or test. Capture those sources in the evidence.
+{cite}`requirements.ci.outcomes`
 
 An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:
 
@@ -72,13 +89,13 @@ For Rust, Habeas parses first-party source files and requires every explicit fun
 
 Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`
 
-Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ "role": "impl", "name": "requirements.some_name" }` objects, `determination`, `rationale`, and `inputs`. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`
+Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ "role": "impl", "name": "requirements.some_name" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book.
+The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
-Run `habeas status [<glob>]` from within the project to list requirements and named examples needing attention and their validation findings. `--all` shows every matching definition and its evidence state. Use `habeas info <glob>` to print matching detail pages as Markdown, including current texts, rationales, inputs, and findings. Both commands match whole full names; `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info` {cite}`requirements.references.definition_globs`
+Run `habeas status [<glob>]` from within the project to list requirements and named examples needing attention and their validation findings, including FIXME judgments and their recorded references. `--all` shows every matching definition and its evidence state. Use `habeas info <glob>` to print matching detail pages as Markdown, including current texts, rationales, inputs, FIXME references, and findings. Both commands match whole full names; `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info` {cite}`requirements.references.definition_globs`
 
 ```sh
 habeas info requirements.ci.inputs

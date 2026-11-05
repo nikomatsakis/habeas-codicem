@@ -1,0 +1,528 @@
+# Authoring evidence
+
+Habeas gives a model a requirement or example and its mandatory source inputs.
+The model can discover files, request more inputs, and submit one judgment. The
+harness records the inputs and writes the judgment into the existing evidence
+format. Rig provides the connection to the user's configured model.
+
+:::{req} invocation
+`habeas author-evidence <full-name> [--config <name>]` MUST assess one existing
+requirement or named example in the current project. It MUST report the selected
+subject, backend, and model, and the evidence and usage-record paths on completion.
+:::
+
+## Model tools
+
+The model receives four tools: `habeas`, `list_files`, `ripgrep`, and `submit_judgment`.
+The following notation defines their arguments and results; names in uppercase
+are data types, and optional fields show their defaults.
+
+### Request evidence inputs: `habeas`
+
+:::{req} source_tools
+The harness MUST expose a `habeas` tool accepting exactly one of these request
+forms. Each form MUST correspond to one existing evidence-input kind:
+
+| Request fields | Evidence input returned | Definition |
+| --- | --- | --- |
+| `file: String`, `line_start: Integer`, optional `line_end: Integer` | File-range input | {cite}`requirements.ci.inputs` |
+| `rust_file: String`, `rust_item: String` | Rust-item input | {cite}`requirements.ci.rust_item_inputs` |
+| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |
+| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |
+
+Rust file and selector arguments MUST use the syntax defined by
+{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current
+project working tree, including uncommitted and untracked sources.
+
+File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read
+through EOF; the returned evidence input MUST contain the actual numeric ending
+line. The model-facing tool description MUST include the argument conventions
+from the cited requirements, including Rust selector syntax, requirement globs,
+and full definition names, with a short request example for each form.
+
+A successful call MUST return the requested evidence input, populated by the
+harness with the selected source text, using the existing evidence schema.
+{cite}`requirements.ci.schema`
+Required terminology dependencies MUST be returned alongside it as additional
+definition inputs under {cite}`requirements.definitions.authoring_inputs`.
+The result MUST have this shape:
+
+```text
+HabeasResult {
+    input: EvidenceInput,
+    definitions: Array<DefinitionInput>,
+}
+```
+
+`definitions` MUST be empty when no additional terminology is required. The
+harness MUST record inputs supplied to the model in the assessment's evidence. A failed
+read MUST return an explanatory tool error and add no evidence input.
+:::
+
+### Discover files: `list_files`
+
+:::{req} file_discovery
+The harness MUST expose a `list_files` tool with this interface:
+
+```text
+list_files({ path: String = "." }) -> Array<DirectoryEntry>
+
+DirectoryEntry {
+    path: String,
+    kind: "file" | "directory",
+}
+```
+
+The tool MUST list the immediate children of the requested project-relative
+directory, returning project-relative paths. The model can list a returned
+directory in another call to explore further. A failed listing MUST return an
+explanatory tool error. Directory listings MUST NOT become evidence inputs.
+:::
+
+### Search file contents: `ripgrep`
+
+:::{req} text_search
+The harness MUST expose a `ripgrep` tool with this interface:
+
+```text
+ripgrep({ pattern: String, path: String = ".", context: Integer = 5 }) -> SearchResult
+
+SearchResult {
+    inputs: Array<FileRangeInput>,
+    definitions: Array<DefinitionInput>,
+}
+```
+
+The tool MUST search the requested project-relative file or directory using
+ripgrep's regular-expression syntax and default case-sensitive search and ignore
+rules. Its model-facing description MUST explain those conventions. `context`
+MUST be nonnegative and specify how many lines before and after each matching
+line to include, defaulting to five on each side. Windows MUST stop at file
+boundaries, and overlapping windows in the same file MUST be merged. Each
+resulting window MUST be returned as a file-range input with its source path,
+inclusive line range, and complete text under {cite}`requirements.ci.inputs`.
+Setting `context` to zero MUST return only matching lines.
+Required terminology MUST be included under
+{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied
+to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
+No matches MUST return empty arrays; invalid arguments or a failed search MUST
+return an explanatory tool error.
+:::
+
+### Submit the result: `submit_judgment`
+
+:::{req} submission
+The harness MUST expose a `submit_judgment` tool accepting exactly these fields:
+
+```text
+submit_judgment({ determination: Judgment, rationale: String })
+
+Judgment = Boolean | { FIXME: Array<String> }
+```
+
+The judgment MUST use the three outcomes and nonempty FIXME entries defined by
+{cite}`requirements.ci.outcomes`.
+`rationale` MUST be nonempty Markdown. This tool call MUST supply the final
+assessment result. The model MUST invoke it exactly once over the entire
+assessment. If the model finishes without invoking it, or invokes it more than
+once, the harness MUST report an error and leave existing evidence unchanged.
+The harness MUST check the complete model response for multiple submissions
+before accepting one. Invalid submission arguments MUST also fail the assessment.
+A valid single submission MUST finish the assessment; there is no submission
+repair or resubmission loop.
+:::
+
+## Initial prompt
+
+### Mandatory inputs
+
+:::{req} mandatory_inputs
+The harness MUST construct each assessment's mandatory input set by combining
+the contributions specified by the requirements applicable to that subject and
+its inputs. A requirement that contributes inputs MUST cite this requirement and
+define which sources it contributes and when. The harness MUST include every
+applicable contribution, deduplicate identical selections, and report
+unresolvable mandatory inputs before inference. The complete set MUST be supplied
+in the initial model request.
+:::
+
+The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),
+[examples](examples.md#examples-as-authoring-inputs),
+[references](references.md#references-as-authoring-inputs),
+[terminology](definitions.md#terminology-as-authoring-inputs), and
+[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).
+
+### Prompt template
+
+:::{req} initial_prompt
+The initial request MUST provide the four tool definitions above and the
+following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`
+or `example`, `{{subject_name}}` with the full subject name, and
+`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using
+the existing evidence-input formats. The template MUST otherwise be used as
+written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,
+{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.
+
+```text
+Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.
+
+Subject: {{subject_kind}} {{subject_name}}
+
+Read the subject and mandatory inputs below. Use habeas to request any additional
+source information you need. Use list_files to discover files and directories,
+and ripgrep to search file contents.
+The harness records source inputs for you; directory listings are not evidence.
+
+Assess only the named subject, using cited requirements and definitions as context.
+For a requirement, check that the cited code implements it as stated and that
+tests cover the interesting points in the design space. If there are no tests,
+assess whether simplicity or impracticality justifies their absence, and explain.
+For an example, assess whether test setup and assertions cover its scenario and
+expected outcomes. A true judgment needs at least one {test} reference to the
+example in the supplied inputs. Explain the coverage.
+
+Choose true when the subject meets these criteria. Choose {"FIXME": ["..."]} when
+the remaining gaps are explicitly acknowledged in source comments or tests;
+list their issue references or other identifying content. The usual convention
+is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.
+Choose false for other gaps or insufficient evidence. Explain your judgment in
+a Markdown rationale with source locations, including any acknowledged gaps.
+
+When you are ready, call submit_judgment exactly once with determination and
+rationale. That tool call is your final answer.
+
+Mandatory inputs:
+{{mandatory_inputs}}
+```
+:::
+
+## Configuration
+
+:::{req} provider
+The authoring harness MUST use Rig and support Bedrock and Ollama. Users MUST be
+able to select a backend and model through configuration without changing the
+assessment tools, prompt, or evidence format.
+:::
+
+:::{req} configuration
+Authoring MUST use the `[authoring]` section of the shared user configuration.
+{cite}`requirements.configuration.user_location`
+{cite}`requirements.configuration.structure`
+{cite}`requirements.configuration.feature_sections`
+It MUST support named configurations and a user-local selection for each project.
+It defines no shared project configuration section. Credentials MUST be obtained
+through the selected backend's credential mechanism; saved configuration MUST
+contain credential-source references rather than credential values.
+:::
+
+### Serialized configuration data model
+
+The shared `UserConfig.authoring` field contains `UserAuthoringConfig`.
+`Optional<T>` means a field may be absent; `Map<K, V>` is a table keyed by `K`.
+
+:::{req} configuration_structure
+Habeas MUST define its authoring configuration using these data structures:
+
+```text
+UserAuthoringConfig {
+    default: Optional<ConfigName>,
+    configs: Map<ConfigName, AuthoringConfig>,
+    projects: Map<CanonicalProjectRoot, ProjectSelection>,
+}
+
+ProjectSelection {
+    config: ConfigName,
+}
+
+AuthoringConfig {
+    backend: BackendConfig,                   // tagged union, flattened in TOML
+}
+
+BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)
+
+BedrockConfig {
+    model: ModelId,                           // model ID or inference-profile ID/ARN
+    aws_profile: Optional<String>,
+    region: Optional<String>,
+    options: Map<String, OptionValue>,
+}
+
+OllamaConfig {
+    model: ModelId,                           // exact identifier, including tag
+    endpoint: Optional<String>,               // default: http://localhost:11434
+    api_key_env: Optional<EnvironmentVariableName>,
+    options: Map<String, OptionValue>,
+}
+
+OptionValue = String | Boolean | Integer | FiniteFloat
+            | Array<OptionValue> | Map<String, OptionValue>
+
+ModelRef {
+    backend: BackendKind,                     // Bedrock or Ollama
+    model: ModelId,
+}
+```
+
+`ModelRef` MUST be derived from the selected backend configuration and MUST
+preserve the exact model identifier. It MUST identify the model without replacing
+connection settings such as AWS profile, region, or Ollama endpoint.
+:::
+
+:::{req} configuration_serialization
+The `[authoring]` table MUST serialize UserAuthoringConfig. Each
+`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with
+`backend = "bedrock"` or `backend = "ollama"` and that variant's fields in the same
+table. Backend-specific inference options MUST appear in its `options` subtable.
+Within a present authoring section, `configs` MUST be present but MAY be empty;
+omitted `projects` and `options` tables MUST deserialize as empty maps.
+Serialization MUST follow the common rules in
+{cite}`requirements.configuration.serialization`.
+:::
+
+:::{req} configuration_storage
+Configuration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.
+Project-selection keys MUST be canonical absolute project-root paths. Model IDs
+MUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST
+name a nonempty environment variable without `=` or NUL.
+
+Authoring MUST validate its fields under {cite}`requirements.configuration.loading`.
+The `options` map MUST accept backend-defined inference settings rather than a
+closed Habeas list; the adapter MUST pass them through Rig's provider parameter
+mechanism and report rejection by Rig or the provider. These options MUST NOT
+replace the selected model, the assessment prompt, or tool definitions.
+:::
+
+:::{req} configuration_precedence
+`--config <name>` MUST select a configuration for that invocation. Otherwise,
+authoring MUST use the user's selection for the canonical project root, then the
+user's default. Backend, model, connection settings, and options MUST come from
+that configuration as a unit. Missing configuration or an unknown selection MUST
+produce an error identifying the user-file path and pointing to the documented
+examples.
+
+An explicit Bedrock AWS profile or region MUST override the corresponding SDK
+default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use
+its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its
+named variable MUST supply the credential; a missing or empty value MUST produce
+an error before a model request.
+:::
+
+:::{req} rig_configuration_mapping
+Habeas MUST resolve its saved configuration before constructing Rig provider
+clients and completion models. The Habeas data structures MUST remain the saved
+format. Rig model references MAY be reused internally without discarding the
+connection settings they do not represent.
+
+The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK
+configuration. The Ollama adapter MUST use the chosen server, exact model ID,
+and optional authentication; the server MAY be local or remote. Both adapters
+MUST supply the same tools and initial prompt.
+:::
+
+### Editing the file
+
+:::{req} configuration_documentation
+Authoring documentation MUST follow {cite}`requirements.configuration.documentation`
+and include complete TOML examples for Bedrock and Ollama, with all placeholders
+identified. It MUST show how to choose a default, use a remote Ollama server,
+select a configuration for a project or invocation, and edit or remove selections
+by hand. It MUST explain backend-specific options and credential-source references.
+:::
+
+Create the user file at the [shared configuration location](configuration.md#locations-and-scope).
+For Ollama, this is a complete minimal file; replace `MODEL_TAG` with a model
+identifier available on the local server:
+
+```toml
+version = 1
+
+[authoring]
+default = "local"
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+```
+
+For Bedrock, this is a complete minimal file. Replace `MODEL_ID` with an available
+model or inference-profile identifier, `research` with your AWS profile name,
+and `us-east-1` with your region:
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+aws_profile = "research"
+region = "us-east-1"
+```
+
+This complete file combines Bedrock, local Ollama, and remote Ollama. Replace
+`MODEL_ID` with an available Bedrock model or inference-profile identifier,
+`research` with your AWS profile name, `us-east-1` with your region, `MODEL_TAG`
+with an Ollama model identifier, `workstation` in the URL with your server, and
+`/absolute/path/to/project` with the canonical path to your checkout.
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+aws_profile = "research"
+region = "us-east-1"
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+
+[authoring.configs.workstation]
+backend = "ollama"
+model = "MODEL_TAG"
+endpoint = "http://workstation:11434"
+
+[authoring.projects."/absolute/path/to/project"]
+config = "workstation"
+```
+
+Edit `authoring.default` to change the user default, or the project entry's
+`config` to change that checkout's selection. Delete the corresponding field or
+project table to remove a selection. To remove a named configuration, delete its
+table and update any selections naming it. Preserve other feature sections when
+editing an existing file.
+
+Run `habeas author-evidence <full-name>` in the project, or add `--config local`
+to override the saved selection for one run. Backend options belong under
+`[authoring.configs.<name>.options]`. For an authenticated Ollama server, put
+`api_key_env = "OLLAMA_API_KEY"` in its configuration table and set that variable
+outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an
+Ollama endpoint to use localhost.
+
+## Recording results
+
+:::{req} delivered_inputs
+The harness MUST record the source text it supplies to the model, including
+mandatory inputs and additional reads, using the existing evidence input formats
+defined by {cite}`requirements.ci.inputs`,
+{cite}`requirements.ci.rust_item_inputs`,
+{cite}`requirements.ci.requirements_inputs`, and
+{cite}`requirements.definitions.inputs`. The harness MUST create these records
+itself so ordinary evidence validation can check them later.
+:::
+
+:::{req} persistence
+After one valid judgment, the harness MUST write the subject text, submitted
+determination and rationale, and recorded inputs using the existing evidence
+schema. {cite}`requirements.ci.schema`
+All three outcomes MUST be saved as completed assessments; their validation
+status MUST follow {cite}`requirements.ci.determination`.
+:::
+
+### Usage history
+
+:::{req} usage_storage
+Each assessment MUST have a separate JSON usage record under
+`<state-root>/authoring/usage/<run-id>.json` using
+{cite}`requirements.configuration.state_location`.
+It MUST identify its format version, run, project root, subject kind and full
+name, start time, backend and model when known, end time when finished, outcome,
+accepted determination kind (`true`, `false`, or `FIXME`) when present, and
+whether evidence was written. FIXME entry text MUST NOT be stored in usage
+records. Failed, cancelled, or unfinished
+runs MUST remain distinguishable from completed judgments. Records MUST persist
+for later review without storing source text, prompts, responses, or rationale.
+:::
+
+:::{req} usage_inputs
+Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8
+bytes and lines, and the same information for additional inputs requested through
+`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.
+Usage MUST distinguish unique inputs from repeated reads, successful from
+failed reads, and prepared inputs from those actually sent to the model.
+File-discovery calls MUST count as tool calls without recording directory
+listings as evidence or source inputs.
+:::
+
+:::{req} usage_requests
+Usage MUST record each provider request's outcome and available input/output
+token counts, including retries, with cached or reasoning-token counts when
+provided. Missing measurements MUST be recorded as unavailable, not zero.
+Run totals MUST include request and tool-call counts by tool, elapsed time, and
+available token usage, identifying incomplete totals without double counting
+provider counters that overlap.
+:::
+
+### CI without inference
+
+:::{req} deterministic_validation
+Ordinary evidence validation, status inspection, and book rendering MUST continue
+to check evidence using the existing rules without invoking models, contacting
+providers, or requiring authoring configuration or credentials. Missing or stale
+evidence MUST remain a validation failure rather than trigger authoring.
+:::
+
+## Examples
+
+:::{example} complete_initial_bundle
+A requirement has an implementation citation in one function, a test citation in
+another, and a terminology reference. The initial prompt contains the complete
+requirement, both functions, and the required definition as evidence inputs.
+{cite}`requirements.authoring_input`
+{cite}`requirements.references.authoring_inputs`
+{cite}`requirements.definitions.authoring_inputs`
+{cite}`requirements.authoring.mandatory_inputs`
+{cite}`requirements.authoring.initial_prompt`
+:::
+
+:::{example} additional_read
+The model calls `list_files` to find a directory, then `ripgrep` to find matching
+lines in a Rust file. The listing creates no evidence input; the search returns
+and records file-range inputs including five context lines on each side, where
+available. A `habeas` request with that file's `rust_file` and
+a `rust_item` selector returns and records the complete Rust item, along with any
+required terminology. A file-range request omitting `line_end` reads through EOF
+and records the actual ending line without requiring the model to know it.
+{cite}`requirements.authoring.file_discovery`
+{cite}`requirements.authoring.text_search`
+{cite}`requirements.authoring.source_tools`
+{cite}`requirements.authoring.delivered_inputs`
+:::
+
+:::{example} submission_count
+A model finishes with prose but never calls `submit_judgment`: the assessment
+fails without writing evidence. A response with two `submit_judgment` calls also
+fails, even when their payloads are identical. A single call with invalid
+arguments fails without requesting a replacement submission.
+{cite}`requirements.authoring.submission`
+:::
+
+:::{example} negative_assessment
+The model reads additional sources and calls `submit_judgment` once with
+`determination: false` and a rationale explaining the discrepancy. The harness
+saves that judgment with all source inputs it supplied. The authoring operation
+completes; ordinary evidence validation reports the false determination.
+{cite}`requirements.authoring.submission`
+{cite}`requirements.authoring.delivered_inputs`
+{cite}`requirements.authoring.persistence`
+:::
+
+:::{example} acknowledged_gap
+The cited code implements a requirement except for a boundary case explicitly
+documented in a source comment as `FIXME(#125)`. The model finds no other gaps
+and calls `submit_judgment` once with `determination: {"FIXME": ["#125"]}` and a
+rationale locating the comment and explaining the boundary case. The harness
+saves that judgment and the source inputs, including the comment. CI accepts
+the FIXME judgment when all other evidence checks pass.
+{cite}`requirements.ci.outcomes`
+{cite}`requirements.ci.determination`
+{cite}`requirements.authoring.submission`
+{cite}`requirements.authoring.delivered_inputs`
+{cite}`requirements.authoring.persistence`
+:::
