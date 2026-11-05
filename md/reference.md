@@ -124,6 +124,24 @@ habeas author-evidence requirements.check --config local
 habeas info requirements.check
 ```
 
+Use `--stdout` to emit the evidence JSON followed by a newline without creating
+or changing evidence files or directories. The completion summary, usage-record
+path, and diagnostics go to stderr, so stdout can be redirected or piped:
+
+```sh
+habeas author-evidence requirements.check --stdout > /tmp/assessment.json
+```
+
+All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An
+assessment that fails before accepting a valid judgment emits no evidence JSON.
+Usage is still recorded outside the project, with `evidence_output` identifying
+the selected `file` or `stdout` destination and `evidence_written` reporting
+whether the write succeeded.
+{cite}`requirements.authoring.invocation`
+{cite}`requirements.authoring.submission`
+{cite}`requirements.authoring.persistence`
+{cite}`requirements.authoring.usage_storage`
+
 Change `authoring.default` to switch the default, or add a per-project selection
 using its canonical absolute path (replace `/absolute/path/to/project`):
 
@@ -160,8 +178,8 @@ go in the same options table; Rig places them in Ollama's native request.
 {cite}`requirements.authoring.configuration_storage`
 {cite}`requirements.authoring.rig_configuration_mapping`
 
-The command reports the evidence and usage-record paths. Usage metadata is kept
-under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to
+The command reports the evidence destination and usage-record path. Usage
+metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to
 `$HOME/.local/state/habeas/authoring/usage`; Windows uses
 `%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and
 book rendering remain deterministic and do not require model configuration or

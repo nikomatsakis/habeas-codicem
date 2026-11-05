@@ -37,6 +37,9 @@ enum Command {
         subject: String,
         #[arg(long)]
         config: Option<String>,
+        /// Write evidence JSON to stdout instead of updating its file.
+        #[arg(long)]
+        stdout: bool,
     },
     #[command(hide = true)]
     Hook {
@@ -112,20 +115,44 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         // {impl}`requirements.authoring.invocation`
-        Command::AuthorEvidence { subject, config } => {
+        Command::AuthorEvidence {
+            subject,
+            config,
+            stdout,
+        } => {
             let root = setup::project_root()?;
+            let output = if stdout {
+                habeas::authoring::EvidenceOutput::Stdout
+            } else {
+                habeas::authoring::EvidenceOutput::File
+            };
             let outcome = tokio::runtime::Runtime::new()?.block_on(
-                habeas::authoring::author_evidence(&root, &subject, config.as_deref()),
+                habeas::authoring::author_evidence_with_output(
+                    &root,
+                    &subject,
+                    config.as_deref(),
+                    output,
+                ),
             )?;
-            println!(
-                "{}: {} / {} — {}\nEvidence: {}\nUsage: {}",
+            let summary = format!(
+                "{}: {} / {} — {}",
                 outcome.subject,
                 outcome.backend,
                 outcome.model,
                 outcome.determination.kind(),
-                outcome.evidence_path.display(),
-                outcome.usage_path.display()
             );
+            if let Some(path) = outcome.evidence_path {
+                println!(
+                    "{summary}\nEvidence: {}\nUsage: {}",
+                    path.display(),
+                    outcome.usage_path.display()
+                );
+            } else {
+                eprintln!(
+                    "{summary}\nEvidence: stdout\nUsage: {}",
+                    outcome.usage_path.display()
+                );
+            }
             Ok(())
         }
         // {impl}`requirements.integration.symposium_setup_hook`

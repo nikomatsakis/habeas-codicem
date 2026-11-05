@@ -6,9 +6,12 @@ harness records the inputs and writes the judgment into the existing evidence
 format. Rig provides the connection to the user's configured model.
 
 :::{req} invocation
-`habeas author-evidence <full-name> [--config <name>]` MUST assess one existing
-requirement or named example in the current project. It MUST report the selected
-subject, backend, and model, and the evidence and usage-record paths on completion.
+`habeas author-evidence <full-name> [--config <name>] [--stdout]` MUST assess one
+existing requirement or named example in the current project. It MUST report the
+selected subject, backend, model, evidence destination, and usage-record path on
+completion. The evidence destination MUST identify the evidence-file path by
+default or stdout when `--stdout` is selected. In stdout mode, the completion
+report and diagnostics MUST go to stderr.
 :::
 
 ## Model tools
@@ -129,7 +132,8 @@ once, the harness MUST report an error and leave existing evidence unchanged.
 The harness MUST check the complete model response for multiple submissions
 before accepting one. Invalid submission arguments MUST also fail the assessment.
 A valid single submission MUST finish the assessment; there is no submission
-repair or resubmission loop.
+repair or resubmission loop. An assessment that fails before accepting a valid
+judgment MUST emit no evidence JSON to stdout.
 :::
 
 ## Initial prompt
@@ -421,7 +425,10 @@ itself so ordinary evidence validation can check them later.
 After one valid judgment, the harness MUST write the subject text, submitted
 determination and rationale, and recorded inputs using the existing evidence
 schema. {cite}`requirements.ci.schema`
-All three outcomes MUST be saved as completed assessments; their validation
+By default, it MUST write the subject's evidence file. With `--stdout`, it MUST
+emit a single evidence JSON object followed by a newline to stdout and MUST NOT
+create or change evidence files or directories. All three outcomes MUST be
+written to the selected destination as completed assessments; their validation
 status MUST follow {cite}`requirements.ci.determination`.
 :::
 
@@ -434,8 +441,11 @@ Each assessment MUST have a separate JSON usage record under
 It MUST identify its format version, run, project root, subject kind and full
 name, start time, backend and model when known, end time when finished, outcome,
 accepted determination kind (`true`, `false`, or `FIXME`) when present, and
-whether evidence was written. FIXME entry text MUST NOT be stored in usage
-records. Failed, cancelled, or unfinished
+whether evidence was written. It MUST record the selected output destination in
+`evidence_output` as `file` or `stdout`; a successful write to either destination
+MUST set `evidence_written` to true. Usage recording MUST remain outside the
+project in stdout mode. FIXME entry text MUST NOT be stored in usage records.
+Failed, cancelled, or unfinished
 runs MUST remain distinguishable from completed judgments. Records MUST persist
 for later review without storing source text, prompts, responses, or rationale.
 :::

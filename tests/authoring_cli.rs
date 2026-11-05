@@ -456,6 +456,76 @@ fn false_is_a_completed_assessment() {
     assert_eq!(fixture.usage()["determination"], "false");
 }
 
+// {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.delivered_inputs`
+// {test}`requirements.authoring.usage_storage`
+#[test]
+fn stdout_emits_only_evidence_json_without_changing_project_files() {
+    for (determination, kind, existing_evidence) in [
+        (json!(true), "true", true),
+        (json!(false), "false", true),
+        (json!({"FIXME":["#125"]}), "FIXME", true),
+        (json!(true), "true", false),
+    ] {
+        let rationale = "The supplied sources explain this judgment.";
+        let server = Server::start(vec![reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination":determination,"rationale":rationale}),
+        )])]);
+        let fixture = Fixture::new(&server.endpoint);
+        if !existing_evidence {
+            fs::remove_dir_all(fixture.project.join("evidence")).unwrap();
+        }
+        let output = fixture.run(&["author-evidence", SUBJECT, "--stdout"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(server.finish().len(), 1);
+        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(output.stdout.ends_with(b"\n"));
+        assert_eq!(evidence["requirement"], REQUIREMENT);
+        assert_eq!(evidence["determination"], determination);
+        assert_eq!(evidence["rationale"], rationale);
+        let inputs = evidence["inputs"].as_array().unwrap();
+        assert!(inputs.iter().any(|input| input["requirements"] == SUBJECT));
+        assert!(
+            inputs
+                .iter()
+                .any(|input| input["definition"] == "terms.readiness")
+        );
+        assert!(
+            inputs
+                .iter()
+                .any(|input| input["rust_file"] == "src/lib.rs")
+        );
+        if existing_evidence {
+            assert_eq!(
+                fs::read_to_string(&fixture.evidence).unwrap(),
+                fixture.original
+            );
+        } else {
+            assert!(!fixture.project.join("evidence").exists());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("{SUBJECT}: ollama / {MODEL} — {kind}")));
+        assert!(stderr.contains("Evidence: stdout\n"));
+        let usage_path = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("Usage: "))
+            .expect("stderr reports usage location");
+        assert!(std::path::Path::new(usage_path).is_file());
+        let usage = fixture.usage();
+        assert_eq!(usage["outcome"], "completed");
+        assert_eq!(usage["determination"], kind);
+        assert_eq!(usage["evidence_output"], "stdout");
+        assert_eq!(usage["evidence_written"], true);
+    }
+}
+
 // {test}`requirements.authoring.submission_count`
 // {test}`requirements.authoring.submission`
 // {test}`requirements.authoring.usage_storage`
@@ -480,20 +550,31 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             json!({"determination":{"FIXME":[]},"rationale":"No gap identified."}),
         )],
     ] {
-        let server = Server::start(vec![reply(calls)]);
-        let fixture = Fixture::new(&server.endpoint);
-        let output = fixture.run(&["author-evidence", SUBJECT]);
-        assert!(!output.status.success());
-        server.finish();
-        assert_eq!(
-            fs::read_to_string(&fixture.evidence).unwrap(),
-            fixture.original
-        );
-        let usage = fixture.usage();
-        assert_eq!(usage["outcome"], "failed");
-        assert_eq!(usage["evidence_written"], false);
-        assert_eq!(usage["request_count"], 1);
-        assert!(usage["determination"].is_null());
+        for stdout in [false, true] {
+            let server = Server::start(vec![reply(calls.clone())]);
+            let fixture = Fixture::new(&server.endpoint);
+            let mut args = vec!["author-evidence", SUBJECT];
+            if stdout {
+                args.push("--stdout");
+            }
+            let output = fixture.run(&args);
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            server.finish();
+            assert_eq!(
+                fs::read_to_string(&fixture.evidence).unwrap(),
+                fixture.original
+            );
+            let usage = fixture.usage();
+            assert_eq!(usage["outcome"], "failed");
+            assert_eq!(
+                usage["evidence_output"],
+                if stdout { "stdout" } else { "file" }
+            );
+            assert_eq!(usage["evidence_written"], false);
+            assert_eq!(usage["request_count"], 1);
+            assert!(usage["determination"].is_null());
+        }
     }
 }
 
@@ -527,6 +608,8 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
 // {test}`requirements.authoring.initial_prompt`
 // {test}`requirements.authoring.usage_requests`
 // {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.authoring.source_tools`
+// {test}`requirements.authoring.submission`
 #[test]
 fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
     let server = Server::start(vec![json!({
@@ -599,9 +682,51 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
     assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
     let prompt = body["messages"][0]["content"][0]["text"].as_str().unwrap();
     assert!(prompt.contains("Bring your expert judgment") && prompt.contains(REQUIREMENT));
-    let mut tools = body["toolConfig"]["tools"]
-        .as_array()
-        .unwrap()
+    let tool_specs = body["toolConfig"]["tools"].as_array().unwrap();
+    for tool in tool_specs {
+        let schema = &tool["toolSpec"]["inputSchema"]["json"];
+        assert_eq!(schema["type"], "object");
+        for unsupported in ["oneOf", "allOf", "anyOf"] {
+            assert!(
+                schema.get(unsupported).is_none(),
+                "Bedrock rejects {unsupported} at the root of {}'s input schema",
+                tool["toolSpec"]["name"]
+            );
+        }
+    }
+    let habeas_schema = &tool_specs
+        .iter()
+        .find(|tool| tool["toolSpec"]["name"] == "habeas")
+        .unwrap()["toolSpec"]["inputSchema"]["json"];
+    assert_eq!(habeas_schema["additionalProperties"], false);
+    for field in [
+        "file",
+        "rust_file",
+        "rust_item",
+        "requirements",
+        "definition",
+    ] {
+        assert_eq!(habeas_schema["properties"][field]["type"], "string");
+    }
+    for field in ["line_start", "line_end"] {
+        assert_eq!(habeas_schema["properties"][field]["type"], "integer");
+        assert_eq!(habeas_schema["properties"][field]["minimum"], 1);
+    }
+    let judgment_schema = &tool_specs
+        .iter()
+        .find(|tool| tool["toolSpec"]["name"] == "submit_judgment")
+        .unwrap()["toolSpec"]["inputSchema"]["json"]["properties"]["determination"];
+    let outcomes = judgment_schema["oneOf"].as_array().unwrap();
+    assert!(outcomes.iter().any(|outcome| outcome["type"] == "boolean"));
+    let fixme = &outcomes
+        .iter()
+        .find(|outcome| outcome["type"] == "object")
+        .unwrap()["properties"]["FIXME"];
+    assert_eq!(fixme["type"], "array");
+    assert_eq!(fixme["minItems"], 1);
+    assert_eq!(fixme["items"]["type"], "string");
+    assert_eq!(fixme["items"]["minLength"], 1);
+    let mut tools = tool_specs
         .iter()
         .map(|tool| tool["toolSpec"]["name"].as_str().unwrap())
         .collect::<Vec<_>>();

@@ -6,7 +6,7 @@ mod tools;
 mod usage;
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -24,18 +24,34 @@ pub struct AuthoringOutcome {
     pub subject: String,
     pub backend: String,
     pub model: String,
-    pub evidence_path: PathBuf,
+    pub evidence_path: Option<PathBuf>,
     pub usage_path: PathBuf,
     pub determination: Judgment,
+}
+
+#[derive(Clone, Copy)]
+pub enum EvidenceOutput {
+    File,
+    Stdout,
+}
+
+// {impl}`requirements.authoring.invocation`
+pub async fn author_evidence(
+    root: &Path,
+    subject: &str,
+    selection: Option<&str>,
+) -> io::Result<AuthoringOutcome> {
+    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await
 }
 
 // {impl}`requirements.authoring.invocation`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
-pub async fn author_evidence(
+pub async fn author_evidence_with_output(
     root: &Path,
     subject: &str,
     selection: Option<&str>,
+    output: EvidenceOutput,
 ) -> io::Result<AuthoringOutcome> {
     let root = fs::canonicalize(root)?;
     let state = config::state_root()?;
@@ -46,8 +62,13 @@ pub async fn author_evidence(
         ));
     }
     let mut usage = UsageLog::start(&state, &root, subject)?;
+    usage.record.evidence_output = match output {
+        EvidenceOutput::File => "file",
+        EvidenceOutput::Stdout => "stdout",
+    };
+    usage.save()?;
     let result = tokio::select! {
-        result = configured_assessment(&root, subject, selection, &mut usage) => result,
+        result = configured_assessment(&root, subject, selection, output, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, "evidence authoring cancelled")),
@@ -83,6 +104,7 @@ async fn configured_assessment(
     root: &Path,
     subject: &str,
     selection: Option<&str>,
+    output: EvidenceOutput,
     usage: &mut UsageLog,
 ) -> io::Result<AuthoringOutcome> {
     let config = config::resolve_authoring(root, selection)?;
@@ -106,7 +128,8 @@ async fn configured_assessment(
                 config.name
             ))
         })?;
-    let (determination, evidence_path) = assess(&provider, root, &mut sources, usage).await?;
+    let (determination, evidence_path) =
+        assess(&provider, root, &mut sources, output, usage).await?;
     Ok(AuthoringOutcome {
         subject: subject.into(),
         backend: backend.into(),
@@ -184,8 +207,9 @@ async fn assess(
     provider: &impl CompletionProvider,
     root: &Path,
     sources: &mut AssessmentSources,
+    output: EvidenceOutput,
     usage: &mut UsageLog,
-) -> io::Result<(Judgment, PathBuf)> {
+) -> io::Result<(Judgment, Option<PathBuf>)> {
     let mut request = CompletionRequest::new(initial_prompt(sources)?);
     request.tools = tool_definitions()?;
     let mut pending = sources.mandatory_inputs().to_vec();
@@ -232,16 +256,25 @@ async fn assess(
             let (judgment, rationale) = result?;
             usage.record.determination = Some(judgment.kind().into());
             usage.save()?;
-            let evidence_path = root
-                .join("evidence")
-                .join(format!("{}.json", sources.subject_name));
             let evidence = json!({sources.subject_kind.noun(): sources.subject_text,
                 "determination": judgment.to_value(), "rationale": rationale, "inputs": sources.recorded_inputs()});
-            fs::create_dir_all(evidence_path.parent().expect("evidence parent"))?;
-            fs::write(
-                &evidence_path,
-                format!("{}\n", serde_json::to_string_pretty(&evidence)?),
-            )?;
+            let json = format!("{}\n", serde_json::to_string_pretty(&evidence)?);
+            let evidence_path = match output {
+                EvidenceOutput::File => {
+                    let path = root
+                        .join("evidence")
+                        .join(format!("{}.json", sources.subject_name));
+                    fs::create_dir_all(path.parent().expect("evidence parent"))?;
+                    fs::write(&path, json)?;
+                    Some(path)
+                }
+                EvidenceOutput::Stdout => {
+                    let mut stdout = io::stdout().lock();
+                    stdout.write_all(json.as_bytes())?;
+                    stdout.flush()?;
+                    None
+                }
+            };
             usage.record.evidence_written = true;
             usage.save()?;
             return Ok((judgment, evidence_path));

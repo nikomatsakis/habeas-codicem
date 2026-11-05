@@ -17,16 +17,21 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
 pub(crate) fn definitions() -> Vec<Value> {
+    // Providers such as Anthropic require a plain object at the schema root.
+    // Describe the alternative forms here and enforce them in read().
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as one evidence input. Supply exactly one request form. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input.",
-            "parameters": {"type":"object", "oneOf": [
-                {"type":"object", "properties":{"file":{"type":"string"},"line_start":{"type":"integer","minimum":1},"line_end":{"type":"integer","minimum":1}}, "required":["file","line_start"], "additionalProperties":false},
-                {"type":"object", "properties":{"rust_file":{"type":"string"},"rust_item":{"type":"string"}}, "required":["rust_file","rust_item"], "additionalProperties":false},
-                {"type":"object", "properties":{"requirements":{"type":"string"}}, "required":["requirements"], "additionalProperties":false},
-                {"type":"object", "properties":{"definition":{"type":"string"}}, "required":["definition"], "additionalProperties":false}
-            ]}
+            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input.",
+            "parameters": {"type":"object", "properties": {
+                "file":{"type":"string"},
+                "line_start":{"type":"integer","minimum":1},
+                "line_end":{"type":"integer","minimum":1},
+                "rust_file":{"type":"string"},
+                "rust_item":{"type":"string"},
+                "requirements":{"type":"string"},
+                "definition":{"type":"string"}
+            }, "additionalProperties":false}
         }),
         json!({
             "name": "list_files", "description": "List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs.",
@@ -345,14 +350,24 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            dispatch(
-                &sources,
-                "habeas",
-                &json!({"file":"src/lib.rs","line_start":1,"definition":"terms.value"})
-            )
-            .is_err()
-        );
+        // The provider-facing schema leaves selector fields optional; the
+        // harness still rejects incomplete, mixed, and unknown request forms.
+        for arguments in [
+            json!({}),
+            json!({"file":"src/lib.rs"}),
+            json!({"line_start":1}),
+            json!({"rust_file":"src/lib.rs"}),
+            json!({"rust_item":"fn[work]"}),
+            json!({"file":"src/lib.rs","line_start":1,"definition":"terms.value"}),
+            json!({"rust_file":"src/lib.rs","rust_item":"fn[work]","requirements":"requirements.*"}),
+            json!({"requirements":"requirements.*","definition":"terms.value"}),
+            json!({"definition":"terms.value","extra":true}),
+        ] {
+            assert!(
+                dispatch(&sources, "habeas", &arguments).is_err(),
+                "unexpectedly accepted {arguments}"
+            );
+        }
         assert!(
             dispatch(
                 &sources,
