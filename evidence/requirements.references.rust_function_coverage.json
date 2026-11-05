@@ -1,7 +1,7 @@
 {
   "requirement": "During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST cite a requirement. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is met. I found no gaps, and there are no FIXME markers. I did not run the code or the tests. I also did not check every function in the repository for a citation, so the self-check is not confirmed by me.\n\n**Implementation**\n- `inspect_repository` in `src/evidence.rs` calls `crate::rust_coverage::validate_rust_functions` during repository validation. It appends the results to the same error list as the other validation errors.\n- `rust_files` in `src/rust_coverage.rs` walks the project recursively. It skips only `.git` and `target`, plus the root-level `book`, `evidence` and `vendor` directories. Nested source directories such as `src/evidence/` are still scanned.\n- `validate_rust_functions` reads each `.rs` file. It reports unreadable files and parse failures as `file:line: cannot parse Rust source: …`, and does not skip them silently.\n- `missing_function_references` parses each file with `syn::parse_file`. `FunctionCollector` records every `ItemFn`, `ImplItemFn`, `TraitItemFn` and `ForeignItemFn`. It also recurses, so nested functions and test helpers are included.\n- Comment ranges come from a custom scanner, `comments`. It skips string, raw-string and char literals, so a reference inside a string literal does not count (`quoted_end`, `char_end`, `raw_string_end`).\n- Comments are attached to a function only in two ways, through `attached_comment_indices` or by lying inside the function's own body, where the innermost enclosing function owns them.\n  - `attached_comment_indices` takes contiguous comments directly above the function. It stops at a blank-line gap, at trailing comments after a previous item, and at `//!` inner docs.\n  - A comment on an enclosing module or impl block therefore does not count.\n- A function counts as cited only if some comment owned by it contains a non-term `{impl}`, `{cite}` or `{test}` role whose target is a defined requirement or example. Unknown names do not count.\n- Uncited functions are reported with file, line and name, in the format `{label}:{line}: function {name} has no requirement or example citation`.\n- \"A named example MUST cite a requirement\" is enforced where definitions are collected (`src/evidence.rs`, around lines 288–310). That check produces the error \"example … must cite at least one requirement\".\n\n**Tests (`src/rust_coverage.rs` tests module, plus one integration test)**\n- `finds_uncited_functions_without_using_enclosing_or_string_references` covers:\n  - a citation on an enclosing module or impl block, which does not count;\n  - a citation inside a string or raw string;\n  - an unknown requirement name;\n  - a body comment, which counts;\n  - a comment separated by a blank line;\n  - a trailing comment on the previous item;\n  - an inner doc comment `//!`;\n  - an outer doc comment `///`.\n- `checks_trait_test_helper_and_nested_functions_separately` covers:\n  - trait methods;\n  - nested functions, where a comment in the inner function does not cite the outer one;\n  - `{test}` citing a requirement and citing a named example;\n  - an uncited test helper.\n- `locates_functions_after_unicode_text` checks that byte offsets and line numbers stay correct after non-ASCII text.\n- `reports_all_files_and_parse_failures` checks that multiple files are scanned and a parse failure is reported. It also checks that nested source directories are scanned and that `target/` and `evidence/` are ignored.\n- `tests/authoring_batch.rs::discovery_errors_fail_before_configuration_or_inference` checks, end to end through the CLI, that a Rust parse failure (`fn broken(`) is reported as \"cannot parse Rust source\" with the file path.\n\n**Minor limitations**\n- Functions generated inside `macro_rules!` bodies or macro invocations are not parsed, so they are not checked. I do not consider this a gap, because the requirement covers \"explicitly declared\" functions.\n- An unusual same-line `/* */` comment placed after a previous item would attach to the next function. This is a corner case, and it does not contradict the requirement.",
+  "rationale": "**Judgment: the requirement is met.** The implementation matches the requirement text, and the tests cover the main cases. I did not run the tests or the repository self-validation; the self-validation point rests on reading the code and a spot-check.\n\n**Wiring.** `inspect_repository` in `src/evidence.rs` calls `crate::rust_coverage::validate_rust_functions` during repository validation. That call carries its own `{impl}` comment.\n\n**Parsing every first-party file.**\n- `rust_files` walks the whole project tree.\n  - It skips `.git` and `target` at any depth.\n  - It skips `book`, `evidence` and `vendor` only at the root, so `src/evidence/check.rs` is still scanned.\n- `validate_rust_functions` reads each file and calls `missing_function_references`, which runs `syn::parse_file`.\n- A parse failure becomes `\"{file}:{line}: cannot parse Rust source: …\"`, and read or directory errors are also reported. Files are never silently skipped.\n\n**Which functions are collected.**\n- `FunctionCollector` visits `ItemFn`, `ImplItemFn`, `TraitItemFn` and `ForeignItemFn`, and recurses into each. That covers free functions, methods, trait methods (including bodiless ones), extern functions, nested functions and test helpers.\n- Functions generated inside macros are not seen. That fits \"explicitly declared\".\n\n**Which comments count.**\n- `comments()` is a lexer that skips string, raw-string, byte-string and char literals, so a reference in a string literal does not count. It also handles nested block comments.\n- `attached_comment_indices` attaches comments that sit directly above a function with at most one blank line and nothing else between them. A comment is not attached if code precedes it on its line, or if it is an inner doc comment (`//!` or `/*!`).\n- A comment inside a function's span goes to the smallest enclosing function, so a comment in a nested function does not credit the outer one.\n- Comments on an enclosing `mod` or `impl` only count if they are directly attached to a function, which in practice excludes them.\n- A reference counts only if its role is not `term` and it names a defined requirement or example. Unknown names do not count.\n- Uncited functions are reported with file, line and name.\n- Citations are not checked by definition kind. A named example that cites no requirement still counts here, but the definition-collection check in `src/evidence.rs` reports that separately (\"example … must cite at least one requirement\").\n\n**Tests in `src/rust_coverage.rs`.**\n- `finds_uncited_functions_without_using_enclosing_or_string_references` covers:\n  - enclosing mod and impl references not counting;\n  - string and raw-string references not counting;\n  - unknown names not counting;\n  - body block comments counting;\n  - a distant comment not counting;\n  - a trailing comment on the previous line not counting;\n  - an inner doc comment not counting;\n  - an outer doc comment counting.\n- `checks_trait_test_helper_and_nested_functions_separately` covers trait methods, nested functions, `{test}` references on a requirement and on a named example, and an uncited test helper.\n- `locates_functions_after_unicode_text` checks byte-offset and line handling.\n- `reports_all_files_and_parse_failures` checks multi-file traversal, nested directories, a parse failure, and the `target` and root `evidence` exclusions.\n\n**Integration tests.**\n- `tests/authoring_batch.rs::discovery_errors_fail_before_configuration_or_inference` checks the parse-failure diagnostic through the CLI.\n- `tests/commands.rs::status_preserves_repository_wide_rust_findings_in_every_form` checks the \"has no requirement or example citation\" message through the CLI.\n- `tests/habeas.rs` runs `habeas::validate()` on the repository itself. The visible sampled functions are cited, e.g. `fn habeas` carries `{test}\\`requirements.integration.self_test\\``.\n\n**Minor observations, not gaps.**\n- No test exercises `ForeignItemFn` specifically.\n- The reported line for a function with attributes is the start of its span, which includes the attributes.\n\nNo FIXME-acknowledged gaps were found in `src/rust_coverage.rs`.",
   "inputs": [
     {
       "requirements": "requirements.references.rust_function_coverage",
@@ -801,6 +801,50 @@
       ]
     },
     {
+      "rust_file": "tests/commands.rs",
+      "rust_item": "fn[status_preserves_repository_wide_rust_findings_in_every_form]",
+      "text": [
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.references.rust_function_coverage`",
+        "// {test}`requirements.references.rust_function_attestations`",
+        "// {test}`requirements.references.definition_globs`",
+        "#[test]",
+        "fn status_preserves_repository_wide_rust_findings_in_every_form() {",
+        "    let temp = fixture();",
+        "    let nested = temp.path().join(\"src/nested\");",
+        "    for flags in [",
+        "        [].as_slice(),",
+        "        [\"--all\"].as_slice(),",
+        "        [\"--verbose\"].as_slice(),",
+        "        [\"--all\", \"--verbose\"].as_slice(),",
+        "    ] {",
+        "        for selection in [None, Some(\"requirements.ready\")] {",
+        "            let mut args = vec![\"status\"];",
+        "            args.extend_from_slice(flags);",
+        "            args.extend(selection);",
+        "            let output = habeas(&nested, &args);",
+        "            assert!(output.status.success(), \"{args:?}: {output:?}\");",
+        "            let text = String::from_utf8(output.stdout).unwrap();",
+        "            assert!(",
+        "                text.contains(\"## Other validation findings\"),",
+        "                \"{args:?}: {text}\"",
+        "            );",
+        "            assert!(",
+        "                text.contains(",
+        "                    \"src/main.rs:1: function main has no requirement or example citation\"",
+        "                ),",
+        "                \"{args:?}: {text}\"",
+        "            );",
+        "            assert!(",
+        "                text.contains(\"src/main.rs:1 fn[main]: missing Rust function attestation file\"),",
+        "                \"{args:?}: {text}\"",
+        "            );",
+        "        }",
+        "    }",
+        "}"
+      ]
+    },
+    {
       "file": "src/add_input.rs",
       "line_start": 238,
       "line_end": 244,
@@ -917,13 +961,13 @@
       "line_start": 842,
       "line_end": 848,
       "text": [
+        "    // {test}`requirements.references.targets`",
         "    #[test]",
         "    fn references_in_requirement_bodies_are_scanned_as_markdown() {",
         "        let known = [\"{\", \"cite}`requirements.ready`\"].concat();",
         "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
         "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");",
-        "        let references = reference_roles(&content, true);",
-        "        assert_eq!(references.len(), 1);"
+        "        let references = reference_roles(&content, true);"
       ]
     },
     {
@@ -1205,6 +1249,7 @@
       "line_start": 521,
       "line_end": 601,
       "text": [
+        "        });",
         "        let (end, body_end, closed) = if let Some(close_index) = close_index {",
         "            (lines[close_index].1, lines[close_index].0, true)",
         "        } else {",
@@ -1284,8 +1329,7 @@
         "        let name_start = start + prefix.len();",
         "        let Some(name_end_offset) = content[name_start..].find('`') else {",
         "            continue;",
-        "        };",
-        "        let name_end = name_start + name_end_offset;"
+        "        };"
       ]
     },
     {
@@ -1371,9 +1415,1853 @@
       "line_start": 49,
       "line_end": 51,
       "text": [
+        "serde = { version = \"1.0.229\", features = [\"derive\"] }",
         "serde_json = \"1\"",
-        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
-        "tempfile = \"3.27.0\""
+        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
+      "line_start": 28,
+      "line_end": 30,
+      "text": [
+        "",
+        "The harness assesses whether cited implementations meet requirements and whether tests cover interesting cases, allowing a rationale for absent tests when logic is simple or testing is impractical. For examples, it checks the scenario, test setup, and expected assertions; a true judgment needs a covered `{test}` reference. Its outcomes are true for supported subjects, false for unacknowledged gaps or insufficient information, and `{\"FIXME\": [\"#125\"]}` for gaps explicitly acknowledged in source comments or tests. A FIXME does not excuse additional unacknowledged gaps. Function-attestation determinations remain boolean judgments of citation completeness.",
+        ""
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 15,
+      "line_end": 17,
+      "text": [
+        "examples, and first-party Rust functions. Current accepted records, including",
+        "FIXME judgments, are preserved. Each assessment runs in its own model conversation.",
+        "The harness records delivered source inputs and writes the model's judgment and"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 33,
+      "line_end": 36,
+      "text": [
+        "Use `habeas status [<glob>]` to find requirements and examples needing attention,",
+        "or `--all` to include accepted records. Status groups FIXME judgments by issue;",
+        "use `--verbose` to list the judgments and original FIXME entries in each group.",
+        "Use `habeas info <glob>` to inspect their"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 58,
+      "line_end": 65,
+      "text": [
+        "",
+        "Requirement and example judgments are `true`, `false`, or `{\"FIXME\": [\"#125\"]}`.",
+        "FIXME means source comments or tests explicitly acknowledge every remaining gap;",
+        "the entries identify issues or other source content. The convention is",
+        "`FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but other source locations are allowed.",
+        "The harness records these references; do not invent issue numbers or change a",
+        "judgment to make validation pass. CI accepts true and FIXME only when all schema,",
+        "freshness, and coverage checks also pass. Function attestations remain boolean"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "line_start": 21,
+      "line_end": 23,
+      "text": [
+        "",
+        "Requirement and example judgments have three outcomes: `true`, `false`, or `{\"FIXME\": [\"#125\"]}`. The harness uses FIXME when source comments or tests explicitly acknowledge the uncovered aspects, recording their issue references or other identifying content. A documented gap does not excuse other, unacknowledged gaps. Use the `habeas-evidence` skill for the authoring workflow.",
+        ""
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 36,
+      "line_end": 38,
+      "text": [
+        "| `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |",
+        "| `determination` | `true`, `false`, or `{\"FIXME\": [\"#125\"]}` for explicitly documented gaps. |",
+        "| `rationale` | A Markdown explanation of that judgment. |"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 48,
+      "line_end": 56,
+      "text": [
+        "",
+        "The model chooses `true` when that review supports the subject and FIXME when",
+        "source comments or tests explicitly acknowledge the remaining implementation or",
+        "testing gaps; otherwise it chooses `false` for gaps or missing information.",
+        "The FIXME array records the acknowledged gaps' issue references or other",
+        "identifying source content, with each gap and source location explained in the",
+        "rationale. The expected comment",
+        "convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may",
+        "appear elsewhere in the comment or test. The harness captures those source inputs."
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 87,
+      "line_end": 89,
+      "text": [
+        "false records. It includes requirements, examples, and Rust function attestations,",
+        "preserving current accepted evidence, including FIXME judgments. Each assessment",
+        "gets its own conversation and usage record. Successful results are kept if"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 164,
+      "line_end": 166,
+      "text": [
+        "",
+        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
+        "assessment that fails before accepting a valid judgment emits no evidence JSON."
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 281,
+      "line_end": 283,
+      "text": [
+        "",
+        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
+        ""
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 285,
+      "line_end": 290,
+      "text": [
+        "",
+        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
+        "",
+        "Run `habeas status [<glob>]` from within the project to list requirements and named",
+        "examples needing attention and their validation findings. FIXME judgments are",
+        "summarized by issue, for example:"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 294,
+      "line_end": 296,
+      "text": [
+        "- #45 — affects 3 judgments",
+        "- 16 judgments marked FIXME without an issue",
+        "```"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 300,
+      "line_end": 302,
+      "text": [
+        "no recognized issue reference. References may appear in explanatory text or",
+        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
+        "URLs are also recognized. Groups with the most affected judgments come first."
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 305,
+      "line_end": 310,
+      "text": [
+        "Use `--verbose` to list the actual judgments in each group, with their full names,",
+        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
+        "evidence state. Stale or invalid FIXME evidence still reports its validation",
+        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
+        "including current texts, rationales, inputs, FIXME references, and findings. Both",
+        "commands match whole full names; `*` can span any number of characters, including"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 21,
+      "line_end": 23,
+      "text": [
+        "missing, stale, invalid, or false. It MUST preserve accepted, current records,",
+        "including accepted FIXME judgments, without invoking a model for those records.",
+        "`--all` MUST be mutually exclusive with a subject name and `--stdout`."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 168,
+      "line_end": 173,
+      "text": [
+        "",
+        "Judgment = Boolean | { FIXME: Array<String> }",
+        "```",
+        "",
+        "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
+        "{cite}`requirements.ci.outcomes`."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 235,
+      "line_end": 240,
+      "text": [
+        "",
+        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+        "the remaining gaps are explicitly acknowledged in source comments or tests;",
+        "list their issue references or other identifying content. The usual convention",
+        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+        "Choose false for other gaps or insufficient evidence. Explain your judgment in"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 261,
+      "line_end": 263,
+      "text": [
+        "derive the recorded citations from source and record the inputs it supplies;",
+        "the model MUST supply only the boolean determination and rationale. FIXME MUST",
+        "be rejected for a function attestation."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 291,
+      "line_end": 293,
+      "text": [
+        "requirements inputs cover that set. The determination",
+        "must be boolean; FIXME is not a function-attestation outcome.",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 574,
+      "line_end": 576,
+      "text": [
+        "name, start time, backend and model when known, end time when finished, outcome,",
+        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
+        "whether evidence was written. It MUST record the selected output destination in"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 578,
+      "line_end": 580,
+      "text": [
+        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
+        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
+        "Failed, cancelled, or unfinished"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 659,
+      "line_end": 665,
+      "text": [
+        "The cited code implements a requirement except for a boundary case explicitly",
+        "documented in a source comment as `FIXME(#125)`. The model finds no other gaps",
+        "and calls `submit_judgment` once with `determination: {\"FIXME\": [\"#125\"]}` and a",
+        "rationale locating the comment and explaining the boundary case. The harness",
+        "saves that judgment and the source inputs, including the comment. CI accepts",
+        "the FIXME judgment when all other evidence checks pass.",
+        "{cite}`requirements.ci.outcomes`"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 19,
+      "line_end": 21,
+      "text": [
+        ":::{req} determination",
+        "For requirement and example evidence, both `true` and `FIXME` MUST satisfy the determination check in `habeas::validate()`. A false determination MUST fail validation and be reported with its rationale. Every Rust function attestation MUST have `determination: true`; a false attestation MUST be reported with its rationale. All other evidence checks MUST still pass: FIXME MUST NOT excuse malformed, missing, or stale evidence or uncovered references. Validation MUST check the recorded outcome, schema, input freshness, and reference coverage without inference or reassessing whether a source comment adequately acknowledges a gap.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 45,
+      "line_end": 47,
+      "text": [
+        "  and the gaps are not all explicitly acknowledged in source comments or tests.",
+        "- `FIXME`: some aspects remain unmet or untested, and source comments or tests",
+        "  explicitly acknowledge those gaps. The reviewer MUST explain the gaps and"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 51,
+      "line_end": 59,
+      "text": [
+        "The JSON `determination` MUST be `true`, `false`, or an object containing exactly",
+        "`\"FIXME\"` with a nonempty array of nonempty strings, such as",
+        "`{\"FIXME\": [\"#125\", \"rust-lang/rust#123\"]}`. The expected source convention is",
+        "`FIXME(issue-number)`, for example `FIXME(#125)` or",
+        "`FIXME(rust-lang/rust#123)`. References MAY appear elsewhere in the comment or",
+        "test; the reviewer MUST recognize explicit acknowledgments without requiring",
+        "that spelling. When no issue reference is present, the strings MUST identify the",
+        "documented gap using its source content. A FIXME judgment MUST be grounded in",
+        "recorded evidence inputs; a bare issue reference without an acknowledged gap"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 62,
+      "line_end": 64,
+      "text": [
+        "",
+        "See [FIXME examples](#fixme-examples) for concrete review judgments and CI results.",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 128,
+      "line_end": 130,
+      "text": [
+        "",
+        "## FIXME examples",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 138,
+      "line_end": 140,
+      "text": [
+        "```text",
+        "// FIXME(#125): capacity-zero insertion does not return Full yet.",
+        "```"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 142,
+      "line_end": 144,
+      "text": [
+        "The reviewer finds the remaining behavior implemented and adequately tested.",
+        "The judgment is `{\"FIXME\": [\"#125\"]}`, with a rationale explaining the zero-capacity",
+        "gap and locating the comment. The recorded inputs include the comment and reviewed"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 156,
+      "line_end": 158,
+      "text": [
+        "```text",
+        "// FIXME(#125): retry-after-timeout coverage is missing.",
+        "// Partial-write recovery is also untested; tracked in rust-lang/rust#123."
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 161,
+      "line_end": 165,
+      "text": [
+        "The reviewer finds no other gaps and records",
+        "`{\"FIXME\": [\"#125\", \"rust-lang/rust#123\"]}`. The rationale identifies both missing",
+        "tests, and the inputs include these comments. The second reference is recognized",
+        "even though it is outside `FIXME(...)`. CI accepts this documented incomplete",
+        "coverage; the example does not receive a `true` judgment."
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 177,
+      "line_end": 179,
+      "text": [
+        "```text",
+        "// FIXME: cancellation races are not tested on Windows.",
+        "```"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 181,
+      "line_end": 183,
+      "text": [
+        "The reviewer records",
+        "`{\"FIXME\": [\"cancellation races are not tested on Windows\"]}`, using the comment's",
+        "content without inventing an issue number. The rationale explains the gap and"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 192,
+      "line_end": 194,
+      "text": [
+        ":::{example} fixme_with_unacknowledged_gap",
+        "The queue implementation acknowledges its zero-capacity bug with `FIXME(#125)`.",
+        "The reviewer also finds that insertion overwrites an existing entry when a"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 196,
+      "line_end": 198,
+      "text": [
+        "or test acknowledges that second gap. The judgment is `false`, with a rationale",
+        "describing both gaps and their source locations. The existing FIXME does not",
+        "account for the additional defect. CI rejects the false determination."
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 202,
+      "line_end": 210,
+      "text": [
+        "",
+        "### Recorded FIXME evidence becomes stale",
+        "",
+        ":::{example} fixme_stale_input",
+        "A current evidence record has `{\"FIXME\": [\"#125\"]}` and passes CI. A source comment",
+        "within one of its recorded file-range inputs then changes. CI rejects the record",
+        "because the recorded text no longer matches, even though its determination is",
+        "still FIXME. Validation reports the changed input without running a model or",
+        "reassessing the documented gap."
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 15,
+      "line_end": 17,
+      "text": [
+        ":::{req} status",
+        "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 20,
+      "line_end": 24,
+      "text": [
+        "`habeas status` MUST group the selected requirement and example judgments marked",
+        "FIXME by issue reference and report how many distinct judgments each issue",
+        "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+        "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+        "`https://github.com/owner/repo/issues/123` MUST identify the same issue as"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 29,
+      "line_end": 33,
+      "text": [
+        "A judgment MUST count at most once for each issue, even when that issue occurs",
+        "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+        "count in each corresponding group. Judgments with no recognized issue in any",
+        "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+        "Issue groups MUST be ordered by decreasing affected-judgment count, then by"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 37,
+      "line_end": 40,
+      "text": [
+        "`--verbose` MUST list the full name and kind of every judgment in each issue",
+        "group and in the group without an issue, along with its original FIXME strings.",
+        "The summary MUST include valid FIXME determinations even when other evidence",
+        "checks fail; grouping MUST NOT hide their validation findings. Malformed"
+      ]
+    },
+    {
+      "file": "md/requirements/index/README.md",
+      "line_start": 7,
+      "line_end": 9,
+      "text": [
+        ":::{req} state",
+        "The requirements index MUST show each requirement's evidence state as Valid, Missing, Determination false, FIXME, or Invalid. Valid MUST mean its determination is true and its record passes the same evidence and reference coverage checks as `habeas::validate()`. A false or FIXME determination MUST have its distinct state when the record passes all other checks. The FIXME state MUST pass validation while retaining its distinct label. Malformed or stale evidence MUST remain Invalid regardless of its determination. Each detail page MUST show any validation findings.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/index/README.md",
+      "line_start": 11,
+      "line_end": 13,
+      "text": [
+        ":::{req} detail_format",
+        "Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement or example body as a Markdown block quote labeled by kind. It MUST render the recorded rationale as Markdown in a Rationale section and display the recorded FIXME strings when the determination is FIXME. Each input MUST have its own subsection identifying its selector. A file-range or Rust-item input MUST show its resolved file and inclusive line range. A requirements input MUST show its glob and each matched definition's full name, file, and inclusive line range. Each subsection MUST show the exact recorded text in a fenced code block. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/references.md",
+      "line_start": 33,
+      "line_end": 35,
+      "text": [
+        ":::{req} rust_function_attestations",
+        "For every function or method covered by `references.rust_function_coverage`, repository validation MUST require exactly one attestation in `evidence/rust/<rust_file>.json`. Each such file MUST be an object with exactly `rust_file` and `functions`, where `rust_file` matches its repository-relative source path and `functions` is an array. Each attestation MUST contain exactly `rust_item`, `citations`, `determination`, `rationale`, and `inputs`. Its `determination` MUST remain a boolean assessing citation coverage; the FIXME outcome applies to requirement and example judgments. Its `citations` MUST be the nonempty set of valid references owned by the function, each recorded by role and full requirement or example name. Its `inputs` MUST include one Rust-item input selecting the function and at least one requirements input; together, the requirements inputs MUST match every name in `citations`. Habeas MUST validate every input and fail for a missing, duplicate, orphaned, stale, or false attestation, a changed citation set, or an empty rationale. Each finding MUST identify the source file, current line when available, and item selector.",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 392,
+      "line_end": 394,
+      "text": [
+        "    } else {",
+        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 571,
+      "line_end": 573,
+      "text": [
+        "        let state = tempfile::tempdir().unwrap();",
+        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
+        "            let mut sources ="
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 395,
+      "line_end": 397,
+      "text": [
+        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
+        "        log.record.determination = Some(\"FIXME\".into());",
+        "        log.record.evidence_written = true;"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 402,
+      "line_end": 404,
+      "text": [
+        "        assert_eq!(sent[\"outcome\"], \"completed\");",
+        "        assert_eq!(sent[\"determination\"], \"FIXME\");",
+        "        assert_eq!(sent[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 49,
+      "line_end": 51,
+      "text": [
+        "",
+        "        let mut output = String::from(\"\\n## FIXME judgments\\n\\n\");",
+        "        for (issue, judgments) in &groups {"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 59,
+      "line_end": 61,
+      "text": [
+        "            output.push_str(&format!(",
+        "                \"- {} {} marked FIXME without an issue\\n\",",
+        "                without_issue.len(),"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 74,
+      "line_end": 76,
+      "text": [
+        "            if !without_issue.is_empty() {",
+        "                output.push_str(\"\\n### FIXME without an issue\\n\\n\");",
+        "                render_judgments(&mut output, &without_issue);"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 232,
+      "line_end": 234,
+      "text": [
+        "            Self::DeterminationFalse => \"Determination false\",",
+        "            Self::Fixme => \"FIXME\",",
+        "            Self::Invalid => \"Invalid\","
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 504,
+      "line_end": 506,
+      "text": [
+        "    if !detail_evidence.fixme_entries.is_empty() {",
+        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
+        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 17,
+      "line_end": 23,
+      "text": [
+        "            Value::Bool(false) => Ok(Self::False),",
+        "            Value::Object(object) if object.len() == 1 && object.contains_key(\"FIXME\") => {",
+        "                let entries = object[\"FIXME\"]",
+        "                    .as_array()",
+        "                    .filter(|entries| !entries.is_empty())",
+        "                    .ok_or(\"FIXME must be a nonempty array of nonempty strings\")?;",
+        "                let entries = entries"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 29,
+      "line_end": 31,
+      "text": [
+        "                            .map(str::to_owned)",
+        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")",
+        "                    })"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 35,
+      "line_end": 37,
+      "text": [
+        "            _ => Err(",
+        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\"",
+        "                    .to_owned(),"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 47,
+      "line_end": 49,
+      "text": [
+        "            Self::False => Value::Bool(false),",
+        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 56,
+      "line_end": 58,
+      "text": [
+        "            Self::False => \"false\",",
+        "            Self::Fixme(_) => \"FIXME\",",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 30,
+      "line_end": 32,
+      "text": [
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 279,
+      "line_end": 281,
+      "text": [
+        "            \"pub fn beta()\",",
+        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\",",
+        "        ),"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 295,
+      "line_end": 297,
+      "text": [
+        "    let mut beta = fixture.evidence(\"requirements.beta\");",
+        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});",
+        "    beta[\"rationale\"] = \"The source explicitly acknowledges the missing beta test.\".into();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 148,
+      "line_end": 150,
+      "text": [
+        "        .unwrap();",
+        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 273,
+      "line_end": 275,
+      "text": [
+        "            json!({",
+        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),",
+        "        )]),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 340,
+      "line_end": 342,
+      "text": [
+        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
+        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));",
+        "    assert_eq!(evidence[\"requirement\"], REQUIREMENT);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 375,
+      "line_end": 377,
+      "text": [
+        "    assert_eq!(usage[\"outcome\"], \"completed\");",
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
+        "    assert_eq!(usage[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 428,
+      "line_end": 430,
+      "text": [
+        "        \"submit_judgment\",",
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
+        "    )])]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 432,
+      "line_end": 434,
+      "text": [
+        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 442,
+      "line_end": 444,
+      "text": [
+        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
+        "    assert!(prompt.contains(\"queue[0] = value\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 453,
+      "line_end": 455,
+      "text": [
+        "    );",
+        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
+        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 467,
+      "line_end": 469,
+      "text": [
+        "        (json!(false), \"false\", true),",
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
+        "        (json!(true), \"true\", false),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 549,
+      "line_end": 551,
+      "text": [
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
+        "        )],"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 746,
+      "line_end": 748,
+      "text": [
+        "            .find(|outcome| outcome[\"type\"] == \"object\")",
+        "            .unwrap()[\"properties\"][\"FIXME\"];",
+        "        assert_eq!(fixme[\"type\"], \"array\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 795,
+      "line_end": 797,
+      "text": [
+        "            json!({",
+        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\"",
+        "            }),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 814,
+      "line_end": 816,
+      "text": [
+        "    assert_eq!(usage[\"outcome\"], \"failed\");",
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
+        "    assert_eq!(usage[\"evidence_written\"], false);"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 135,
+      "line_end": 137,
+      "text": [
+        "            \"req\",",
+        "            \"alpha\",",
+        "            \"Alpha MUST work.\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 147,
+      "line_end": 149,
+      "text": [
+        "            \"beta\",",
+        "            \"Beta MUST work.\",",
+        "            vec![\"#123\", \"#45\", \"Rust-Lang/rust#456\", \"An unrelated note\"],"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 180,
+      "line_end": 182,
+      "text": [
+        "        fs::write(",
+        "            temp.path().join(format!(\"evidence/rules.{name}.json\")),",
+        "            json!({"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 235,
+      "line_end": 237,
+      "text": [
+        "    let all = String::from_utf8(output.stdout).unwrap();",
+        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 260,
+      "line_end": 262,
+      "text": [
+        "    }",
+        "    for detail in [",
+        "        \"requirement\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 34,
+      "line_end": 36,
+      "text": [
+        "    .unwrap();",
+        "    let source = \"// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).\";",
+        "    fs::write(temp.path().join(\"observed.txt\"), format!(\"{source}\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 58,
+      "line_end": 60,
+      "text": [
+        "            \"example\": example,",
+        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },",
+        "            \"rationale\": \"The recorded comments acknowledge the missing timeout tests.\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 90,
+      "line_end": 93,
+      "text": [
+        "        json!(false),",
+        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
+        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 97,
+      "line_end": 107,
+      "text": [
+        "        Value::Null,",
+        "        json!(\"FIXME\"),",
+        "        json!([\"#125\"]),",
+        "        json!({}),",
+        "        json!({ \"FIXME\": [] }),",
+        "        json!({ \"FIXME\": [\"\"] }),",
+        "        json!({ \"FIXME\": [\"   \"] }),",
+        "        json!({ \"FIXME\": [\"#125\", 125] }),",
+        "        json!({ \"FIXME\": \"#125\" }),",
+        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
+        "        json!({ \"fixme\": [\"#125\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 150,
+      "line_end": 157,
+      "text": [
+        "        (",
+        "            \"// FIXME(#125): capacity-zero insertion does not return Full yet.\",",
+        "            json!({ \"FIXME\": [\"#125\"] }),",
+        "        ),",
+        "        (",
+        "            \"// FIXME: cancellation races are not tested on Windows.\",",
+        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
+        "        ),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 181,
+      "line_end": 183,
+      "text": [
+        "    let temp = fixture();",
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 264,
+      "line_end": 266,
+      "text": [
+        "            \"citations\": [{\"role\": \"impl\", \"name\": \"requirements.ready\"}],",
+        "            \"determination\": {\"FIXME\": [\"#125\"]},",
+        "            \"rationale\": \"The function's citations were reviewed.\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 299,
+      "line_end": 301,
+      "text": [
+        "        assert_eq!(status.contains(\"requirements.timeout\"), all, \"{status}\");",
+        "        assert!(status.contains(\"FIXME\"));",
+        "        assert!(status.contains(\"#125\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 309,
+      "line_end": 311,
+      "text": [
+        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
+        "    assert!(info.contains(\"## FIXME references\"));",
+        "    assert!(info.contains(\"rust-lang/rust#123\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 327,
+      "line_end": 329,
+      "text": [
+        "    let index = book.chapters().nth(1).unwrap();",
+        "    assert!(index.content.contains(\"FIXME\"));",
+        "    let detail = index"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 336,
+      "line_end": 339,
+      "text": [
+        "        .unwrap();",
+        "    assert!(detail.content.contains(\"evidence-FIXME\"));",
+        "    assert!(detail.content.contains(\"## FIXME references\"));",
+        "    assert!(detail.content.contains(\"rust-lang/rust#123\"));"
+      ]
+    },
+    {
+      "file": "md/requirements/references.md",
+      "line_start": 21,
+      "line_end": 21,
+      "text": [
+        ":::{req} rust_function_coverage"
+      ]
+    },
+    {
+      "file": "md/requirements/references.md",
+      "line_start": 34,
+      "line_end": 34,
+      "text": [
+        "For every function or method covered by `references.rust_function_coverage`, repository validation MUST require exactly one attestation in `evidence/rust/<rust_file>.json`. Each such file MUST be an object with exactly `rust_file` and `functions`, where `rust_file` matches its repository-relative source path and `functions` is an array. Each attestation MUST contain exactly `rust_item`, `citations`, `determination`, `rationale`, and `inputs`. Its `determination` MUST remain a boolean assessing citation coverage; the FIXME outcome applies to requirement and example judgments. Its `citations` MUST be the nonempty set of valid references owned by the function, each recorded by role and full requirement or example name. Its `inputs` MUST include one Rust-item input selecting the function and at least one requirements input; together, the requirements inputs MUST match every name in `citations`. Habeas MUST validate every input and fail for a missing, duplicate, orphaned, stale, or false attestation, a changed citation set, or an empty rationale. Each finding MUST identify the source file, current line when available, and item selector."
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 126,
+      "line_end": 127,
+      "text": [
+        "    // {impl}`requirements.references.rust_function_coverage`",
+        "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 13,
+      "line_end": 13,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 21,
+      "line_end": 21,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 27,
+      "line_end": 27,
+      "text": [
+        "    // {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 40,
+      "line_end": 40,
+      "text": [
+        "    // {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 46,
+      "line_end": 46,
+      "text": [
+        "    // {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 52,
+      "line_end": 52,
+      "text": [
+        "    // {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 58,
+      "line_end": 58,
+      "text": [
+        "    // {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 65,
+      "line_end": 65,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 78,
+      "line_end": 78,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 104,
+      "line_end": 104,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 133,
+      "line_end": 133,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 180,
+      "line_end": 180,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 214,
+      "line_end": 214,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 275,
+      "line_end": 275,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 329,
+      "line_end": 330,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`",
+        "pub(crate) fn validate_rust_functions("
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 362,
+      "line_end": 362,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 377,
+      "line_end": 377,
+      "text": [
+        "    use super::{missing_function_references, validate_rust_functions};"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 381,
+      "line_end": 381,
+      "text": [
+        "    // {test}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 412,
+      "line_end": 412,
+      "text": [
+        "    // {test}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 478,
+      "line_end": 478,
+      "text": [
+        "    // {test}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 512,
+      "line_end": 512,
+      "text": [
+        "    // {test}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 528,
+      "line_end": 528,
+      "text": [
+        "    // {test}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 556,
+      "line_end": 556,
+      "text": [
+        "        validate_rust_functions(project.path(), &definitions(), &mut errors);"
+      ]
+    },
+    {
+      "file": "src/rust_items.rs",
+      "line_start": 504,
+      "line_end": 504,
+      "text": [
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 448,
+      "line_end": 448,
+      "text": [
+        "// {test}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 30,
+      "line_end": 34,
+      "text": [
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {",
+        "        let listener = TcpListener::bind((\"127.0.0.1\", 0)).unwrap();",
+        "        listener.set_nonblocking(true).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 67,
+      "line_end": 71,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.batch`",
+        "    fn subjects(&self) -> Vec<String> {",
+        "        self.requests.0.lock().unwrap().subjects.clone()",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 74,
+      "line_end": 78,
+      "text": [
+        "impl Drop for Server {",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn drop(&mut self) {",
+        "        self.stop.store(true, Ordering::Relaxed);",
+        "        self.thread.take().unwrap().join().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 83,
+      "line_end": 87,
+      "text": [
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.function_attestations`",
+        "fn serve(",
+        "    mut stream: TcpStream,",
+        "    requests: Arc<(Mutex<Requests>, Condvar)>,"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 172,
+      "line_end": 176,
+      "text": [
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn new(endpoint: &str, concurrency: Option<usize>) -> Self {",
+        "        let temp = tempfile::tempdir().unwrap();",
+        "        let project = temp.path().join(\"project\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 217,
+      "line_end": 221,
+      "text": [
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.concurrency`",
+        "    fn run(&self, args: &[&str]) -> Output {",
+        "        Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
+        "            .current_dir(&self.project)"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 231,
+      "line_end": 235,
+      "text": [
+        "    // {test}`requirements.authoring.batch`",
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    fn evidence(&self, name: &str) -> Value {",
+        "        serde_json::from_slice(",
+        "            &fs::read(self.project.join(format!(\"evidence/{name}.json\"))).unwrap(),"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 239,
+      "line_end": 243,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    fn function(&self, selector: &str) -> Value {",
+        "        self.evidence(\"rust/src/lib.rs\")[\"functions\"]",
+        "            .as_array()"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 251,
+      "line_end": 255,
+      "text": [
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    // {test}`requirements.authoring.batch`",
+        "    fn usage(&self) -> Vec<Value> {",
+        "        let path = self.state.join(if cfg!(windows) {",
+        "            \"habeas/state/authoring/usage\""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 270,
+      "line_end": 274,
+      "text": [
+        "// {test}`requirements.ci.determination`",
+        "#[test]",
+        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {",
+        "    let server = Server::start(true, None);",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 364,
+      "line_end": 368,
+      "text": [
+        "// {test}`requirements.authoring.batch`",
+        "#[test]",
+        "fn ollama_batches_are_serial_by_default() {",
+        "    let server = Server::start(false, None);",
+        "    let fixture = Fixture::new(&server.endpoint, None);"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 380,
+      "line_end": 384,
+      "text": [
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
+        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 434,
+      "line_end": 438,
+      "text": [
+        "// {test}`requirements.authoring.batch`",
+        "#[test]",
+        "fn batch_stdout_is_rejected_before_authoring() {",
+        "    let server = Server::start(false, None);",
+        "    let fixture = Fixture::new(&server.endpoint, None);"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 448,
+      "line_end": 452,
+      "text": [
+        "// {test}`requirements.references.rust_function_coverage`",
+        "#[test]",
+        "fn discovery_errors_fail_before_configuration_or_inference() {",
+        "    for (declarations, source, location, diagnostic) in [",
+        "        (\"\", \"fn broken(\", \"src/lib.rs\", \"cannot parse Rust source\"),"
+      ]
+    },
+    {
+      "file": "md/requirements/references.md",
+      "line_start": 1,
+      "line_end": 32,
+      "text": [
+        "# References and Rust items",
+        "",
+        ":::{req} targets",
+        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.",
+        "",
+        "```text",
+        "{impl}`requirements.references.targets`",
+        "{cite}`requirements.references.targets`",
+        "{test}`requirements.references.targets`",
+        "```",
+        ":::",
+        "",
+        ":::{req} book_badges",
+        "In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`.",
+        ":::",
+        "",
+        ":::{req} evidence_coverage",
+        "For every `{impl}`, `{cite}`, and `{test}` reference in a project source file, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
+        ":::",
+        "",
+        ":::{req} rust_function_coverage",
+        "During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST cite a requirement. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
+        ":::",
+        "",
+        ":::{req} definition_globs",
+        "A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. The same glob matching rule MUST be used by requirements evidence inputs and CLI definition filters. All three MUST match against both requirements and named examples.",
+        ":::",
+        "",
+        ":::{req} rust_item_selectors",
+        "Habeas MUST identify a Rust item by the pair of its repository-relative `rust_file` and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 289,
+      "line_end": 293,
+      "text": [
+        "    );",
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    let entries = fixture.evidence(\"rust/src/lib.rs\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 357,
+      "line_end": 361,
+      "text": [
+        "    assert_eq!(fixture.function(\"fn[beta]\"), beta_function);",
+        "    assert_eq!(fixture.function(\"fn[alpha_case]\"), test_function);",
+        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 190,
+      "line_end": 194,
+      "text": [
+        "        .unwrap();",
+        "    }",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    temp"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 62,
+      "line_end": 66,
+      "text": [
+        "    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
+        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    let before = fs::read(&path).unwrap();",
+        "    capture(root);"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 70,
+      "line_end": 74,
+      "text": [
+        "    let original = fs::read_to_string(&glossary).unwrap();",
+        "    fs::write(&glossary, format!(\"\\n\\n{original}\")).unwrap();",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    for changed in [",
+        "        original.replace(\":phrase: beta\", \":phrase: new beta\"),"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 78,
+      "line_end": 82,
+      "text": [
+        "    ] {",
+        "        fs::write(&glossary, changed).unwrap();",
+        "        let report = validate_repository(root).unwrap();",
+        "        assert!(",
+        "            report"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 94,
+      "line_end": 98,
+      "text": [
+        "    assert_eq!(refreshed[\"inputs\"].as_array().unwrap().len(), 3);",
+        "    approve(&path);",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "",
+        "    let mut missing = refreshed.clone();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 103,
+      "line_end": 107,
+      "text": [
+        "    fs::write(&path, missing.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 114,
+      "line_end": 118,
+      "text": [
+        "    fs::write(&path, duplicate.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 163,
+      "line_end": 167,
+      "text": [
+        "        .unwrap();",
+        "        assert!(",
+        "            validate_repository(temp.path())",
+        "                .unwrap()",
+        "                .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 177,
+      "line_end": 181,
+      "text": [
+        "    .unwrap();",
+        "    assert!(",
+        "        validate_repository(temp.path())",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 184,
+      "line_end": 188,
+      "text": [
+        "    );",
+        "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();",
+        "    let errors = validate_repository(temp.path()).unwrap().errors;",
+        "    assert!(",
+        "        errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 288,
+      "line_end": 292,
+      "text": [
+        "    .unwrap();",
+        "    approve(&root.join(\"evidence/rules.ready.json\"));",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    let glossary = root.join(\"md/glossary.md\");",
+        "    fs::write("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 297,
+      "line_end": 301,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    let errors = validate_repository(root).unwrap().errors;",
+        "    for label in [\"evidence/rules.ready.json\", \"evidence/rust/src/lib.rs.json\"] {",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 312,
+      "line_end": 316,
+      "text": [
+        "    .unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 335,
+      "line_end": 339,
+      "text": [
+        "    fs::write(&path, invalid.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 344,
+      "line_end": 348,
+      "text": [
+        "    fs::remove_file(root.join(\"md/glossary.md\")).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 363,
+      "line_end": 367,
+      "text": [
+        "    capture(root);",
+        "    approve(&root.join(\"evidence/rules.ready.json\"));",
+        "    let report = validate_repository(root).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    let record: Value ="
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 52,
+      "line_end": 56,
+      "text": [
+        "        vec![json!({\"file\":\"data.txt\", \"line_start\":2, \"line_end\":2, \"text\":[\"second\"]})],",
+        "    );",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    for (input, expected) in ["
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 73,
+      "line_end": 77,
+      "text": [
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(expected), \"missing {expected:?}: {errors}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 95,
+      "line_end": 99,
+      "text": [
+        "        ],",
+        "    );",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    let sibling = temp.path().join(\"project-sibling\");"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 106,
+      "line_end": 110,
+      "text": [
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"escape.rs resolves outside the repository\"),"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 119,
+      "line_end": 123,
+      "text": [
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "    let record = fs::read(root.join(\"evidence/rules.ready.json\")).unwrap();",
+        "    for directory in [\"evidence/nested\", \"evidence/rust\"] {"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 126,
+      "line_end": 130,
+      "text": [
+        "    fs::write(root.join(\"evidence/nested/rules.ready.json\"), &record).unwrap();",
+        "    fs::write(root.join(\"evidence/rust/other.json\"), &record).unwrap();",
+        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "    assert!(",
+        "        errors.contains(\"evidence/nested/rules.ready.json: no matching requirement or example\"),"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 164,
+      "line_end": 168,
+      "text": [
+        "    let mut sidecar = json!({\"rust_file\":\"src/lib.rs\", \"functions\":[entry.clone()]});",
+        "    fs::write(&path, sidecar.to_string()).unwrap();",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    let mut removed = entry;"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 170,
+      "line_end": 174,
+      "text": [
+        "    sidecar[\"functions\"].as_array_mut().unwrap().push(removed);",
+        "    fs::write(&path, sidecar.to_string()).unwrap();",
+        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "    assert!(",
+        "        errors.contains(\"orphaned Rust function attestation\") && errors.contains(\"fn[removed]\"),"
+      ]
+    },
+    {
+      "file": "tests/habeas.rs",
+      "line_start": 2,
+      "line_end": 5,
+      "text": [
+        "#[test]",
+        "fn habeas() {",
+        "    habeas::validate();",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 118,
+      "line_end": 122,
+      "text": [
+        "    let temp = fixture();",
+        "    assert!(",
+        "        habeas::validate_repository(temp.path())",
+        "            .unwrap()",
+        "            .errors"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 124,
+      "line_end": 128,
+      "text": [
+        "    );",
+        "    replace_judgment(temp.path(), \"timeout\", json!(true));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 132,
+      "line_end": 136,
+      "text": [
+        "    );",
+        "    replace_judgment(temp.path(), \"timeout\", json!(false));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 169,
+      "line_end": 173,
+      "text": [
+        "        }));",
+        "        write_record(temp.path(), \"ready\", record);",
+        "        let report = habeas::validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 181,
+      "line_end": 185,
+      "text": [
+        "    let temp = fixture();",
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 206,
+      "line_end": 210,
+      "text": [
+        "    let temp = fixture();",
+        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 226,
+      "line_end": 230,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 273,
+      "line_end": 277,
+      "text": [
+        "    });",
+        "    fs::write(&attestation_path, attestation.to_string()).unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(",
+        "        report"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 282,
+      "line_end": 286,
+      "text": [
+        "    attestation[\"functions\"][0][\"determination\"] = json!(true);",
+        "    fs::write(attestation_path, attestation.to_string()).unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 98,
+      "line_end": 102,
+      "text": [
+        "    assert_eq!(",
+        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
+        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
+        "    );",
+        "    assert!(project.join(\"md/habeas.css\").is_file());"
+      ]
+    },
+    {
+      "file": "tests/habeas.rs",
+      "line_start": 1,
+      "line_end": 5,
+      "text": [
+        "// {test}`requirements.integration.self_test`",
+        "#[test]",
+        "fn habeas() {",
+        "    habeas::validate();",
+        "}"
       ]
     }
   ]

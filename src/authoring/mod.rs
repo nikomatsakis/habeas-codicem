@@ -1,5 +1,6 @@
 //! Model-assisted evidence authoring, invoked explicitly and never by validation.
 
+mod access;
 mod batch;
 mod inputs;
 mod providers;

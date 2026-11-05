@@ -28,6 +28,9 @@ enum Command {
     Status {
         #[arg(long)]
         all: bool,
+        /// List the judgments and original FIXME entries within each issue group.
+        #[arg(long)]
+        verbose: bool,
         glob: Option<String>,
     },
     Info {
@@ -103,10 +106,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         // {impl}`requirements.cli.setup`
         Command::Setup { path } => setup::run(path.as_deref()),
         // {impl}`requirements.cli.status`
-        Command::Status { all, glob } => {
+        // {impl}`requirements.cli.fixme_summary`
+        Command::Status { all, glob, verbose } => {
             let root = setup::project_root()?;
             io::stdout().lock().write_all(
-                habeas::status_markdown_filtered(&root, all, glob.as_deref())?.as_bytes(),
+                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?
+                    .as_bytes(),
             )?;
             Ok(())
         }

@@ -1,7 +1,7 @@
 {
   "requirement": "The `habeas` CLI MUST use `clap` to define and parse its commands and options.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.cli.clap`.\n\n**Implementation**\n- `Cargo.toml` depends on `clap` 4.6.7 with the `derive` feature.\n- `src/main.rs` imports `clap::{ArgGroup, Parser, Subcommand}`.\n- `struct Cli` derives `Parser` with `#[command(name = \"habeas\")]` and a `#[command(subcommand)] command: Command` field. It carries the `{impl}` marker for this requirement.\n- `enum Command`, `enum MdbookCommand` and `enum HookCommand` derive `Subcommand`. They define every command and option: `mdbook`, `mdbook supports`, `setup --path`, `status [--all] [glob]`, `info`, `author` (with `--all`, `--config`, `--stdout` and the `author-evidence` alias), the hidden `hook session-start`, and `add-input`. `author` and `add-input` use `ArgGroup`s for required and mutually exclusive targets.\n- `main()` parses with `Cli::parse().command`, so clap does all the parsing. The only `env::args` hit in `src/` is a text match inside a string; I found no manual argument parsing. The `.expect(\"clap requires …\")` calls rely on clap's group constraints.\n\n**Tests**\n- No test is tagged with `requirements.cli.clap`. This is a structural requirement, and the CLI tests exercise clap's behavior directly:\n  - `tests/cli.rs` runs the real binary with an unknown command, `setup --wrong` and `setup --install-skills`. It asserts a failure exit and clap's `Usage: habeas` message on stderr.\n  - `tests/commands.rs` (around line 250) asserts the same clap usage error for invalid argument combinations.\n  - `tests/cli.rs` also runs `mdbook supports html` and `mdbook supports epub`, which goes through the clap-parsed subcommands.\n- That coverage is adequate for a requirement this simple.",
+  "rationale": "**Verdict:** the requirement is met. The CLI is defined and parsed with `clap`. No test is tagged to this requirement, and I think that is acceptable here.\n\n**Implementation**\n- `Cargo.toml` depends on `clap = { version = \"4.6.7\", features = [\"derive\"] }`.\n- `src/main.rs` imports `clap::{ArgGroup, Parser, Subcommand}`.\n- `struct Cli` derives `Parser` with `#[command(name = \"habeas\")]`. It is marked `{impl}` for `requirements.cli.clap` at lines 10–11.\n- `enum Command` derives `Subcommand`. It declares these subcommands:\n  - `mdbook`, with a nested `supports` subcommand\n  - `setup`\n  - `status`\n  - `info`\n  - `author`\n  - a hidden `hook`\n  - `add-input`\n- The options on those subcommands use `#[arg(...)]`. `ArgGroup` expresses mutual exclusion and required groups: `author_target` for `author`, and `target` and `mode` for `add-input`. Other attributes cover the `author-evidence` alias, `conflicts_with`, `num_args`, and `value_names`.\n- `main` calls `Cli::parse().command` and dispatches on the result. This is also marked `{impl}` for `requirements.cli.clap`, at line 87.\n- There is no hand-rolled argument parsing.\n\n**Tests**\n- No test cites `requirements.cli.clap` directly.\n- `tests/cli.rs` runs the real binary on unknown commands and invalid options. It asserts failure and a `Usage: habeas` message, which is clap's error output. These tests cite `requirements.cli.invocation`.\n- `tests/commands.rs`, `tests/authoring_cli.rs` and `tests/live_bedrock.rs` exercise the parsed subcommands and flags end to end.\n- The requirement is structural: it says which library defines and parses the CLI. It is satisfied by the declarative derive code, and a dedicated test would add little. The existing tests exercise clap-generated behavior, such as usage errors and argument groups.\n\n**Gaps:** none acknowledged and none found. There are no FIXME markers.",
   "inputs": [
     {
       "requirements": "requirements.cli.clap",
@@ -54,10 +54,12 @@
         "        // {impl}`requirements.cli.setup`",
         "        Command::Setup { path } => setup::run(path.as_deref()),",
         "        // {impl}`requirements.cli.status`",
-        "        Command::Status { all, glob } => {",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status { all, glob, verbose } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_filtered(&root, all, glob.as_deref())?.as_bytes(),",
+        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                    .as_bytes(),",
         "            )?;",
         "            Ok(())",
         "        }",
@@ -221,6 +223,7 @@
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
         "pulldown-cmark = \"=0.11.3\"",
+        "regex = \"1.13.1\"",
         "rig-bedrock = \"0.44\"",
         "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
         "serde = { version = \"1.0.229\", features = [\"derive\"] }",
@@ -230,8 +233,7 @@
         "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\"] }",
         "toml = \"1.2.0\"",
         "toml_edit = \"0.25.17\"",
-        "",
-        "[dev-dependencies]"
+        ""
       ]
     },
     {
@@ -300,6 +302,9 @@
         "    Status {",
         "        #[arg(long)]",
         "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]",
+        "        verbose: bool,",
         "        glob: Option<String>,",
         "    },",
         "    Info {",
@@ -377,9 +382,9 @@
       "line_start": 50,
       "line_end": 52,
       "text": [
-        "        #[command(subcommand)]",
-        "        command: HookCommand,",
-        "    },"
+        "    },",
+        "    #[command(hide = true)]",
+        "    Hook {"
       ]
     },
     {
@@ -387,9 +392,9 @@
       "line_start": 73,
       "line_end": 75,
       "text": [
-        "#[derive(Subcommand)]",
-        "enum MdbookCommand {",
-        "    Supports { renderer: String },"
+        "    },",
+        "}",
+        ""
       ]
     },
     {
@@ -397,9 +402,9 @@
       "line_start": 78,
       "line_end": 80,
       "text": [
-        "#[derive(Subcommand)]",
-        "enum HookCommand {",
-        "    SessionStart,"
+        "    Supports { renderer: String },",
+        "}",
+        ""
       ]
     },
     {
@@ -407,9 +412,9 @@
       "line_start": 83,
       "line_end": 85,
       "text": [
-        "fn main() -> Result<(), Box<dyn Error>> {",
-        "    // {impl}`requirements.cli.clap`",
-        "    match Cli::parse().command {"
+        "    SessionStart,",
+        "}",
+        ""
       ]
     },
     {
@@ -417,9 +422,9 @@
       "line_start": 94,
       "line_end": 96,
       "text": [
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { renderer }),",
-        "        } => {"
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.cli.invocation`"
       ]
     },
     {
@@ -427,9 +432,9 @@
       "line_start": 156,
       "line_end": 158,
       "text": [
-        "                &root,",
-        "                &subject.expect(\"clap requires a subject or --all\"),",
-        "                config.as_deref(),"
+        "                habeas::authoring::EvidenceOutput::Stdout",
+        "            } else {",
+        "                habeas::authoring::EvidenceOutput::File"
       ]
     },
     {
@@ -437,9 +442,9 @@
       "line_start": 183,
       "line_end": 185,
       "text": [
-        "        Command::Hook {",
-        "            command: HookCommand::SessionStart,",
-        "        } => hook::session_start(),"
+        "                );",
+        "            }",
+        "            Ok(())"
       ]
     },
     {
@@ -447,9 +452,9 @@
       "line_start": 200,
       "line_end": 202,
       "text": [
-        "            } else {",
-        "                let parts = for_rust_item.expect(\"clap requires a target\");",
-        "                habeas::InputTarget::RustFunction {"
+        "            let root = setup::project_root()?;",
+        "            let target = if let Some(name) = for_requirement {",
+        "                habeas::InputTarget::Requirement(name)"
       ]
     },
     {
@@ -457,9 +462,9 @@
       "line_start": 211,
       "line_end": 213,
       "text": [
-        "            } else {",
-        "                habeas::InputMode::Requirements(requirements.expect(\"clap requires an input mode\"))",
-        "            };"
+        "            };",
+        "            let mode = if let Some(specification) = file_range {",
+        "                habeas::InputMode::FileRange(specification)"
       ]
     },
     {
@@ -521,13 +526,13 @@
       "line_start": 250,
       "line_end": 256,
       "text": [
-        "        let output = habeas(temp.path(), args);",
-        "        assert!(!output.status.success(), \"{args:?}: {output:?}\");",
-        "        assert!(",
-        "            String::from_utf8_lossy(&output.stderr).contains(\"Usage: habeas\"),",
-        "            \"{args:?}: {output:?}\"",
-        "        );",
-        "    }"
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.references.definition_globs`",
+        "#[test]",
+        "fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {",
+        "    let temp = fixme_fixture();",
+        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");"
       ]
     },
     {
@@ -604,6 +609,40 @@
         "    assert!(!output.status.success());",
         "    assert!(String::from_utf8_lossy(&output.stderr).contains(\"Usage: habeas\"));",
         "}"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 86,
+      "line_end": 88,
+      "text": [
+        "fn main() -> Result<(), Box<dyn Error>> {",
+        "    // {impl}`requirements.cli.clap`",
+        "    match Cli::parse().command {"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 8,
+      "line_end": 12,
+      "text": [
+        "mod setup;",
+        "",
+        "// {impl}`requirements.cli.clap`",
+        "#[derive(Parser)]",
+        "#[command(name = \"habeas\")]"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 85,
+      "line_end": 89,
+      "text": [
+        "",
+        "fn main() -> Result<(), Box<dyn Error>> {",
+        "    // {impl}`requirements.cli.clap`",
+        "    match Cli::parse().command {",
+        "        // {impl}`requirements.cli.mdbook`"
       ]
     }
   ]

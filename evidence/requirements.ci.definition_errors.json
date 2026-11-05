@@ -1,7 +1,7 @@
 {
   "requirement": "Validation MUST report a requirement or example with a missing closing fence or an empty body. Full names of `{req}` and `{example}` definitions MUST be unique across requirements, examples, and named definitions. Habeas MUST report every duplicate full name, including collisions involving named definitions, and identify both the duplicate declaration and the first declaration.",
   "determination": true,
-  "rationale": "**Verdict:** `requirements.ci.definition_errors` is met. I did not read `definition_blocks` in `src/lib.rs`. I rely on the tests below to show that it detects unclosed blocks.\n\n**Implementation.** `collect_definitions` in `src/evidence.rs` is annotated `{impl}requirements.ci.definition_errors`. `load_definitions` is annotated the same way and returns the collected errors as `InvalidData`. Together they do the following:\n- **Missing closing fence:** if `!block.closed`, it pushes `\"{source}: {kind} {name} is missing a closing colon fence\"`. This applies to requirements, examples and definitions.\n- **Empty body:** if the trimmed body is empty, it pushes `\"{source}: {kind} {name} has no text\"`.\n- **Duplicates:** requirements, examples and named definitions all go into one `BTreeMap` keyed by full name. An `Entry::Occupied` match pushes `\"{source}: duplicate {kind} {name}; first declared at {previous.source}\"`. That message names both the duplicate declaration and the first one.\n- **Every duplicate is reported:** the first declaration stays in the map, so each later collision is reported against it. Collisions across kinds, such as a requirement and a definition, are caught because the namespace is shared.\n\n**Tests.**\n- **Unclosed requirement:** `reports_a_missing_closing_colon_fence` asserts the exact message `md/requirements.md:1: requirement requirements.ready is missing a closing colon fence`.\n- **Duplicate and empty requirement:** `collects_missing_orphan_format_false_and_changed_line_errors` asserts `duplicate requirement requirements.one; first declared at md/requirements.md:3` and `requirement requirements.empty has no text`.\n- **Examples:** `example_errors_include_duplicates_invalid_bodies_and_missing_tests` covers these cases:\n  - a duplicate requirement;\n  - a cross-kind collision, a requirement and an example sharing a name, with the first-declared location;\n  - a duplicate example;\n  - an empty example;\n  - an unclosed example.\n- **Named definitions:** `invalid_declarations_and_reference_targets_are_reported` in `tests/definitions.rs` checks a requirement and a definition sharing a name. It asserts `duplicate definition bad.x` but not the `first declared at` text, which is a minor gap. The `first declared at` format is covered by the requirement and example cases above.\n- **End to end:** `discovery_errors_fail_before_configuration_or_inference` in `tests/authoring_batch.rs` shows an unclosed requirement fails the `author --all` command with a diagnostic naming the file and the missing fence.\n\nNo FIXMEs or acknowledged gaps were found.",
+  "rationale": "**Verdict:** `requirements.ci.definition_errors` is implemented and tested. I did not run the tests; this rests on reading the code and test assertions.\n\n**Implementation.** `collect_definitions` in `src/evidence.rs` is tagged `{impl}` for this requirement. It processes every parsed block of every kind (requirement, example, named definition) in one pass.\n- **Missing closing fence:** when `!block.closed`, it pushes `\"{source}: {noun} {name} is missing a closing colon fence\"`.\n- **Empty body:** when the trimmed body is empty, it pushes `\"{source}: {noun} {name} has no text\"`. This applies to both requirements and examples.\n- **Duplicates:** all kinds go into one `BTreeMap` keyed by full name, so collisions across requirements, examples and named definitions are all detected. The `Entry::Occupied` branch pushes `\"{source}: duplicate {noun} {name}; first declared at {previous.source}\"`. That names the duplicate declaration (`file:line`) and the first declaration.\n- **Error propagation:** `load_definitions` returns all collected errors as `InvalidData`. A duplicate is reported every time it occurs, not just once.\n\n**Tests.**\n- `collects_missing_orphan_format_false_and_changed_line_errors` has a duplicate requirement and an empty requirement. It asserts `duplicate requirement requirements.one; first declared at md/requirements.md:3` and `requirement requirements.empty has no text`.\n- `reports_a_missing_closing_colon_fence` asserts the exact message for a requirement, including file and line.\n- `example_errors_include_duplicates_invalid_bodies_and_missing_tests` covers:\n  - a requirement and an example sharing a name, which gives a cross-kind duplicate with the first-declaration location;\n  - a duplicate example;\n  - an empty example;\n  - an unclosed example.\n- `tests/definitions.rs`, `invalid_declarations_and_reference_targets_are_reported`, covers a requirement and a named definition colliding (`duplicate definition bad.x`). It also covers an unclosed named definition.\n- `tests/authoring_batch.rs`, `discovery_errors_fail_before_configuration_or_inference`, checks that an unclosed requirement fails the CLI run with the file location and the diagnostic.\n\n**Minor gap.** The named-definition collision test does not assert the \"first declared at\" suffix. That message is built by the same code path the other tests do assert, so I don't count this as a real gap.\n\nNo FIXMEs or acknowledged gaps appear in the supplied sources.",
   "inputs": [
     {
       "requirements": "requirements.ci.definition_errors",
@@ -541,13 +541,13 @@
       "line_start": 19,
       "line_end": 25,
       "text": [
+        "",
         "impl AssessmentKind {",
         "    // {impl}`requirements.authoring.function_attestations`",
         "    // {impl}`requirements.authoring.usage_storage`",
         "    // {impl}`requirements.authoring.initial_prompt`",
         "    pub(crate) fn noun(&self) -> &'static str {",
-        "        match self {",
-        "            Self::Definition(kind) => kind.noun(),"
+        "        match self {"
       ]
     },
     {
@@ -585,13 +585,13 @@
       "line_start": 58,
       "line_end": 64,
       "text": [
+        "impl DefinitionKind {",
         "    // {impl}`requirements.ci.errors`",
         "    // {impl}`requirements.examples.evidence`",
         "    // {impl}`requirements.definitions.declaration`",
         "    pub(crate) fn noun(self) -> &'static str {",
         "        match self {",
-        "            Self::Requirement => \"requirement\",",
-        "            Self::Example => \"example\","
+        "            Self::Requirement => \"requirement\","
       ]
     },
     {
@@ -599,13 +599,13 @@
       "line_start": 466,
       "line_end": 472,
       "text": [
+        "// {impl}`requirements.ci.identifiers`",
         "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
         "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
         "    let code_ranges = Parser::new(content)",
-        "        .into_offset_iter()",
-        "        .filter_map(|(event, range)| {"
+        "        .into_offset_iter()"
       ]
     },
     {
@@ -751,6 +751,7 @@
       "line_start": 40,
       "line_end": 80,
       "text": [
+        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\",",
         "            report.requirements,",
         "            report.examples,",
         "            report.evidence_files,",
@@ -790,8 +791,7 @@
         "            Self::Term => \"definition\",",
         "        }",
         "    }",
-        "",
-        "    // {impl}`requirements.references.book_badges`"
+        ""
       ]
     }
   ]

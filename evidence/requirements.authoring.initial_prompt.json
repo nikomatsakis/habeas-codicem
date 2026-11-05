@@ -1,7 +1,7 @@
 {
   "requirement": "The initial request MUST provide the four tool definitions above and the\nfollowing prompt. The harness MUST replace `{{subject_kind}}` with `requirement`\nor `example`, `{{subject_name}}` with the full subject name, and\n`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using\nthe existing evidence-input formats. The template MUST otherwise be used as\nwritten. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,\n{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.\n\n```text\nBring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.\n\nSubject: {{subject_kind}} {{subject_name}}\n\nRead the subject and mandatory inputs below. Use habeas to request any additional\nsource information you need. Use list_files to discover files and directories,\nand ripgrep to search file contents.\nThe harness records source inputs for you; directory listings are not evidence.\n\nAssess only the named subject, using cited requirements and definitions as context.\nFor a requirement, check that the cited code implements it as stated and that\ntests cover the interesting points in the design space. If there are no tests,\nassess whether simplicity or impracticality justifies their absence, and explain.\nFor an example, assess whether test setup and assertions cover its scenario and\nexpected outcomes. A true judgment needs at least one {test} reference to the\nexample in the supplied inputs. Explain the coverage.\n\nChoose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when\nthe remaining gaps are explicitly acknowledged in source comments or tests;\nlist their issue references or other identifying content. The usual convention\nis FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.\nChoose false for other gaps or insufficient evidence. Explain your judgment in\na Markdown rationale with source locations, including any acknowledged gaps.\n\nWhen you are ready, call submit_judgment exactly once with determination and\nrationale. That tool call is your final answer.\n\nMandatory inputs:\n{{mandatory_inputs}}\n```",
   "determination": true,
-  "rationale": "**Verdict: true.** The code implements every obligation in the requirement, and the tests cover the main behaviours. The tests could assert the substitutions more directly.\n\n**Implementation**\n- `initial_prompt` (`src/authoring/mod.rs`, around lines 321–360) reads the template straight from `md/requirements/authoring.md` with `include_str!`. It starts at the approved opening sentence and stops at the closing code fence.\n  - This uses the template as written, with no copy to drift out of sync. A comment says \"Keep the approved template as the sole source\".\n  - It substitutes `{{subject_kind}}` with `sources.subject_kind.noun()`, `{{subject_name}}` with the full subject name, and `{{mandatory_inputs}}` with `serde_json::to_string_pretty(sources.mandatory_inputs())`.\n  - For definition subjects, `AssessmentKind::noun` delegates to `DefinitionKind::noun` (`src/lib.rs`), which returns \"requirement\" or \"example\".\n  - The mandatory inputs are the same evidence-input values that `assess` later records, so they use the existing evidence-input formats.\n- The review-guidance text (outcomes, FIXME convention, true needing a test reference for examples) is part of the template in the chapter. It is not rewritten in code.\n- `assess` builds the request from `initial_prompt(sources)` and sets `request.tools = tool_definitions(function)`. This returns `tools::definitions()` (`habeas`, `list_files`, `ripgrep`) plus `submit_judgment`, which makes the four tool definitions in the initial request.\n\n**Tests**\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`) checks the first request's prompt for:\n  - the template opening, \"Bring your expert judgment\";\n  - the requirement text, the terminology text and both cited functions (`fn ready()`, `fn ready_test()`);\n  - the \"submit_judgment exactly once\" instruction, and that stale rationale text is absent.\n  - It also asserts the first request carries exactly the four tools: `habeas`, `list_files`, `ripgrep`, `submit_judgment`.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` repeats the prompt and four-tool checks over the Bedrock path, including the tool schemas.\n- The test at `tests/authoring_cli.rs` lines ~439–446 checks that later template wording (\"Choose false for other gaps…\") and the inputs reach the prompt.\n- `function_judgments_use_boolean_schema_and_harness_owned_inputs` (`src/authoring/mod.rs`, ~lines 560–600) checks the function-attestation variant: the right opening, the subject name present, and no leftover `{{` placeholders.\n- `tests/authoring_batch.rs` parses the `Subject: ` line from prompts for both requirement and example subjects, which exercises `{{subject_name}}` substitution.\n\n**Gaps**\n- No test asserts the literal `Subject: requirement <name>` or `Subject: example <name>` line.\n- No test asserts that no `{{` placeholders remain in a requirement or example prompt. The placeholder check exists only for the function variant.\n- The mandatory-inputs array is checked by content rather than by parsing the JSON.\n\nThe substitution logic is a few plain string replacements, and the checks above exercise it end to end. I judge the remaining gaps minor, so I did not mark FIXME or false.",
+  "rationale": "**Verdict: true.** The code implements the requirement, and the tests cover its main points. Two small gaps in test strictness are noted below.\n\n**Implementation**\n- `initial_prompt` (src/authoring/mod.rs, ~lines 323–360) embeds `md/requirements/authoring.md` with `include_str!`. It locates the template by its opening sentence and cuts it at the closing code fence (`split(\"\\n```\")`).\n  - The definition-subject opening sentence occurs only once in the chapter (line 219), so the lookup is unambiguous.\n  - The template is therefore the requirement's own text, used as written, with no second copy to drift.\n- It replaces `{{subject_kind}}` with `sources.subject_kind.noun()`, which is \"requirement\" or \"example\" (`AssessmentKind::noun` in src/authoring/inputs.rs ~line 24, delegating to `DefinitionKind::noun` in src/lib.rs).\n- It replaces `{{subject_name}}` with the full subject name.\n- It replaces `{{mandatory_inputs}}` last, with `serde_json::to_string_pretty(sources.mandatory_inputs())`, a JSON array of the existing evidence-input objects. Replacing it last means substituted source text is not re-scanned for placeholders.\n- `assess` (~line 417) builds the request from `initial_prompt(sources)` and sets `request.tools = tool_definitions(function)`. That function returns the three source tools (`habeas`, `list_files`, `ripgrep`) from `tools::definitions()` plus `submit_judgment`, which makes four tool definitions in the initial request.\n- The review guidance comes from the template text, which matches the review_criteria, examples.evidence and outcomes requirements. This includes the `{test}` reference needed for a true example judgment, the FIXME convention, and the \"false for other gaps\" rule.\n\n**Tests**\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (tests/authoring_cli.rs ~236–420) reads the first request's prompt. It asserts the prompt:\n  - contains \"Bring your expert judgment\";\n  - contains the requirement text;\n  - contains the definition text;\n  - contains the implementation and test function bodies;\n  - contains \"submit_judgment exactly once\";\n  - does not contain old rationale text.\n  - It also asserts the tool names are exactly `habeas`, `list_files`, `ripgrep`, `submit_judgment`.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` (~606–780) repeats the prompt and four-tool checks over the Bedrock path. It also checks the tool schemas.\n- The test around tests/authoring_cli.rs ~434–446 asserts the prompt contains the \"Choose false for other gaps or insufficient evidence\" guidance and the mandatory source text.\n- tests/authoring_batch.rs (~lines 109–116) parses the `Subject: ` line from the prompt. The failure-injection case matches `requirement requirements.alpha`, so it exercises the `{{subject_kind}}` and `{{subject_name}}` substitution.\n- The unit test in src/authoring/mod.rs (~lines 560–590) asserts that the function-attestation prompt starts with its approved opening and has no leftover `{{`. That prompt is a sibling template, but it shares the same `initial_prompt` code.\n\n**Gaps**\n- No test compares the entire prompt byte-for-byte with the template.\n- No test parses the `{{mandatory_inputs}}` payload as a JSON array or asserts that no `{{` remains for requirement and example subjects.\n- Both properties follow from the short, direct construction, which takes the template from the documentation file and substitutes three placeholders. The existing assertions would catch any substitution failure that matters in practice.\n- No FIXME is acknowledged, and none is needed.",
   "inputs": [
     {
       "requirements": "requirements.authoring.initial_prompt",
@@ -717,16 +717,16 @@
       "line_start": 483,
       "line_end": 492,
       "text": [
-        "default = \"cloud\"",
+        "This complete file combines Bedrock, local Ollama, and remote Ollama. Replace",
+        "`MODEL_ID` with an available Bedrock model or inference-profile identifier,",
+        "`research` with your AWS profile name, `us-east-1` with your region, `MODEL_TAG`",
+        "with an Ollama model identifier, `workstation` in the URL with your server, and",
+        "`/absolute/path/to/project` with the canonical path to your checkout.",
         "",
-        "[authoring.configs.cloud]",
-        "backend = \"bedrock\"",
-        "model = \"MODEL_ID\"",
-        "aws_profile = \"research\"",
-        "region = \"us-east-1\"",
+        "```toml",
+        "version = 1",
         "",
-        "[authoring.configs.local]",
-        "backend = \"ollama\""
+        "[authoring]"
       ]
     },
     {
@@ -945,9 +945,9 @@
       "line_start": 315,
       "line_end": 317,
       "text": [
+        "                \"{}: authoring.configs.{}: {error}\",",
         "                config.config_path.display(),",
-        "                config.name",
-        "            ))"
+        "                config.name"
       ]
     },
     {
@@ -955,9 +955,9 @@
       "line_start": 319,
       "line_end": 321,
       "text": [
+        "        })?;",
         "    assess(&provider, &mut sources, usage).await",
-        "}",
-        ""
+        "}"
       ]
     },
     {
@@ -965,9 +965,9 @@
       "line_start": 377,
       "line_end": 379,
       "text": [
+        "    let judgment = Judgment::from_value(&object[\"determination\"]).map_err(io::Error::other)?;",
         "    let rationale = object[\"rationale\"]",
-        "        .as_str()",
-        "        .filter(|s| !s.trim().is_empty())"
+        "        .as_str()"
       ]
     },
     {
@@ -975,9 +975,9 @@
       "line_start": 397,
       "line_end": 399,
       "text": [
+        "            \"determination\": determination,",
         "            \"rationale\":{\"type\":\"string\",\"minLength\":1}}}}));",
-        "    definitions",
-        "        .into_iter()"
+        "    definitions"
       ]
     },
     {
@@ -985,9 +985,9 @@
       "line_start": 408,
       "line_end": 410,
       "text": [
+        "// {impl}`requirements.authoring.persistence`",
         "// {impl}`requirements.authoring.usage_inputs`",
-        "// {impl}`requirements.authoring.usage_requests`",
-        "// {impl}`requirements.authoring.function_attestations`"
+        "// {impl}`requirements.authoring.usage_requests`"
       ]
     },
     {
@@ -995,9 +995,9 @@
       "line_start": 564,
       "line_end": 566,
       "text": [
+        "            project.path().join(\"src/lib.rs\"),",
         "            format!(",
-        "                \"// {}\\npub fn ready() {{}}\\n\",",
-        "                inputs::tests::role(\"impl\", \"requirements.ready\")"
+        "                \"// {}\\npub fn ready() {{}}\\n\","
       ]
     },
     {
@@ -1005,8 +1005,8 @@
       "line_start": 82,
       "line_end": 84,
       "text": [
-        "definition inputs under {cite}`requirements.definitions.authoring_inputs`.",
-        "The result MUST have this shape:",
+        "from the cited requirements, including Rust selector syntax, requirement globs,",
+        "and full definition names, with a short request example for each form.",
         ""
       ]
     },
@@ -1015,15 +1015,25 @@
       "line_start": 87,
       "line_end": 89,
       "text": [
-        "    input: EvidenceInput,",
-        "    definitions: Array<DefinitionInput>,",
-        "}"
+        "{cite}`requirements.ci.schema`",
+        "Required terminology dependencies MUST be returned alongside it as additional",
+        "definition inputs under {cite}`requirements.definitions.authoring_inputs`."
       ]
     },
     {
       "file": "md/requirements/authoring.md",
       "line_start": 99,
       "line_end": 101,
+      "text": [
+        "`definitions` MUST be empty when no additional terminology is required. The",
+        "harness MUST record inputs supplied to the model in the assessment's evidence. A failed",
+        "read MUST return an explanatory tool error and add no evidence input."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 106,
+      "line_end": 108,
       "text": [
         ":::{req} file_discovery",
         "The harness MUST expose a `list_files` tool with this interface:",
@@ -1032,22 +1042,12 @@
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 106,
-      "line_end": 108,
-      "text": [
-        "    path: String,",
-        "    kind: \"file\" | \"directory\",",
-        "}"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
       "line_start": 119,
       "line_end": 121,
       "text": [
-        "### Search file contents: `ripgrep`",
-        "",
-        ":::{req} text_search"
+        "directory, returning project-relative paths. The model can list a returned",
+        "directory in another call to explore further. A failed listing MUST return an",
+        "explanatory tool error. Directory listings MUST NOT become evidence inputs."
       ]
     },
     {
@@ -1055,9 +1055,9 @@
       "line_start": 126,
       "line_end": 128,
       "text": [
+        ":::",
         "",
-        "SearchResult {",
-        "    inputs: Array<FileRangeInput>,"
+        "### Search file contents: `ripgrep`"
       ]
     },
     {
@@ -1065,9 +1065,9 @@
       "line_start": 149,
       "line_end": 151,
       "text": [
-        ":::",
-        "",
-        "### Submit the result: `submit_judgment`"
+        "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
+        "Setting `context` to zero MUST return only matching lines.",
+        "Search results MUST exclude files disallowed by"
       ]
     },
     {
@@ -1075,9 +1075,9 @@
       "line_start": 153,
       "line_end": 155,
       "text": [
-        ":::{req} submission",
-        "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
-        ""
+        "path MUST return a tool error.",
+        "Required terminology MUST be included under",
+        "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied"
       ]
     },
     {
@@ -1085,11 +1085,11 @@
       "line_start": 192,
       "line_end": 196,
       "text": [
-        "[examples](examples.md#examples-as-authoring-inputs),",
-        "[references](references.md#references-as-authoring-inputs),",
-        "[terminology](definitions.md#terminology-as-authoring-inputs), and",
-        "[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).",
-        ""
+        "its inputs. A requirement that contributes inputs MUST cite this requirement and",
+        "define which sources it contributes and when. The harness MUST include every",
+        "applicable contribution, deduplicate identical selections, and report",
+        "unresolvable mandatory inputs before inference. The complete set MUST be supplied",
+        "in the initial model request."
       ]
     },
     {
@@ -1097,12 +1097,12 @@
       "line_start": 199,
       "line_end": 204,
       "text": [
-        ":::{req} initial_prompt",
-        "The initial request MUST provide the four tool definitions above and the",
-        "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
-        "or `example`, `{{subject_name}}` with the full subject name, and",
-        "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
-        "the existing evidence-input formats. The template MUST otherwise be used as"
+        ":::",
+        "",
+        "The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),",
+        "[examples](examples.md#examples-as-authoring-inputs),",
+        "[references](references.md#references-as-authoring-inputs),",
+        "[terminology](definitions.md#terminology-as-authoring-inputs), and"
       ]
     },
     {
@@ -1110,10 +1110,10 @@
       "line_start": 228,
       "line_end": 231,
       "text": [
-        "list their issue references or other identifying content. The usual convention",
-        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
-        "Choose false for other gaps or insufficient evidence. Explain your judgment in",
-        "a Markdown rationale with source locations, including any acknowledged gaps."
+        "Assess only the named subject, using cited requirements and definitions as context.",
+        "For a requirement, check that the cited code implements it as stated and that",
+        "tests cover the interesting points in the design space. If there are no tests,",
+        "assess whether simplicity or impracticality justifies their absence, and explain."
       ]
     },
     {
@@ -1121,11 +1121,11 @@
       "line_start": 246,
       "line_end": 250,
       "text": [
-        "It MUST supply the complete function, its current citations, all requirement and",
-        "example declarations selected by `*`, and their required terminology as mandatory",
-        "inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation",
-        "input selectors MUST also contribute their current resolutions, subject to the",
-        "generated-output exclusion above. The harness MUST"
+        "Mandatory inputs:",
+        "{{mandatory_inputs}}",
+        "```",
+        ":::",
+        ""
       ]
     },
     {
@@ -1133,13 +1133,13 @@
       "line_start": 252,
       "line_end": 258,
       "text": [
-        "the model MUST supply only the boolean determination and rationale. FIXME MUST",
-        "be rejected for a function attestation.",
         "",
-        "The same four tools and exactly-once submission rule MUST apply. The initial",
-        "prompt MUST use the following template, replacing `{{subject_name}}` with the",
-        "repository-relative Rust file and selector, `{{citations}}` with the current",
-        "citation objects as JSON, and `{{mandatory_inputs}}` with the mandatory input"
+        ":::{req} function_attestations",
+        "The harness MUST author Rust function attestations using the schema and citation",
+        "completeness criteria in {cite}`requirements.references.rust_function_attestations`.",
+        "It MUST supply the complete function, its current citations, all requirement and",
+        "example declarations selected by `*`, and their required terminology as mandatory",
+        "inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation"
       ]
     },
     {
@@ -1147,10 +1147,10 @@
       "line_start": 278,
       "line_end": 281,
       "text": [
-        "example. Choose false for missing citations or insufficient information.",
-        "Explain how you identified the applicable set and how the cited declarations",
-        "account for the function's behavior, with source locations, and why the reviewed",
-        "requirements inputs cover that set. The determination"
+        "Read the whole function and the requirement and example declarations below.",
+        "Look beyond the citations already present for every applicable requirement or",
+        "example, including obligations governing observable branches and error cases.",
+        "Assess citation completeness, not whether those requirements are implemented."
       ]
     },
     {
@@ -1158,9 +1158,9 @@
       "line_start": 309,
       "line_end": 311,
       "text": [
-        ":::",
         "",
-        "### Serialized configuration data model"
+        ":::{req} configuration",
+        "Authoring MUST use the `[authoring]` section of the shared user configuration."
       ]
     },
     {
@@ -1168,9 +1168,9 @@
       "line_start": 348,
       "line_end": 350,
       "text": [
-        "    options: Map<String, OptionValue>,",
-        "}",
-        ""
+        "    model: ModelId,                           // model ID or inference-profile ID/ARN",
+        "    aws_profile: Optional<String>,",
+        "    region: Optional<String>,"
       ]
     },
     {
@@ -1178,9 +1178,9 @@
       "line_start": 435,
       "line_end": 437,
       "text": [
-        "and include complete TOML examples for Bedrock and Ollama, with all placeholders",
-        "identified. It MUST show how to choose a default, use a remote Ollama server,",
-        "select a configuration for a project or invocation, and edit or remove selections"
+        "The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK",
+        "configuration. The Ollama adapter MUST use the chosen server, exact model ID,",
+        "and optional authentication; the server MAY be local or remote. Both adapters"
       ]
     },
     {
@@ -1188,9 +1188,9 @@
       "line_start": 444,
       "line_end": 446,
       "text": [
-        "",
-        "```toml",
-        "version = 1"
+        "Authoring documentation MUST follow {cite}`requirements.configuration.documentation`",
+        "and include complete TOML examples for Bedrock and Ollama, with all placeholders",
+        "identified. It MUST show how to choose a default, use a remote Ollama server,"
       ]
     },
     {
@@ -1199,8 +1199,8 @@
       "line_end": 452,
       "text": [
         "",
-        "[authoring.configs.local]",
-        "backend = \"ollama\""
+        "Create the user file at the [shared configuration location](configuration.md#locations-and-scope).",
+        "For Ollama, this is a complete minimal file; replace `MODEL_TAG` with a model"
       ]
     },
     {
@@ -1208,9 +1208,9 @@
       "line_start": 461,
       "line_end": 463,
       "text": [
-        "version = 1",
-        "",
-        "[authoring]"
+        "[authoring.configs.local]",
+        "backend = \"ollama\"",
+        "model = \"MODEL_TAG\""
       ]
     },
     {
@@ -1218,9 +1218,9 @@
       "line_start": 469,
       "line_end": 471,
       "text": [
-        "aws_profile = \"research\"",
-        "region = \"us-east-1\"",
-        "```"
+        "",
+        "```toml",
+        "version = 1"
       ]
     },
     {
@@ -1228,8 +1228,8 @@
       "line_start": 492,
       "line_end": 494,
       "text": [
-        "backend = \"ollama\"",
-        "model = \"MODEL_TAG\"",
+        "[authoring]",
+        "default = \"cloud\"",
         ""
       ]
     },
@@ -1238,9 +1238,9 @@
       "line_start": 505,
       "line_end": 507,
       "text": [
-        "`config` to change that checkout's selection. Delete the corresponding field or",
-        "project table to remove a selection. To remove a named configuration, delete its",
-        "table and update any selections naming it. Preserve other feature sections when"
+        "[authoring.configs.workstation]",
+        "backend = \"ollama\"",
+        "model = \"MODEL_TAG\""
       ]
     },
     {
@@ -1248,9 +1248,9 @@
       "line_start": 510,
       "line_end": 512,
       "text": [
-        "Run `habeas author --all` to fill in evidence needing attention, or",
-        "`habeas author <full-name>` to assess one requirement or example. Add `--config local`",
-        "to override the saved selection for one run. Set `concurrency` alongside `backend`"
+        "[authoring.projects.\"/absolute/path/to/project\"]",
+        "config = \"workstation\"",
+        "```"
       ]
     },
     {
@@ -1265,7 +1265,7 @@
         "",
         "use serde_json::{Map, Value, json};",
         "",
-        "use super::inputs::{AssessmentSources, generated_evidence_path};",
+        "use super::inputs::AssessmentSources;",
         "use crate::inputs::{InputSelector, read_project_file};",
         "",
         "pub(crate) struct ToolDelivery {",
@@ -1282,7 +1282,7 @@
         "    vec![",
         "        json!({",
         "            \"name\": \"habeas\",",
-        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Generated evidence under evidence/ is excluded from source reads.\",",
+        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Read only project-local sources; in Git worktrees, files and their resolved symlink targets must be tracked. Generated evidence under evidence/ is excluded.\",",
         "            \"parameters\": {\"type\":\"object\", \"properties\": {",
         "                \"file\":{\"type\":\"string\"},",
         "                \"line_start\":{\"type\":\"integer\",\"minimum\":1},",
@@ -1294,11 +1294,11 @@
         "            }, \"additionalProperties\":false}",
         "        }),",
         "        json!({",
-        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Generated evidence under evidence/ is excluded from discovery.\",",
+        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible project-local sources are listed; Git worktrees omit untracked files and directories without tracked source descendants. Generated evidence under evidence/ is excluded.\",",
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
         "        }),",
         "        json!({",
-        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Generated evidence under evidence/ is excluded from searches.\",",
+        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible project-local sources, tracked in Git worktrees. Generated evidence under evidence/ is excluded.\",",
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
         "        }),",
         "    ]",
@@ -1314,6 +1314,20 @@
       "line_start": 190,
       "line_end": 196,
       "text": [
+        "The harness MUST construct each assessment's mandatory input set by combining",
+        "the contributions specified by the requirements applicable to that subject and",
+        "its inputs. A requirement that contributes inputs MUST cite this requirement and",
+        "define which sources it contributes and when. The harness MUST include every",
+        "applicable contribution, deduplicate identical selections, and report",
+        "unresolvable mandatory inputs before inference. The complete set MUST be supplied",
+        "in the initial model request."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 200,
+      "line_end": 206,
+      "text": [
         "",
         "The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),",
         "[examples](examples.md#examples-as-authoring-inputs),",
@@ -1325,30 +1339,16 @@
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 200,
-      "line_end": 206,
-      "text": [
-        "The initial request MUST provide the four tool definitions above and the",
-        "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
-        "or `example`, `{{subject_name}}` with the full subject name, and",
-        "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
-        "the existing evidence-input formats. The template MUST otherwise be used as",
-        "written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,",
-        "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`."
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
       "line_start": 253,
       "line_end": 259,
       "text": [
-        "be rejected for a function attestation.",
-        "",
-        "The same four tools and exactly-once submission rule MUST apply. The initial",
-        "prompt MUST use the following template, replacing `{{subject_name}}` with the",
-        "repository-relative Rust file and selector, `{{citations}}` with the current",
-        "citation objects as JSON, and `{{mandatory_inputs}}` with the mandatory input",
-        "array. {cite}`requirements.authoring.submission`"
+        ":::{req} function_attestations",
+        "The harness MUST author Rust function attestations using the schema and citation",
+        "completeness criteria in {cite}`requirements.references.rust_function_attestations`.",
+        "It MUST supply the complete function, its current citations, all requirement and",
+        "example declarations selected by `*`, and their required terminology as mandatory",
+        "inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation",
+        "input selectors MUST also contribute their current resolutions, subject to the"
       ]
     },
     {
@@ -1383,13 +1383,13 @@
       "line_start": 21,
       "line_end": 27,
       "text": [
+        "    // {impl}`requirements.authoring.function_attestations`",
         "    // {impl}`requirements.authoring.usage_storage`",
         "    // {impl}`requirements.authoring.initial_prompt`",
         "    pub(crate) fn noun(&self) -> &'static str {",
         "        match self {",
         "            Self::Definition(kind) => kind.noun(),",
-        "            Self::RustFunction { .. } => \"rust_function\",",
-        "        }"
+        "            Self::RustFunction { .. } => \"rust_function\","
       ]
     },
     {
@@ -1397,13 +1397,13 @@
       "line_start": 542,
       "line_end": 548,
       "text": [
-        "                \"inputs\": [{\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1}]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        assert!(",
-        "            AssessmentSources::prepare(root.path(), \"requirements.ready\")"
+        "        assert_eq!(",
+        "            example.mandatory_inputs()[0][\"requirements\"],",
+        "            \"requirements.case\"",
+        "        );",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.mandatory_inputs`"
       ]
     },
     {
@@ -1411,13 +1411,13 @@
       "line_start": 298,
       "line_end": 304,
       "text": [
+        "    usage.record.backend = Some(backend.into());",
         "    usage.record.model = Some(model.model.clone());",
         "    let mut sources = match subject {",
         "        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),",
         "        AuthoringSubject::RustFunction {",
         "            rust_file,",
-        "            rust_item,",
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),"
+        "            rust_item,"
       ]
     },
     {
@@ -1425,13 +1425,13 @@
       "line_start": 338,
       "line_end": 344,
       "text": [
+        "    };",
         "    let start = chapter.find(opening).expect(\"approved prompt template\");",
         "    let template = chapter[start..]",
         "        .split(\"\\n```\")",
         "        .next()",
         "        .expect(\"prompt closing fence\");",
-        "    let citations = match &sources.subject_kind {",
-        "        AssessmentKind::Definition(_) => String::new(),"
+        "    let citations = match &sources.subject_kind {"
       ]
     },
     {
@@ -1439,13 +1439,13 @@
       "line_start": 457,
       "line_end": 463,
       "text": [
+        "                return Err(io::Error::other(",
         "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
         "                ));",
         "            }",
         "            let result = submission(",
         "                &Value::Object(submissions[0].function.arguments.clone()),",
-        "                function,",
-        "            );"
+        "                function,"
       ]
     },
     {
@@ -1453,13 +1453,13 @@
       "line_start": 51,
       "line_end": 57,
       "text": [
-        "        }",
+        "    let mut findings = String::new();",
+        "    let mut fixmes = FixmeSummary::default();",
+        "    let mut associated_errors = BTreeSet::new();",
         "",
-        "        rows.push((",
-        "            format!(\"`{name}` ({})\", definition.kind.noun()),",
-        "            evidence.state().label(),",
-        "        ));",
-        "        if !evidence.fixme_entries().is_empty() {"
+        "    for (name, definition) in &inspection.definitions {",
+        "        if definition.kind == crate::DefinitionKind::Term {",
+        "            continue;"
       ]
     },
     {
@@ -1579,6 +1579,7 @@
       "line_start": 520,
       "line_end": 594,
       "text": [
+        "    use rig_core::completion::{CompletionResponse, FinishReason, Usage};",
         "    use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};",
         "",
         "    use super::*;",
@@ -1652,8 +1653,7 @@
         "                assert_eq!(record[\"rust_item\"], \"fn[ready]\");",
         "                assert_eq!(",
         "                    record[\"citations\"],",
-        "                    json!([{\"role\": \"impl\", \"name\": \"requirements.ready\"}])",
-        "                );"
+        "                    json!([{\"role\": \"impl\", \"name\": \"requirements.ready\"}])"
       ]
     },
     {
@@ -1661,7 +1661,7 @@
       "line_start": 209,
       "line_end": 209,
       "text": [
-        "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example."
+        ":::{req} initial_prompt"
       ]
     },
     {
@@ -1669,7 +1669,7 @@
       "line_start": 263,
       "line_end": 263,
       "text": [
-        "Bring your expert judgment to the task of assessing a Rust function's citation completeness."
+        "be rejected for a function attestation."
       ]
     },
     {
@@ -1677,7 +1677,7 @@
       "line_start": 325,
       "line_end": 325,
       "text": [
-        "// {impl}`requirements.ci.outcomes`"
+        "// {impl}`requirements.ci.review_criteria`"
       ]
     },
     {
@@ -1685,7 +1685,7 @@
       "line_start": 328,
       "line_end": 328,
       "text": [
-        "    // Keep the approved template as the sole source of these instructions."
+        "fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {"
       ]
     },
     {
@@ -1693,7 +1693,7 @@
       "line_start": 566,
       "line_end": 566,
       "text": [
-        "                inputs::tests::role(\"impl\", \"requirements.ready\")"
+        "                \"// {}\\npub fn ready() {{}}\\n\","
       ]
     },
     {
@@ -1755,11 +1755,11 @@
       "line_start": 425,
       "line_end": 429,
       "text": [
-        "            .unwrap();",
-        "    assert_eq!(",
-        "        example[\"example\"],",
-        "        \"Given ready, it works. CITE`rules.ready`\".replace(\"CITE\", \"{cite}\")",
-        "    );"
+        "        \"{exact}\"",
+        "    );",
+        "    assert!(",
+        "        exact.contains(\"img.shields.io/badge/evidence-Valid-237346\"),",
+        "        \"{exact}\""
       ]
     },
     {
@@ -1779,9 +1779,9 @@
       "line_start": 21,
       "line_end": 23,
       "text": [
+        "    // {impl}`requirements.authoring.function_attestations`",
         "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.authoring.initial_prompt`",
-        "    pub(crate) fn noun(&self) -> &'static str {"
+        "    // {impl}`requirements.authoring.initial_prompt`"
       ]
     },
     {
@@ -1789,9 +1789,9 @@
       "line_start": 321,
       "line_end": 323,
       "text": [
+        "}",
         "",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.function_attestations`"
+        "// {impl}`requirements.authoring.initial_prompt`"
       ]
     },
     {
@@ -1799,11 +1799,11 @@
       "line_start": 326,
       "line_end": 330,
       "text": [
+        "// {impl}`requirements.ci.outcomes`",
         "// {impl}`requirements.examples.evidence`",
         "fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {",
         "    // Keep the approved template as the sole source of these instructions.",
-        "    let chapter = include_str!(\"../../md/requirements/authoring.md\");",
-        "    let opening = match &sources.subject_kind {"
+        "    let chapter = include_str!(\"../../md/requirements/authoring.md\");"
       ]
     },
     {
@@ -1811,9 +1811,9 @@
       "line_start": 384,
       "line_end": 386,
       "text": [
+        "",
         "// {impl}`requirements.authoring.submission`",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.function_attestations`"
+        "// {impl}`requirements.authoring.initial_prompt`"
       ]
     },
     {
@@ -1821,9 +1821,9 @@
       "line_start": 404,
       "line_end": 406,
       "text": [
+        "",
         "// {impl}`requirements.authoring.submission`",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.delivered_inputs`"
+        "// {impl}`requirements.authoring.initial_prompt`"
       ]
     },
     {
@@ -1831,9 +1831,9 @@
       "line_start": 417,
       "line_end": 419,
       "text": [
+        "    usage: &mut UsageLog,",
         ") -> io::Result<(Judgment, Value)> {",
-        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
-        "    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });"
+        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);"
       ]
     },
     {
@@ -1841,9 +1841,9 @@
       "line_start": 574,
       "line_end": 576,
       "text": [
+        "                AssessmentSources::prepare_function(project.path(), \"src/lib.rs\", \"fn[ready]\")",
         "                    .unwrap();",
-        "            let prompt = initial_prompt(&sources).unwrap();",
-        "            assert!(prompt.starts_with(\"Bring your expert judgment to the task of assessing a Rust function's citation completeness.\"));"
+        "            let prompt = initial_prompt(&sources).unwrap();"
       ]
     },
     {
@@ -2102,6 +2102,7 @@
       "line_start": 17,
       "line_end": 29,
       "text": [
+        "    },",
         "}",
         "",
         "impl AssessmentKind {",
@@ -2113,8 +2114,7 @@
         "            Self::Definition(kind) => kind.noun(),",
         "            Self::RustFunction { .. } => \"rust_function\",",
         "        }",
-        "    }",
-        "}"
+        "    }"
       ]
     },
     {
@@ -2122,6 +2122,7 @@
       "line_start": 55,
       "line_end": 67,
       "text": [
+        "    Term,",
         "}",
         "",
         "impl DefinitionKind {",
@@ -2133,8 +2134,403 @@
         "            Self::Requirement => \"requirement\",",
         "            Self::Example => \"example\",",
         "            Self::Term => \"definition\",",
-        "        }",
-        "    }"
+        "        }"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 211,
+      "line_end": 212,
+      "text": [
+        "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+        "or `example`, `{{subject_name}}` with the full subject name, and"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 219,
+      "line_end": 219,
+      "text": [
+        "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 221,
+      "line_end": 221,
+      "text": [
+        "Subject: {{subject_kind}} {{subject_name}}"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 266,
+      "line_end": 266,
+      "text": [
+        "prompt MUST use the following template, replacing `{{subject_name}}` with the"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 273,
+      "line_end": 273,
+      "text": [
+        "Bring your expert judgment to the task of assessing a Rust function's citation completeness."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 275,
+      "line_end": 275,
+      "text": [
+        "Subject: {{subject_name}}"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 333,
+      "line_end": 333,
+      "text": [
+        "            \"Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.\""
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 336,
+      "line_end": 336,
+      "text": [
+        "            \"Bring your expert judgment to the task of assessing a Rust function's citation completeness.\""
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 349,
+      "line_end": 350,
+      "text": [
+        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())",
+        "        .replace(\"{{subject_name}}\", &sources.subject_name)"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 577,
+      "line_end": 577,
+      "text": [
+        "            assert!(prompt.starts_with(\"Bring your expert judgment to the task of assessing a Rust function's citation completeness.\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 114,
+      "line_end": 114,
+      "text": [
+        "        .find_map(|line| line.strip_prefix(\"Subject: \"))"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 12,
+      "line_end": 12,
+      "text": [
+        "const SUBJECT: &str = \"requirements.ready\";"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 141,
+      "line_end": 141,
+      "text": [
+        "            format!(\":::{{req}} ready\\n{REQUIREMENT}\\n:::\\n\"),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 167,
+      "line_end": 167,
+      "text": [
+        "        let evidence = project.join(format!(\"evidence/{SUBJECT}.json\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 229,
+      "line_end": 229,
+      "text": [
+        "        \"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":11,\"eval_count\":7})"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 238,
+      "line_end": 238,
+      "text": [
+        "// {test}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 278,
+      "line_end": 278,
+      "text": [
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 298,
+      "line_end": 298,
+      "text": [
+        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 307,
+      "line_end": 307,
+      "text": [
+        "        assert!(prompt.contains(text), \"prompt missing {text}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 309,
+      "line_end": 309,
+      "text": [
+        "    assert!(!prompt.contains(\"OLD_RATIONALE_MUST_NOT_REACH_MODEL\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 434,
+      "line_end": 434,
+      "text": [
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 441,
+      "line_end": 444,
+      "text": [
+        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
+        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
+        "    assert!(prompt.contains(\"queue[0] = value\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 481,
+      "line_end": 481,
+      "text": [
+        "        let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--stdout\"]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 494,
+      "line_end": 494,
+      "text": [
+        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == SUBJECT));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 514,
+      "line_end": 514,
+      "text": [
+        "        assert!(stderr.contains(&format!(\"{SUBJECT}: ollama / {MODEL} — {kind}\")));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 556,
+      "line_end": 556,
+      "text": [
+        "            let mut args = vec![\"author-evidence\", SUBJECT];"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 591,
+      "line_end": 591,
+      "text": [
+        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 597,
+      "line_end": 597,
+      "text": [
+        "    assert!(String::from_utf8_lossy(&output.stdout).contains(SUBJECT));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 608,
+      "line_end": 608,
+      "text": [
+        "// {test}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 669,
+      "line_end": 669,
+      "text": [
+        "            .args([\"author-evidence\", SUBJECT])"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 706,
+      "line_end": 707,
+      "text": [
+        "        let prompt = body[\"messages\"][0][\"content\"][0][\"text\"].as_str().unwrap();",
+        "        assert!(prompt.contains(\"Bring your expert judgment\") && prompt.contains(REQUIREMENT));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 809,
+      "line_end": 809,
+      "text": [
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT]);"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 23,
+      "line_end": 23,
+      "text": [
+        "    // {impl}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 323,
+      "line_end": 323,
+      "text": [
+        "// {impl}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 386,
+      "line_end": 386,
+      "text": [
+        "// {impl}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 406,
+      "line_end": 406,
+      "text": [
+        "// {impl}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 419,
+      "line_end": 419,
+      "text": [
+        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 576,
+      "line_end": 576,
+      "text": [
+        "            let prompt = initial_prompt(&sources).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1579,
+      "line_end": 1580,
+      "text": [
+        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
+        "            \"requirement requirements.empty has no text\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1736,
+      "line_end": 1736,
+      "text": [
+        "                \"md/requirements.md:1: requirement requirements.ready is missing a closing colon fence\""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 380,
+      "line_end": 386,
+      "text": [
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
+        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(!output.status.success());"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 205,
+      "line_end": 252,
+      "text": [
+        "[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).",
+        "",
+        "### Prompt template",
+        "",
+        ":::{req} initial_prompt",
+        "The initial request MUST provide the four tool definitions above and the",
+        "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+        "or `example`, `{{subject_name}}` with the full subject name, and",
+        "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
+        "the existing evidence-input formats. The template MUST otherwise be used as",
+        "written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,",
+        "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.",
+        "",
+        "```text",
+        "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
+        "",
+        "Subject: {{subject_kind}} {{subject_name}}",
+        "",
+        "Read the subject and mandatory inputs below. Use habeas to request any additional",
+        "source information you need. Use list_files to discover files and directories,",
+        "and ripgrep to search file contents.",
+        "The harness records source inputs for you; directory listings are not evidence.",
+        "",
+        "Assess only the named subject, using cited requirements and definitions as context.",
+        "For a requirement, check that the cited code implements it as stated and that",
+        "tests cover the interesting points in the design space. If there are no tests,",
+        "assess whether simplicity or impracticality justifies their absence, and explain.",
+        "For an example, assess whether test setup and assertions cover its scenario and",
+        "expected outcomes. A true judgment needs at least one {test} reference to the",
+        "example in the supplied inputs. Explain the coverage.",
+        "",
+        "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+        "the remaining gaps are explicitly acknowledged in source comments or tests;",
+        "list their issue references or other identifying content. The usual convention",
+        "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+        "Choose false for other gaps or insufficient evidence. Explain your judgment in",
+        "a Markdown rationale with source locations, including any acknowledged gaps.",
+        "",
+        "When you are ready, call submit_judgment exactly once with determination and",
+        "rationale. That tool call is your final answer.",
+        "",
+        "Mandatory inputs:",
+        "{{mandatory_inputs}}",
+        "```",
+        ":::",
+        "",
+        "### Rust function attestations",
+        ""
       ]
     }
   ]

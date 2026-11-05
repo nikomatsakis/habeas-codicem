@@ -1,7 +1,7 @@
 {
   "requirement": "When authoring evidence for a named example, its complete fenced declaration\nMUST be included in the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is met. One test gap is minor and not acknowledged in the source.\n\n**Implementation**\n- `AssessmentSources::prepare` in `src/authoring/inputs.rs` (marked `{impl}` for `requirements.examples.authoring_inputs`) looks the subject up among non-term definitions. Examples are accepted because only `DefinitionKind::Term` is excluded.\n- It always makes `InputSelector::Requirements { requirements: subject_name }` the first selector. This runs before the cited references, source references, and the existing-evidence selectors are added. It is also unconditional, so it applies to examples as well as requirements.\n- Each selector goes through `source_input`, then `InputSelector::resolve`. For `Requirements` this reads the matching `Declaration`'s `raw_lines` (`src/inputs.rs`, around lines 204–211).\n- `load_definitions` builds `raw_lines` in `src/evidence.rs` (around lines 270–282) from `content[block.start..block.end]`.\n- `definition_blocks` in `src/lib.rs` sets `start` at the opening colon-fence line. It sets `end` to the end of the closing fence line, using a fence of at least the opening length. So the text includes the full opening fence (`:::{example} name`) and the closing fence.\n- The glob match is on the complete name, so only the named example is selected.\n- Duplicates are removed by `insert_selector`. Generated `evidence/` output is filtered out. The mandatory set is held in `mandatory` and is available through `mandatory_inputs()`.\n\n**Tests**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` in `src/authoring/inputs.rs` carries `{test}` for `requirements.examples.authoring_inputs`. It declares `:::{example} case` and calls `prepare(root, \"requirements.case\")`.\n- It asserts that `subject_kind` is `AssessmentKind::Definition(DefinitionKind::Example)`. It also asserts that `mandatory_inputs()[0][\"requirements\"] == \"requirements.case\"`, so the example's own declaration is the first mandatory input.\n- The same test covers the surrounding behaviour for the requirement subject: the cited requirements and terms are included, uncited distant requirements are excluded, and old evidence content is not leaked.\n\n**Gap**\n- The example case does not assert that the input's `text` holds the complete fenced block, including both fence lines. That follows from the shared `raw_lines` code, which is also exercised in other tests (for example the `ci.requirements_inputs` tests in `src/evidence.rs`).\n- The mandatory input shown for this very subject also contains the full `:::{req} … :::` text, which confirms the behaviour.\n- I consider this minor, and no FIXME acknowledges it.",
+  "rationale": "**Verdict:** the requirement is met. One test assertion is weaker than it could be, but it is not a real gap.\n\n**Implementation**\n- `AssessmentSources::prepare` in `src/authoring/inputs.rs` looks the subject up in the loaded definitions. It accepts any non-term definition, so named examples are included.\n- It makes `InputSelector::Requirements { requirements: subject_name }` the first selector. It does this before adding referenced subjects, source references to the subject, and selectors from existing evidence.\n- `source_input` then resolves that selector through `InputSelector::resolve` in `src/inputs.rs`. The `Requirements` branch emits each matching definition's `raw_lines`. It also records a source range from `definition.line_start` to `definition.line_end`.\n- `raw_lines` and the line range are built in `load_definitions` in `src/evidence.rs`, around lines 270–285. `raw_lines` is `content[block.start..block.end]`.\n- `block.start` is the start of the opening `:::{example} name` line. `block.end` is the end of the closing fence line, as `definition_blocks` in `src/lib.rs` sets it.\n- So the supplied text is the complete fenced declaration, opening and closing fences included.\n- Mandatory inputs are deduplicated and filtered to exclude generated `evidence/` selectors. Those steps do not drop the subject's own declaration.\n\n**Tests**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` in `src/authoring/inputs.rs` carries `{test}` `requirements.examples.authoring_inputs` (line 456).\n- It declares `:::{example} case` in the fixture, calls `AssessmentSources::prepare(root, \"requirements.case\")`, and asserts the following:\n  - `subject_kind` is `Definition(DefinitionKind::Example)`.\n  - `mandatory_inputs()[0][\"requirements\"] == \"requirements.case\"`, so the example's declaration is the first mandatory input.\n- In the same test, the `requirements.ready` bundle includes `requirements.case`. That is the example that cites it.\n- The example case therefore has setup and assertions that cover the scenario.\n\n**Minor weakness**\n- The test does not assert the fence text of the example's input. The fenced text comes from the shared declaration-capture code, `raw_lines`, which other input-validation tests exercise.\n- Given the simple, direct implementation, this is not enough to withhold a pass.",
   "inputs": [
     {
       "requirements": "requirements.examples.authoring_inputs",
@@ -48,6 +48,7 @@
         "    // {impl}`requirements.ci.authoring_inputs`",
         "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {",
         "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let access = SourceAccess::load(&root)?;",
         "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;",
         "        let subject = definitions",
         "            .get(subject_name)",
@@ -123,10 +124,16 @@
         "        let mut mandatory = Vec::new();",
         "        for selector in selectors {",
         "            if !generated_evidence_selector(&root, &selector) {",
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
         "            }",
         "        }",
-        "        let dependencies = definition_inputs(&root, &definitions, &mandatory, Some(&subject.text))?;",
+        "        let dependencies = definition_inputs(",
+        "            &root,",
+        "            &access,",
+        "            &definitions,",
+        "            &mandatory,",
+        "            Some(&subject.text),",
+        "        )?;",
         "        for input in dependencies {",
         "            if !mandatory.contains(&input) {",
         "                mandatory.push(input);",
@@ -134,6 +141,7 @@
         "        }",
         "        Ok(Self {",
         "            root,",
+        "            access,",
         "            subject_name: subject_name.to_owned(),",
         "            subject_kind: AssessmentKind::Definition(subject.kind),",
         "            subject_text: subject.text.clone(),",
@@ -262,13 +270,13 @@
       "line_start": 291,
       "line_end": 297,
       "text": [
-        "    }",
         "}",
         "",
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.definitions.authoring_inputs`",
-        "// {impl}`requirements.ci.authoring_inputs`"
+        "// {impl}`requirements.ci.authoring_inputs`",
+        "fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {",
+        "    match selector {"
       ]
     },
     {
@@ -276,13 +284,13 @@
       "line_start": 518,
       "line_end": 524,
       "text": [
-        "            !serde_json::to_string(inputs)",
-        "                .unwrap()",
-        "                .contains(\"old secret judgment\")",
+        "            !inputs",
+        "                .iter()",
+        "                .any(|input| input[\"requirements\"] == \"requirements.distant\")",
         "        );",
-        "        let example = AssessmentSources::prepare(root.path(), \"requirements.case\").unwrap();",
-        "        assert!(matches!(",
-        "            example.subject_kind,"
+        "        assert_eq!(",
+        "            inputs",
+        "                .iter()"
       ]
     },
     {
@@ -388,13 +396,13 @@
       "line_start": 287,
       "line_end": 293,
       "text": [
+        "        }",
         "        let badge = shield_badge(",
         "            block.kind.badge(),",
         "            &full_name,",
         "            if block.kind == DefinitionKind::Example {",
         "                \"5b62a8\"",
-        "            } else {",
-        "                \"006ba8\""
+        "            } else {"
       ]
     },
     {
@@ -402,13 +410,13 @@
       "line_start": 496,
       "line_end": 502,
       "text": [
+        "        };",
         "        let (kind, rest) = if let Some(rest) = suffix.strip_prefix(\"{req}\") {",
         "            (DefinitionKind::Requirement, rest)",
         "        } else if let Some(rest) = suffix.strip_prefix(\"{example}\") {",
         "            (DefinitionKind::Example, rest)",
         "        } else if let Some(rest) = suffix.strip_prefix(\"{definition}\") {",
-        "            (DefinitionKind::Term, rest)",
-        "        } else {"
+        "            (DefinitionKind::Term, rest)"
       ]
     },
     {
@@ -416,13 +424,13 @@
       "line_start": 873,
       "line_end": 879,
       "text": [
+        "            .replace(\"CITE\", \"{cite}\");",
         "        let blocks = definition_blocks(&source);",
         "        assert_eq!(blocks.len(), 2);",
         "        assert_eq!(blocks[0].kind, DefinitionKind::Requirement);",
         "        assert_eq!(blocks[1].kind, DefinitionKind::Example);",
         "",
-        "        let mut book = Book::new();",
-        "        book.push_item(Chapter::new("
+        "        let mut book = Book::new();"
       ]
     },
     {
@@ -444,6 +452,18 @@
       "line_start": 285,
       "line_end": 400,
       "text": [
+        "pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {",
+        "    let path = root.join(path);",
+        "    let evidence = root.join(\"evidence\");",
+        "    path.starts_with(&evidence)",
+        "        || fs::canonicalize(&path)",
+        "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.ci.authoring_inputs`",
+        "fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {",
         "    match selector {",
         "        InputSelector::FileRange { file, .. }",
         "        | InputSelector::RustItem {",
@@ -459,19 +479,20 @@
         "// {impl}`requirements.ci.authoring_inputs`",
         "fn source_input(",
         "    root: &Path,",
+        "    access: &SourceAccess,",
         "    definitions: &BTreeMap<String, Declaration>,",
         "    selector: &InputSelector,",
         ") -> Result<Value, String> {",
-        "    if generated_evidence_selector(root, selector) {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "    if let InputSelector::FileRange { file, .. }",
+        "    | InputSelector::RustItem {",
+        "        rust_file: file, ..",
+        "    } = selector",
+        "    {",
+        "        access.file(root, Path::new(file))?;",
         "    }",
         "    let resolved = selector.resolve(root, definitions)?;",
-        "    if resolved",
-        "        .ranges",
-        "        .iter()",
-        "        .any(|range| generated_evidence_path(root, Path::new(&range.file)))",
-        "    {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "    for range in &resolved.ranges {",
+        "        access.file(root, Path::new(&range.file))?;",
         "    }",
         "    Ok(selector.to_input(&resolved))",
         "}",
@@ -546,20 +567,7 @@
         "    let (_, source) = read_project_file(root, &file)?;",
         "    Ok(InputSelector::FileRange {",
         "        file,",
-        "        line_start: 1,",
-        "        line_end: source.lines().count(),",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.definitions.authoring_inputs`",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "fn definition_inputs(",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    inputs: &[Value],",
-        "    subject: Option<&str>,",
-        ") -> Result<Vec<Value>, String> {",
-        "    let record = json!({ \"inputs\": inputs });"
+        "        line_start: 1,"
       ]
     },
     {
@@ -591,15 +599,15 @@
       "line_start": 363,
       "line_end": 371,
       "text": [
-        "        .extension()",
-        "        .is_some_and(|extension| extension == \"md\")",
-        "        && let Some((name, declaration)) = definitions",
-        "            .iter()",
-        "            .filter(|(_, declaration)| {",
-        "                declaration.file == file",
-        "                    && declaration.line_start <= reference.line",
-        "                    && reference.line <= declaration.line_end",
-        "            })"
+        "                    item.line_end - item.line_start,",
+        "                    item.byte_end - item.byte_start,",
+        "                )",
+        "            })",
+        "        {",
+        "            return Ok(InputSelector::RustItem {",
+        "                rust_file: file,",
+        "                rust_item: item.selector.clone(),",
+        "            });"
       ]
     },
     {
@@ -812,19 +820,19 @@
       "line_start": 378,
       "line_end": 390,
       "text": [
-        "        } else {",
-        "            InputSelector::Requirements {",
-        "                requirements: name.clone(),",
-        "            }",
-        "        });",
-        "    }",
-        "    let (_, source) = read_project_file(root, &file)?;",
-        "    Ok(InputSelector::FileRange {",
-        "        file,",
-        "        line_start: 1,",
-        "        line_end: source.lines().count(),",
-        "    })",
-        "}"
+        "        && let Some((name, declaration)) = definitions",
+        "            .iter()",
+        "            .filter(|(_, declaration)| {",
+        "                declaration.file == file",
+        "                    && declaration.line_start <= reference.line",
+        "                    && reference.line <= declaration.line_end",
+        "            })",
+        "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)",
+        "    {",
+        "        return Ok(if declaration.kind == DefinitionKind::Term {",
+        "            InputSelector::Definition {",
+        "                definition: name.clone(),",
+        "            }"
       ]
     },
     {
@@ -832,6 +840,7 @@
       "line_start": 22,
       "line_end": 34,
       "text": [
+        "use crate::judgment::Judgment;",
         "use inputs::{AssessmentKind, AssessmentSources};",
         "use providers::{CompletionProvider, RigProvider};",
         "use usage::UsageLog;",
@@ -843,8 +852,7 @@
         "    pub evidence_path: Option<PathBuf>,",
         "    pub usage_path: PathBuf,",
         "    pub determination: Judgment,",
-        "}",
-        ""
+        "}"
       ]
     },
     {
@@ -852,6 +860,7 @@
       "line_start": 189,
       "line_end": 201,
       "text": [
+        "            match signal {",
         "                Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, \"evidence authoring cancelled\")),",
         "                Err(error) => Err(error),",
         "            }",
@@ -863,8 +872,7 @@
         "                subject: subject.label(),",
         "                backend: usage.record.backend.clone().expect(\"configured backend\"),",
         "                model: usage.record.model.clone().expect(\"configured model\"),",
-        "                evidence_path: None,",
-        "                usage_path: usage.path.clone(),"
+        "                evidence_path: None,"
       ]
     },
     {
@@ -872,6 +880,7 @@
       "line_start": 261,
       "line_end": 273,
       "text": [
+        "            let mut stdout = io::stdout().lock();",
         "            stdout.write_all(json.as_bytes())?;",
         "            stdout.flush()?;",
         "            None",
@@ -883,8 +892,7 @@
         "        subject: subject.into(),",
         "        backend: usage.record.backend.clone().expect(\"configured backend\"),",
         "        model: config.model_ref().model,",
-        "        evidence_path,",
-        "        usage_path: usage.path.clone(),"
+        "        evidence_path,"
       ]
     },
     {
@@ -1387,6 +1395,7 @@
       "line_start": 84,
       "line_end": 98,
       "text": [
+        "    pub(crate) fn anchor(self, name: &str) -> String {",
         "        format!(\"habeas-{}-{name}\", self.badge())",
         "    }",
         "}",
@@ -1400,8 +1409,7 @@
         "    pub(crate) kind: DefinitionKind,",
         "    pub(crate) closed: bool,",
         "}",
-        "",
-        "pub(crate) struct Definition {"
+        ""
       ]
     },
     {
@@ -1409,6 +1417,7 @@
       "line_start": 133,
       "line_end": 145,
       "text": [
+        "            Self::Term => \"006ba8\",",
         "        }",
         "    }",
         "}",
@@ -1420,8 +1429,7 @@
         "    pub(crate) kind: ReferenceKind,",
         "}",
         "",
-        "// {impl}`requirements.cli.mdbook`",
-        "// {impl}`requirements.examples.definition`"
+        "// {impl}`requirements.cli.mdbook`"
       ]
     },
     {
@@ -1429,6 +1437,7 @@
       "line_start": 545,
       "line_end": 557,
       "text": [
+        "        return None;",
         "    }",
         "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
         "    (length >= 3).then_some((&trimmed[length..], length))",
@@ -1440,8 +1449,7 @@
         "        .iter()",
         "        .any(|range| start < range.end && range.start < end)",
         "}",
-        "",
-        "// {impl}`requirements.references.targets`"
+        ""
       ]
     },
     {
@@ -1449,6 +1457,7 @@
       "line_start": 600,
       "line_end": 612,
       "text": [
+        "            continue;",
         "        };",
         "        let name_end = name_start + name_end_offset;",
         "        let name = &content[name_start..name_end];",
@@ -1460,8 +1469,7 @@
         "                kind,",
         "            });",
         "        }",
-        "    }",
-        ""
+        "    }"
       ]
     },
     {
@@ -1469,6 +1477,7 @@
       "line_start": 865,
       "line_end": 877,
       "text": [
+        "        assert!(content[blocks[0].end..].contains(\"Outside.\"));",
         "    }",
         "",
         "    // {test}`requirements.examples.definition`",
@@ -1480,8 +1489,7 @@
         "        let blocks = definition_blocks(&source);",
         "        assert_eq!(blocks.len(), 2);",
         "        assert_eq!(blocks[0].kind, DefinitionKind::Requirement);",
-        "        assert_eq!(blocks[1].kind, DefinitionKind::Example);",
-        ""
+        "        assert_eq!(blocks[1].kind, DefinitionKind::Example);"
       ]
     },
     {
@@ -1489,6 +1497,7 @@
       "line_start": 902,
       "line_end": 915,
       "text": [
+        "                .contains(\"id=\\\"habeas-example-requirements.something.foo\\\"\")",
         "        );",
         "        assert!(",
         "            chapters[0]",
@@ -1501,8 +1510,7 @@
         "            chapters[1].content.contains(",
         "                \"href=\\\"../requirements.html#habeas-example-requirements.something.foo\\\"\"",
         "            )",
-        "        );",
-        "    }"
+        "        );"
       ]
     },
     {
@@ -1657,6 +1665,8 @@
       "line_start": 37,
       "line_end": 49,
       "text": [
+        "    pub(crate) subject_text: String,",
+        "    mandatory: Vec<Value>,",
         "    recorded: Vec<Value>,",
         "}",
         "",
@@ -1667,9 +1677,7 @@
         "    // {impl}`requirements.examples.authoring_inputs`",
         "    // {impl}`requirements.references.authoring_inputs`",
         "    // {impl}`requirements.definitions.authoring_inputs`",
-        "    // {impl}`requirements.ci.authoring_inputs`",
-        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {",
-        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;"
+        "    // {impl}`requirements.ci.authoring_inputs`"
       ]
     },
     {
@@ -1677,19 +1685,19 @@
       "line_start": 431,
       "line_end": 443,
       "text": [
-        "            root.path().join(\"md/requirements.md\"),",
-        "            \":::{req} ready\\nThe project MUST be ready.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        root",
+        "        format!(\"{{{kind}}}`{name}`\")",
         "    }",
         "",
-        "    // {test}`requirements.authoring.complete_initial_bundle`",
         "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    // {test}`requirements.authoring_input`",
-        "    // {test}`requirements.examples.authoring_inputs`",
-        "    // {test}`requirements.references.authoring_inputs`",
-        "    // {test}`requirements.definitions.authoring_inputs`"
+        "    pub(crate) fn project() -> tempfile::TempDir {",
+        "        let root = tempfile::tempdir().unwrap();",
+        "        fs::create_dir_all(root.path().join(\"md\")).unwrap();",
+        "        fs::create_dir_all(root.path().join(\"src\")).unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"Cargo.toml\"),",
+        "            \"[package]\\nname='fixture'\\nversion='0.1.0'\\n\",",
+        "        )",
+        "        .unwrap();"
       ]
     },
     {
@@ -1697,6 +1705,7 @@
       "line_start": 389,
       "line_end": 549,
       "text": [
+        "}",
         "",
         "// {impl}`requirements.references.book_badges`",
         "// {impl}`requirements.references.safe_badges`",
@@ -1856,8 +1865,7 @@
         "    }",
         "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
         "    (length >= 3).then_some((&trimmed[length..], length))",
-        "}",
-        ""
+        "}"
       ]
     },
     {
@@ -1865,16 +1873,26 @@
       "line_start": 206,
       "line_end": 256,
       "text": [
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
+        "                    }",
+        "                }",
+        "            }",
+        "            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}",
+        "            Err(error) => return Err(format!(\"{}: {error}\", path.display())),",
+        "        }",
+        "        let mut mandatory = Vec::new();",
+        "        for selector in selectors {",
+        "            if !generated_evidence_selector(&root, &selector) {",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
         "            }",
         "        }",
-        "        for input in definition_inputs(&root, &definitions, &mandatory, None)? {",
+        "        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {",
         "            if !mandatory.contains(&input) {",
         "                mandatory.push(input);",
         "            }",
         "        }",
         "        Ok(Self {",
         "            root,",
+        "            access,",
         "            subject_name: format!(\"{rust_file}:{rust_item}\"),",
         "            subject_kind: AssessmentKind::RustFunction {",
         "                rust_item: rust_item.to_owned(),",
@@ -1905,17 +1923,7 @@
         "            if !self.recorded.contains(input) {",
         "                self.recorded.push(input.clone());",
         "            }",
-        "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.source_tools`",
-        "    // {impl}`requirements.authoring.text_search`",
-        "    pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {",
-        "        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;",
-        "        source_input(&self.root, &definitions, selector)",
-        "    }",
-        "",
-        "    // {impl}`requirements.definitions.authoring_inputs`"
+        "        }"
       ]
     },
     {
@@ -2037,7 +2045,7 @@
       "line_start": 23,
       "line_end": 23,
       "text": [
-        "    pub(crate) fn noun(&self) -> &'static str {"
+        "    // {impl}`requirements.authoring.initial_prompt`"
       ]
     },
     {
@@ -2045,7 +2053,7 @@
       "line_start": 48,
       "line_end": 48,
       "text": [
-        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {"
+        "    // {impl}`requirements.definitions.authoring_inputs`"
       ]
     },
     {
@@ -2053,7 +2061,7 @@
       "line_start": 149,
       "line_end": 149,
       "text": [
-        "    pub(crate) fn prepare_function("
+        "            mandatory,"
       ]
     },
     {
@@ -2061,7 +2069,7 @@
       "line_start": 231,
       "line_end": 231,
       "text": [
-        "    pub(crate) fn mandatory_inputs(&self) -> &[Value] {"
+        "                    .map(|(role, name)| json!({\"role\": role, \"name\": name}))"
       ]
     },
     {
@@ -2069,7 +2077,7 @@
       "line_start": 236,
       "line_end": 236,
       "text": [
-        "    pub(crate) fn recorded_inputs(&self) -> &[Value] {"
+        "            recorded: Vec::new(),"
       ]
     },
     {
@@ -2077,7 +2085,7 @@
       "line_start": 241,
       "line_end": 241,
       "text": [
-        "    pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {"
+        "    pub(crate) fn mandatory_inputs(&self) -> &[Value] {"
       ]
     },
     {
@@ -2085,7 +2093,7 @@
       "line_start": 251,
       "line_end": 251,
       "text": [
-        "    pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {"
+        "    pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {"
       ]
     },
     {
@@ -2093,7 +2101,7 @@
       "line_start": 259,
       "line_end": 259,
       "text": [
-        "    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {"
+        "    // {impl}`requirements.authoring.source_tools`"
       ]
     },
     {
@@ -2101,7 +2109,7 @@
       "line_start": 273,
       "line_end": 273,
       "text": [
-        "pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {"
+        "                .into_iter()"
       ]
     },
     {
@@ -2109,7 +2117,7 @@
       "line_start": 284,
       "line_end": 284,
       "text": [
-        "fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {"
+        "// {impl}`requirements.ci.authoring_inputs`"
       ]
     },
     {
@@ -2117,7 +2125,7 @@
       "line_start": 298,
       "line_end": 298,
       "text": [
-        "fn source_input("
+        "        InputSelector::FileRange { file, .. }"
       ]
     },
     {
@@ -2125,7 +2133,7 @@
       "line_start": 318,
       "line_end": 318,
       "text": [
-        "fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) {"
+        "        rust_file: file, .."
       ]
     },
     {
@@ -2133,7 +2141,7 @@
       "line_start": 325,
       "line_end": 325,
       "text": [
-        "fn reference_selector("
+        "        access.file(root, Path::new(&range.file))?;"
       ]
     },
     {
@@ -2141,7 +2149,7 @@
       "line_start": 394,
       "line_end": 394,
       "text": [
-        "fn definition_inputs("
+        "            }"
       ]
     },
     {
@@ -2149,7 +2157,7 @@
       "line_start": 415,
       "line_end": 415,
       "text": [
-        "    pub(crate) fn role(kind: &str, name: &str) -> String {"
+        "    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)?"
       ]
     },
     {
@@ -2157,7 +2165,7 @@
       "line_start": 420,
       "line_end": 420,
       "text": [
-        "    pub(crate) fn project() -> tempfile::TempDir {"
+        "        })"
       ]
     },
     {
@@ -2165,7 +2173,7 @@
       "line_start": 446,
       "line_end": 446,
       "text": [
-        "    fn bundle_combines_direct_references_terms_and_current_existing_selectors() {"
+        "            root.path().join(\"md/requirements.md\"),"
       ]
     },
     {
@@ -2173,7 +2181,7 @@
       "line_start": 462,
       "line_end": 462,
       "text": [
-        "        fs::write(root.path().join(\"src/lib.rs\"), format!(\"struct Thing;\\nimpl Thing {{\\n    // {}\\n    fn run(&self) {{}}\\n    fn unrelated(&self) {{}}\\n}}\\n// {}\\nfn test_ready() {{}}\\n\", role(\"impl\", \"requirements.ready\"), role(\"test\", \"requirements.ready\"))).unwrap();"
+        "        let root = project();"
       ]
     },
     {
@@ -2181,7 +2189,7 @@
       "line_start": 536,
       "line_end": 536,
       "text": [
-        "    fn unresolved_existing_selector_fails_before_inference() {"
+        "        );"
       ]
     },
     {
@@ -2189,7 +2197,7 @@
       "line_start": 561,
       "line_end": 561,
       "text": [
-        "    fn function_inputs_include_uncited_definitions_and_current_sources() {"
+        "        .unwrap();"
       ]
     },
     {
@@ -2197,7 +2205,7 @@
       "line_start": 579,
       "line_end": 579,
       "text": [
-        "                \"// {}\\npub fn ready() {{}}\\n\","
+        "            root.path().join(\"md/requirements.md\"),"
       ]
     },
     {
@@ -2205,7 +2213,7 @@
       "line_start": 643,
       "line_end": 643,
       "text": [
-        "    fn existing_generated_evidence_inputs_are_omitted_before_resolution() {"
+        "        );"
       ]
     },
     {
@@ -2213,7 +2221,476 @@
       "line_start": 648,
       "line_end": 648,
       "text": [
-        "                \"// {}\\npub fn ready() {{}}\\n\","
+        "        );"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 467,
+      "line_end": 473,
+      "text": [
+        "        );",
+        "        fs::write(root.path().join(\"md/terms.md\"), terms).unwrap();",
+        "        let declarations = format!(",
+        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {}\\n:::\\n\",",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"term\", \"terms.unit\"),",
+        "            role(\"cite\", \"requirements.distant\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 46,
+      "line_end": 46,
+      "text": [
+        "    // {impl}`requirements.examples.authoring_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 456,
+      "line_end": 456,
+      "text": [
+        "    // {test}`requirements.examples.authoring_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 526,
+      "line_end": 534,
+      "text": [
+        "                .count(),",
+        "            2",
+        "        );",
+        "        assert!(inputs.iter().any(",
+        "            |input| input[\"file\"] == \"notes.txt\" && input[\"text\"] == json!([\"new source text\"])",
+        "        ));",
+        "        assert!(",
+        "            !serde_json::to_string(inputs)",
+        "                .unwrap()"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 638,
+      "line_end": 646,
+      "text": [
+        "        );",
+        "        assert!(",
+        "            inputs",
+        "                .iter()",
+        "                .any(|input| input[\"text\"] == json!([\"current notes\"]))",
+        "        );",
+        "        assert!(",
+        "            !serde_json::to_string(inputs)",
+        "                .unwrap()"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 697,
+      "line_end": 705,
+      "text": [
+        "                .filter(|input| input.get(\"file\").is_some())",
+        "                .collect::<Vec<_>>();",
+        "            assert_eq!(file_inputs.len(), 1);",
+        "            assert_eq!(file_inputs[0][\"file\"], \"notes.txt\");",
+        "            assert_eq!(file_inputs[0][\"text\"], json!([\"current source\"]));",
+        "        }",
+        "        assert_eq!(",
+        "            serde_json::from_str::<Value>(&fs::read_to_string(path).unwrap()).unwrap()[\"inputs\"],",
+        "            json!(old_inputs)"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 794,
+      "line_end": 802,
+      "text": [
+        "        ] {",
+        "            assert!(",
+        "                sources",
+        "                    .mandatory_inputs()",
+        "                    .iter()",
+        "                    .any(|input| input[\"file\"] == \"notes.txt\"",
+        "                        && input[\"text\"] == json!([\"current notes\"]))",
+        "            );",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 193,
+      "line_end": 201,
+      "text": [
+        "            .map_err(|error| format!(\"invalid ripgrep output: {error}\"))?;",
+        "        if event[\"type\"] != \"match\" {",
+        "            continue;",
+        "        }",
+        "        let file = event[\"data\"][\"path\"][\"text\"]",
+        "            .as_str()",
+        "            .ok_or_else(|| \"ripgrep found a non-UTF-8 path\".to_owned())?;",
+        "        if sources.access.file(&sources.root, Path::new(file)).is_err() {",
+        "            continue;"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 347,
+      "line_end": 355,
+      "text": [
+        "            &json!({\"file\":\"src/lib.rs\",\"line_start\":2}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(eof.result[\"input\"][\"line_end\"], 2);",
+        "        assert_eq!(eof.result[\"input\"][\"text\"], json!([\"fn work() {}\"]));",
+        "        assert!(",
+        "            dispatch(",
+        "                &sources,",
+        "                \"habeas\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 411,
+      "line_end": 419,
+      "text": [
+        "        assert_eq!(search.inputs.len(), 1);",
+        "        assert_eq!(search.inputs[0][\"file\"], \"sample.txt\");",
+        "        assert_eq!(search.inputs[0][\"line_start\"], 1);",
+        "        assert_eq!(search.inputs[0][\"line_end\"], 11);",
+        "        assert_eq!(search.inputs[0][\"text\"], json!(&lines[..11]));",
+        "        let exact = dispatch(",
+        "            &sources,",
+        "            \"ripgrep\",",
+        "            &json!({\"pattern\":\"needle\",\"path\":\"sample.txt\",\"context\":0}),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 632,
+      "line_end": 640,
+      "text": [
+        "            (\"staged.txt\", \"needle staged\"),",
+        "            (\"tracked-dir/file.txt\", \"needle dirty\"),",
+        "        ] {",
+        "            let read = dispatch(&sources, \"habeas\", &json!({\"file\":path, \"line_start\":1})).unwrap();",
+        "            assert_eq!(read.result[\"input\"][\"text\"], json!([text]));",
+        "        }",
+        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"needle\"})).unwrap();",
+        "        assert_eq!(",
+        "            search"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 698,
+      "line_end": 706,
+      "text": [
+        "            \"habeas\",",
+        "            &json!({\"file\":\"tracked-alias.txt\", \"line_start\":1}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(allowed.result[\"input\"][\"text\"], json!([\"needle allowed\"]));",
+        "        for alias in [\"untracked-target.txt\", \"untracked-alias.txt\"] {",
+        "            assert!(",
+        "                dispatch(&sources, \"habeas\", &json!({\"file\":alias, \"line_start\":1}))",
+        "                    .err()"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 140,
+      "line_end": 148,
+      "text": [
+        "                \"requirements\"",
+        "            } else {",
+        "                \"definition\"",
+        "            };",
+        "            let text = input[\"text\"]",
+        "                .as_array()",
+        "                .map(Vec::as_slice)",
+        "                .unwrap_or_default();",
+        "            let bytes = text"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 268,
+      "line_end": 276,
+      "text": [
+        "                errors.push(format!(\"{source}: definition {name}: {error}\"));",
+        "            }",
+        "            match definitions.entry(name.clone()) {",
+        "                Entry::Vacant(slot) => {",
+        "                    let raw_lines = content[block.start..block.end]",
+        "                        .lines()",
+        "                        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
+        "                        .collect::<Vec<_>>();",
+        "                    slot.insert(Declaration {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 278,
+      "line_end": 287,
+      "text": [
+        "                        text,",
+        "                        source,",
+        "                        file: label.clone(),",
+        "                        line_start: line,",
+        "                        line_end: line + raw_lines.len().saturating_sub(1),",
+        "                        raw_lines,",
+        "                    });",
+        "                }",
+        "                Entry::Occupied(previous) => errors.push(format!(",
+        "                    \"{source}: duplicate {} {name}; first declared at {}\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 497,
+      "line_end": 505,
+      "text": [
+        "        errors.push(format!(\"{label}: expected a JSON object\"));",
+        "        return None;",
+        "    };",
+        "    if object.contains_key(\"rust_file\") || object.contains_key(\"rust_item\") {",
+        "        check_keys(object, &[\"rust_file\", \"rust_item\", \"text\"], label, errors);",
+        "        let rust_file = string_field(object, \"rust_file\", label, errors);",
+        "        let rust_item = string_field(object, \"rust_item\", label, errors);",
+        "        let text = text_field(object, label, errors);",
+        "        let (Some(rust_file), Some(rust_item), Some(text)) = (rust_file, rust_item, text) else {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 511,
+      "line_end": 519,
+      "text": [
+        "        };",
+        "        return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);",
+        "    }",
+        "    if object.contains_key(\"definition\") {",
+        "        check_keys(object, &[\"definition\", \"text\"], label, errors);",
+        "        let definition = string_field(object, \"definition\", label, errors);",
+        "        let text = text_field(object, label, errors);",
+        "        let (Some(definition), Some(text)) = (definition, text) else {",
+        "            return None;"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 530,
+      "line_end": 538,
+      "text": [
+        "            errors,",
+        "        );",
+        "    }",
+        "    if object.contains_key(\"requirements\") || object.contains_key(\"matches\") {",
+        "        check_keys(object, &[\"requirements\", \"matches\", \"text\"], label, errors);",
+        "        let requirements = string_field(object, \"requirements\", label, errors);",
+        "        let matches = array_field(object, \"matches\", label, errors).and_then(|values| {",
+        "            let mut names = Vec::new();",
+        "            for (index, value) in values.iter().enumerate() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 581,
+      "line_end": 589,
+      "text": [
+        "    errors: &mut Vec<String>,",
+        ") -> Option<ResolvedInput> {",
+        "    check_keys(",
+        "        object,",
+        "        &[\"file\", \"line_start\", \"line_end\", \"text\"],",
+        "        label,",
+        "        errors,",
+        "    );",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 468,
+      "line_end": 472,
+      "text": [
+        "        fs::write(root.path().join(\"md/terms.md\"), terms).unwrap();",
+        "        let declarations = format!(",
+        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {}\\n:::\\n\",",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"term\", \"terms.unit\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 30,
+      "line_end": 34,
+      "text": [
+        "    pub(crate) line_start: usize,",
+        "    pub(crate) line_end: usize,",
+        "    pub(crate) raw_lines: Vec<String>,",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 270,
+      "line_end": 274,
+      "text": [
+        "            match definitions.entry(name.clone()) {",
+        "                Entry::Vacant(slot) => {",
+        "                    let raw_lines = content[block.start..block.end]",
+        "                        .lines()",
+        "                        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 280,
+      "line_end": 285,
+      "text": [
+        "                        file: label.clone(),",
+        "                        line_start: line,",
+        "                        line_end: line + raw_lines.len().saturating_sub(1),",
+        "                        raw_lines,",
+        "                    });",
+        "                }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1786,
+      "line_end": 1790,
+      "text": [
+        "    fn cited_example_with_a_test_and_matching_evidence_validates() {",
+        "        let temp = fixture();",
+        "        let chapter = \"# Rules\\n\\n:::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it succeeds. CITE`rules.ready`\\n:::\\n\"",
+        "            .replace(\"CITE\", \"{cite}\");",
+        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1963,
+      "line_end": 1967,
+      "text": [
+        "    fn example_errors_include_duplicates_invalid_bodies_and_missing_tests() {",
+        "        let temp = fixture();",
+        "        let chapter = \":::{req} repeated\\nReady.\\n:::\\n\\n:::{req} repeated\\nAgain.\\n:::\\n\\n:::{example} repeated\\nGiven ready. CITE`rules.repeated`\\n:::\\n\\n:::{example} case\\nGiven ready. CITE`rules.repeated`\\n:::\\n\\n:::{example} case\\nAgain. CITE`rules.repeated`\\n:::\\n\\n:::{example} empty\\n \\n:::\\n\\n:::{example} unclosed\\nNo close.\"",
+        "            .replace(\"CITE\", \"{cite}\");",
+        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1205,
+      "line_end": 1209,
+      "text": [
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        let source = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} pending\\nPending case. CITE`rules.ready`\\n:::\\n\\n:::{example} missing\\nMissing case. CITE`rules.ready`\\n:::\\n\"",
+        "            .replace(\"CITE\", \"{cite}\");",
+        "        fs::write(temp.path().join(\"md/rules.md\"), &source).unwrap();"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 125,
+      "line_end": 129,
+      "text": [
+        "            } => {",
+        "                let (_, content) = read_project_file(root, file)?;",
+        "                let lines = raw_lines(&content);",
+        "                if *line_start == 0 || *line_end < *line_start || *line_end > lines.len() {",
+        "                    return Err(format!("
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 187,
+      "line_end": 191,
+      "text": [
+        "                        name: Some(definition.clone()),",
+        "                    }],",
+        "                    text: target.raw_lines.clone(),",
+        "                    matches: Vec::new(),",
+        "                })"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 206,
+      "line_end": 210,
+      "text": [
+        "                        text.push(String::new());",
+        "                    }",
+        "                    text.extend(definition.raw_lines.iter().cloned());",
+        "                    ranges.push(SourceRange {",
+        "                        file: definition.file.clone(),"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 264,
+      "line_end": 268,
+      "text": [
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "fn raw_lines(content: &str) -> Vec<String> {",
+        "    content",
+        "        .lines()"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 870,
+      "line_end": 874,
+      "text": [
+        "    #[test]",
+        "    fn examples_are_distinct_definitions_and_tests_link_to_them() {",
+        "        let source = \"::::{req} ready\\nReady.\\n\\n:::{example} something.foo\\nGiven ready, it succeeds. CITE`requirements.ready`\\n:::\\n::::\\n\\n:::{example} bad name\\nInvalid.\\n:::\\n\\n```text\\n:::{example} hidden\\nLiteral.\\n:::\\n```\"",
+        "            .replace(\"CITE\", \"{cite}\");",
+        "        let blocks = definition_blocks(&source);"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 907,
+      "line_end": 912,
+      "text": [
+        "                .contains(\"alt=\\\"example requirements.something.foo\\\"\")",
+        "        );",
+        "        assert!(chapters[0].content.contains(\":::{example} bad name\"));",
+        "        assert!(chapters[0].content.contains(\":::{example} hidden\"));",
+        "        assert!(",
+        "            chapters[1].content.contains("
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 391,
+      "line_end": 395,
+      "text": [
+        "                    line_start: 1,",
+        "                    line_end: 1,",
+        "                    raw_lines: vec![],",
+        "                },",
+        "            ),"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 404,
+      "line_end": 408,
+      "text": [
+        "                    line_start: 5,",
+        "                    line_end: 5,",
+        "                    raw_lines: vec![],",
+        "                },",
+        "            ),"
       ]
     }
   ]

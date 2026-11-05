@@ -1,7 +1,7 @@
 {
   "requirement": "Evidence inputs MAY have a definition form containing exactly `definition` and `text`. `definition` MUST identify one named definition; `text` MUST contain its complete raw fenced declaration as source lines, including its phrase option and explanatory body.\n\nValidation MUST reject missing definitions and changed snapshot text, identifying the definition and showing a compact diff when available. Moving an unchanged definition within its chapter MUST NOT invalidate its snapshot. Evidence displays MUST show the definition name, current source location, and recorded text.",
   "determination": true,
-  "rationale": "The sources satisfy `requirements.definitions.inputs`, and the tests cover the main points. One minor gap: no test asserts on the diff text itself.\n\n**Schema (exactly `definition` and `text`)**\n- `validate_input` in `src/evidence.rs` detects the `definition` form. It calls `check_keys` with only `[\"definition\", \"text\"]`, so extra fields are rejected.\n- `InputSelector::from_input` and `to_input` in `src/inputs.rs` parse and emit exactly `{definition, text}`.\n- `tests/definitions.rs::definition_schema_deletion_and_literal_references_are_checked` adds an `unexpected` field to a definition input. It asserts the \"unexpected field\" error.\n\n**Identifies one named definition; text is the complete raw declaration**\n- `InputSelector::resolve` looks the name up in the definitions map. It accepts only `DefinitionKind::Term`.\n- Otherwise it returns \"no matching named definition\".\n- The resolved text is `target.raw_lines`, which is the raw fenced declaration including the phrase option and body.\n- The display test asserts that the recorded input contains `:phrase: alpha`.\n\n**Rejects missing definitions and changed snapshot text, identifying the definition with a compact diff**\n- A missing definition produces \"`<label>: <definition>: no matching named definition`\". The test deletes `md/glossary.md` and asserts that this error names `glossary.a`.\n- A text mismatch in `validate_resolved_input` (`src/evidence.rs`) emits \"input text changed for {selector:?}\" plus `compact_diff`. The selector debug output includes the definition name.\n- `compact_diff` produces a `-`/`+` diff of at most 8 lines per side.\n- The test `cyclic_dependencies_are_captured_once_and_changes_require_review` changes the phrase and the body. It asserts the \"input text changed\" error mentioning `glossary.`.\n- It also checks that the record file is not modified by validation.\n\n**Moving an unchanged definition does not invalidate the snapshot**\n- Snapshots compare only the raw text, not the line numbers.\n- The same test prepends blank lines to the glossary, which moves the definitions. It asserts that validation reports no errors.\n\n**Evidence displays show name, current location, and recorded text**\n- `render_input` in `src/index.rs` renders the label \"definition <name>\". It resolves the current ranges and renders each location with `render_source_location`, which includes the name and file:lines. It then renders the recorded `text` in a code block.\n- The test at `tests/definitions.rs` ~393–399 uses `info_markdown` and asserts that the output contains `definition glossary.a`, `md/glossary.md` and `:phrase: alpha`.\n\n**Related examples**\n- `transitive_cycle` and `reassessment` carry `{test}` references in the same test.\n- Cycles are captured with one input per definition (3 inputs total).\n- Duplicate and missing inputs are rejected (`found 2`, `glossary.b, found 0`) in `src/terms.rs`.\n- Changed definitions make validation report stale evidence without modifying the record.\n- Re-running capture refreshes the inputs and sets `determination` to false, pending review.\n\nNo FIXMEs are present.",
+  "rationale": "The sources satisfy `requirements.definitions.inputs`. Two small gaps do not change that: the compact diff and the exact-key check are not asserted for definition inputs specifically.\n\n**Schema.** `validate_input` in `src/evidence.rs` accepts the definition form when a `definition` key is present. It calls `check_keys(object, [\"definition\", \"text\"])`, so any extra field is rejected. It requires string `definition` and `text` fields. `InputSelector::from_input` and `to_input` in `src/inputs.rs` round-trip exactly `{definition, text}`.\n\n**Snapshot content.** `InputSelector::Definition` in `resolve` (`src/inputs.rs`) looks up a named term definition. It returns `target.raw_lines`, the raw declaration lines, and the validator compares the recorded text against them. A missing definition gives the error `\"{definition}: no matching named definition\"`.\n\n**Changed text.** `validate_resolved_input` (`src/evidence.rs` ~650–700) reports `input text changed for Definition { definition: \"...\" }`. It appends `compact_diff(...)`, which gives `-`/`+` lines capped at 8 lines per side. The error therefore names the definition and shows a compact diff.\n\n**Moves.** Only the raw text is compared, not the line numbers. Moving an unchanged definition therefore does not invalidate the snapshot.\n\n**Display.** `render_input` in `src/index.rs` shows `definition <name>`, the current source location through `render_source_location`, including the definition name, and the recorded text.\n\n**Tests.** `tests/definitions.rs::cyclic_dependencies_are_captured_once_and_changes_require_review`:\n- It prepends blank lines to the glossary, which moves the definitions, and validation still passes.\n- It changes the phrase and the body, and each change yields an \"input text changed … glossary.\" error.\n- Recorded evidence is left unmodified, and `capture` refreshes the inputs and sets the determination to false.\n- It removes a definition input and duplicates another, and both are reported.\n\n`definition_schema_deletion_and_literal_references_are_checked` adds an unexpected field, which gives an \"unexpected field\" error. It also deletes the glossary file, which gives \"glossary.a … no matching named definition\". The display test near `tests/definitions.rs:393` checks that `info_markdown` output contains `definition glossary.a`, `md/glossary.md` and `:phrase: alpha`. The `compact_diff` output (`- `/`+ ` lines) is asserted in the general `src/evidence.rs` tests, for example around lines 1565–1573.\n\n**Gaps.** No test asserts the compact diff for a definition input specifically. No test asserts the exact-key check against a missing `text` field. Both paths share generic, tested code, so I do not count them as gaps.",
   "inputs": [
     {
       "requirements": "requirements.definitions.inputs",
@@ -35,7 +35,14 @@
         "",
         "Rust file and selector arguments MUST use the syntax defined by",
         "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-        "project working tree, including uncommitted and untracked sources.",
+        "project working tree, including unstaged changes to tracked files and staged new",
+        "files. All source inputs, including mandatory inputs, MUST stay within the",
+        "project root after resolving symlinks. In a Git worktree, both the requested file",
+        "and its resolved target MUST be present in the Git index. Untracked mandatory",
+        "inputs and explicit reads MUST fail with guidance to stage the file using",
+        "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+        "boundaries without requiring an index; failure to read an existing repository's",
+        "index MUST be reported as an error.",
         "The project-root `evidence/` directory contains generated output and MUST be",
         "excluded from source reads, including paths that resolve there through symlinks.",
         "",
@@ -1000,6 +1007,166 @@
         "        content.push_str(&escape_html(&location));",
         "        content.push_str(\"</code>\\n\");",
         "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 425,
+      "line_end": 429,
+      "text": [
+        "                \"{label}: {text_field} text changed at {}{}\",",
+        "                expected.source,",
+        "                compact_diff(",
+        "                    &text.split('\\n').collect::<Vec<_>>(),",
+        "                    &expected.text.split('\\n').collect::<Vec<_>>()"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 697,
+      "line_end": 701,
+      "text": [
+        "        errors.push(format!(",
+        "            \"{label}: input text changed for {selector:?}{}\",",
+        "            compact_diff(&old, &new)",
+        "        ));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 754,
+      "line_end": 758,
+      "text": [
+        "        errors.push(format!(",
+        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
+        "            compact_diff(text, actual)",
+        "        ));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 760,
+      "line_end": 764,
+      "text": [
+        "",
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn compact_diff(recorded: &[&str], current: &[&str]) -> String {",
+        "    let prefix = recorded",
+        "        .iter()"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1565,
+      "line_end": 1573,
+      "text": [
+        "            \"missing for requirement\",",
+        "            \"requirement text changed\",",
+        "            \"- Old text.\",",
+        "            \"+ First.\",",
+        "            \"determination is false\",",
+        "            \"input text changed\",",
+        "            \"- changed line\",",
+        "            \"+ // first line\",",
+        "            \"requirement must be a string\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1935,
+      "line_end": 1939,
+      "text": [
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
+        "",
+        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 8,
+      "line_end": 14,
+      "text": [
+        "",
+        "// {test}`requirements.definitions.dependencies`",
+        "// {test}`requirements.definitions.declaration`",
+        "fn fixture() -> TempDir {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 30,
+      "line_end": 36,
+      "text": [
+        "}",
+        "",
+        "// {test}`requirements.definitions.capture`",
+        "fn capture(root: &Path) {",
+        "    add_input(",
+        "        root,",
+        "        InputTarget::Requirement(\"rules.ready\".into()),"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 40,
+      "line_end": 46,
+      "text": [
+        "}",
+        "",
+        "// {test}`requirements.definitions.capture`",
+        "fn approve(path: &Path) {",
+        "    let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
+        "    record[\"determination\"] = json!(true);",
+        "    record[\"rationale\"] = json!(\"Reviewed the requirement and its complete definition context.\");"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 82,
+      "line_end": 88,
+      "text": [
+        "            report",
+        "                .errors",
+        "                .iter()",
+        "                .any(|e| e.contains(\"input text changed\") && e.contains(\"glossary.\")),",
+        "            \"{:?}\",",
+        "            report.errors",
+        "        );"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 300,
+      "line_end": 306,
+      "text": [
+        "    for label in [\"evidence/rules.ready.json\", \"evidence/rust/src/lib.rs.json\"] {",
+        "        assert!(",
+        "            errors.iter().any(|e| e.contains(label)",
+        "                && e.contains(\"input text changed\")",
+        "                && e.contains(\"glossary.b\")),",
+        "            \"{errors:?}\"",
+        "        );"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 378,
+      "line_end": 384,
+      "text": [
+        "    let root = temp.path();",
+        "    let path = root.join(\"md/rules.md\");",
+        "    let text = fs::read_to_string(&path).unwrap()",
+        "        + &\"\\n:::{example} case\\nCITE`rules.ready` with TERM`glossary.a`.\\n:::\\n\"",
+        "            .replace(\"CITE\", \"{cite}\")",
+        "            .replace(\"TERM\", \"{term}\");",
+        "    fs::write(path, text).unwrap();"
       ]
     }
   ]

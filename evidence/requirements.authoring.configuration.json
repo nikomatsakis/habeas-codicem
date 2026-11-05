@@ -1,7 +1,7 @@
 {
   "requirement": "Authoring MUST use the `[authoring]` section of the shared user configuration.\n{cite}`requirements.configuration.user_location`\n{cite}`requirements.configuration.structure`\n{cite}`requirements.configuration.feature_sections`\nIt MUST support named configurations and a user-local selection for each project.\nIt defines no shared project configuration section. Credentials MUST be obtained\nthrough the selected backend's credential mechanism; saved configuration MUST\ncontain credential-source references rather than credential values.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is implemented as stated, and the tests cover the main points in its design space. One weakness is that the direct `{test}` attestation sits on a fixture helper.\n\n**Implementation (`src/config.rs`)**\n- **Section and location:** Authoring settings live only under `UserConfig.authoring`, the `[authoring]` table of the shared user file. `user_config_path_from` implements the shared location rules: XDG when absolute, otherwise `$HOME/.config`, and `%APPDATA%` on Windows. It returns an explanatory error when the base directory is missing.\n- **Root structure:** `UserConfig` has `version` and the feature table, and it uses `deny_unknown_fields`. `validate` requires `version = 1`. A file holding only `version = 1` is valid.\n- **Named configurations and per-project selection:** `UserAuthoringConfig` holds `configs`, `default` and `projects`. `projects` is keyed by canonical absolute project path, and `validate` checks that path. `resolve_authoring_from` picks the explicit name first, then the project selection, then the default. It returns clear errors for a missing section, no selection, or an unknown name.\n- **No shared project section:** `ProjectConfig` is an empty struct with `deny_unknown_fields`. `resolve_authoring` parses `book.toml` through it, so any authoring keys under `[habeas]` are rejected.\n- **Credentials:** Saved configuration stores only references. Ollama uses `api_key_env`, which names an environment variable, and `api_key_from` resolves the value at use time. Bedrock stores `aws_profile` and `region`, and AWS credentials come from the AWS mechanism. `ResolvedAuthoringConfig` is documented as holding no resolved secrets.\n\n**Tests**\n- **`tests/configuration.rs`**\n  - Covers location rules: absolute XDG, invalid XDG falling back to `$HOME`, Windows, and missing variables erroring.\n  - Covers a minimal `version = 1` file, an absent file, and a read-only load.\n  - Covers a `[habeas]` section in `book.toml` being absent, empty, or invalid.\n  - Round-trips named configurations without materializing defaults.\n  - Covers explicit, project and default selection, plus an unknown name and a missing authoring section.\n  - Covers many invalid-schema cases that report the config path.\n  - The Ollama credential test checks that the env-var name is saved and the secret value is not.\n- **`tests/authoring_cli.rs`**\n  - `Fixture::new` carries the direct `{test}` reference to `requirements.authoring.configuration`. It writes a real `$XDG_CONFIG_HOME/habeas/config.toml` with `[authoring]` and a named config, and the CLI tests that use it run end to end against it.\n  - The Bedrock test exercises profile and region selection.\n  - A separate test shows that an invalid user config does not affect ordinary `status`.\n\n**Gap:** The `{test}` reference sits on a helper function, not on a test function. It is still exercised by every CLI authoring test, and the sibling configuration tests cover the details. I do not consider this a substantive gap.",
+  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and the tests cover the main points of the design space. Two minor test gaps are noted at the end.\n\n**Implementation (`src/config.rs`)**\n- **`[authoring]` in the shared user file.** `UserConfig` has `version` and an optional `authoring: UserAuthoringConfig`. It uses `deny_unknown_fields`, so authoring settings cannot sit at unscoped root keys.\n- **User file location.** `resolve_authoring` loads the file from `user_config_path()`. That function implements the XDG, `HOME` and `APPDATA` rules, with an explanatory error when the base directory cannot be determined.\n- **Named configurations.** `UserAuthoringConfig.configs` is a `BTreeMap<String, AuthoringConfig>`. `validate_name` and `BackendConfig::validate` check each entry.\n- **User-local selection per project.** The `projects: BTreeMap<PathBuf, ProjectSelection>` table and `default` are both kept in the user file. `resolve_authoring_from` picks the explicit option first, then the project entry (keyed by the canonicalized root), then `default`. A missing selection or an unknown name gives a diagnostic that names the file and points to the documentation.\n- **No shared project section.** `ProjectConfig` is an empty struct with `deny_unknown_fields`. `from_book_toml` accepts an absent or empty `[habeas]` table and rejects any key under it. No authoring field can be placed in `book.toml`.\n- **Credentials by reference.** Ollama stores only `api_key_env`, the name of an environment variable. `api_key_from` resolves the value at use time and fails if it is unset, empty or non-UTF-8. Bedrock stores `aws_profile` and `region` and leaves credential lookup to the AWS mechanism. `providers.rs` passes the resolved key to the client at runtime and never writes it back.\n\n**Tests**\n- `tests/configuration.rs`:\n  - `explicit_project_and_default_selections_choose_whole_configs` covers default, project and explicit precedence, and an unknown name (`DEFAULT`) giving an error that names the file and the docs. It also covers a missing authoring section.\n  - `ollama_authentication_resolves_separately_and_rejects_missing_values` checks that missing or empty keys error and that the serialized config contains `MODEL_KEY` but not `private-value`.\n  - `absent_and_minimal_configuration_are_distinct_and_read_only` checks that `[habeas]` may be absent or empty and that `[habeas] version = 1` is rejected.\n  - `invalid_schema_and_feature_values_report_the_configuration_path` rejects relative project roots, bad `api_key_env` values and unknown fields.\n  - `backend_configuration_round_trips_without_materializing_defaults` covers round-tripping and named configurations.\n  - `locations_use_absolute_xdg_values_and_platform_fallbacks` covers the file locations.\n- `tests/authoring_cli.rs`: `Fixture::new` is annotated `{test}requirements.authoring.configuration`. It writes a real user `config.toml` with `[authoring]`, `default`, a named config and `api_key_env`. The CLI tests then run end to end through it, with the key supplied only via the environment variable. `bedrock_cli_uses_selected_profile_region_and_converse_tools` exercises the Bedrock profile and region path. `ordinary_status_ignores_invalid_user_authoring_configuration` shows that the user config is needed only for authoring operations.\n\n**Minor gaps, not enough to fail the requirement**\n- No test checks that `[habeas.authoring]` in `book.toml` is rejected. `deny_unknown_fields` and the `version = 1` rejection test cover the same mechanism indirectly.\n- The `{test}` annotation sits on a fixture helper rather than a `#[test]` function. The fixture is used by the end-to-end tests, so the coverage is real.",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration",
@@ -1145,7 +1145,7 @@
       "line_start": 108,
       "line_end": 108,
       "text": [
-        "fn habeas(dir: &Path, args: &[&str]) -> Output {"
+        "// {test}`requirements.cli.info`"
       ]
     },
     {
@@ -1153,8 +1153,8 @@
       "line_start": 117,
       "line_end": 118,
       "text": [
-        "#[test]",
-        "fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {"
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.ci.outcomes`"
       ]
     },
     {
@@ -1162,8 +1162,8 @@
       "line_start": 176,
       "line_end": 177,
       "text": [
-        "#[test]",
-        "fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {"
+        "            \"example\"",
+        "        } else {"
       ]
     },
     {
@@ -1171,8 +1171,8 @@
       "line_start": 241,
       "line_end": 242,
       "text": [
-        "#[test]",
-        "fn commands_report_invalid_arguments_and_unmatched_selectors() {"
+        "            \"{all}\"",
+        "        );"
       ]
     },
     {
@@ -1180,8 +1180,8 @@
       "line_start": 287,
       "line_end": 288,
       "text": [
-        "#[test]",
-        "fn status_tables_align_each_column_to_its_widest_cell() {"
+        "        \"#123\",",
+        "        \"rust-lang/rust\","
       ]
     },
     {
@@ -1189,8 +1189,8 @@
       "line_start": 339,
       "line_end": 340,
       "text": [
-        "#[test]",
-        "fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {"
+        "    let output = habeas(&nested, &[\"status\", \"--all\"]);",
+        "    assert!(output.status.success(), \"{:?}\", output);"
       ]
     },
     {
@@ -1518,8 +1518,8 @@
       "line_start": 178,
       "line_end": 179,
       "text": [
-        "#[test]",
-        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {"
+        "// {test}`requirements.cli.fixme_summary`",
+        "#[test]"
       ]
     },
     {
@@ -1527,8 +1527,8 @@
       "line_start": 200,
       "line_end": 201,
       "text": [
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {"
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.fixme_stale_input`"
       ]
     },
     {
@@ -1536,8 +1536,8 @@
       "line_start": 233,
       "line_end": 234,
       "text": [
-        "#[test]",
-        "fn rust_function_attestations_still_require_boolean_true() {"
+        "            .any(|error| error.contains(\"no input covers\"))",
+        "    );"
       ]
     },
     {
@@ -1545,8 +1545,8 @@
       "line_start": 287,
       "line_end": 288,
       "text": [
-        "#[test]",
-        "fn valid_fixme_remains_visible_in_status_info_and_book() {"
+        "",
+        "// {test}`requirements.cli.status`"
       ]
     },
     {
@@ -1992,6 +1992,282 @@
         "// {test}`requirements.authoring.delivered_inputs`",
         "#[test]",
         "fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 111,
+      "line_end": 117,
+      "text": [
+        "impl Fixture {",
+        "    // {test}`requirements.authoring.complete_initial_bundle`",
+        "    // {test}`requirements.authoring.persistence`",
+        "    // {test}`requirements.authoring.configuration`",
+        "    fn new(endpoint: &str) -> Self {",
+        "        let temp = tempfile::tempdir().unwrap();",
+        "        let project = temp.path().join(\"project\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 167,
+      "line_end": 173,
+      "text": [
+        "        let evidence = project.join(format!(\"evidence/{SUBJECT}.json\"));",
+        "        fs::write(&evidence, &original).unwrap();",
+        "        fs::write(config.join(\"habeas/config.toml\"), format!(",
+        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = '{MODEL}'\\nendpoint = '{endpoint}'\\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\\n[authoring.configs.mock.options]\\ntemperature = 0.25\\nnum_ctx = 4096\\nthink = false\\n\")).unwrap();",
+        "        Self {",
+        "            temp,",
+        "            project,"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 196,
+      "line_end": 202,
+      "text": [
+        "            .env(\"APPDATA\", &self.config)",
+        "            .env(\"LOCALAPPDATA\", &self.state)",
+        "            .env(\"HOME\", self.temp.path())",
+        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);",
+        "        command",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 126,
+      "line_end": 132,
+      "text": [
+        "    let path = Path::new(\"settings.toml\");",
+        "    let config = UserConfig::parse(source, path).unwrap();",
+        "    let authoring = config.authoring.as_ref().unwrap();",
+        "    assert!(authoring.projects.is_empty());",
+        "    let local = &authoring.configs[\"local\"].backend;",
+        "    let BackendConfig::Ollama(ollama) = local else {",
+        "        panic!(\"wrong backend\")"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 228,
+      "line_end": 234,
+      "text": [
+        "            .name,",
+        "        \"default\"",
+        "    );",
+        "    config.authoring.as_mut().unwrap().projects.insert(",
+        "        root.clone(),",
+        "        habeas::config::ProjectSelection {",
+        "            config: \"project\".to_owned(),"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 281,
+      "line_end": 287,
+      "text": [
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'BAD=KEY'\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
+        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
+        "    ] {",
+        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
+        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 8,
+      "line_end": 8,
+      "text": [
+        ":::{req} invocation"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 18,
+      "line_end": 18,
+      "text": [
+        ":::{req} batch"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 55,
+      "line_end": 55,
+      "text": [
+        ":::{req} source_tools"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 106,
+      "line_end": 106,
+      "text": [
+        ":::{req} file_discovery"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 130,
+      "line_end": 130,
+      "text": [
+        ":::{req} text_search"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 163,
+      "line_end": 163,
+      "text": [
+        ":::{req} submission"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 189,
+      "line_end": 189,
+      "text": [
+        ":::{req} mandatory_inputs"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 209,
+      "line_end": 209,
+      "text": [
+        ":::{req} initial_prompt"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 253,
+      "line_end": 253,
+      "text": [
+        ":::{req} function_attestations"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 304,
+      "line_end": 304,
+      "text": [
+        ":::{req} provider"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 310,
+      "line_end": 310,
+      "text": [
+        ":::{req} configuration"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 326,
+      "line_end": 326,
+      "text": [
+        ":::{req} configuration_structure"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 375,
+      "line_end": 375,
+      "text": [
+        ":::{req} configuration_serialization"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 386,
+      "line_end": 386,
+      "text": [
+        ":::{req} concurrency"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 401,
+      "line_end": 401,
+      "text": [
+        ":::{req} configuration_storage"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 414,
+      "line_end": 414,
+      "text": [
+        ":::{req} configuration_precedence"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 429,
+      "line_end": 429,
+      "text": [
+        ":::{req} rig_configuration_mapping"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 443,
+      "line_end": 443,
+      "text": [
+        ":::{req} configuration_documentation"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 546,
+      "line_end": 546,
+      "text": [
+        ":::{req} delivered_inputs"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 556,
+      "line_end": 556,
+      "text": [
+        ":::{req} persistence"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 569,
+      "line_end": 569,
+      "text": [
+        ":::{req} usage_storage"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 585,
+      "line_end": 585,
+      "text": [
+        ":::{req} usage_inputs"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 595,
+      "line_end": 595,
+      "text": [
+        ":::{req} usage_requests"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 606,
+      "line_end": 606,
+      "text": [
+        ":::{req} deterministic_validation"
       ]
     }
   ]

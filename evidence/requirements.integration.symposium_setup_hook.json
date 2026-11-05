@@ -1,7 +1,7 @@
 {
   "requirement": "For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project depending on `habeas` MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The only gap I found is a minor edge case, described at the end.\n\n**Registration (`Cargo.toml` lines 31–37).**\n- `[[package.metadata.symposium.hooks]]` declares `habeas-setup-check`.\n- It uses event `SessionStart`, format `symposium`, and runs `habeas hook session-start`.\n- This is how Symposium delivers the hook to supported agent sessions in projects that depend on `habeas`.\n- `src/main.rs` routes `Command::Hook { SessionStart }` to `hook::session_start()`.\n\n**Behaviour (`src/hook.rs`).** `session_start_response` returns an empty `{\"SessionStart\": {}}` in four cases, so there is no advisory:\n- The input has no `SessionStart` event.\n- No ancestor of the working directory contains both `Cargo.toml` and `book.toml` (`setup::find_project_root`).\n- The project does not depend on Habeas (`project_depends_on_habeas`).\n- `setup::is_configured` returns true.\n\nOtherwise it returns `additionalContext`. The text says \"Habeas Codicem is not fully configured … Run `habeas setup`\". Because it is plain context, it is nonblocking.\n\nThe hook only reads files and never calls `setup::run`, so it does not modify the project or run setup.\n\n**Completeness check (`setup::is_configured`).** It mirrors what `requirements.cli.setup` establishes. It requires:\n- the Habeas dev dependency;\n- a valid `book.src`, which must be relative with no parent components, with `SUMMARY.md` present;\n- the `habeas mdbook` preprocessor with renderers `[\"html\"]`;\n- the CSS entry in `additional-css`;\n- the CSS file with exactly the expected content;\n- `tests/habeas.rs` with exactly the expected content.\n\nThe shared helpers `css_relative`, `book_source`, `has_habeas_dev_dependency` and `find_project_root` are reused from setup, so the two paths cannot drift apart.\n\n**Tests.**\n- `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` spawns the real binary and covers:\n  - a project without Habeas gets no advisory;\n  - a configured project gets no advisory, including when the cwd is a nested directory;\n  - a missing stylesheet gets an advisory containing \"not fully configured\" and \"habeas setup\";\n  - the hook does not recreate the CSS file and leaves `book.toml` unchanged;\n  - a wrong preprocessor gets an advisory;\n  - no `book.toml` means no applicable project and no advisory.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` checks that a configured project gets no advisory, and that an invalid `book.src` gets one.\n- `tests/symposium_hook_smoke.py` is an end-to-end test through a real Symposium (`cargo-agents`). It checks that:\n  - the hook is registered and the advisory is delivered to the agent before setup;\n  - the advisory goes away after `habeas setup`.\n\n**Minor gap (not a failure).**\n- `project_depends_on_habeas` looks only at `[dev-dependencies]`, so a project with `habeas` solely in `[dependencies]` would get no advisory.\n- Not every individual incompleteness case is tested separately. Examples are a missing `tests/habeas.rs` or a missing dev dependency.\n- The covered cases exercise the same `is_configured` code path, so I don't consider these blocking.",
+  "rationale": "**Verdict:** The sources satisfy the requirement. I found no acknowledged gaps (no FIXME or TODO markers), and the untested edge cases below are minor.\n\n**Implementation**\n- `Cargo.toml` lines 31–37 declare a Symposium `SessionStart` hook, `habeas-setup-check`. It runs `habeas hook session-start`, in the `symposium` format and as a plugin metadata entry. That is how a supported agent session gets the hook.\n- `src/main.rs` routes `Command::Hook { SessionStart }` to `hook::session_start()`.\n- `src/hook.rs` `session_start_response` returns the following:\n  - It returns an empty `{\"SessionStart\": {}}` when the input has no `SessionStart` event, when no ancestor of the cwd holds both `Cargo.toml` and `book.toml`, when the project does not depend on habeas, or when setup is complete.\n  - Otherwise it returns `additionalContext` saying \"Habeas Codicem is not fully configured in …. Run `habeas setup` …\". This context is advisory and does not block the session.\n- The hook only reads files. It never writes to the project and never invokes `setup::run`.\n- `setup::is_configured` checks everything `habeas setup` establishes:\n  - the habeas dev dependency;\n  - a valid `book.src` that is relative, nonempty, free of parent components, and contains `SUMMARY.md`;\n  - the `habeas mdbook` preprocessor with `renderers = [\"html\"]`;\n  - the CSS entry in `additional-css`;\n  - a `habeas.css` file with the exact expected content;\n  - a `tests/habeas.rs` file with the exact expected content.\n  Setup itself refuses to overwrite files whose content differs, so treating a differing file as \"not compatible\" is consistent.\n\n**Tests**\n- `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` runs the real binary through a `session_start` helper and checks these cases:\n  - A project without habeas gets no advisory.\n  - A project that has been set up gets no advisory, including when the cwd is a nested directory.\n  - After the stylesheet is deleted, the advisory contains \"Habeas Codicem is not fully configured\" and \"habeas setup\". The hook does not recreate the stylesheet, and `book.toml` is unchanged.\n  - A wrong preprocessor command produces an advisory.\n  - With no `book.toml`, there is no advisory.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` checks that a default `src` is accepted as configured and that an invalid `book.src` produces an advisory.\n- `tests/symposium_hook_smoke.py` is an end-to-end test against a real Symposium (`cargo-agents`). It enables the plugin, checks that the hook is registered, and checks that the advisory is delivered before setup. After `habeas setup` runs, it checks that the advisory disappears.\n\n**Minor untested edge cases**\n- A missing or differing `tests/habeas.rs` and a differing `habeas.css` are not tested individually. They go through the same `is_configured` boolean path as the cases that are tested.\n- \"Depending on `habeas`\" is implemented as a `[dev-dependencies]` entry only, which matches what setup creates.",
   "inputs": [
     {
       "requirements": "requirements.integration.symposium_setup_hook",
@@ -17,7 +17,7 @@
     {
       "file": "Cargo.toml",
       "line_start": 1,
-      "line_end": 57,
+      "line_end": 58,
       "text": [
         "[package]",
         "name = \"habeas\"",
@@ -64,6 +64,7 @@
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
         "pulldown-cmark = \"=0.11.3\"",
+        "regex = \"1.13.1\"",
         "rig-bedrock = \"0.44\"",
         "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
         "serde = { version = \"1.0.229\", features = [\"derive\"] }",
@@ -153,10 +154,12 @@
         "        // {impl}`requirements.cli.setup`",
         "        Command::Setup { path } => setup::run(path.as_deref()),",
         "        // {impl}`requirements.cli.status`",
-        "        Command::Status { all, glob } => {",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status { all, glob, verbose } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_filtered(&root, all, glob.as_deref())?.as_bytes(),",
+        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                    .as_bytes(),",
         "            )?;",
         "            Ok(())",
         "        }",
@@ -852,6 +855,70 @@
     },
     {
       "file": "Cargo.toml",
+      "line_start": 1,
+      "line_end": 57,
+      "text": [
+        "[package]",
+        "name = \"habeas\"",
+        "version = \"0.2.0\"",
+        "authors = [\"Niko Matsakis\"]",
+        "edition = \"2024\"",
+        "description = \"Requirement evidence for mdBook and Cargo projects\"",
+        "license = \"MIT OR Apache-2.0\"",
+        "repository = \"https://github.com/nikomatsakis/habeas-codicem\"",
+        "readme = \"README.md\"",
+        "keywords = [\"requirements\", \"traceability\", \"evidence\", \"mdbook\"]",
+        "categories = [\"development-tools\", \"command-line-utilities\"]",
+        "",
+        "# {impl}`requirements.integration.symposium`",
+        "[package.metadata.symposium]",
+        "name = \"habeas\"",
+        "",
+        "[package.metadata.symposium.defaults]",
+        "skills = false",
+        "",
+        "[[package.metadata.symposium.skills]]",
+        "source.path = \"assets/skills\"",
+        "",
+        "# {impl}`requirements.integration.symposium_cli`",
+        "[[package.metadata.symposium.installations]]",
+        "name = \"habeas\"",
+        "source = \"cargo\"",
+        "crate = \"habeas\"",
+        "executable = \"habeas\"",
+        "global = true",
+        "",
+        "# {impl}`requirements.integration.symposium_setup_hook`",
+        "[[package.metadata.symposium.hooks]]",
+        "name = \"habeas-setup-check\"",
+        "event = \"SessionStart\"",
+        "format = \"symposium\"",
+        "command = \"habeas\"",
+        "args = [\"hook\", \"session-start\"]",
+        "",
+        "[dependencies]",
+        "aws-config = \"=1.8.13\"",
+        "aws-sdk-bedrockruntime = \"1.153\"",
+        "clap = { version = \"4.6.7\", features = [\"derive\"] }",
+        "mdbook-preprocessor = \"=0.5.3\"",
+        "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
+        "pulldown-cmark = \"=0.11.3\"",
+        "regex = \"1.13.1\"",
+        "rig-bedrock = \"0.44\"",
+        "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
+        "serde = { version = \"1.0.229\", features = [\"derive\"] }",
+        "serde_json = \"1\"",
+        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
+        "tempfile = \"3.27.0\"",
+        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\"] }",
+        "toml = \"1.2.0\"",
+        "toml_edit = \"0.25.17\"",
+        "",
+        "[dev-dependencies]"
+      ]
+    },
+    {
+      "file": "Cargo.toml",
       "line_start": 31,
       "line_end": 31,
       "text": [
@@ -920,10 +987,10 @@
       "line_start": 158,
       "line_end": 161,
       "text": [
-        "                config.as_deref(),",
-        "                output,",
-        "            ))?;",
-        "            let summary = format!("
+        "                habeas::authoring::EvidenceOutput::File",
+        "            };",
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
+        "                &root,"
       ]
     },
     {
@@ -931,6 +998,9 @@
       "line_start": 62,
       "line_end": 76,
       "text": [
+        "        for_requirement: Option<String>,",
+        "        #[arg(long)]",
+        "        for_example: Option<String>,",
         "        #[arg(long, num_args = 2, value_names = [\"rust_file\", \"rust_item\"])]",
         "        for_rust_item: Option<Vec<String>>,",
         "        #[arg(long)]",
@@ -942,10 +1012,7 @@
         "    },",
         "}",
         "",
-        "#[derive(Subcommand)]",
-        "enum MdbookCommand {",
-        "    Supports { renderer: String },",
-        "}"
+        "#[derive(Subcommand)]"
       ]
     },
     {
@@ -1316,11 +1383,11 @@
       "line_start": 180,
       "line_end": 184,
       "text": [
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.integration.symposium_setup_hook`",
-        "        Command::Hook {",
-        "            command: HookCommand::SessionStart,"
+        "                eprintln!(",
+        "                    \"{summary}\\nEvidence: stdout\\nUsage: {}\",",
+        "                    outcome.usage_path.display()",
+        "                );",
+        "            }"
       ]
     },
     {
@@ -1453,6 +1520,280 @@
         "        # {test}`requirements.integration.symposium_setup_hook`",
         "        interactive_sync(symposium, project, env)",
         "        saved_config = (symposium_home / \"config.toml\").read_text()"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 60,
+      "line_end": 172,
+      "text": [
+        "        .find(|directory| {",
+        "            directory.join(\"Cargo.toml\").is_file() && directory.join(\"book.toml\").is_file()",
+        "        })",
+        "        .map(Path::to_path_buf)",
+        "}",
+        "",
+        "// {impl}`requirements.cli.setup_project`",
+        "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {",
+        "    let cwd = std::env::current_dir()?;",
+        "    find_project_root(&cwd)",
+        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
+        "}",
+        "",
+        "// {impl}`requirements.cli.setup`",
+        "pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {",
+        "    if path.exists() {",
+        "        if fs::read_to_string(path)? != content {",
+        "            return Err(format!(",
+        "                \"{} already exists with different content; review it before running setup again\",",
+        "                path.display()",
+        "            )",
+        "            .into());",
+        "        }",
+        "    } else {",
+        "        if let Some(parent) = path.parent() {",
+        "            fs::create_dir_all(parent)?;",
+        "        }",
+        "        fs::write(path, content)?;",
+        "    }",
+        "    Ok(())",
+        "}",
+        "",
+        "// {impl}`requirements.cli.setup`",
+        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
+        "    let root = project_root()?;",
+        "    let book_path = root.join(\"book.toml\");",
+        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
+        "    // {impl}`requirements.cli.setup_project`",
+        "    let source = book_source(&book)?.to_owned();",
+        "    let source_path = Path::new(&source);",
+        "    if source.is_empty()",
+        "        || !source_path",
+        "            .components()",
+        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+        "    {",
+        "        return Err(\"book.src must be a directory inside this project\".into());",
+        "    }",
+        "    let source_dir = root.join(source_path);",
+        "    if !source_dir.join(\"SUMMARY.md\").is_file() {",
+        "        return Err(format!(\"cannot find mdBook SUMMARY.md in {}\", source_dir.display()).into());",
+        "    }",
+        "",
+        "    let css_path = source_dir.join(\"habeas.css\");",
+        "    let test_path = root.join(\"tests/habeas.rs\");",
+        "    for (path, desired) in [(&css_path, BADGE_CSS), (&test_path, TEST_SOURCE)] {",
+        "        if path.exists() && fs::read_to_string(path)? != desired {",
+        "            return Err(format!(\"{} already exists with different content\", path.display()).into());",
+        "        }",
+        "    }",
+        "",
+        "    book[\"preprocessor\"][\"habeas\"][\"command\"] = value(\"habeas mdbook\");",
+        "    let mut renderers = Array::new();",
+        "    renderers.push(\"html\");",
+        "    book[\"preprocessor\"][\"habeas\"][\"renderers\"] = value(renderers);",
+        "",
+        "    let css_relative = css_relative(source_path);",
+        "    // {impl}`requirements.cli.setup_css`",
+        "    let additional_css = &mut book[\"output\"][\"html\"][\"additional-css\"];",
+        "    if additional_css.is_none() {",
+        "        let mut css = Array::new();",
+        "        css.push(css_relative.as_str());",
+        "        *additional_css = value(css);",
+        "    } else if let Some(css) = additional_css.as_array_mut() {",
+        "        if !css",
+        "            .iter()",
+        "            .any(|existing| existing.as_str() == Some(css_relative.as_str()))",
+        "        {",
+        "            css.push(css_relative.as_str());",
+        "        }",
+        "    } else {",
+        "        return Err(\"output.html.additional-css must be an array\".into());",
+        "    }",
+        "",
+        "    let manifest_path = root.join(\"Cargo.toml\");",
+        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
+        "    // {impl}`requirements.cli.setup_local_path`",
+        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
+        "    if !has_dev_dependency {",
+        "        let mut command = Command::new(\"cargo\");",
+        "        command",
+        "            .arg(\"add\")",
+        "            .arg(\"--dev\")",
+        "            .arg(\"habeas\")",
+        "            .arg(\"--manifest-path\")",
+        "            .arg(&manifest_path);",
+        "        if let Some(local_crate) = local_crate {",
+        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
+        "        }",
+        "        let output = command.current_dir(&root).output()?;",
+        "        if !output.status.success() {",
+        "            return Err(format!(",
+        "                \"cargo add habeas --dev failed:\\n{}\",",
+        "                String::from_utf8_lossy(&output.stderr)",
+        "            )",
+        "            .into());",
+        "        }",
+        "    }",
+        "",
+        "    write_new_or_same(&css_path, BADGE_CSS)?;",
+        "    write_new_or_same(&test_path, TEST_SOURCE)?;",
+        "    fs::write(&book_path, book.to_string())?;",
+        "    println!(\"Habeas configured in {}\", root.display());",
+        "    Ok(())"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 392,
+      "line_end": 394,
+      "text": [
+        "    } else {",
+        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 571,
+      "line_end": 573,
+      "text": [
+        "        let state = tempfile::tempdir().unwrap();",
+        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
+        "            let mut sources ="
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 395,
+      "line_end": 397,
+      "text": [
+        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
+        "        log.record.determination = Some(\"FIXME\".into());",
+        "        log.record.evidence_written = true;"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 402,
+      "line_end": 404,
+      "text": [
+        "        assert_eq!(sent[\"outcome\"], \"completed\");",
+        "        assert_eq!(sent[\"determination\"], \"FIXME\");",
+        "        assert_eq!(sent[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 49,
+      "line_end": 51,
+      "text": [
+        "",
+        "        let mut output = String::from(\"\\n## FIXME judgments\\n\\n\");",
+        "        for (issue, judgments) in &groups {"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 59,
+      "line_end": 61,
+      "text": [
+        "            output.push_str(&format!(",
+        "                \"- {} {} marked FIXME without an issue\\n\",",
+        "                without_issue.len(),"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 74,
+      "line_end": 76,
+      "text": [
+        "            if !without_issue.is_empty() {",
+        "                output.push_str(\"\\n### FIXME without an issue\\n\\n\");",
+        "                render_judgments(&mut output, &without_issue);"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 232,
+      "line_end": 234,
+      "text": [
+        "            Self::DeterminationFalse => \"Determination false\",",
+        "            Self::Fixme => \"FIXME\",",
+        "            Self::Invalid => \"Invalid\","
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 504,
+      "line_end": 506,
+      "text": [
+        "    if !detail_evidence.fixme_entries.is_empty() {",
+        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
+        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 17,
+      "line_end": 23,
+      "text": [
+        "            Value::Bool(false) => Ok(Self::False),",
+        "            Value::Object(object) if object.len() == 1 && object.contains_key(\"FIXME\") => {",
+        "                let entries = object[\"FIXME\"]",
+        "                    .as_array()",
+        "                    .filter(|entries| !entries.is_empty())",
+        "                    .ok_or(\"FIXME must be a nonempty array of nonempty strings\")?;",
+        "                let entries = entries"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 29,
+      "line_end": 31,
+      "text": [
+        "                            .map(str::to_owned)",
+        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")",
+        "                    })"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 35,
+      "line_end": 37,
+      "text": [
+        "            _ => Err(",
+        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\"",
+        "                    .to_owned(),"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 47,
+      "line_end": 49,
+      "text": [
+        "            Self::False => Value::Bool(false),",
+        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 56,
+      "line_end": 58,
+      "text": [
+        "            Self::False => \"false\",",
+        "            Self::Fixme(_) => \"FIXME\",",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 30,
+      "line_end": 32,
+      "text": [
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]"
       ]
     }
   ]

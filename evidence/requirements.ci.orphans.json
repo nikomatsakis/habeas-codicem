@@ -1,7 +1,7 @@
 {
   "requirement": "Every JSON file directly under `evidence/` MUST correspond to a declared requirement or named example. A JSON file at `evidence/rust/<rust_file>.json` MUST correspond to a first-party Rust source file containing an explicitly declared function or method. Habeas MUST report evidence JSON files in other locations under `evidence/` and Rust evidence files or entries whose source item no longer exists.",
   "determination": true,
-  "rationale": "**Judgment: the sources satisfy `requirements.ci.orphans`.** I judged this from the supplied excerpts and did not open any other files.\n\n**Top-level evidence files** (`src/evidence.rs`, `inspect_repository`, cited `requirements.ci.orphans`)\n- Habeas collects every `*.json` file under `evidence/`.\n- Files under `evidence/rust/` that end in `.rs.json` are left to the Rust attestation check. The `starts_with(\"rust\")` test compares path components, so a name like `evidence/rust.rs.json` does not slip through.\n- Every other file must sit directly under `evidence/` and have a stem equal to a declared requirement or named example. Terms are excluded by the `DefinitionKind::Term` filter. Anything else, such as `evidence/nested/x.json` or `evidence/rust/other.json`, gets the error \"no matching requirement or example\".\n\n**Rust sidecars and entries** (`validate_rust_attestations` and `validate_rust_attestation_file`, both cited `requirements.ci.orphans`)\n- Habeas walks the first-party Rust files and parses each one. A sidecar path is expected only if the file contains at least one explicitly declared function or method. Missing sidecars are reported.\n- Every JSON file under `evidence/rust` that is not an expected path gets \"orphaned Rust attestation file\". This covers a deleted source file, a source file with no functions, and a wrongly named file.\n- Inside a sidecar, any entry whose `rust_item` selector no longer matches a current function gets \"orphaned Rust function attestation\". The message includes the source file and selector.\n\n**Tests**\n- `tests/evidence_boundaries.rs::nested_evidence_and_non_source_rust_sidecars_are_reported` covers a nested evidence file and `evidence/rust/other.json`.\n- `tests/evidence_boundaries.rs::deleted_function_entries_are_reported_in_an_existing_sidecar` covers a stale function entry in an otherwise valid sidecar. It first checks that the valid case produces no errors.\n- `src/evidence.rs` has `collects_missing_orphan_format_false_and_changed_line_errors`, which writes a valid but orphaned `evidence/ghost.json`. I did not see its final assertion in the excerpt.\n- `src/evidence.rs` also has `cited_example_with_a_test_and_matching_evidence_validates`, which writes `evidence/rust/src/removed.rs.json` and asserts \"orphaned Rust attestation file\".\n\nThese tests cover the requirement's main cases: an orphaned top-level file, a misplaced file, a sidecar for a nonexistent source file, and an orphaned entry. They also check that a valid fixture produces no errors.\n\n**Minor gaps, neither acknowledged in source:**\n- A Rust file that fails to parse will have its sidecar reported as orphaned. That error is consistent with the parse failure being reported elsewhere.\n- I did not see a test for a sidecar whose source file exists but contains no functions. The same code path handles it.\n\nNeither gap is material.",
+  "rationale": "**Verdict:** the requirement is implemented and tested.\n\n**Implementation**\n- `inspect_repository` (src/evidence.rs, around lines 86–111) walks every `*.json` file under `evidence/`.\n  - It skips only files under the `rust` component that end in `.rs.json`. These are left to the Rust attestation check.\n  - For every other file, the name must be a single path component whose stem is a declared requirement or example. Terms are excluded by the `kind != Term` filter.\n  - Anything else gets `no matching requirement or example`. This covers nested files such as `evidence/nested/x.json` and non-sidecar files such as `evidence/rust/other.json`.\n- `validate_rust_attestations` (src/evidence.rs, around lines 1100–1170) covers the Rust sidecars.\n  - It parses every first-party Rust file found by `rust_files`.\n  - Only files with at least one explicitly declared function or method add `evidence/rust/<rust_file>.json` to `expected_files`.\n  - Any JSON file under `evidence/rust` that is not in `expected_files` produces `orphaned Rust attestation file`. This covers a deleted source file and a source file with no functions.\n- `validate_rust_attestation_file` reports `orphaned Rust function attestation` for entries whose `rust_item` selector no longer exists in the source. This is the \"entries whose source item no longer exists\" part of the requirement.\n\n**Tests**\n- `tests/evidence_boundaries.rs::nested_evidence_and_non_source_rust_sidecars_are_reported` covers a nested evidence file and `evidence/rust/other.json`. It asserts both the `no matching requirement or example` error and the `orphaned Rust attestation file` error.\n- `tests/evidence_boundaries.rs::deleted_function_entries_are_reported_in_an_existing_sidecar` starts from a valid sidecar and adds an entry for `fn[removed]`. It asserts `orphaned Rust function attestation` and the selector.\n- The `src/evidence.rs` unit tests cover three more cases:\n  - `evidence/ghost.json` is reported as `no matching requirement`.\n  - `evidence/rust/src/removed.rs.json` is reported as an `orphaned Rust attestation file`.\n  - Both are checked in `collects_missing_orphan_format_false_and_changed_line_errors` and the attestation test.\n- `fixture()` carries the `{test}` citation for this requirement.\n\n**Gaps:** none significant. A source file that exists but has no functions is not tested directly. It is handled by the same `expected_files` logic as the tested removed-file case.",
   "inputs": [
     {
       "requirements": "requirements.ci.orphans",
@@ -568,11 +568,11 @@
       "line_start": 51,
       "line_end": 55,
       "text": [
+        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let access = SourceAccess::load(&root)?;",
+        "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;",
         "        let subject = definitions",
-        "            .get(subject_name)",
-        "            .filter(|definition| definition.kind != DefinitionKind::Term)",
-        "            .ok_or_else(|| format!(\"{subject_name}: no matching requirement or named example\"))?;",
-        "        let mut selectors = vec![InputSelector::Requirements {"
+        "            .get(subject_name)"
       ]
     },
     {
@@ -952,7 +952,7 @@
       "line_start": 530,
       "line_end": 530,
       "text": [
-        "        );"
+        "            |input| input[\"file\"] == \"notes.txt\" && input[\"text\"] == json!([\"new source text\"])"
       ]
     },
     {
@@ -984,9 +984,9 @@
       "line_start": 473,
       "line_end": 475,
       "text": [
-        "    let attestation: serde_json::Value = serde_json::from_slice(",
-        "        &fs::read(temp.path().join(\"evidence/rust/src/main.rs.json\")).unwrap(),",
-        "    )"
+        "    for args in [",
+        "        [\"status\", \"--wrong\"].as_slice(),",
+        "        [\"status\", \"--all\", \"extra\", \"more\"].as_slice(),"
       ]
     },
     {
@@ -1014,9 +1014,9 @@
       "line_start": 236,
       "line_end": 238,
       "text": [
-        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"evidence/rust/src\")).unwrap();",
-        "    let source = \"// IMPL`requirements.ready`\\nfn sample() {}\\n\".replace(\"IMPL\", \"{impl}\");"
+        "",
+        "// {test}`requirements.references.rust_function_attestations`",
+        "// {test}`requirements.ci.determination`"
       ]
     },
     {
@@ -1024,9 +1024,9 @@
       "line_start": 252,
       "line_end": 254,
       "text": [
-        "    write_record(temp.path(), \"ready\", record);",
-        "    let attestation_path = temp.path().join(\"evidence/rust/src/sample.rs.json\");",
-        "    let mut attestation = json!({"
+        "    let mut record: Value =",
+        "        serde_json::from_str(&fs::read_to_string(record_path).unwrap()).unwrap();",
+        "    record[\"inputs\"]"
       ]
     },
     {
@@ -1060,8 +1060,8 @@
       "line_start": 128,
       "line_end": 129,
       "text": [
-        "        (\"stale\", \"Invalid\"),",
-        "        (\"stale_input\", \"Invalid\"),"
+        "        \"[package]\\nname = 'fixture'\\n\",",
+        "    )"
       ]
     },
     {
@@ -1069,8 +1069,8 @@
       "line_start": 158,
       "line_end": 159,
       "text": [
-        "        \"stale\",",
-        "        \"stale_input\","
+        "                \"#000 is not an issue\",",
+        "                \"#12abc and ##123 are not complete issue references\","
       ]
     },
     {
@@ -1078,7 +1078,7 @@
       "line_start": 198,
       "line_end": 198,
       "text": [
-        "// {test}`requirements.ci.fixme_stale_input`"
+        "}"
       ]
     },
     {
@@ -1086,7 +1086,7 @@
       "line_start": 201,
       "line_end": 201,
       "text": [
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {"
+        "// {test}`requirements.ci.fixme_stale_input`"
       ]
     },
     {
@@ -1620,6 +1620,158 @@
         "                        display_path(root, &path)",
         "                    ));",
         "                    continue;"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 107,
+      "line_end": 111,
+      "text": [
+        "            present.insert(name.to_owned());",
+        "        } else {",
+        "            errors.push(format!(\"{label}: no matching requirement or example\"));",
+        "        }",
+        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 934,
+      "line_end": 938,
+      "text": [
+        "        } else {",
+        "            errors.push(format!(",
+        "                \"{}:{}: {{{}}}`{}` has no matching requirement or example\",",
+        "                display_path(root, &reference.file),",
+        "                reference.line,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1546,
+      "line_end": 1550,
+      "text": [
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/ghost.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ghost.\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1561,
+      "line_end": 1565,
+      "text": [
+        "        let errors = report.errors.join(\"\\n\");",
+        "        for detail in [",
+        "            \"no matching requirement\",",
+        "            \"invalid JSON\",",
+        "            \"missing for requirement\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1665,
+      "line_end": 1669,
+      "text": [
+        "        assert!(",
+        "            errors.contains(&format!(",
+        "                \"src/main.rs:3: {unknown} has no matching requirement\"",
+        "            )),",
+        "            \"{errors}\""
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 10,
+      "line_end": 10,
+      "text": [
+        "// {test}`requirements.ci.orphans`"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 116,
+      "line_end": 116,
+      "text": [
+        "// {test}`requirements.ci.orphans`"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 139,
+      "line_end": 139,
+      "text": [
+        "// {test}`requirements.ci.orphans`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 246,
+      "line_end": 306,
+      "text": [
+        "                .min_by_key(|(_, function)| function.end - function.start)",
+        "                .map(|(index, _)| index);",
+        "        }",
+        "    }",
+        "",
+        "    let mut cited = vec![false; functions.len()];",
+        "    for (comment_index, owner) in owners.iter().enumerate() {",
+        "        let Some(function_index) = owner else {",
+        "            continue;",
+        "        };",
+        "        if reference_roles(&source[comments[comment_index].clone()], false)",
+        "            .iter()",
+        "            .any(|role| {",
+        "                role.kind != crate::ReferenceKind::Term",
+        "                    && definitions",
+        "                        .get(role.name)",
+        "                        .is_some_and(|d| d.kind != crate::DefinitionKind::Term)",
+        "            })",
+        "        {",
+        "            cited[*function_index] = true;",
+        "        }",
+        "    }",
+        "    Ok(functions",
+        "        .into_iter()",
+        "        .zip(cited)",
+        "        .filter_map(|(function, cited)| (!cited).then_some((function.line, function.name)))",
+        "        .collect())",
+        "}",
+        "",
+        "// {impl}`requirements.references.rust_function_coverage`",
+        "pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path::PathBuf> {",
+        "    let mut stack = vec![root.to_path_buf()];",
+        "    let mut files = Vec::new();",
+        "    while let Some(directory) = stack.pop() {",
+        "        let entries = match fs::read_dir(&directory) {",
+        "            Ok(entries) => entries,",
+        "            Err(error) => {",
+        "                errors.push(format!(",
+        "                    \"{}: cannot scan Rust sources: {error}\",",
+        "                    display_path(root, &directory)",
+        "                ));",
+        "                continue;",
+        "            }",
+        "        };",
+        "        for entry in entries {",
+        "            let entry = match entry {",
+        "                Ok(entry) => entry,",
+        "                Err(error) => {",
+        "                    errors.push(format!(",
+        "                        \"{}: cannot read Rust source directory entry: {error}\",",
+        "                        display_path(root, &directory)",
+        "                    ));",
+        "                    continue;",
+        "                }",
+        "            };",
+        "            let path = entry.path();",
+        "            let kind = match entry.file_type() {",
+        "                Ok(kind) => kind,",
+        "                Err(error) => {",
+        "                    errors.push(format!(",
+        "                        \"{}: cannot inspect Rust source: {error}\","
       ]
     }
   ]

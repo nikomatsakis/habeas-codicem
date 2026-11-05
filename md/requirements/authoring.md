@@ -65,7 +65,14 @@ forms. Each form MUST correspond to one existing evidence-input kind:
 
 Rust file and selector arguments MUST use the syntax defined by
 {cite}`requirements.references.rust_item_selectors`. Reads MUST use the current
-project working tree, including uncommitted and untracked sources.
+project working tree, including unstaged changes to tracked files and staged new
+files. All source inputs, including mandatory inputs, MUST stay within the
+project root after resolving symlinks. In a Git worktree, both the requested file
+and its resolved target MUST be present in the Git index. Untracked mandatory
+inputs and explicit reads MUST fail with guidance to stage the file using
+`git add`. Projects outside Git MUST use the same project-root and generated-output
+boundaries without requiring an index; failure to read an existing repository's
+index MUST be reported as an error.
 The project-root `evidence/` directory contains generated output and MUST be
 excluded from source reads, including paths that resolve there through symlinks.
 
@@ -112,8 +119,10 @@ The tool MUST list the immediate children of the requested project-relative
 directory, returning project-relative paths. The model can list a returned
 directory in another call to explore further. A failed listing MUST return an
 explanatory tool error. Directory listings MUST NOT become evidence inputs.
-Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;
-requesting that directory or an alias to it MUST return a tool error.
+Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.
+In a Git worktree, directories MUST have at least one eligible tracked source
+descendant to be listed. Explicitly requesting an excluded path MUST return a
+tool error.
 :::
 
 ### Search file contents: `ripgrep`
@@ -139,8 +148,9 @@ boundaries, and overlapping windows in the same file MUST be merged. Each
 resulting window MUST be returned as a file-range input with its source path,
 inclusive line range, and complete text under {cite}`requirements.ci.inputs`.
 Setting `context` to zero MUST return only matching lines.
-Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;
-explicitly requesting those output paths MUST return a tool error.
+Search results MUST exclude files disallowed by
+{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
+path MUST return a tool error.
 Required terminology MUST be included under
 {cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied
 to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.

@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST continue validating after an error and report all validation errors it finds in one run. Each error MUST identify the affected evidence file or requirement and explain the failure.",
   "determination": true,
-  "rationale": "**Verdict:** the code and tests together satisfy `requirements.ci.errors`.\n\n**Implementation: validation continues and collects errors**\n- `inspect_repository` (`src/evidence.rs`, lines 38–150) threads a single `errors: Vec<String>` through every stage. The stages are book source, definition collection, evidence files, coverage, references, Rust function coverage and Rust attestations. The result is returned in `EvidenceReport.errors`.\n- No stage stops the run. The only fatal early return is `fs::canonicalize(root)?`, for a repository root that does not exist, and no validation can happen then.\n- Every failure path pushes an error and then does one of three things:\n  - It continues the loop.\n  - It returns from that single helper.\n  - It falls back to a default. For example, `book_source_dir` falls back to `md` after an invalid `book.toml`, so later stages still run.\n- This holds in each helper:\n  - `files_with_extension` (lines 316–367) reports directory read failures and continues.\n  - `collect_definitions` uses `continue` after a bad name or an unreadable chapter.\n  - `validate_evidence_file` uses `check_keys` and the `string_field`, `boolean_field`, `array_field` and `usize_field` helpers, which report and return `None`.\n  - `validate_rust_attestation_file` collects per-entry and per-citation errors and keeps going through all entries.\n  - `validate_references` and the Rust coverage and attestation passes behave the same way.\n- Each error names the affected file or requirement, with an explanation of the failure. Examples of the error formats:\n  - `evidence/{name}.json: missing for requirement at md/...:line`\n  - `{label}: invalid JSON: ...`\n  - `{label}: requirement text changed at {source}` followed by a diff\n  - `{source}: duplicate requirement X; first declared at ...`\n  - `book.toml: book.src must be a string`\n  - `{label}: no matching requirement or example`\n- `DefinitionKind::noun` (`src/lib.rs`, line 60) supplies the \"requirement\" or \"example\" wording in those messages.\n- `src/lib.rs` lines 37–44 print all errors in one panic message, with a count.\n\n**Tests**\n- `collects_missing_orphan_format_false_and_changed_line_errors` is annotated `{test}` for `requirements.ci.errors`. It builds one fixture containing many simultaneous faults:\n  - an orphaned evidence file\n  - broken JSON\n  - a missing evidence file\n  - changed requirement text\n  - a false determination\n  - changed input text\n  - wrong field types\n  - an outside-repository path\n  - a bad line number\n  - a duplicate requirement\n  - an empty requirement\n- It runs `validate_repository` once and asserts that every expected diagnostic appears in the combined output. That shows validation continues after errors and reports them all in one run.\n- The `book_source` test additionally covers multiple `book.toml` failure modes, each reported with the file named.\n\n**Remaining gaps:** there is no fixture for every individual error path (for example, directory read I/O errors). Those are simple push-and-continue patterns, so I judge this adequate. No FIXMEs are present.",
+  "rationale": "**Verdict: the requirement is met.** The code collects errors instead of stopping at the first one. Every error names a file or requirement and says what failed. One test checks the multi-error case.\n\n**Continue-and-collect behaviour**\n- `inspect_repository` (src/evidence.rs ~68–150) passes one `errors: &mut Vec<String>` through every stage, so no stage returns early on a validation failure. The stages are:\n  - book source lookup\n  - definition collection\n  - evidence file validation\n  - orphan and missing-evidence checks\n  - reference validation\n  - Rust coverage\n  - Rust attestations\n- It returns all errors in `EvidenceReport.errors`. The only early `?` is `fs::canonicalize(root)`, which fails only when the root itself is unusable.\n- Per-item failures use `continue` or a local `return`, so only that item is abandoned:\n  - an invalid-JSON evidence file\n  - an unreadable chapter\n  - an unreadable directory entry\n  - a bad Rust source file\n- `validate_rust_attestation_file` (cited with `requirements.ci.errors`) behaves the same way. It records duplicate, orphaned, citation-mismatch, false-determination, input-count and missing-attestation errors per entry and carries on to the next entry.\n\n**Each error identifies its target and explains the failure**\n- Errors use a `file: message` or `source:line: message` format. Examples:\n  - `evidence/{name}.json: missing for requirement at md/...:N`\n  - `{label}: no matching requirement or example`\n  - `{label}: requirement text changed at {source}` with a compact diff\n  - `{label}: invalid JSON: ...`\n  - `book.toml: ...`\n  - `{source}: duplicate requirement X; first declared at ...`\n- `DefinitionKind::noun` (src/lib.rs, cited with `requirements.ci.errors`) supplies the \"requirement\" or \"example\" wording in these messages.\n- The Rust attestation errors also give the Rust file, line, selector and a purpose hint.\n\n**Tests**\n- `collects_missing_orphan_format_false_and_changed_line_errors` (src/evidence.rs, cited with `{test}` for `requirements.ci.errors`) builds one fixture with many simultaneous faults:\n  - an orphan evidence file\n  - a malformed JSON file\n  - a missing evidence file\n  - changed requirement text\n  - a false determination\n  - changed input text\n  - wrong-typed fields\n  - an escaping path\n  - a duplicate requirement\n  - an empty requirement\n- It runs `validate_repository` once and asserts that all 18 expected error fragments appear in the single report. That directly tests \"continue after an error and report all errors in one run\".\n- `book_source_defaults_only_when_absent_and_reports_invalid_configuration` covers the `book.toml` error messages.\n\nThere are no acknowledged FIXME gaps.",
   "inputs": [
     {
       "requirements": "requirements.ci.errors",
@@ -525,14 +525,14 @@
       "line_start": 37,
       "line_end": 44,
       "text": [
+        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
         "    if !report.errors.is_empty() {",
         "        panic!(",
         "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\",",
         "            report.requirements,",
         "            report.examples,",
         "            report.evidence_files,",
-        "            report.errors.len(),",
-        "            report.errors.join(\"\\n- \")"
+        "            report.errors.len(),"
       ]
     },
     {
@@ -540,6 +540,7 @@
       "line_start": 58,
       "line_end": 67,
       "text": [
+        "impl DefinitionKind {",
         "    // {impl}`requirements.ci.errors`",
         "    // {impl}`requirements.examples.evidence`",
         "    // {impl}`requirements.definitions.declaration`",
@@ -548,8 +549,7 @@
         "            Self::Requirement => \"requirement\",",
         "            Self::Example => \"example\",",
         "            Self::Term => \"definition\",",
-        "        }",
-        "    }"
+        "        }"
       ]
     },
     {
@@ -585,13 +585,13 @@
       "line_start": 55,
       "line_end": 61,
       "text": [
+        "    Term,",
         "}",
         "",
         "impl DefinitionKind {",
         "    // {impl}`requirements.ci.errors`",
         "    // {impl}`requirements.examples.evidence`",
-        "    // {impl}`requirements.definitions.declaration`",
-        "    pub(crate) fn noun(self) -> &'static str {"
+        "    // {impl}`requirements.definitions.declaration`"
       ]
     },
     {
@@ -1794,9 +1794,9 @@
       "line_start": 57,
       "line_end": 59,
       "text": [
+        "",
         "impl DefinitionKind {",
-        "    // {impl}`requirements.ci.errors`",
-        "    // {impl}`requirements.examples.evidence`"
+        "    // {impl}`requirements.ci.errors`"
       ]
     },
     {
@@ -2736,6 +2736,124 @@
         "        Err(error) => {",
         "            errors.push(format!(\"{label}: cannot read evidence: {error}\"));",
         "            return;"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1105,
+      "line_end": 1175,
+      "text": [
+        "",
+        "// {impl}`requirements.references.rust_function_attestations`",
+        "// {impl}`requirements.ci.orphans`",
+        "// {impl}`requirements.authoring.batch`",
+        "fn validate_rust_attestations(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    errors: &mut Vec<String>,",
+        "    discovery_errors: &mut Vec<String>,",
+        ") -> Vec<(String, String, bool)> {",
+        "    let mut inspected = Vec::new();",
+        "    let mut expected_files = BTreeSet::new();",
+        "    let initial_errors = errors.len();",
+        "    let files = crate::rust_coverage::rust_files(root, errors);",
+        "    discovery_errors.extend(errors[initial_errors..].iter().cloned());",
+        "    for file in files {",
+        "        let rust_file = display_path(root, &file);",
+        "        let source = match fs::read_to_string(&file) {",
+        "            Ok(source) => source,",
+        "            Err(error) => {",
+        "                let error = format!(\"{rust_file}: cannot read Rust source: {error}\");",
+        "                discovery_errors.push(error.clone());",
+        "                errors.push(error);",
+        "                continue;",
+        "            }",
+        "        };",
+        "        let functions = match crate::rust_items::function_citations(&source, definitions) {",
+        "            Ok(functions) => functions,",
+        "            Err(error) => {",
+        "                // The citation check also includes this in the validation report.",
+        "                discovery_errors.push(format!(\"{rust_file}: cannot parse Rust source: {error}\"));",
+        "                continue;",
+        "            }",
+        "        };",
+        "        if functions.is_empty() {",
+        "            continue;",
+        "        }",
+        "        let evidence_path = root.join(\"evidence/rust\").join(format!(\"{rust_file}.json\"));",
+        "        expected_files.insert(evidence_path.clone());",
+        "        let valid = validate_rust_attestation_file(",
+        "            root,",
+        "            &evidence_path,",
+        "            &rust_file,",
+        "            &functions,",
+        "            definitions,",
+        "            errors,",
+        "        );",
+        "        inspected.extend(functions.iter().map(|(item, _)| {",
+        "            (",
+        "                rust_file.clone(),",
+        "                item.selector.clone(),",
+        "                valid.contains(&item.selector),",
+        "            )",
+        "        }));",
+        "    }",
+        "    let evidence_root = root.join(\"evidence/rust\");",
+        "    if evidence_root.is_dir() {",
+        "        for file in files_with_extension(root, &evidence_root, \"json\", errors) {",
+        "            if !expected_files.contains(&file) {",
+        "                errors.push(format!(",
+        "                    \"{}: orphaned Rust attestation file\",",
+        "                    display_path(root, &file)",
+        "                ));",
+        "            }",
+        "        }",
+        "    }",
+        "    inspected",
+        "}",
+        "",
+        "// {impl}`requirements.references.rust_function_attestations`",
+        "// {impl}`requirements.ci.schema`"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 82,
+      "line_end": 82,
+      "text": [
+        "| `src/evidence.rs:791` `collects_missing_orphan_format_false_and_changed_line_errors` | `requirements.integration.report_api`, `requirements.ci.errors`, `requirements.ci.diagnostics`, `requirements.ci.input_containment`, `requirements.ci.definition_errors` |"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 68,
+      "line_end": 68,
+      "text": [
+        "// {impl}`requirements.ci.errors`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1180,
+      "line_end": 1180,
+      "text": [
+        "// {impl}`requirements.ci.errors`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1506,
+      "line_end": 1506,
+      "text": [
+        "    // {test}`requirements.ci.errors`"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 59,
+      "line_end": 59,
+      "text": [
+        "    // {impl}`requirements.ci.errors`"
       ]
     }
   ]

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use super::access::SourceAccess;
 use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
 use crate::inputs::{InputSelector, read_project_file};
 use crate::{DefinitionKind, ReferenceKind};
@@ -30,6 +31,7 @@ impl AssessmentKind {
 
 pub(crate) struct AssessmentSources {
     pub(crate) root: PathBuf,
+    pub(crate) access: SourceAccess,
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
     pub(crate) subject_text: String,
@@ -47,6 +49,7 @@ impl AssessmentSources {
     // {impl}`requirements.ci.authoring_inputs`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {
         let root = fs::canonicalize(root).map_err(|error| format!("project root: {error}"))?;
+        let access = SourceAccess::load(&root)?;
         let definitions = load_definitions(&root).map_err(|error| error.to_string())?;
         let subject = definitions
             .get(subject_name)
@@ -122,10 +125,16 @@ impl AssessmentSources {
         let mut mandatory = Vec::new();
         for selector in selectors {
             if !generated_evidence_selector(&root, &selector) {
-                mandatory.push(source_input(&root, &definitions, &selector)?);
+                mandatory.push(source_input(&root, &access, &definitions, &selector)?);
             }
         }
-        let dependencies = definition_inputs(&root, &definitions, &mandatory, Some(&subject.text))?;
+        let dependencies = definition_inputs(
+            &root,
+            &access,
+            &definitions,
+            &mandatory,
+            Some(&subject.text),
+        )?;
         for input in dependencies {
             if !mandatory.contains(&input) {
                 mandatory.push(input);
@@ -133,6 +142,7 @@ impl AssessmentSources {
         }
         Ok(Self {
             root,
+            access,
             subject_name: subject_name.to_owned(),
             subject_kind: AssessmentKind::Definition(subject.kind),
             subject_text: subject.text.clone(),
@@ -152,10 +162,9 @@ impl AssessmentSources {
         rust_item: &str,
     ) -> Result<Self, String> {
         let root = fs::canonicalize(root).map_err(|error| format!("project root: {error}"))?;
+        let access = SourceAccess::load(&root)?;
         let definitions = load_definitions(&root).map_err(|error| error.to_string())?;
-        if generated_evidence_path(&root, Path::new(rust_file)) {
-            return Err("generated evidence is output, not assessment source".to_owned());
-        }
+        access.file(&root, Path::new(rust_file))?;
         let (_, source) = read_project_file(&root, rust_file)?;
         let (_, citations) = crate::rust_items::function_citations(&source, &definitions)
             .map_err(|error| format!("{rust_file}: cannot parse Rust source: {error}"))?
@@ -203,16 +212,17 @@ impl AssessmentSources {
         let mut mandatory = Vec::new();
         for selector in selectors {
             if !generated_evidence_selector(&root, &selector) {
-                mandatory.push(source_input(&root, &definitions, &selector)?);
+                mandatory.push(source_input(&root, &access, &definitions, &selector)?);
             }
         }
-        for input in definition_inputs(&root, &definitions, &mandatory, None)? {
+        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {
             if !mandatory.contains(&input) {
                 mandatory.push(input);
             }
         }
         Ok(Self {
             root,
+            access,
             subject_name: format!("{rust_file}:{rust_item}"),
             subject_kind: AssessmentKind::RustFunction {
                 rust_item: rust_item.to_owned(),
@@ -250,7 +260,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.text_search`
     pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {
         let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;
-        source_input(&self.root, &definitions, selector)
+        source_input(&self.root, &self.access, &definitions, selector)
     }
 
     // {impl}`requirements.definitions.authoring_inputs`
@@ -258,10 +268,12 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.text_search`
     pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {
         let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;
-        Ok(definition_inputs(&self.root, &definitions, inputs, None)?
-            .into_iter()
-            .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
-            .collect())
+        Ok(
+            definition_inputs(&self.root, &self.access, &definitions, inputs, None)?
+                .into_iter()
+                .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
+                .collect(),
+        )
     }
 }
 
@@ -297,19 +309,20 @@ fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {
 // {impl}`requirements.ci.authoring_inputs`
 fn source_input(
     root: &Path,
+    access: &SourceAccess,
     definitions: &BTreeMap<String, Declaration>,
     selector: &InputSelector,
 ) -> Result<Value, String> {
-    if generated_evidence_selector(root, selector) {
-        return Err("generated evidence is output, not assessment source".to_owned());
+    if let InputSelector::FileRange { file, .. }
+    | InputSelector::RustItem {
+        rust_file: file, ..
+    } = selector
+    {
+        access.file(root, Path::new(file))?;
     }
     let resolved = selector.resolve(root, definitions)?;
-    if resolved
-        .ranges
-        .iter()
-        .any(|range| generated_evidence_path(root, Path::new(&range.file)))
-    {
-        return Err("generated evidence is output, not assessment source".to_owned());
+    for range in &resolved.ranges {
+        access.file(root, Path::new(&range.file))?;
     }
     Ok(selector.to_input(&resolved))
 }
@@ -393,6 +406,7 @@ fn reference_selector(
 // {impl}`requirements.authoring.mandatory_inputs`
 fn definition_inputs(
     root: &Path,
+    access: &SourceAccess,
     definitions: &BTreeMap<String, Declaration>,
     inputs: &[Value],
     subject: Option<&str>,
@@ -402,7 +416,7 @@ fn definition_inputs(
         .into_iter()
         .map(|definition| {
             let selector = InputSelector::Definition { definition };
-            source_input(root, definitions, &selector)
+            source_input(root, access, definitions, &selector)
         })
         .collect()
 }
@@ -410,6 +424,7 @@ fn definition_inputs(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use crate::authoring::access::tests::git;
 
     // {test}`requirements.authoring.mandatory_inputs`
     pub(crate) fn role(kind: &str, name: &str) -> String {
@@ -689,5 +704,101 @@ pub(super) mod tests {
             serde_json::from_str::<Value>(&fs::read_to_string(path).unwrap()).unwrap()["inputs"],
             json!(old_inputs)
         );
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.ci.authoring_inputs`
+    // {test}`requirements.authoring.function_attestations`
+    // {test}`requirements.authoring_input`
+    // {test}`requirements.references.authoring_inputs`
+    #[test]
+    fn mandatory_git_inputs_require_staging_declarations_sources_terms_and_old_selectors() {
+        let root = project();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "Cargo.toml", "book.toml"]);
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("md/requirements.md") && error.contains("git add"),
+            "{error}"
+        );
+        git(root.path(), &["add", "md"]);
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn ready() {{}}\n",
+                role("impl", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        for result in [
+            AssessmentSources::prepare(root.path(), "requirements.ready"),
+            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]"),
+        ] {
+            let error = result.err().unwrap();
+            assert!(
+                error.contains("src/lib.rs") && error.contains("git add"),
+                "{error}"
+            );
+        }
+        git(root.path(), &["add", "src"]);
+        fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} ready\n:phrase: ready\nReady to proceed.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {} {}\nfn ready() {{}}\n",
+                role("impl", "requirements.ready"),
+                role("term", "terms.ready")
+            ),
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("md/terms.md") && error.contains("git add"),
+            "{error}"
+        );
+        git(root.path(), &["add", "md/terms.md"]);
+        fs::write(root.path().join("notes.txt"), "current notes\n").unwrap();
+        fs::create_dir_all(root.path().join("evidence/rust/src")).unwrap();
+        let inputs =
+            json!([{"file":"notes.txt", "line_start":1, "line_end":1, "text":["old notes"]}]);
+        fs::write(
+            root.path().join("evidence/requirements.ready.json"),
+            json!({"inputs":inputs}).to_string(),
+        )
+        .unwrap();
+        fs::write(root.path().join("evidence/rust/src/lib.rs.json"), json!({"rust_file":"src/lib.rs", "functions":[{"rust_item":"fn[ready]", "inputs":inputs}]}).to_string()).unwrap();
+        for result in [
+            AssessmentSources::prepare(root.path(), "requirements.ready"),
+            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]"),
+        ] {
+            let error = result.err().unwrap();
+            assert!(
+                error.contains("notes.txt") && error.contains("git add"),
+                "{error}"
+            );
+        }
+        git(root.path(), &["add", "notes.txt"]);
+        for sources in [
+            AssessmentSources::prepare(root.path(), "requirements.ready").unwrap(),
+            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]").unwrap(),
+        ] {
+            assert!(
+                sources
+                    .mandatory_inputs()
+                    .iter()
+                    .any(|input| input["file"] == "notes.txt"
+                        && input["text"] == json!(["current notes"]))
+            );
+        }
     }
 }

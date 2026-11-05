@@ -11,6 +11,7 @@ pub mod authoring;
 pub mod config;
 mod definition_glob;
 mod evidence;
+mod fixme;
 mod index;
 mod inputs;
 pub mod judgment;
@@ -917,4 +918,6 @@ mod tests {
 
 mod commands;
 mod markdown;
-pub use commands::{info_markdown, status_markdown, status_markdown_filtered};
+pub use commands::{
+    info_markdown, status_markdown, status_markdown_filtered, status_markdown_with_options,
+};

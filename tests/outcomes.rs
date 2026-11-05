@@ -175,6 +175,7 @@ fn fixme_requirements_accept_issue_references_and_other_content() {
 
 // {test}`requirements.ci.schema`
 // {test}`requirements.index.state`
+// {test}`requirements.cli.fixme_summary`
 #[test]
 fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
     let temp = fixture();
@@ -192,11 +193,14 @@ fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
         .find(|line| line.starts_with("| `requirements.timeout`"))
         .unwrap();
     assert!(row.contains("Invalid"), "{row}");
+    assert!(status.contains("nonempty array"), "{status}");
+    assert!(!status.contains("affects"), "{status}");
 }
 
 // {test}`requirements.ci.inputs`
 // {test}`requirements.ci.fixme_stale_input`
 // {test}`requirements.index.state`
+// {test}`requirements.cli.fixme_summary`
 #[test]
 fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
     let temp = fixture();
@@ -214,6 +218,8 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
         .find(|line| line.starts_with("| `requirements.timeout`"))
         .unwrap();
     assert!(row.contains("Invalid"), "{row}");
+    assert!(status.contains("#125"), "{status}");
+    assert!(status.contains("input text changed"), "{status}");
     fs::write(
         temp.path().join("other.txt"),
         "CITE`requirements.timeout`".replace("CITE", "{cite}"),
@@ -280,6 +286,7 @@ fn rust_function_attestations_still_require_boolean_true() {
 }
 
 // {test}`requirements.cli.status`
+// {test}`requirements.cli.fixme_summary`
 // {test}`requirements.cli.info`
 // {test}`requirements.index.state`
 // {test}`requirements.index.detail_format`
@@ -289,12 +296,16 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
     let temp = fixture();
     for all in [false, true] {
         let status = habeas::status_markdown(temp.path(), all).unwrap();
-        assert!(status.contains("requirements.timeout"));
+        assert_eq!(status.contains("requirements.timeout"), all, "{status}");
         assert!(status.contains("FIXME"));
         assert!(status.contains("#125"));
         assert!(status.contains("rust-lang/rust#123"));
+        assert!(status.contains("affects 1 judgment"), "{status}");
         assert!(!status.contains("## Validation findings"));
     }
+    let verbose = habeas::status_markdown_with_options(temp.path(), false, None, true).unwrap();
+    assert!(verbose.contains("requirements.timeout"), "{verbose}");
+    assert!(verbose.contains("example"), "{verbose}");
     let info = habeas::info_markdown(temp.path(), "requirements.timeout").unwrap();
     assert!(info.contains("## FIXME references"));
     assert!(info.contains("rust-lang/rust#123"));

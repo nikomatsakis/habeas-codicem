@@ -19,6 +19,10 @@ rationale. The supervising agent must not compose or refresh evidence JSON,
 determinations, rationales, or source snapshots itself, or delegate that work to
 an ad hoc evidence-writing agent.
 
+In a Git worktree, stage new source files with `git add` before authoring.
+Unstaged edits to tracked files are readable. The harness excludes untracked
+files, generated `evidence/` content, and paths outside the project.
+
 Use `--config <name>` to select a saved authoring configuration. Configuration and
 credentials stay outside the project. Bedrock defaults to concurrent assessments;
 Ollama defaults to one at a time. Each named configuration's positive `concurrency`
@@ -27,7 +31,9 @@ setting and rerun the command. Do not substitute manual evidence creation when
 configuration or provider access is missing; report the blocker.
 
 Use `habeas status [<glob>]` to find requirements and examples needing attention,
-or `--all` to include accepted records. Use `habeas info <glob>` to inspect their
+or `--all` to include accepted records. Status groups FIXME judgments by issue;
+use `--verbose` to list the judgments and original FIXME entries in each group.
+Use `habeas info <glob>` to inspect their
 judgments, inputs, and validation findings. Globs match whole names; `*` matches
 any number of characters, including dots. For a focused reassessment, run
 `habeas author <full-name>`; add `--stdout` to inspect its JSON without changing

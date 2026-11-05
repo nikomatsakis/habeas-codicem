@@ -1,7 +1,7 @@
 {
   "requirement": "Ordinary evidence validation, status inspection, and book rendering MUST continue\nto check evidence using the existing rules without invoking models, contacting\nproviders, or requiring authoring configuration or credentials. Missing or stale\nevidence MUST remain a validation failure rather than trigger authoring.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation is structurally sound. Test coverage is narrower than the full wording, but I judged it adequate.\n\n**Implementation**\n- `habeas::validate()` (src/lib.rs:26-48) only locates the project root and calls `validate_repository` from src/evidence.rs. It panics with the collected errors. The panic text tells the agent to run `habeas author --all`, but nothing in the code invokes authoring.\n- A search of `src/` for `authoring::`, `config::` and `crate::config` finds no use in `src/evidence.rs`, `src/lib.rs` validation, or the `status`/`info` paths. The only matches are:\n  - the authoring modules themselves (`src/authoring/*`);\n  - `src/main.rs` lines 135-155, in the `Command::Author` arm;\n  - `src/index.rs`, which uses only mdBook's own `Config`.\n- The `Status`, `Info` and `Mdbook` arms in `src/main.rs` call `setup::project_root` and `habeas::status_markdown_filtered`, `info_markdown` or `preprocess_book`. None of these load user authoring configuration, build a provider or read credentials.\n- Missing or stale evidence is only reported. `validate_repository` returns error strings and `validate()` panics on them. Nothing in that path writes evidence or starts authoring.\n- This also matches the user-facing text in md/reference.md (~225-231) and the cross-reference in md/requirements/integration.md (`requirements.integration.validate`).\n\n**Tests**\n- `ordinary_status_ignores_invalid_user_authoring_configuration` (tests/authoring_cli.rs:581-603) is tagged `{test}requirements.authoring.deterministic_validation`.\n  - It writes a malformed user `config.toml` and points the Ollama endpoint at the unusable `http://127.0.0.1:1`.\n  - It runs `habeas status --all` on a project whose evidence has `determination: false`.\n  - It asserts that the command succeeds, that the subject is listed, that no state or usage directory is created, and that the evidence file is byte-identical to the original.\n  - Together these show that status needs no authoring configuration, contacts no provider, and does not author stale or pending evidence.\n- The `Fixture::run` helper (tests/authoring_cli.rs:180-186) is also tagged and drives the CLI for these checks.\n- Other tests cover the \"existing rules\" and \"failure, not authoring\" parts. They are not tagged to this requirement.\n  - tests/commands.rs reports `absent`, `malformed`, `stale`, `stale_input` and `uncovered` evidence as findings.\n  - tests/outcomes.rs, tests/definitions.rs and tests/evidence_boundaries.rs exercise `validate_repository` on stale, false and FIXME evidence.\n  - tests/habeas.rs runs `habeas::validate()` on the repository itself.\n  - tests/outcomes.rs calls `preprocess_book` and checks that FIXME judgments are rendered, so book rendering is exercised without any authoring setup.\n\n**Residual weakness**\nNo test runs `validate()` or `mdbook` rendering specifically with an absent or invalid authoring configuration. The code has no path from those functions to the config or provider modules, and `tests/habeas.rs` runs `validate()` in CI without any model credentials. This is a small gap in explicitness, not a missing behaviour, and I found no FIXME acknowledging it.",
+  "rationale": "**Verdict:** the requirement is met. It has one modest coverage gap, noted at the end.\n\n**Implementation.** The requirement is mostly a negative property: validation, status and rendering must not invoke models, contact providers, or need authoring configuration.\n- `habeas::validate()` (`src/lib.rs` ~26-47) only locates the project root and calls `validate_repository`.\n  - If there are errors, it panics with them. The message tells the user to run `habeas author --all`, but it never runs authoring itself.\n  - Missing or stale evidence therefore stays a validation failure.\n- `preprocess_book`, the status/info functions and `src/evidence.rs` are in the library's non-authoring modules.\n- A ripgrep over `src/` finds the provider and configuration dependencies (`rig_*`, `tokio`, `aws_config`, `config::resolve_authoring`, `config::state_root`) only in `src/authoring/*`, `src/config.rs` and the `Author` arm of `src/main.rs` (lines ~133-170).\n- The `Status`, `Info` and `Mdbook` arms (`src/main.rs` ~96-125) call only `habeas::status_markdown_with_options`, `info_markdown` and `preprocess_book`. None of them load user configuration, state directories or credentials.\n- The code structure therefore separates deterministic checking from authoring.\n\n**Tests.**\n- `tests/authoring_cli.rs::ordinary_status_ignores_invalid_user_authoring_configuration` carries `{test}` for this requirement. It writes malformed TOML as the user config and runs `habeas status requirements.ready --all`. It asserts that:\n  - the command succeeds and lists the subject;\n  - the state directory is never created, so no usage record or authoring happened;\n  - the evidence file is byte-for-byte unchanged, even though the fixture evidence is a false determination that needs attention.\n\n  This shows that invalid or stale evidence is reported rather than triggering authoring, and that a broken authoring configuration is ignored.\n- `Fixture::run` also carries the `{test}` reference.\n- `tests/outcomes.rs`, `tests/definitions.rs` and `tests/evidence_boundaries.rs` call `validate_repository` on stale, false and missing evidence and assert that errors are reported.\n  - Those tests use no model configuration or providers.\n  - Nothing is authored.\n- `tests/habeas.rs` runs `habeas::validate()` against the repository itself as the CI self-test.\n\n**Gap.** There is no explicit test that runs `validate()` or `mdbook` rendering with a broken or absent user config. Those paths are covered by the structural absence of any config or provider dependency and by the status test, so this is a minor gap. I judged it too small to change the verdict. No FIXME comments acknowledge any gap.",
   "inputs": [
     {
       "requirements": "requirements.authoring.deterministic_validation",
@@ -20,7 +20,7 @@
     {
       "file": "md/reference.md",
       "line_start": 1,
-      "line_end": 346,
+      "line_end": 377,
       "text": [
         "# How it works",
         "",
@@ -122,6 +122,12 @@
         "Ollama server. The server can run on another machine; Habeas does not need a GPU.",
         "{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`",
         "{cite}`requirements.authoring.text_search`",
+        "",
+        "In a Git worktree, stage new source files with `git add` before authoring. The",
+        "model can read unstaged edits to tracked files. Reads exclude untracked files,",
+        "generated `evidence/` content, and paths outside the project, including symlink",
+        "aliases. Standalone projects use the same containment rules without requiring Git.",
+        "{cite}`requirements.authoring.source_tools`",
         "",
         "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
         "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
@@ -303,12 +309,37 @@
         "",
         "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
         "",
-        "Run `habeas status [<glob>]` from within the project to list requirements and named examples needing attention and their validation findings, including FIXME judgments and their recorded references. `--all` shows every matching definition and its evidence state. Use `habeas info <glob>` to print matching detail pages as Markdown, including current texts, rationales, inputs, FIXME references, and findings. Both commands match whole full names; `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info` {cite}`requirements.references.definition_globs`",
+        "Run `habeas status [<glob>]` from within the project to list requirements and named",
+        "examples needing attention and their validation findings. FIXME judgments are",
+        "summarized by issue, for example:",
+        "",
+        "```text",
+        "- #123 — affects 22 judgments",
+        "- #45 — affects 3 judgments",
+        "- 16 judgments marked FIXME without an issue",
+        "```",
+        "",
+        "Each judgment counts once per issue, even if it repeats that reference. A judgment",
+        "with several issues counts in each group; the final group counts judgments with",
+        "no recognized issue reference. References may appear in explanatory text or",
+        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
+        "URLs are also recognized. Groups with the most affected judgments come first.",
+        "{cite}`requirements.cli.fixme_summary`",
+        "",
+        "Use `--verbose` to list the actual judgments in each group, with their full names,",
+        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
+        "evidence state. Stale or invalid FIXME evidence still reports its validation",
+        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
+        "including current texts, rationales, inputs, FIXME references, and findings. Both",
+        "commands match whole full names; `*` can span any number of characters, including",
+        "dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
+        "{cite}`requirements.references.definition_globs`",
         "",
         "```sh",
         "habeas info requirements.ci.inputs",
         "habeas info 'requirements.cli.*'",
         "habeas status 'requirements.cli.*' --all",
+        "habeas status --verbose",
         "```",
         "",
         "Agent skills installed by Habeas point to `habeas info` for looking up definition details.",
@@ -428,10 +459,363 @@
     },
     {
       "file": "md/reference.md",
+      "line_start": 1,
+      "line_end": 346,
+      "text": [
+        "# How it works",
+        "",
+        "Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `cargo test --workspace` checks the evidence; `mdbook build` renders links to it.",
+        "",
+        "## Requirements",
+        "",
+        "Write a colon-fenced `{req}` directive in a book chapter. For example, in `md/requirements.md`:",
+        "",
+        "```text",
+        ":::{req} check",
+        "The CLI MUST report invalid arguments.",
+        ":::",
+        "```",
+        "",
+        "The chapter path is part of the requirement's name, so this one is `requirements.check`. Everything between the opening and closing fences is its body, including headings and other Markdown.",
+        "",
+        "## Examples",
+        "",
+        "An example is a separate named definition for a concrete case. State the situation, action, and expected result, and cite the requirement it illustrates. This book contains a working example:",
+        "",
+        ":::{example} cli.unknown_command",
+        "Running `habeas unknown` fails with a nonzero exit status and prints a usage message. {cite}`requirements.cli.invocation`",
+        ":::",
+        "",
+        "Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The authoring harness records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the citations are current; the rationale explains why the tests are adequate.",
+        "",
+        "## Evidence",
+        "",
+        "Run `habeas author --all` to create and refresh evidence for requirements, examples,",
+        "and Rust function attestations. The harness writes `evidence/requirements.check.json`",
+        "for the requirement above and `evidence/reference.cli.unknown_command.json` for the",
+        "example. Each requirement or example evidence file records four fields:",
+        "",
+        "| Field | Meaning |",
+        "| --- | --- |",
+        "| `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |",
+        "| `determination` | `true`, `false`, or `{\"FIXME\": [\"#125\"]}` for explicitly documented gaps. |",
+        "| `rationale` | A Markdown explanation of that judgment. |",
+        "| `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or glob of definitions. |",
+        "",
+        "For a requirement, the model reviews whether the cited code implements its stated obligations",
+        "and whether tests cover the interesting design cases. If there are no tests,",
+        "its rationale explains why the logic is simple enough to need none or testing is impractical.",
+        "For an example, the model reviews whether tests cover its scenario and expected outcomes;",
+        "a true judgment requires a covered `{test}` reference. The assessment concerns",
+        "the named subject, using referenced requirements and definitions as context.",
+        "{cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`",
+        "",
+        "The model chooses `true` when that review supports the subject and FIXME when",
+        "source comments or tests explicitly acknowledge the remaining implementation or",
+        "testing gaps; otherwise it chooses `false` for gaps or missing information.",
+        "The FIXME array records the acknowledged gaps' issue references or other",
+        "identifying source content, with each gap and source location explained in the",
+        "rationale. The expected comment",
+        "convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may",
+        "appear elsewhere in the comment or test. The harness captures those source inputs.",
+        "{cite}`requirements.ci.outcomes`",
+        "",
+        "An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:",
+        "",
+        "```json",
+        "{\"file\":\"src/main.rs\",\"line_start\":1,\"line_end\":3,\"text\":[\"...\"]}",
+        "{\"rust_file\":\"src/main.rs\",\"rust_item\":\"fn[main]\",\"text\":[\"...\"]}",
+        "{\"requirements\":\"requirements.cli.*\",\"matches\":[\"requirements.cli.info\"],\"text\":[\"...\"]}",
+        "```",
+        "",
+        "`habeas author --all` captures source text and delegates judgments to the configured",
+        "model. The supervising agent fixes reported gaps and reruns the command; it does",
+        "not write evidence by hand. The lower-level `habeas add-input` command remains",
+        "available for selecting an additional input. A changed input leaves its",
+        "determination false until the authoring harness reassesses it.",
+        "{cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`",
+        "",
+        "```sh",
+        "habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20",
+        "habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26",
+        "habeas add-input --for-rust-item src/evidence.rs 'fn[validate_repository]' --requirements 'requirements.ci.*'",
+        "```",
+        "",
+        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`",
+        "",
+        "Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference.",
+        "",
+        "## Authoring evidence with a model",
+        "",
+        "`habeas author --all` fills in missing or stale evidence and reassesses invalid or",
+        "false records. It includes requirements, examples, and Rust function attestations,",
+        "preserving current accepted evidence, including FIXME judgments. Each assessment",
+        "gets its own conversation and usage record. Successful results are kept if",
+        "another assessment fails; the command reports failures and exits unsuccessfully.",
+        "A completed false judgment is saved and remains a validation failure.",
+        "{cite}`requirements.authoring.batch` {cite}`requirements.authoring.function_attestations`",
+        "",
+        "`habeas author <full-name>` assesses one requirement or example, records the",
+        "source inputs delivered to the model, and writes its judgment to the usual",
+        "evidence file. `author-evidence` remains an alias. Install `rg` (ripgrep) on your PATH for the model's search tool.",
+        "Choose a model that supports tool calls, either on Amazon Bedrock or an accessible",
+        "Ollama server. The server can run on another machine; Habeas does not need a GPU.",
+        "{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`",
+        "{cite}`requirements.authoring.text_search`",
+        "",
+        "In a Git worktree, stage new source files with `git add` before authoring. The",
+        "model can read unstaged edits to tracked files. Reads exclude untracked files,",
+        "generated `evidence/` content, and paths outside the project, including symlink",
+        "aliases. Standalone projects use the same containment rules without requiring Git.",
+        "{cite}`requirements.authoring.source_tools`",
+        "",
+        "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
+        "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
+        "relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local",
+        "and is not part of the project. Here is a complete configuration with two choices:",
+        "{cite}`requirements.configuration.user_location`",
+        "{cite}`requirements.authoring.configuration_documentation`",
+        "",
+        "```toml",
+        "version = 1",
+        "",
+        "[authoring]",
+        "default = \"cloud\"",
+        "",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\"",
+        "model = \"MODEL_ID\"",
+        "aws_profile = \"research\"",
+        "region = \"us-east-1\"",
+        "",
+        "[authoring.configs.local]",
+        "backend = \"ollama\"",
+        "model = \"MODEL_TAG\"",
+        "```",
+        "",
+        "Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,",
+        "`research` with your configured AWS profile, `us-east-1` with your region, and",
+        "`MODEL_TAG` with a model installed on your Ollama server. Omit `aws_profile` and",
+        "`region` to use standard AWS SDK resolution. Ollama defaults to",
+        "`http://localhost:11434`; add `endpoint = \"http://workstation:11434\"` to its table",
+        "for a remote server, replacing `workstation` with that server's host name. For",
+        "authentication, add `api_key_env = \"OLLAMA_API_KEY\"` and set that variable outside",
+        "the file. Credentials belong to AWS's credential sources or the named environment",
+        "variable. {cite}`requirements.authoring.configuration_precedence`",
+        "",
+        "Run from the project:",
+        "",
+        "```sh",
+        "habeas author --all",
+        "habeas author --all --config local",
+        "```",
+        "",
+        "For a single requirement or example, replace `requirements.check` with its full name:",
+        "",
+        "```sh",
+        "habeas author requirements.check",
+        "habeas author requirements.check --config local",
+        "habeas info requirements.check",
+        "```",
+        "",
+        "Use `--stdout` to emit the evidence JSON followed by a newline without creating",
+        "or changing evidence files or directories. The completion summary, usage-record",
+        "path, and diagnostics go to stderr, so stdout can be redirected or piped:",
+        "",
+        "```sh",
+        "habeas author requirements.check --stdout > /tmp/assessment.json",
+        "```",
+        "",
+        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
+        "assessment that fails before accepting a valid judgment emits no evidence JSON.",
+        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
+        "Usage is still recorded outside the project, with `evidence_output` identifying",
+        "the selected `file` or `stdout` destination and `evidence_written` reporting",
+        "whether the write succeeded.",
+        "{cite}`requirements.authoring.invocation`",
+        "{cite}`requirements.authoring.submission`",
+        "{cite}`requirements.authoring.persistence`",
+        "{cite}`requirements.authoring.usage_storage`",
+        "",
+        "Change `authoring.default` to switch the default, or add a per-project selection",
+        "using its canonical absolute path (replace `/absolute/path/to/project`):",
+        "",
+        "```toml",
+        "[authoring.projects.\"/absolute/path/to/project\"]",
+        "config = \"local\"",
+        "```",
+        "",
+        "The invocation's `--config` wins over that project selection, which wins over the",
+        "default. Remove the project table or default field to remove a selection. Delete",
+        "a configuration's table to remove it, updating selections that named it. Provider",
+        "inference options go under `[authoring.configs.<name>.options]`; supported keys",
+        "depend on the provider, and cannot replace the model, prompt, or tools. See the",
+        "[configuration reference](requirements/authoring.md#configuration) for the full",
+        "format. {cite}`requirements.authoring.configuration_storage`",
+        "{cite}`requirements.authoring.configuration_documentation`",
+        "",
+        "Bedrock runs assessments concurrently by default, using the available logical CPU",
+        "count. Ollama runs one at a time. Override either default with a positive",
+        "`concurrency` value alongside `backend` and `model` in its configuration table:",
+        "",
+        "```toml",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\"",
+        "model = \"MODEL_ID\"",
+        "concurrency = 4",
+        "```",
+        "",
+        "Four is an example, not a fixed default. Authoring uses asynchronous tasks on a",
+        "fixed worker thread pool and limits simultaneous assessments to this value.",
+        "Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work",
+        "on records that still need attention. {cite}`requirements.authoring.concurrency`",
+        "",
+        "For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and",
+        "`stopSequences` directly in that options table. Habeas maps them to Converse's",
+        "`inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.",
+        "Use these flat keys without an `inferenceConfig` wrapper. For example:",
+        "",
+        "```toml",
+        "[authoring.configs.cloud.options]",
+        "temperature = 0.25",
+        "maxTokens = 321",
+        "topP = 0.75",
+        "stopSequences = [\"END\"]",
+        "```",
+        "",
+        "These values are illustrative choices, not Habeas defaults. Omit any setting to",
+        "leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`",
+        "go in the same options table; Rig places them in Ollama's native request.",
+        "{cite}`requirements.authoring.configuration_storage`",
+        "{cite}`requirements.authoring.rig_configuration_mapping`",
+        "",
+        "The command reports the evidence destination and usage-record path. Usage",
+        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
+        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
+        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
+        "book rendering remain deterministic and do not require model configuration or",
+        "credentials. {cite}`requirements.authoring.usage_storage`",
+        "{cite}`requirements.authoring.deterministic_validation`",
+        "",
+        "### Live Bedrock tests",
+        "",
+        "`cargo test` includes a live Bedrock integration test. It skips with a visible",
+        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing",
+        "Bedrock authoring configuration fails the test. A skip returns successfully, so",
+        "Cargo displays `ok` rather than `ignored`. Once credentials load, provider and",
+        "authoring errors fail the test. Local runs with credentials make billable model",
+        "requests and retain their usage records in the usual user state directory.",
+        "",
+        "Run just these tests with:",
+        "",
+        "```sh",
+        "cargo test --test live_bedrock",
+        "```",
+        "",
+        "The live test uses the project's or user's selected Bedrock configuration,",
+        "falling back to the first named Bedrock configuration in name order. To select",
+        "one explicitly:",
+        "",
+        "```sh",
+        "HABEAS_LIVE_CONFIG=sonnet cargo test --test live_bedrock",
+        "```",
+        "",
+        "The test uses a temporary project and stdout evidence output, leaving the",
+        "checkout's evidence unchanged. Any set `CI` environment variable disables live",
+        "testing before configuration or credential lookup, even if credentials are",
+        "available. For example, `CI=1 cargo test` runs the suite without live inference.",
+        "{cite}`requirements.integration.live_bedrock_test`",
+        "",
+        "## References",
+        "",
+        "Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:",
+        "",
+        "```text",
+        "{impl}`requirements.check`",
+        "{cite}`requirements.check`",
+        "{test}`requirements.check`",
+        "{test}`reference.cli.unknown_command`",
+        "```",
+        "",
+        "Each reference must name an existing requirement or example. Its evidence must include an input covering the line with the reference. In the book, references and definitions become linked badges.",
+        "",
+        "For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example cites a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit project requirement such as `internal-detail` and provide evidence explaining why it adds no otherwise unspecified user-visible behavior.",
+        "",
+        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
+        "",
+        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
+        "",
+        "## Checking and viewing",
+        "",
+        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
+        "",
+        "Run `habeas status [<glob>]` from within the project to list requirements and named",
+        "examples needing attention and their validation findings. FIXME judgments are",
+        "summarized by issue, for example:",
+        "",
+        "```text",
+        "- #123 — affects 22 judgments",
+        "- #45 — affects 3 judgments",
+        "- 16 judgments marked FIXME without an issue",
+        "```",
+        "",
+        "Each judgment counts once per issue, even if it repeats that reference. A judgment",
+        "with several issues counts in each group; the final group counts judgments with",
+        "no recognized issue reference. References may appear in explanatory text or",
+        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
+        "URLs are also recognized. Groups with the most affected judgments come first.",
+        "{cite}`requirements.cli.fixme_summary`",
+        "",
+        "Use `--verbose` to list the actual judgments in each group, with their full names,",
+        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
+        "evidence state. Stale or invalid FIXME evidence still reports its validation",
+        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
+        "including current texts, rationales, inputs, FIXME references, and findings. Both",
+        "commands match whole full names; `*` can span any number of characters, including",
+        "dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
+        "{cite}`requirements.references.definition_globs`",
+        "",
+        "```sh",
+        "habeas info requirements.ci.inputs",
+        "habeas info 'requirements.cli.*'",
+        "habeas status 'requirements.cli.*' --all",
+        "habeas status --verbose",
+        "```",
+        "",
+        "Agent skills installed by Habeas point to `habeas info` for looking up definition details.",
+        "",
+        "To add an evidence index, list a chapter in `SUMMARY.md` and put this directive in it:",
+        "",
+        "```text",
+        ":::{requirements-index}",
+        ":::",
+        "```",
+        "",
+        "The build fills that chapter with requirement and example states and adds an evidence page under it for each definition.",
+        "",
+        "## Using a local checkout",
+        "",
+        "To use a checkout instead of the registry package, install the CLI from that checkout and point setup at it:",
+        "",
+        "```sh",
+        "cargo install --path /path/to/habeas-codicem",
+        "habeas setup --path /path/to/habeas-codicem",
+        "```",
+        "",
+        "Run `habeas setup` in the consuming Cargo and mdBook project. Its book uses the installed `habeas mdbook` CLI; the repository-local `cargo habeas` alias is only for Habeas's own book.",
+        "",
+        "## Named definitions",
+        "",
+        "Use a definition for shared vocabulary. It has a stable chapter-qualified name,",
+        "a short display phrase, and an explanatory body:"
+      ]
+    },
+    {
+      "file": "md/reference.md",
       "line_start": 187,
       "line_end": 187,
       "text": [
-        "Bedrock runs assessments concurrently by default, using the available logical CPU"
+        "inference options go under `[authoring.configs.<name>.options]`; supported keys"
       ]
     },
     {
@@ -439,13 +823,13 @@
       "line_start": 225,
       "line_end": 231,
       "text": [
-        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
-        "book rendering remain deterministic and do not require model configuration or",
-        "credentials. {cite}`requirements.authoring.usage_storage`",
-        "{cite}`requirements.authoring.deterministic_validation`",
+        "{cite}`requirements.authoring.configuration_storage`",
+        "{cite}`requirements.authoring.rig_configuration_mapping`",
         "",
-        "### Live Bedrock tests",
-        ""
+        "The command reports the evidence destination and usage-record path. Usage",
+        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
+        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
+        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and"
       ]
     },
     {
@@ -772,9 +1156,9 @@
       "line_start": 442,
       "line_end": 444,
       "text": [
+        "        .iter()",
         "        .zip(&target_html)",
-        "        .take_while(|(left, right)| left == right)",
-        "        .count();"
+        "        .take_while(|(left, right)| left == right)"
       ]
     },
     {
@@ -782,13 +1166,13 @@
       "line_start": 119,
       "line_end": 125,
       "text": [
+        "        Command::Info { selector } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout()",
+        "                .lock()",
+        "                .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;",
         "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.authoring.invocation`",
-        "        // {impl}`requirements.authoring.batch`",
-        "        // {impl}`requirements.authoring.concurrency`",
-        "        Command::Author {",
-        "            subject,"
+        "        }"
       ]
     },
     {
@@ -796,11 +1180,11 @@
       "line_start": 133,
       "line_end": 137,
       "text": [
-        "            if all {",
-        "                let outcome =",
-        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;",
-        "                println!(",
-        "                    \"{} authored; {} unchanged; {} failed\","
+        "            stdout,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            // Tokio's fixed worker pool is shared by all async assessments.",
+        "            let runtime = tokio::runtime::Runtime::new()?;"
       ]
     },
     {
@@ -808,11 +1192,11 @@
       "line_start": 142,
       "line_end": 146,
       "text": [
-        "                if !outcome.failures.is_empty() {",
-        "                    return Err(io::Error::other(",
-        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
-        "                    )",
-        "                    .into());"
+        "                    \"{} authored; {} unchanged; {} failed\",",
+        "                    outcome.completed.len(),",
+        "                    outcome.unchanged,",
+        "                    outcome.failures.len()",
+        "                );"
       ]
     },
     {
@@ -820,15 +1204,15 @@
       "line_start": 149,
       "line_end": 157,
       "text": [
+        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
+        "                    )",
+        "                    .into());",
+        "                }",
+        "                return Ok(());",
         "            }",
         "            let output = if stdout {",
         "                habeas::authoring::EvidenceOutput::Stdout",
-        "            } else {",
-        "                habeas::authoring::EvidenceOutput::File",
-        "            };",
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
-        "                &root,",
-        "                &subject.expect(\"clap requires a subject or --all\"),"
+        "            } else {"
       ]
     },
     {
@@ -866,6 +1250,9 @@
         "    Status {",
         "        #[arg(long)]",
         "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]",
+        "        verbose: bool,",
         "        glob: Option<String>,",
         "    },",
         "    Info {",
@@ -941,10 +1328,12 @@
         "        // {impl}`requirements.cli.setup`",
         "        Command::Setup { path } => setup::run(path.as_deref()),",
         "        // {impl}`requirements.cli.status`",
-        "        Command::Status { all, glob } => {",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status { all, glob, verbose } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_filtered(&root, all, glob.as_deref())?.as_bytes(),",
+        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                    .as_bytes(),",
         "            )?;",
         "            Ok(())",
         "        }",
@@ -1030,12 +1419,7 @@
         "            rust_item,",
         "            requirements,",
         "        } => {",
-        "            let root = setup::project_root()?;",
-        "            let target = if let Some(name) = for_requirement {",
-        "                habeas::InputTarget::Requirement(name)",
-        "            } else if let Some(name) = for_example {",
-        "                habeas::InputTarget::Example(name)",
-        "            } else {"
+        "            let root = setup::project_root()?;"
       ]
     },
     {
@@ -1051,7 +1435,7 @@
       "line_start": 20,
       "line_end": 20,
       "text": [
-        "use crate::config::{self, BackendKind, ResolvedAuthoringConfig};"
+        ""
       ]
     },
     {
@@ -1067,7 +1451,7 @@
       "line_start": 301,
       "line_end": 301,
       "text": [
-        "    Ok(path)"
+        "        .ok_or_else(|| \"path is not UTF-8\".to_owned())"
       ]
     },
     {
@@ -1075,7 +1459,7 @@
       "line_start": 135,
       "line_end": 135,
       "text": [
-        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;"
+        "            let root = setup::project_root()?;"
       ]
     },
     {
@@ -1083,7 +1467,7 @@
       "line_start": 151,
       "line_end": 151,
       "text": [
-        "                habeas::authoring::EvidenceOutput::Stdout"
+        "                    .into());"
       ]
     },
     {
@@ -1091,7 +1475,7 @@
       "line_start": 153,
       "line_end": 153,
       "text": [
-        "                habeas::authoring::EvidenceOutput::File"
+        "                return Ok(());"
       ]
     },
     {
@@ -1099,7 +1483,7 @@
       "line_start": 155,
       "line_end": 155,
       "text": [
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output("
+        "            let output = if stdout {"
       ]
     },
     {
@@ -1131,11 +1515,11 @@
       "line_start": 175,
       "line_end": 179,
       "text": [
-        "// {test}`requirements.cli.definition_glob_search`",
-        "#[test]",
-        "fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {",
-        "    let temp = fixture();",
-        "    let output = habeas(temp.path(), &[\"info\", \"requirements.ready\"]);"
+        "        let subject_key = if kind == \"example\" {",
+        "            \"example\"",
+        "        } else {",
+        "            \"requirement\"",
+        "        };"
       ]
     },
     {
@@ -1155,11 +1539,11 @@
       "line_start": 199,
       "line_end": 203,
       "text": [
+        "",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.fixme_stale_input`",
         "// {test}`requirements.index.state`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();"
+        "// {test}`requirements.cli.fixme_summary`"
       ]
     },
     {
@@ -1191,13 +1575,13 @@
       "line_start": 26,
       "line_end": 32,
       "text": [
+        "///",
         "/// Panics with all validation errors so an integration test can simply call",
         "/// `habeas::validate()`.",
         "#[track_caller]",
         "pub fn validate() {",
         "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd"
+        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");"
       ]
     },
     {
@@ -1205,13 +1589,13 @@
       "line_start": 146,
       "line_end": 152,
       "text": [
+        "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.definitions.references`",
         "// {impl}`requirements.definitions.selection`",
         "pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {",
         "    let mut definitions = BTreeMap::new();",
-        "    for chapter in book.chapters() {",
-        "        let Some(source_path) = chapter.source_path.as_deref().or(chapter.path.as_deref()) else {"
+        "    for chapter in book.chapters() {"
       ]
     },
     {
@@ -1494,11 +1878,11 @@
       "line_start": 180,
       "line_end": 184,
       "text": [
+        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {",
         "    let temp = fixture();",
         "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
         "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report"
+        "    assert!("
       ]
     },
     {
@@ -1506,11 +1890,11 @@
       "line_start": 202,
       "line_end": 206,
       "text": [
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report"
+        "// {test}`requirements.index.state`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "#[test]",
+        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
+        "    let temp = fixture();"
       ]
     },
     {
@@ -1518,11 +1902,11 @@
       "line_start": 220,
       "line_end": 224,
       "text": [
-        "    )",
-        "    .unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report"
+        "    assert!(row.contains(\"Invalid\"), \"{row}\");",
+        "    assert!(status.contains(\"#125\"), \"{status}\");",
+        "    assert!(status.contains(\"input text changed\"), \"{status}\");",
+        "    fs::write(",
+        "        temp.path().join(\"other.txt\"),"
       ]
     },
     {
@@ -1530,11 +1914,11 @@
       "line_start": 267,
       "line_end": 271,
       "text": [
-        "    });",
-        "    fs::write(&attestation_path, attestation.to_string()).unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report"
+        "            \"inputs\": [function, {",
+        "                \"requirements\": \"requirements.ready\",",
+        "                \"matches\": [\"requirements.ready\"],",
+        "                \"text\": [\":::{req} ready\", \"The behavior MUST work.\", \":::\"]",
+        "            }]"
       ]
     },
     {
@@ -1542,11 +1926,11 @@
       "line_start": 276,
       "line_end": 280,
       "text": [
-        "    attestation[\"functions\"][0][\"determination\"] = json!(true);",
-        "    fs::write(attestation_path, attestation.to_string()).unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "}"
+        "    assert!(",
+        "        report",
+        "            .errors",
+        "            .iter()",
+        "            .any(|error| error.contains(\"determination must be a boolean\"))"
       ]
     },
     {
@@ -1554,6 +1938,7 @@
       "line_start": 20,
       "line_end": 145,
       "text": [
+        "mod terms;",
         "",
         "pub use add_input::{InputMode, InputTarget, add_input};",
         "pub use evidence::{EvidenceReport, validate_repository};",
@@ -1678,8 +2063,7 @@
         "    pub(crate) kind: ReferenceKind,",
         "}",
         "",
-        "// {impl}`requirements.cli.mdbook`",
-        "// {impl}`requirements.examples.definition`"
+        "// {impl}`requirements.cli.mdbook`"
       ]
     },
     {
@@ -1695,7 +2079,7 @@
       "line_start": 122,
       "line_end": 122,
       "text": [
-        "    output: EvidenceOutput,"
+        "    selection: Option<&str>,"
       ]
     },
     {
@@ -1703,7 +2087,7 @@
       "line_start": 174,
       "line_end": 174,
       "text": [
-        "    config: &ResolvedAuthoringConfig,"
+        "    subject: &AuthoringSubject,"
       ]
     },
     {
@@ -1711,7 +2095,7 @@
       "line_start": 240,
       "line_end": 240,
       "text": [
-        "    output: EvidenceOutput,"
+        "    selection: Option<&str>,"
       ]
     },
     {
@@ -1736,7 +2120,7 @@
       "line_start": 318,
       "line_end": 318,
       "text": [
-        "mod tests {"
+        "        fs::write("
       ]
     },
     {
@@ -1800,7 +2184,7 @@
       "line_start": 228,
       "line_end": 228,
       "text": [
-        "{cite}`requirements.authoring.deterministic_validation`"
+        "The command reports the evidence destination and usage-record path. Usage"
       ]
     },
     {
@@ -1868,11 +2252,11 @@
       "line_start": 313,
       "line_end": 317,
       "text": [
-        "        Vec::new(),",
-        "    ));",
-        "    habeas::preprocess_book(&mut book, temp.path()).unwrap();",
-        "    let index = book.chapters().nth(1).unwrap();",
-        "    assert!(index.content.contains(\"FIXME\"));"
+        "    let mut book = Book::new();",
+        "    book.push_item(Chapter::new(",
+        "        \"Requirements\",",
+        "        fs::read_to_string(temp.path().join(\"md/requirements.md\")).unwrap(),",
+        "        \"requirements.md\","
       ]
     },
     {
@@ -1920,7 +2304,7 @@
       "line_start": 125,
       "line_end": 125,
       "text": [
-        "    let state = config::state_root()?;"
+        "    let root = fs::canonicalize(root)?;"
       ]
     },
     {
@@ -1928,7 +2312,7 @@
       "line_start": 177,
       "line_end": 177,
       "text": [
-        "    let state = config::state_root()?;"
+        "    let root = fs::canonicalize(root)?;"
       ]
     },
     {
@@ -1936,7 +2320,7 @@
       "line_start": 243,
       "line_end": 243,
       "text": [
-        "    let config = config::resolve_authoring(root, selection)?;"
+        ") -> io::Result<AuthoringOutcome> {"
       ]
     },
     {
@@ -1944,7 +2328,7 @@
       "line_start": 320,
       "line_end": 320,
       "text": [
-        "    use crate::authoring::inputs::tests::{project, role};"
+        "            \":::{definition} value\\n:phrase: value\\nA useful value.\\n:::\\n\","
       ]
     },
     {
@@ -1952,7 +2336,7 @@
       "line_start": 596,
       "line_end": 596,
       "text": [
-        ":::{req} deterministic_validation"
+        "Usage MUST record each provider request's outcome and available input/output"
       ]
     },
     {
@@ -2082,15 +2466,15 @@
       "line_start": 123,
       "line_end": 131,
       "text": [
-        "    let text = String::from_utf8(output.stdout).unwrap();",
-        "    for (name, state) in [",
-        "        (\"absent\", \"Missing\"),",
-        "        (\"malformed\", \"Invalid\"),",
-        "        (\"pending\", \"Determination false\"),",
-        "        (\"stale\", \"Invalid\"),",
-        "        (\"stale_input\", \"Invalid\"),",
-        "        (\"uncovered\", \"Invalid\"),",
-        "    ] {"
+        "    let temp = TempDir::new().unwrap();",
+        "    fs::create_dir(temp.path().join(\"md\")).unwrap();",
+        "    fs::create_dir(temp.path().join(\"evidence\")).unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"Cargo.toml\"),",
+        "        \"[package]\\nname = 'fixture'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();"
       ]
     },
     {
@@ -2098,11 +2482,11 @@
       "line_start": 140,
       "line_end": 144,
       "text": [
-        "    assert!(!text.contains(\"| `requirements.ready`\"), \"{text}\");",
-        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
-        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
-        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
-        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");"
+        "                \"Repeated #123 and rust-lang/rust#000456.\",",
+        "                \"https://github.com/rust-lang/rust/issues/456\",",
+        "                \"Unlinked extra detail\",",
+        "            ],",
+        "        ),"
       ]
     },
     {
@@ -2110,12 +2494,12 @@
       "line_start": 156,
       "line_end": 161,
       "text": [
-        "        \"pending\",",
-        "        \"ready\",",
-        "        \"stale\",",
-        "        \"stale_input\",",
-        "        \"uncovered\",",
-        "        \"xready\","
+        "            vec![",
+        "                \"No ticket for <script>alert(1)</script>\",",
+        "                \"#000 is not an issue\",",
+        "                \"#12abc and ##123 are not complete issue references\",",
+        "            ],",
+        "        ),"
       ]
     },
     {
@@ -2123,17 +2507,17 @@
       "line_start": 218,
       "line_end": 228,
       "text": [
-        "    assert!(matches.contains(\"\\n\\n---\\n\\n\"), \"{matches}\");",
-        "",
-        "    let missing = habeas(temp.path(), &[\"info\", \"requirements.absent\"]);",
-        "    assert!(missing.status.success(), \"{:?}\", missing);",
-        "    let missing = String::from_utf8(missing.stdout).unwrap();",
-        "    assert!(missing.contains(\"## Validation findings\"), \"{missing}\");",
-        "    assert!(missing.contains(\"missing for requirement\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No rationale recorded.\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");",
-        "",
-        "    let malformed = habeas(temp.path(), &[\"info\", \"requirements.malformed\"]);"
+        "    assert!(",
+        "        text.lines()",
+        "            .any(|line| line.contains(\"1 judgment\") && line.contains(\"without an issue\")),",
+        "        \"{text}\"",
+        "    );",
+        "    assert!(!text.contains(\"#00123\"), \"{text}\");",
+        "    assert!(!text.contains(\"#000456\"), \"{text}\");",
+        "    assert!(",
+        "        text.find(\"without an issue\").unwrap() > text.find(summaries[3]).unwrap(),",
+        "        \"{text}\"",
+        "    );"
       ]
     },
     {
@@ -2141,11 +2525,11 @@
       "line_start": 509,
       "line_end": 513,
       "text": [
-        "            \"rules.ready\",",
-        "            \"--requirements\",",
-        "            \"missing.*\",",
-        "        ],",
-        "    );"
+        "        \"{status}\"",
+        "    );",
+        "    assert!(!status.contains(\"| `requirements.pending`\"), \"{status}\");",
+        "    let no_status = habeas(temp.path(), &[\"status\", \"nothing.*\"]);",
+        "    assert!(!no_status.status.success());"
       ]
     },
     {
@@ -2354,14 +2738,527 @@
       "line_start": 196,
       "line_end": 203,
       "text": [
+        "    assert!(status.contains(\"nonempty array\"), \"{status}\");",
+        "    assert!(!status.contains(\"affects\"), \"{status}\");",
+        "}",
         "",
         "// {test}`requirements.ci.inputs`",
         "// {test}`requirements.ci.fixme_stale_input`",
         "// {test}`requirements.index.state`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();"
+        "// {test}`requirements.cli.fixme_summary`"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 6,
+      "line_end": 6,
+      "text": [
+        "use tokio::task::JoinSet;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 427,
+      "line_end": 427,
+      "text": [
+        "    use crate::authoring::access::tests::git;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 21,
+      "line_end": 21,
+      "text": [
+        "use crate::config::{self, BackendKind, ResolvedAuthoringConfig};"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 126,
+      "line_end": 126,
+      "text": [
+        "    let state = config::state_root()?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 139,
+      "line_end": 139,
+      "text": [
+        "    let result = tokio::select! {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 141,
+      "line_end": 141,
+      "text": [
+        "        signal = tokio::signal::ctrl_c() => {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 178,
+      "line_end": 178,
+      "text": [
+        "    let state = config::state_root()?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 186,
+      "line_end": 186,
+      "text": [
+        "    let result = tokio::select! {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 188,
+      "line_end": 188,
+      "text": [
+        "        signal = tokio::signal::ctrl_c() => {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 244,
+      "line_end": 244,
+      "text": [
+        "    let config = config::resolve_authoring(root, selection)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 560,
+      "line_end": 560,
+      "text": [
+        "    #[tokio::test]"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 307,
+      "line_end": 308,
+      "text": [
+        "    use crate::authoring::access::tests::git;",
+        "    use crate::authoring::inputs::tests::{project, role};"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 137,
+      "line_end": 137,
+      "text": [
+        "            let runtime = tokio::runtime::Runtime::new()?;"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 140,
+      "line_end": 140,
+      "text": [
+        "                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 156,
+      "line_end": 156,
+      "text": [
+        "                habeas::authoring::EvidenceOutput::Stdout"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 158,
+      "line_end": 158,
+      "text": [
+        "                habeas::authoring::EvidenceOutput::File"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 160,
+      "line_end": 160,
+      "text": [
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 380,
+      "line_end": 381,
+      "text": [
+        "pub fn state_root() -> io::Result<PathBuf> {",
+        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 385,
+      "line_end": 385,
+      "text": [
+        "pub fn state_root_from("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 440,
+      "line_end": 440,
+      "text": [
+        "pub fn resolve_authoring("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 451,
+      "line_end": 451,
+      "text": [
+        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 460,
+      "line_end": 460,
+      "text": [
+        "pub fn resolve_authoring_from("
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 234,
+      "line_end": 234,
+      "text": [
+        "{cite}`requirements.authoring.deterministic_validation`"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 606,
+      "line_end": 606,
+      "text": [
+        ":::{req} deterministic_validation"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 17,
+      "line_end": 18,
+      "text": [
+        "use rig_core::completion::{CompletionRequest, ToolDefinition};",
+        "use rig_core::message::{Message, ToolResultContent, turn_failure};"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 234,
+      "line_end": 234,
+      "text": [
+        "// {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 282,
+      "line_end": 282,
+      "text": [
+        "// {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 520,
+      "line_end": 521,
+      "text": [
+        "    use rig_core::completion::{CompletionResponse, FinishReason, Usage};",
+        "    use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 549,
+      "line_end": 549,
+      "text": [
+        "                Origin::new(\"fixture\", \"fixture\", \"fixture\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 3,
+      "line_end": 5,
+      "text": [
+        "use rig_core::completion::{CompletionRequest, CompletionResponse};",
+        "use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};",
+        "use rig_core::{DynModel, operation::Completion};"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 23,
+      "line_end": 23,
+      "text": [
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 40,
+      "line_end": 40,
+      "text": [
+        "                rig_bedrock::client::BedrockRuntime::from(sdk)"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 45,
+      "line_end": 45,
+      "text": [
+        "                let mut provider = rig_core::providers::ollama::OllamaConfig::new()"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 64,
+      "line_end": 64,
+      "text": [
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 84,
+      "line_end": 84,
+      "text": [
+        "// {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 113,
+      "line_end": 114,
+      "text": [
+        "        // Keeping the native item preserves the original block for replay,",
+        "        // including its type, without disturbing signed reasoning or origin."
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 121,
+      "line_end": 121,
+      "text": [
+        "// {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 176,
+      "line_end": 177,
+      "text": [
+        "    use rig_core::completion::{FinishReason, Usage};",
+        "    use rig_core::message::{Opaque, Origin, Reasoning, Text};"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 181,
+      "line_end": 181,
+      "text": [
+        "    // {test}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 207,
+      "line_end": 207,
+      "text": [
+        "    // {test}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 216,
+      "line_end": 216,
+      "text": [
+        "                \"text\":\"Inspect the source.\",\"signature\":\"original-signature\""
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 238,
+      "line_end": 238,
+      "text": [
+        "        let origin = Origin::new("
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 243,
+      "line_end": 243,
+      "text": [
+        "        let raw = json!({\"original\":\"provider response\"});"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 247,
+      "line_end": 247,
+      "text": [
+        "            origin.clone(),"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 262,
+      "line_end": 262,
+      "text": [
+        "            rig_core::message::CallId::from_wire(\"client-1\")"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 272,
+      "line_end": 272,
+      "text": [
+        "            rig_core::message::CallId::from_wire(\"client-2\")"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 275,
+      "line_end": 275,
+      "text": [
+        "        assert_eq!(response.origin, origin);"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 284,
+      "line_end": 284,
+      "text": [
+        "    // {test}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 298,
+      "line_end": 298,
+      "text": [
+        "                Origin::new(\"bedrock.converse\", \"aws_bedrock\", \"model\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 607,
+      "line_end": 607,
+      "text": [
+        "        fs::write(root.path().join(\"tracked-dir/file.txt\"), \"original\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 8,
+      "line_end": 8,
+      "text": [
+        "use rig_core::completion::Usage;"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 42,
+      "line_end": 42,
+      "text": [
+        "    origin: String,"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 133,
+      "line_end": 133,
+      "text": [
+        "    pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 155,
+      "line_end": 155,
+      "text": [
+        "                origin: origin.to_owned(),"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 388,
+      "line_end": 388,
+      "text": [
+        "        assert_eq!(prepared[\"inputs\"][2][\"origin\"], \"habeas\");"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 239,
+      "line_end": 239,
+      "text": [
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 437,
+      "line_end": 437,
+      "text": [
+        "// {impl}`requirements.authoring.rig_configuration_mapping`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1870,
+      "line_end": 1871,
+      "text": [
+        "        let rust_original = fs::read_to_string(&rust_evidence).unwrap();",
+        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1877,
+      "line_end": 1877,
+      "text": [
+        "        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1892,
+      "line_end": 1892,
+      "text": [
+        "        fs::write(&rust_evidence, rust_original).unwrap();"
+      ]
+    },
+    {
+      "file": "src/fixme.rs",
+      "line_start": 48,
+      "line_end": 48,
+      "text": [
+        "        groups.sort_by(|(a, left), (b, right)| right.len().cmp(&left.len()).then(a.cmp(b)));"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 444,
+      "line_end": 444,
+      "text": [
+        "        .take_while(|(left, right)| left == right)"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 31,
+      "line_end": 31,
+      "text": [
+        "        /// List the judgments and original FIXME entries within each issue group."
       ]
     }
   ]

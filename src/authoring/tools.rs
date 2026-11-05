@@ -5,7 +5,7 @@ use std::process::Command;
 
 use serde_json::{Map, Value, json};
 
-use super::inputs::{AssessmentSources, generated_evidence_path};
+use super::inputs::AssessmentSources;
 use crate::inputs::{InputSelector, read_project_file};
 
 pub(crate) struct ToolDelivery {
@@ -22,7 +22,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Generated evidence under evidence/ is excluded from source reads.",
+            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Read only project-local sources; in Git worktrees, files and their resolved symlink targets must be tracked. Generated evidence under evidence/ is excluded.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -34,11 +34,11 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Generated evidence under evidence/ is excluded from discovery.",
+            "name": "list_files", "description": "List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible project-local sources are listed; Git worktrees omit untracked files and directories without tracked source descendants. Generated evidence under evidence/ is excluded.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Generated evidence under evidence/ is excluded from searches.",
+            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible project-local sources, tracked in Git worktrees. Generated evidence under evidence/ is excluded.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
     ]
@@ -70,9 +70,7 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDe
     let selector = if args.contains_key("file") {
         check_keys(args, &["file", "line_start", "line_end"])?;
         let file = string(args, "file")?.to_owned();
-        if generated_evidence_path(&sources.root, Path::new(&file)) {
-            return Err("generated evidence is output, not assessment source".to_owned());
-        }
+        sources.access.file(&sources.root, Path::new(&file))?;
         let line_start = integer(args, "line_start")?;
         let line_end = if args.contains_key("line_end") {
             integer(args, "line_end")?
@@ -117,11 +115,16 @@ fn list_files(
 ) -> Result<ToolDelivery, String> {
     check_keys(args, &["path"])?;
     let path = optional_path(args)?;
-    let directory = project_path(&sources.root, path)?;
+    let directory = project_path(sources, path)?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&directory).map_err(|error| format!("cannot list {path}: {error}"))? {
         let entry = entry.map_err(|error| format!("cannot list {path}: {error}"))?;
-        if generated_evidence_path(&sources.root, &entry.path()) {
+        let relative = relative_path(&sources.root, &entry.path())?;
+        if sources
+            .access
+            .path(&sources.root, Path::new(&relative))
+            .is_err()
+        {
             continue;
         }
         let metadata = fs::metadata(entry.path())
@@ -133,7 +136,6 @@ fn list_files(
         } else {
             continue;
         };
-        let relative = relative_path(&sources.root, &entry.path())?;
         entries.push((relative, kind));
     }
     entries.sort();
@@ -154,7 +156,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<Tool
     check_keys(args, &["pattern", "path", "context"])?;
     let pattern = string(args, "pattern")?;
     let path = optional_path(args)?;
-    project_path(&sources.root, path)?;
+    project_path(sources, path)?;
     let context = if args.contains_key("context") {
         integer(args, "context")?
     } else {
@@ -195,7 +197,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<Tool
         let file = event["data"]["path"]["text"]
             .as_str()
             .ok_or_else(|| "ripgrep found a non-UTF-8 path".to_owned())?;
-        if generated_evidence_path(&sources.root, Path::new(file)) {
+        if sources.access.file(&sources.root, Path::new(file)).is_err() {
             continue;
         }
         let number = event["data"]["line_number"]
@@ -282,23 +284,8 @@ fn optional_path(args: &Map<String, Value>) -> Result<&str, String> {
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.authoring.source_tools`
-fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
-    if relative.is_empty()
-        || !Path::new(relative)
-            .components()
-            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err("path must be relative to the project".to_owned());
-    }
-    let path = fs::canonicalize(root.join(relative))
-        .map_err(|error| format!("cannot open {relative}: {error}"))?;
-    if !path.starts_with(root) {
-        return Err(format!("{relative} resolves outside the project"));
-    }
-    if generated_evidence_path(root, &path) {
-        return Err("generated evidence is output, not assessment source".to_owned());
-    }
-    Ok(path)
+fn project_path(sources: &AssessmentSources, relative: &str) -> Result<PathBuf, String> {
+    sources.access.path(&sources.root, Path::new(relative))
 }
 
 // {impl}`requirements.authoring.file_discovery`
@@ -317,6 +304,7 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authoring::access::tests::git;
     use crate::authoring::inputs::tests::{project, role};
 
     // {test}`requirements.authoring.additional_read`
@@ -403,7 +391,7 @@ mod tests {
     #[test]
     fn search_merges_context_windows_and_respects_ignore_rules() {
         let root = project();
-        fs::create_dir(root.path().join(".git")).unwrap();
+        git(root.path(), &["init", "--quiet"]);
         fs::write(root.path().join(".gitignore"), "ignored.txt\n").unwrap();
         fs::write(root.path().join("ignored.txt"), "needle\n").unwrap();
         fs::write(root.path().join(".hidden.txt"), "needle\n").unwrap();
@@ -417,6 +405,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         fs::write(root.path().join("sample.txt"), lines.join("\n")).unwrap();
+        git(root.path(), &["add", "--force", "."]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"needle"})).unwrap();
         assert_eq!(search.inputs.len(), 1);
@@ -484,6 +473,8 @@ mod tests {
             )
             .unwrap();
         }
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let search = dispatch(
             &sources,
@@ -562,5 +553,180 @@ mod tests {
                     .contains("generated evidence")
             );
         }
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    #[cfg(unix)]
+    #[test]
+    fn outside_symlinks_are_excluded_from_reads_search_and_discovery() {
+        let root = project();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.rs"), "fn outside_needle() {}\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.rs"),
+            root.path().join("outside.rs"),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        assert!(listing.result.as_array().unwrap().iter().all(|entry| {
+            !["outside", "outside.rs"].contains(&entry["path"].as_str().unwrap())
+        }));
+        let search = dispatch(&sources, "ripgrep", &json!({"pattern":"outside_needle"})).unwrap();
+        assert!(search.inputs.is_empty());
+        for path in ["outside/secret.rs", "outside.rs"] {
+            for arguments in [
+                json!({"file":path, "line_start":1}),
+                json!({"file":path, "line_start":1, "line_end":1}),
+                json!({"rust_file":path, "rust_item":"fn[outside_needle]"}),
+            ] {
+                assert!(dispatch(&sources, "habeas", &arguments).is_err());
+            }
+            assert!(
+                dispatch(
+                    &sources,
+                    "ripgrep",
+                    &json!({"path":path, "pattern":"needle"})
+                )
+                .is_err()
+            );
+        }
+        assert!(dispatch(&sources, "list_files", &json!({"path":"outside"})).is_err());
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    #[test]
+    fn git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files() {
+        let root = project();
+        fs::create_dir(root.path().join("tracked-dir")).unwrap();
+        fs::write(root.path().join("tracked-dir/file.txt"), "original\n").unwrap();
+        fs::write(root.path().join("staged.txt"), "needle staged\n").unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        fs::write(root.path().join("tracked-dir/file.txt"), "needle dirty\n").unwrap();
+        fs::create_dir(root.path().join("untracked-dir")).unwrap();
+        fs::write(
+            root.path().join("untracked-dir/file.txt"),
+            "needle hidden\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("untracked.rs"), "fn needle() {}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        assert_eq!(
+            listing
+                .result
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["Cargo.toml", "book.toml", "md", "staged.txt", "tracked-dir"]
+        );
+        for (path, text) in [
+            ("staged.txt", "needle staged"),
+            ("tracked-dir/file.txt", "needle dirty"),
+        ] {
+            let read = dispatch(&sources, "habeas", &json!({"file":path, "line_start":1})).unwrap();
+            assert_eq!(read.result["input"]["text"], json!([text]));
+        }
+        let search = dispatch(&sources, "ripgrep", &json!({"pattern":"needle"})).unwrap();
+        assert_eq!(
+            search
+                .inputs
+                .iter()
+                .map(|input| input["file"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["staged.txt", "tracked-dir/file.txt"]
+        );
+        for arguments in [
+            json!({"file":"untracked.rs", "line_start":1}),
+            json!({"file":"untracked.rs", "line_start":1, "line_end":1}),
+            json!({"rust_file":"untracked.rs", "rust_item":"fn[needle]"}),
+        ] {
+            let error = dispatch(&sources, "habeas", &arguments).err().unwrap();
+            assert!(error.contains("git add"), "{error}");
+        }
+        assert!(dispatch(&sources, "list_files", &json!({"path":"untracked-dir"})).is_err());
+        assert!(
+            dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"path":"untracked.rs", "pattern":"needle"})
+            )
+            .is_err()
+        );
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    #[cfg(unix)]
+    #[test]
+    fn git_symlink_reads_require_both_the_alias_and_target_to_be_tracked() {
+        let root = project();
+        fs::write(root.path().join("tracked.txt"), "needle allowed\n").unwrap();
+        fs::write(root.path().join("untracked.txt"), "needle hidden\n").unwrap();
+        for (alias, target) in [
+            ("tracked-alias.txt", "tracked.txt"),
+            ("untracked-target.txt", "untracked.txt"),
+            ("untracked-alias.txt", "tracked.txt"),
+        ] {
+            std::os::unix::fs::symlink(target, root.path().join(alias)).unwrap();
+        }
+        git(root.path(), &["init", "--quiet"]);
+        git(
+            root.path(),
+            &[
+                "add",
+                "Cargo.toml",
+                "book.toml",
+                "md",
+                "tracked.txt",
+                "tracked-alias.txt",
+                "untracked-target.txt",
+            ],
+        );
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let allowed = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"tracked-alias.txt", "line_start":1}),
+        )
+        .unwrap();
+        assert_eq!(allowed.result["input"]["text"], json!(["needle allowed"]));
+        for alias in ["untracked-target.txt", "untracked-alias.txt"] {
+            assert!(
+                dispatch(&sources, "habeas", &json!({"file":alias, "line_start":1}))
+                    .err()
+                    .unwrap()
+                    .contains("git add")
+            );
+            assert!(
+                dispatch(
+                    &sources,
+                    "ripgrep",
+                    &json!({"path":alias, "pattern":"needle"})
+                )
+                .is_err()
+            );
+        }
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        let paths = listing
+            .result
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"tracked-alias.txt"));
+        assert!(!paths.contains(&"untracked-target.txt"));
+        assert!(!paths.contains(&"untracked-alias.txt"));
+        assert!(!paths.contains(&"untracked.txt"));
     }
 }

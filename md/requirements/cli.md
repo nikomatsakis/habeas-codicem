@@ -13,7 +13,32 @@ Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas a
 :::
 
 :::{req} status
-`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.
+`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.
+:::
+
+:::{req} fixme_summary
+`habeas status` MUST group the selected requirement and example judgments marked
+FIXME by issue reference and report how many distinct judgments each issue
+affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME
+strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as
+`https://github.com/owner/repo/issues/123` MUST identify the same issue as
+`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with
+leading zeros normalized; repository spelling MUST remain case-sensitive, and
+unqualified and qualified references MUST remain distinct.
+
+A judgment MUST count at most once for each issue, even when that issue occurs
+repeatedly or in several FIXME strings. A judgment naming several issues MUST
+count in each corresponding group. Judgments with no recognized issue in any
+FIXME string MUST be counted once in a separate "FIXME without an issue" group.
+Issue groups MUST be ordered by decreasing affected-judgment count, then by
+normalized reference; the group without an issue MUST follow them. A supplied
+glob MUST restrict these counts to the selected subjects.
+
+`--verbose` MUST list the full name and kind of every judgment in each issue
+group and in the group without an issue, along with its original FIXME strings.
+The summary MUST include valid FIXME determinations even when other evidence
+checks fail; grouping MUST NOT hide their validation findings. Malformed
+determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.
 :::
 
 :::{req} status_table_alignment

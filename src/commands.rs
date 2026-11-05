@@ -5,17 +5,34 @@ use std::path::Path;
 use crate::definition_glob;
 use crate::escape_html;
 use crate::evidence::inspect_repository;
+use crate::fixme::FixmeSummary;
 use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};
 use crate::markdown::render_evidence_table;
 
 // {impl}`requirements.cli.status`
+// {impl}`requirements.cli.fixme_summary`
 pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
     status_markdown_filtered(root, all, None)
 }
 
 // {impl}`requirements.cli.status`
+// {impl}`requirements.cli.fixme_summary`
 // {impl}`requirements.definitions.selection`
 pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {
+    status_markdown_with_options(root, all, glob, false)
+}
+
+// {impl}`requirements.cli.status`
+// {impl}`requirements.cli.fixme_summary`
+// {impl}`requirements.cli.shared_status_rendering`
+// {impl}`requirements.definitions.selection`
+// {impl}`requirements.references.definition_globs`
+pub fn status_markdown_with_options(
+    root: &Path,
+    all: bool,
+    glob: Option<&str>,
+    verbose: bool,
+) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     if let Some(glob) = glob {
         definition_glob::validate(glob)
@@ -32,7 +49,7 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
     let mut output = String::from("# Definitions status\n\n");
     let mut rows = Vec::new();
     let mut findings = String::new();
-    let mut fixmes = String::new();
+    let mut fixmes = FixmeSummary::default();
     let mut associated_errors = BTreeSet::new();
 
     for (name, definition) in &inspection.definitions {
@@ -46,7 +63,11 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
         for error in evidence.errors() {
             associated_errors.insert(error.clone());
         }
+        fixmes.add(name, definition.kind.noun(), evidence.fixme_entries());
         if !all && evidence.state() == EvidenceState::Valid {
+            continue;
+        }
+        if !all && !verbose && evidence.state() == EvidenceState::Fixme {
             continue;
         }
 
@@ -54,11 +75,6 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
             format!("`{name}` ({})", definition.kind.noun()),
             evidence.state().label(),
         ));
-        if !evidence.fixme_entries().is_empty() {
-            fixmes.push_str(&format!("\n### `{name}`\n\n<pre><code>"));
-            fixmes.push_str(&escape_html(&evidence.fixme_entries().join("\n")));
-            fixmes.push_str("</code></pre>\n");
-        }
         if !evidence.errors().is_empty() {
             findings.push_str(&format!("\n### `{name}`\n\n<pre><code>"));
             findings.push_str(&escape_html(&evidence.errors().join("\n\n")));
@@ -66,9 +82,12 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
         }
     }
 
+    let fixmes = fixmes.render(verbose);
     if rows.is_empty() {
         output.push_str(if all {
             "No definitions found.\n"
+        } else if !fixmes.is_empty() {
+            "No other definitions need attention.\n"
         } else {
             "All matching definitions have valid evidence.\n"
         });
@@ -83,10 +102,7 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
         .iter()
         .filter(|error| !associated_errors.contains(error.as_str()))
         .collect::<Vec<_>>();
-    if !fixmes.is_empty() {
-        output.push_str("\n## FIXME references\n");
-        output.push_str(&fixmes);
-    }
+    output.push_str(&fixmes);
     if !findings.is_empty() {
         output.push_str("\n## Validation findings\n");
         output.push_str(&findings);

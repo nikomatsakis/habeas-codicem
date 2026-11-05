@@ -1,11 +1,28 @@
 {
+  "requirement": "Existing requirements input globs MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the glob. Sharing a glob's matching name prefix alone MUST NOT make a definition a dependency.",
+  "determination": true,
+  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and one test covers the main scenario. One edge case is untested; I judged it low risk.\n\n**Implementation**\n- `InputSelector::resolve` in `src/inputs.rs`, `Requirements` arm, skips every declaration whose kind is `Term`. It only matches the glob against requirements and examples, and it errors if nothing matches. Named definitions are therefore never selected by a glob.\n- `terms::dependencies` in `src/terms.rs` is separate from glob matching. For a `Requirements` input it scans the selected text, and it adds each referenced term to the set. Terms referenced by those terms are added as well. Each result becomes a separate `definition` input. This happens whether or not the term's name matches the glob.\n- Because dependencies come only from references, a definition that merely shares the glob's name prefix is never added.\n- The CLI paths use the same rule. `status_markdown_with_options` and `info_markdown` in `src/commands.rs` skip `DefinitionKind::Term`. `preprocess_book` passes only non-term definitions to the index (`evidence_definitions`).\n\n**Tests**\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` in `tests/definitions.rs` is cited for both `selection` and the `glob_dependency` example.\n  - It adds an unreferenced `rules.unrelated` definition and captures the glob `rules.*`.\n  - It asserts that `matches` is exactly `[\"rules.ready\"]`.\n  - It asserts that `inputs[1]` and `inputs[2]` are the separate definition inputs `glossary.a` and `glossary.b`. These do not match the glob and are pulled in only through references, including transitively.\n  - It asserts that `status_markdown(..., true)` does not mention `rules.unrelated`.\n  - This is the `glob_dependency` scenario: a referenced definition outside the glob is captured, and an unreferenced definition that matches the glob by name is not.\n- Other tests in `tests/definitions.rs` and `tests/commands.rs` exercise the capture, dependency-change detection and `info` behaviour that rely on this selection. These include the 3-input record, the missing/duplicate definition input checks, and `info_markdown` showing `glossary.a`.\n\n**Gap**\n- No test has a referenced term whose name does match the glob. The code makes dependency capture independent of glob matching, so I did not count this against the requirement.",
   "inputs": [
     {
-      "file": "md/requirements/definitions.md",
-      "line_start": 48,
-      "line_end": 48,
+      "requirements": "requirements.definitions.selection",
+      "matches": [
+        "requirements.definitions.selection"
+      ],
       "text": [
-        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that glob. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the glob. {cite}`requirements.definitions.selection`"
+        ":::{req} selection",
+        "Existing requirements input globs MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the glob. Sharing a glob's matching name prefix alone MUST NOT make a definition a dependency.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.definitions.glob_dependency",
+      "matches": [
+        "requirements.definitions.glob_dependency"
+      ],
+      "text": [
+        ":::{example} glob_dependency",
+        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that glob. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the glob. {cite}`requirements.definitions.selection`",
+        ":::"
       ]
     },
     {
@@ -13,8 +30,28 @@
       "rust_item": "fn[status_markdown_filtered]",
       "text": [
         "// {impl}`requirements.cli.status`",
+        "// {impl}`requirements.cli.fixme_summary`",
         "// {impl}`requirements.definitions.selection`",
         "pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {",
+        "    status_markdown_with_options(root, all, glob, false)",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/commands.rs",
+      "rust_item": "fn[status_markdown_with_options]",
+      "text": [
+        "// {impl}`requirements.cli.status`",
+        "// {impl}`requirements.cli.fixme_summary`",
+        "// {impl}`requirements.cli.shared_status_rendering`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
+        "pub fn status_markdown_with_options(",
+        "    root: &Path,",
+        "    all: bool,",
+        "    glob: Option<&str>,",
+        "    verbose: bool,",
+        ") -> io::Result<String> {",
         "    let inspection = inspect_repository(root)?;",
         "    if let Some(glob) = glob {",
         "        definition_glob::validate(glob)",
@@ -31,7 +68,7 @@
         "    let mut output = String::from(\"# Definitions status\\n\\n\");",
         "    let mut rows = Vec::new();",
         "    let mut findings = String::new();",
-        "    let mut fixmes = String::new();",
+        "    let mut fixmes = FixmeSummary::default();",
         "    let mut associated_errors = BTreeSet::new();",
         "",
         "    for (name, definition) in &inspection.definitions {",
@@ -45,7 +82,11 @@
         "        for error in evidence.errors() {",
         "            associated_errors.insert(error.clone());",
         "        }",
+        "        fixmes.add(name, definition.kind.noun(), evidence.fixme_entries());",
         "        if !all && evidence.state() == EvidenceState::Valid {",
+        "            continue;",
+        "        }",
+        "        if !all && !verbose && evidence.state() == EvidenceState::Fixme {",
         "            continue;",
         "        }",
         "",
@@ -53,11 +94,6 @@
         "            format!(\"`{name}` ({})\", definition.kind.noun()),",
         "            evidence.state().label(),",
         "        ));",
-        "        if !evidence.fixme_entries().is_empty() {",
-        "            fixmes.push_str(&format!(\"\\n### `{name}`\\n\\n<pre><code>\"));",
-        "            fixmes.push_str(&escape_html(&evidence.fixme_entries().join(\"\\n\")));",
-        "            fixmes.push_str(\"</code></pre>\\n\");",
-        "        }",
         "        if !evidence.errors().is_empty() {",
         "            findings.push_str(&format!(\"\\n### `{name}`\\n\\n<pre><code>\"));",
         "            findings.push_str(&escape_html(&evidence.errors().join(\"\\n\\n\")));",
@@ -65,9 +101,12 @@
         "        }",
         "    }",
         "",
+        "    let fixmes = fixmes.render(verbose);",
         "    if rows.is_empty() {",
         "        output.push_str(if all {",
         "            \"No definitions found.\\n\"",
+        "        } else if !fixmes.is_empty() {",
+        "            \"No other definitions need attention.\\n\"",
         "        } else {",
         "            \"All matching definitions have valid evidence.\\n\"",
         "        });",
@@ -82,10 +121,7 @@
         "        .iter()",
         "        .filter(|error| !associated_errors.contains(error.as_str()))",
         "        .collect::<Vec<_>>();",
-        "    if !fixmes.is_empty() {",
-        "        output.push_str(\"\\n## FIXME references\\n\");",
-        "        output.push_str(&fixmes);",
-        "    }",
+        "    output.push_str(&fixmes);",
         "    if !findings.is_empty() {",
         "        output.push_str(\"\\n## Validation findings\\n\");",
         "        output.push_str(&findings);",
@@ -460,18 +496,428 @@
       ]
     },
     {
-      "requirements": "requirements.definitions.glob_dependency",
-      "matches": [
-        "requirements.definitions.glob_dependency"
-      ],
+      "file": "md/requirements/definitions.md",
+      "line_start": 48,
+      "line_end": 48,
       "text": [
-        ":::{example} glob_dependency",
-        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that glob. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the glob. {cite}`requirements.definitions.selection`",
-        ":::"
+        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that glob. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the glob. {cite}`requirements.definitions.selection`"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 8,
+      "line_end": 14,
+      "text": [
+        "",
+        "// {test}`requirements.definitions.dependencies`",
+        "// {test}`requirements.definitions.declaration`",
+        "fn fixture() -> TempDir {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 22,
+      "line_end": 40,
+      "text": [
+        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"md/rules.md\"),",
+        "        \":::{req} ready\\nUse TERM`glossary.a`.\\n:::\\n\".replace(\"TERM\", \"{term}\"),",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"md/glossary.md\"), \":::{definition} a\\n:phrase: alpha\\n\\nSee TERM`glossary.b`.\\n:::\\n\\n:::{definition} b\\n:phrase: beta\\n\\nSee TERM`glossary.a`.\\n:::\\n\".replace(\"TERM\", \"{term}\")).unwrap();",
+        "    temp",
+        "}",
+        "",
+        "// {test}`requirements.definitions.capture`",
+        "fn capture(root: &Path) {",
+        "    add_input(",
+        "        root,",
+        "        InputTarget::Requirement(\"rules.ready\".into()),",
+        "        InputMode::Requirements(\"rules.*\".into()),",
+        "    )",
+        "    .unwrap();",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 57,
+      "line_end": 63,
+      "text": [
+        "    let temp = fixture();",
+        "    let root = temp.path();",
+        "    capture(root);",
+        "    let path = root.join(\"evidence/rules.ready.json\");",
+        "    approve(&path);",
+        "    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
+        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 66,
+      "line_end": 74,
+      "text": [
+        "    capture(root);",
+        "    assert_eq!(before, fs::read(&path).unwrap());",
+        "",
+        "    let glossary = root.join(\"md/glossary.md\");",
+        "    let original = fs::read_to_string(&glossary).unwrap();",
+        "    fs::write(&glossary, format!(\"\\n\\n{original}\")).unwrap();",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    for changed in [",
+        "        original.replace(\":phrase: beta\", \":phrase: new beta\"),"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 76,
+      "line_end": 88,
+      "text": [
+        "            .replace(\"See TERM\", \"Read TERM\")",
+        "            .replace(\"See {term}\", \"Read {term}\"),",
+        "    ] {",
+        "        fs::write(&glossary, changed).unwrap();",
+        "        let report = validate_repository(root).unwrap();",
+        "        assert!(",
+        "            report",
+        "                .errors",
+        "                .iter()",
+        "                .any(|e| e.contains(\"input text changed\") && e.contains(\"glossary.\")),",
+        "            \"{:?}\",",
+        "            report.errors",
+        "        );"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 99,
+      "line_end": 112,
+      "text": [
+        "    missing[\"inputs\"]",
+        "        .as_array_mut()",
+        "        .unwrap()",
+        "        .retain(|i| i.get(\"definition\") != Some(&json!(\"glossary.b\")));",
+        "    fs::write(&path, missing.to_string()).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors",
+        "            .iter()",
+        "            .any(|e| e.contains(\"glossary.b, found 0\"))",
+        "    );",
+        "    let mut duplicate = refreshed;",
+        "    let input = duplicate[\"inputs\"][1].clone();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 135,
+      "line_end": 146,
+      "text": [
+        "    fs::write(path, text).unwrap();",
+        "    capture(temp.path());",
+        "    let record: Value = serde_json::from_str(",
+        "        &fs::read_to_string(temp.path().join(\"evidence/rules.ready.json\")).unwrap(),",
+        "    )",
+        "    .unwrap();",
+        "    assert_eq!(record[\"inputs\"][0][\"matches\"], json!([\"rules.ready\"]));",
+        "    assert_eq!(record[\"inputs\"][1][\"definition\"], \"glossary.a\");",
+        "    assert_eq!(record[\"inputs\"][2][\"definition\"], \"glossary.b\");",
+        "    let status = habeas::status_markdown(temp.path(), true).unwrap();",
+        "    assert!(!status.contains(\"rules.unrelated\"));",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 182,
+      "line_end": 188,
+      "text": [
+        "            .iter()",
+        "            .any(|e| e.contains(\"missing a closing colon fence\"))",
+        "    );",
+        "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();",
+        "    let errors = validate_repository(temp.path()).unwrap().errors;",
+        "    assert!(",
+        "        errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 192,
+      "line_end": 198,
+      "text": [
+        "    assert!(",
+        "        errors",
+        "            .iter()",
+        "            .any(|e| e.contains(\"term rules.ready has no matching named definition\"))",
+        "    );",
+        "    assert!(",
+        "        errors"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 209,
+      "line_end": 232,
+      "text": [
+        "    book.push_item(Chapter::new(",
+        "        \"Glossary\",",
+        "        \":::{definition} a\\n:phrase: *alpha* & <beta>\\n\\nThe body.\\n:::\\n\".into(),",
+        "        \"glossary.md\",",
+        "        Vec::new(),",
+        "    ));",
+        "    let source = \"Use TERM`glossary.a`.\\n\\n`TERM`glossary.a``\\n\\n```text\\nTERM`glossary.a`\\n```\\n\\n\\\\TERM`glossary.a`\".replace(\"TERM\", \"{term}\");",
+        "    book.push_item(Chapter::new(\"Guide\", source, \"guide/deep.md\", Vec::new()));",
+        "    habeas::preprocess_book(&mut book, Path::new(\".\")).unwrap();",
+        "    let chapters: Vec<_> = book.chapters().collect();",
+        "    assert!(",
+        "        chapters[0]",
+        "            .content",
+        "            .contains(\"id=\\\"habeas-definition-glossary.a\\\"\")",
+        "    );",
+        "    assert!(!chapters[0].content.contains(\":phrase:\"));",
+        "    assert!(!chapters[1].content.contains(\"shields.io\"));",
+        "    assert_eq!(",
+        "        chapters[1]",
+        "            .content",
+        "            .matches(\"href=\\\"../glossary.html#habeas-definition-glossary.a\\\"\")",
+        "            .count(),",
+        "        1",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 246,
+      "line_end": 252,
+      "text": [
+        "    let root = temp.path();",
+        "    fs::write(",
+        "        root.join(\"src/lib.rs\"),",
+        "        \"// IMPL`rules.ready`\\n// TERM`glossary.a`\\npub fn run() {}\\n\"",
+        "            .replace(\"IMPL\", \"{impl}\")",
+        "            .replace(\"TERM\", \"{term}\"),",
+        "    )"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 257,
+      "line_end": 263,
+      "text": [
+        "            rust_file: \"src/lib.rs\".into(),",
+        "            rust_item: \"fn[run]\".into(),",
+        "        },",
+        "        InputMode::Requirements(\"rules.*\".into()),",
+        "    )",
+        "    .unwrap();",
+        "    add_input("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 274,
+      "line_end": 280,
+      "text": [
+        "    let entry = &mut sidecar[\"functions\"][0];",
+        "    assert_eq!(",
+        "        entry[\"citations\"],",
+        "        json!([{\"role\":\"impl\",\"name\":\"rules.ready\"}])",
+        "    );",
+        "    assert_eq!(entry[\"inputs\"].as_array().unwrap().len(), 4);",
+        "    entry[\"determination\"] = json!(true);"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 282,
+      "line_end": 313,
+      "text": [
+        "    capture(root);",
+        "    add_input(",
+        "        root,",
+        "        InputTarget::Requirement(\"rules.ready\".into()),",
+        "        InputMode::RustItemsAtLine(\"src/lib.rs:3\".into()),",
+        "    )",
+        "    .unwrap();",
+        "    approve(&root.join(\"evidence/rules.ready.json\"));",
+        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
+        "    let glossary = root.join(\"md/glossary.md\");",
+        "    fs::write(",
+        "        &glossary,",
+        "        fs::read_to_string(&glossary)",
+        "            .unwrap()",
+        "            .replace(\":phrase: beta\", \":phrase: changed\"),",
+        "    )",
+        "    .unwrap();",
+        "    let errors = validate_repository(root).unwrap().errors;",
+        "    for label in [\"evidence/rules.ready.json\", \"evidence/rust/src/lib.rs.json\"] {",
+        "        assert!(",
+        "            errors.iter().any(|e| e.contains(label)",
+        "                && e.contains(\"input text changed\")",
+        "                && e.contains(\"glossary.b\")),",
+        "            \"{errors:?}\"",
+        "        );",
+        "    }",
+        "    fs::write(",
+        "        root.join(\"src/lib.rs\"),",
+        "        \"// TERM`glossary.a`\\npub fn run() {}\\n\".replace(\"TERM\", \"{term}\"),",
+        "    )",
+        "    .unwrap();",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 327,
+      "line_end": 333,
+      "text": [
+        "    let temp = fixture();",
+        "    let root = temp.path();",
+        "    capture(root);",
+        "    let path = root.join(\"evidence/rules.ready.json\");",
+        "    approve(&path);",
+        "    let original: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
+        "    let mut invalid = original.clone();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 341,
+      "line_end": 353,
+      "text": [
+        "            .any(|e| e.contains(\"unexpected field\"))",
+        "    );",
+        "    fs::write(&path, original.to_string()).unwrap();",
+        "    fs::remove_file(root.join(\"md/glossary.md\")).unwrap();",
+        "    assert!(",
+        "        validate_repository(root)",
+        "            .unwrap()",
+        "            .errors",
+        "            .iter()",
+        "            .any(|e| e.contains(\"glossary.a\") && e.contains(\"no matching named definition\"))",
+        "    );",
+        "",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 361,
+      "line_end": 371,
+      "text": [
+        "    )",
+        "    .unwrap();",
+        "    capture(root);",
+        "    approve(&root.join(\"evidence/rules.ready.json\"));",
+        "    let report = validate_repository(root).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    let record: Value =",
+        "        serde_json::from_str(&fs::read_to_string(root.join(\"evidence/rules.ready.json\")).unwrap())",
+        "            .unwrap();",
+        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 1);",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 378,
+      "line_end": 391,
+      "text": [
+        "    let root = temp.path();",
+        "    let path = root.join(\"md/rules.md\");",
+        "    let text = fs::read_to_string(&path).unwrap()",
+        "        + &\"\\n:::{example} case\\nCITE`rules.ready` with TERM`glossary.a`.\\n:::\\n\"",
+        "            .replace(\"CITE\", \"{cite}\")",
+        "            .replace(\"TERM\", \"{term}\");",
+        "    fs::write(path, text).unwrap();",
+        "    add_input(",
+        "        root,",
+        "        InputTarget::Example(\"rules.case\".into()),",
+        "        InputMode::Requirements(\"rules.ready\".into()),",
+        "    )",
+        "    .unwrap();",
+        "    let record: Value ="
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 393,
+      "line_end": 399,
+      "text": [
+        "            .unwrap();",
+        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);",
+        "    let display = habeas::info_markdown(root, \"rules.case\").unwrap();",
+        "    assert!(display.contains(\"definition glossary.a\"));",
+        "    assert!(display.contains(\"md/glossary.md\"));",
+        "    assert!(display.contains(\":phrase: alpha\"));",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 451,
+      "line_end": 455,
+      "text": [
+        "    let missing = String::from_utf8(missing.stdout).unwrap();",
+        "    assert!(missing.contains(\"## Validation findings\"), \"{missing}\");",
+        "    assert!(missing.contains(\"missing for requirement\"), \"{missing}\");",
+        "    assert!(missing.contains(\"No rationale recorded.\"), \"{missing}\");",
+        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 468,
+      "line_end": 472,
+      "text": [
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.references.definition_globs`",
+        "#[test]",
+        "fn commands_report_invalid_arguments_and_unmatched_selectors() {",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 700,
+      "line_end": 703,
+      "text": [
+        "    assert!(stdout.contains(\"remains pending\"), \"{stdout}\");",
+        "    let output = habeas(",
+        "        temp.path(),",
+        "        &["
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 393,
+      "line_end": 397,
+      "text": [
+        "            .unwrap();",
+        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);",
+        "    let display = habeas::info_markdown(root, \"rules.case\").unwrap();",
+        "    assert!(display.contains(\"definition glossary.a\"));",
+        "    assert!(display.contains(\"md/glossary.md\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 307,
+      "line_end": 311,
+      "text": [
+        "    assert!(verbose.contains(\"requirements.timeout\"), \"{verbose}\");",
+        "    assert!(verbose.contains(\"example\"), \"{verbose}\");",
+        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
+        "    assert!(info.contains(\"## FIXME references\"));",
+        "    assert!(info.contains(\"rust-lang/rust#123\"));"
       ]
     }
-  ],
-  "requirement": "Existing requirements input globs MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the glob. Sharing a glob's matching name prefix alone MUST NOT make a definition a dependency.",
-  "determination": true,
-  "rationale": "Requirements selector resolution explicitly excludes the Term declaration kind. Separate dependency traversal captures referenced terms by exact name. globs_exclude_terms_but_capture_referenced_terms_outside_the_glob verifies both behaviors."
+  ]
 }

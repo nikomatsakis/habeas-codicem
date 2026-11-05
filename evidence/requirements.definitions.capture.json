@@ -1,7 +1,7 @@
 {
   "requirement": "When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.\n\nRepeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.",
   "determination": true,
-  "rationale": "**Verdict:** `requirements.definitions.capture` is implemented and tested. I found one minor gap that this requirement does not cover (below).\n\n**Implementation**\n- `add_input` in `src/add_input.rs` routes to `add_definition_inputs` for requirements and examples, and to `add_function_inputs` for Rust functions. Both call `update_inputs`.\n- `update_inputs` (`src/add_input.rs`, about lines 270–330) refreshes the requested inputs. It then calls `terms::dependencies` to compute the required definitions from three sources:\n  - the subject text (passed as `Some(definition.text)` for requirements and examples);\n  - every input already in the record, scanned by input type: requirements bodies, Markdown ranges, and Rust comments;\n  - existing definition inputs, followed transitively through definition bodies.\n- **Transitive closure:** `dependencies` (`src/terms.rs`) uses a `BTreeSet` worklist, so cycles end and each name appears once.\n- **No duplicates:** for each required definition, `update_inputs` counts the existing inputs with that name. If the count is not exactly one, or the stored input differs from the freshly resolved one, it removes every entry for that name and pushes a single fresh one. This repairs duplicates and refreshes stale inputs.\n- **Determination:** whenever `changed` is true, it sets `determination` to false and writes a \"Review pending\" rationale.\n- **Unchanged records:** if nothing changed, `add_definition_inputs` does not write the file, and `add_function_inputs` writes only for a new entry or a change. The record therefore stays byte-identical.\n- **Validation:** `validate_dependencies` in `src/evidence.rs` checks records with the same `dependencies` function. That is how the tests see stale, missing and duplicate definition inputs.\n\n**Tests** (`tests/definitions.rs`)\n- `cyclic_dependencies_are_captured_once_and_changes_require_review` covers the main cases:\n  - Cyclic glossary terms `a` and `b` are captured exactly once (3 inputs).\n  - After approval, a second capture leaves the file byte-identical.\n  - Whitespace-only glossary edits do not make validation fail.\n  - Edits to a phrase and to a body make validation report \"input text changed\" without modifying the record.\n  - Re-running capture refreshes the inputs and sets `determination` to false.\n  - A deleted definition input is reported as \"found 0\", and a duplicated one as \"found 2\".\n  - Re-running capture repairs the record to exactly 3 inputs.\n- `example_subject_and_definition_display_use_the_same_dependencies` covers an example subject. Terms referenced in the example text and in its cited requirement are captured (3 inputs).\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` shows that terms outside the glob are captured and unreferenced ones are not.\n- `function_attestations_capture_terms_without_counting_them_as_citations` covers the Rust-function target.\n- `definition_schema_deletion_and_literal_references_are_checked` covers literal and escaped references that must not be captured.\n- These tests also exercise the reassessment example: stale evidence is reported without modifying the record, and add-input refreshes it and leaves `determination` false.\n\n**Gap outside this requirement:** `add_definition_inputs` does not rewrite the record's stored requirement or example text on refresh. Validation reports that separately as \"text changed\", and it is not part of the definition-input capture requirement.",
+  "rationale": "**Judgment: the requirement is met.** The code implements each clause, and the tests exercise the interesting cases. I judged this from the supplied excerpts and did not run the tests.\n\n**Implementation**\n- `add_definition_inputs` (src/add_input.rs) builds or reads the record for a requirement or example. It passes the definition text as the subject to `update_inputs`, and it writes the file only when `update_inputs` reports a change.\n- `add_function_inputs` does the same for Rust-function attestations. It passes `None` as the subject, writes only when something changed or the entry is new, and shares `update_inputs`.\n- `update_inputs` first applies the requested inputs. It then calls `terms::dependencies(definitions, object, subject)`.\n- `terms::dependencies` (src/terms.rs) takes the terms referenced in the subject text. It adds the terms referenced in every recorded input, with a separate scan for each input kind: definition, Rust item, `.rs` file range, other file range, and requirements. It then follows terms transitively through the current definition bodies. A visited set makes this safe for cycles, and a missing definition gives an error.\n- For each required definition, `update_inputs` resolves a fresh definition input. If the record doesn't hold exactly one matching input, or that input differs, it removes all inputs for that definition and pushes one new input. This guarantees no duplicates and repairs missing or duplicated inputs.\n- If anything changed, `update_inputs` sets `determination` to false and replaces the rationale with a review-pending message.\n- If nothing changed, `changed` stays false and nothing is written, so the record file is byte-identical.\n\n**Tests** (tests/definitions.rs, each citing `requirements.definitions.capture`)\n- `cyclic_dependencies_are_captured_once_and_changes_require_review`:\n  - Mutually referencing definitions `glossary.a` and `glossary.b` yield exactly 3 inputs.\n  - A second capture leaves the file byte-identical, which covers the \"no change, no rewrite\" clause.\n  - A whitespace-only change to the glossary does not make the evidence stale.\n  - Changing a phrase or body text makes validation report stale input text without modifying the record.\n  - Re-running capture refreshes the record, gives `determination == false` and still 3 inputs.\n  - After the validator is shown a record with a definition input removed (\"found 0\") and one with a duplicated input (\"found 2\"), re-running capture repairs the record back to 3 inputs.\n- `example_subject_and_definition_display_use_the_same_dependencies` covers capture for examples, with subject-text dependencies.\n- `function_attestations_capture_terms_without_counting_them_as_citations` covers Rust-function attestations. It captures terms from the function's own comments, and a later term change makes the requirement and the sidecar both stale.\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` shows that referenced terms outside the glob are captured, and that unreferenced ones are not.\n- `definition_schema_deletion_and_literal_references_are_checked` shows that literal or escaped references create no definition inputs.\n\n**Minor observations (not gaps against this requirement)**\n- Definition inputs that are no longer required are not pruned.\n- Dependencies of already-recorded but stale inputs are computed from their stored text.",
   "inputs": [
     {
       "requirements": "requirements.definitions.capture",
@@ -786,35 +786,35 @@
       "line_start": 23,
       "line_end": 51,
       "text": [
+        "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+        "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+        "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+        "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+        "unqualified and qualified references MUST remain distinct.",
+        "",
+        "A judgment MUST count at most once for each issue, even when that issue occurs",
+        "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+        "count in each corresponding group. Judgments with no recognized issue in any",
+        "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+        "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+        "normalized reference; the group without an issue MUST follow them. A supplied",
+        "glob MUST restrict these counts to the selected subjects.",
+        "",
+        "`--verbose` MUST list the full name and kind of every judgment in each issue",
+        "group and in the group without an issue, along with its original FIXME strings.",
+        "The summary MUST include valid FIXME determinations even when other evidence",
+        "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+        "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+        ":::",
+        "",
+        ":::{req} status_table_alignment",
+        "When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Definition and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.",
+        ":::",
+        "",
         ":::{req} shared_status_rendering",
         "`habeas status` and the mdBook requirements index MUST generate their Definition/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different definitions and supply different kind-labeled name cells so mdBook can link to detail pages.",
         ":::",
-        "",
-        ":::{req} info",
-        "`habeas info <glob>` MUST match complete requirement and named example names using `references.definition_globs`; a full name without `*` is an exact selection. It MUST print matches in full-name order as Markdown with the same kind-labeled definition, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid glob or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement or named example.",
-        ":::",
-        "",
-        ":::{req} add_input",
-        "`habeas add-input` MUST accept exactly one evidence target: `--for-requirement <full-name>`, `--for-example <full-name>`, or `--for-rust-item <rust_file> <rust_item>` identifying an explicitly declared function or method. It MUST accept exactly one input mode: `--file-range`, `--rust-item`, or `--requirements`. It MUST use the same input schema and resolution rules as validation. Repeating a selector for a target MUST refresh its existing input rather than add a duplicate; an unchanged input MUST leave the record unchanged. The command MUST report every input it adds or refreshes. It MUST create a missing target record with a pending determination. Whenever it changes a record, it MUST leave `determination` false with a nonempty rationale indicating that review is pending.",
-        ":::",
-        "",
-        ":::{req} add_input_file_range",
-        "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range.",
-        ":::",
-        "",
-        ":::{req} add_input_rust_item",
-        "`habeas add-input --rust-item <rust-file>:<line>` MUST parse the file with `syn` and add or refresh one Rust-item input for every explicit item declared on that line. An item with a declared name is declared on the line containing that name; an item without one is declared on the line containing its distinctive keyword or introducer, such as `use` or `impl`. Each input MUST store the repository-relative `rust_file`, the item's syntactic `rust_item` selector, and its complete raw source lines. The command MUST report every selected item and reject a line on which no item is declared.",
-        ":::",
-        "",
-        ":::{req} add_input_requirements",
-        "`habeas add-input --requirements <glob>` MUST add or refresh one requirements input containing the matched full names and their concatenated raw declaration sources. It MUST report the matched names in expansion order and reject a glob that matches no requirement or named example.",
-        ":::",
-        "",
-        ":::{req} function_attestation_guidance",
-        "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
-        ":::",
-        "",
-        ":::{req} bootstrap_skill"
+        ""
       ]
     },
     {
@@ -850,13 +850,13 @@
       "line_start": 134,
       "line_end": 140,
       "text": [
-        "        Ok(Self {",
-        "            root,",
-        "            subject_name: subject_name.to_owned(),",
-        "            subject_kind: AssessmentKind::Definition(subject.kind),",
-        "            subject_text: subject.text.clone(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),"
+        "            &definitions,",
+        "            &mandatory,",
+        "            Some(&subject.text),",
+        "        )?;",
+        "        for input in dependencies {",
+        "            if !mandatory.contains(&input) {",
+        "                mandatory.push(input);"
       ]
     },
     {
@@ -864,13 +864,13 @@
       "line_start": 123,
       "line_end": 129,
       "text": [
-        "        pages.push(render_cli_detail_page(",
-        "            name,",
-        "            &definition.source,",
-        "            &definition.text,",
-        "            definition.kind,",
-        "            &evidence,",
-        "            &RenderSources {"
+        "",
+        "// {impl}`requirements.cli.info`",
+        "// {impl}`requirements.definitions.selection`",
+        "pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {",
+        "    let inspection = inspect_repository(root)?;",
+        "    definition_glob::validate(selector)",
+        "        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;"
       ]
     },
     {
@@ -906,13 +906,13 @@
       "line_start": 178,
       "line_end": 184,
       "text": [
+        "            (",
         "                name.clone(),",
         "                Definition {",
         "                    path: d.path.clone(),",
         "                    text: d.text.clone(),",
         "                    kind: d.kind,",
-        "                },",
-        "            )"
+        "                },"
       ]
     },
     {
@@ -962,19 +962,19 @@
       "line_start": 28,
       "line_end": 40,
       "text": [
+        "        }",
         "    }",
         "}",
         "",
         "pub(crate) struct AssessmentSources {",
         "    pub(crate) root: PathBuf,",
+        "    pub(crate) access: SourceAccess,",
         "    pub(crate) subject_name: String,",
         "    pub(crate) subject_kind: AssessmentKind,",
         "    pub(crate) subject_text: String,",
         "    mandatory: Vec<Value>,",
         "    recorded: Vec<Value>,",
-        "}",
-        "",
-        "impl AssessmentSources {"
+        "}"
       ]
     },
     {
@@ -982,19 +982,19 @@
       "line_start": 131,
       "line_end": 143,
       "text": [
+        "        let dependencies = definition_inputs(",
+        "            &root,",
+        "            &access,",
+        "            &definitions,",
+        "            &mandatory,",
+        "            Some(&subject.text),",
+        "        )?;",
+        "        for input in dependencies {",
+        "            if !mandatory.contains(&input) {",
         "                mandatory.push(input);",
         "            }",
         "        }",
-        "        Ok(Self {",
-        "            root,",
-        "            subject_name: subject_name.to_owned(),",
-        "            subject_kind: AssessmentKind::Definition(subject.kind),",
-        "            subject_text: subject.text.clone(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),",
-        "        })",
-        "    }",
-        ""
+        "        Ok(Self {"
       ]
     },
     {
@@ -1002,19 +1002,19 @@
       "line_start": 217,
       "line_end": 229,
       "text": [
+        "        }",
+        "        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {",
+        "            if !mandatory.contains(&input) {",
+        "                mandatory.push(input);",
+        "            }",
+        "        }",
+        "        Ok(Self {",
+        "            root,",
+        "            access,",
+        "            subject_name: format!(\"{rust_file}:{rust_item}\"),",
         "            subject_kind: AssessmentKind::RustFunction {",
         "                rust_item: rust_item.to_owned(),",
-        "                citations: citations",
-        "                    .into_iter()",
-        "                    .map(|(role, name)| json!({\"role\": role, \"name\": name}))",
-        "                    .collect(),",
-        "            },",
-        "            subject_text: String::new(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),",
-        "        })",
-        "    }",
-        ""
+        "                citations: citations"
       ]
     },
     {
@@ -1022,6 +1022,7 @@
       "line_start": 454,
       "line_end": 466,
       "text": [
+        "                for _ in &submissions {",
         "                    usage.tool(\"submit_judgment\", true);",
         "                }",
         "                return Err(io::Error::other(",
@@ -1033,8 +1034,7 @@
         "                function,",
         "            );",
         "            usage.tool(\"submit_judgment\", result.is_err());",
-        "            let (judgment, rationale) = result?;",
-        "            usage.record.determination = Some(judgment.kind().into());"
+        "            let (judgment, rationale) = result?;"
       ]
     },
     {
@@ -1570,19 +1570,19 @@
       "line_start": 395,
       "line_end": 407,
       "text": [
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    inputs: &[Value],",
-        "    subject: Option<&str>,",
-        ") -> Result<Vec<Value>, String> {",
-        "    let record = json!({ \"inputs\": inputs });",
-        "    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)?",
-        "        .into_iter()",
-        "        .map(|definition| {",
-        "            let selector = InputSelector::Definition { definition };",
-        "            source_input(root, definitions, &selector)",
-        "        })",
-        "        .collect()"
+        "        });",
+        "    }",
+        "    let (_, source) = read_project_file(root, &file)?;",
+        "    Ok(InputSelector::FileRange {",
+        "        file,",
+        "        line_start: 1,",
+        "        line_end: source.lines().count(),",
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.definitions.authoring_inputs`",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "fn definition_inputs("
       ]
     },
     {

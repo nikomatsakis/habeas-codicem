@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range.",
   "determination": false,
-  "rationale": "**Implementation: adequate.**\n- `src/main.rs:206-210` maps `--file-range` to `InputMode::FileRange`.\n- `selectors_for_mode` (`src/add_input.rs:73-90`) parses `<file>:<start>-<end>`. It rejects a missing colon, a missing dash, and non-numeric bounds.\n- `InputSelector::FileRange::resolve` (`src/inputs.rs:119-145`) calls `read_project_file`, which errors on a missing or escaping file.\n- `resolve` also rejects `line_start == 0`, `end < start`, and `end > lines.len()`.\n- On success it stores the raw lines `lines[start-1..end]`.\n- `add_input` writes the result through `add_definition_inputs`, which supports the add and refresh behaviour shared by all modes.\n\n**Tests: incomplete.**\n- `tests/commands.rs::add_input_modes_capture_raw_sources_and_refresh_idempotently` runs `--file-range src/main.rs:1-2` successfully (lines 361-372).\n- Its assertions check that the evidence has three inputs. They also check the text of the second input, `inputs[1]` (the rust-item input from the next command, not the file-range input at `inputs[0]`).\n- It never asserts the content of the file-range input itself. It does not test that re-running or refreshing the file-range input is idempotent or picks up changed lines. The \"unchanged\" check covers only the `--rust-item` mode.\n- No test runs `habeas add-input --file-range` against a missing file or an invalid range. I found no such test in `tests/`. The only failure case in that test is an unmatched `--requirements` glob (`missing.*`).\n- `tests/evidence_boundaries.rs::file_ranges_report_order_eof_length_and_missing_file_errors` covers validation of stored evidence, not the `add-input` command's rejection behaviour.\n- The rejection obligation (\"MUST reject a missing file or invalid range\") is a core part of the requirement. It has several distinct cases: malformed spec, non-numeric bounds, zero start, reversed range, range beyond EOF, and missing file. None of them is exercised through `add-input`.\n- No FIXME or other acknowledged-gap comment covers this.\n\nThe code looks correct, but the rejection half of the requirement and the file-range refresh path are untested, and nothing in the source acknowledges that. The determination is false.",
+  "rationale": "**Implementation: adequate.**\n- `src/add_input.rs` `selectors_for_mode`, `InputMode::FileRange` arm (lines ~75–89), parses `<file>:<start>-<end>` with `rsplit_once(':')` and `split_once('-')`. It rejects a malformed spec or non-numeric start or end with an `invalid_input` error.\n- `add_input` (cited `{impl}` for this requirement) then calls `selector.resolve(...)`.\n- `InputSelector::FileRange` in `src/inputs.rs` (~lines 119–145) reads the file through `read_project_file`. That fails for a missing file and is bounded to the project. It rejects `line_start == 0`, `end < start` and `end > lines.len()`. It stores `lines[start-1..end]`, the raw inclusive lines, as `text`.\n- `add_definition_inputs` and the `main.rs` wiring (`InputMode::FileRange`) route the result into the evidence file. Resolving the current lines on each run gives the \"add or refresh\" behavior.\n\n**Tests: incomplete.**\n- The only test citing `{test}requirements.cli.add_input_file_range` is `add_input_modes_capture_raw_sources_and_refresh_idempotently` in `tests/commands.rs`. It exercises `--file-range src/main.rs:1-2` once, on the success path only. It asserts success and that `inputs[1].text` holds the four raw lines.\n- Its idempotent-refresh assertion (\"unchanged\", byte-identical file) is made on the `--rust-item` re-run, not the file-range re-run.\n- Its only failure assertion is an unmatched `--requirements missing.*` glob, which is unrelated to this requirement.\n- I found no test through `habeas add-input` that rejects any of these:\n  - a missing file;\n  - a range with start 0;\n  - end before start;\n  - end beyond EOF;\n  - a malformed spec such as no `:` or no `-`;\n  - non-numeric bounds.\n- The other tests I found that touch these cases (`tests/evidence_boundaries.rs`, `src/authoring/inputs.rs`) validate stored evidence or authoring reads. They do not exercise the `add-input` CLI rejection.\n- There is also no test that a changed file range is refreshed with new text.\n\nThe rejection half of the requirement (\"MUST reject a missing file or invalid range\") is therefore untested at the CLI level. The source has no `FIXME` or issue reference acknowledging the gap, and the logic is not trivial enough to justify skipping tests. A FIXME determination is therefore not available either.",
   "inputs": [
     {
       "requirements": "requirements.cli.add_input_file_range",
@@ -17,7 +17,7 @@
     {
       "file": "md/reference.md",
       "line_start": 1,
-      "line_end": 346,
+      "line_end": 377,
       "text": [
         "# How it works",
         "",
@@ -119,6 +119,12 @@
         "Ollama server. The server can run on another machine; Habeas does not need a GPU.",
         "{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`",
         "{cite}`requirements.authoring.text_search`",
+        "",
+        "In a Git worktree, stage new source files with `git add` before authoring. The",
+        "model can read unstaged edits to tracked files. Reads exclude untracked files,",
+        "generated `evidence/` content, and paths outside the project, including symlink",
+        "aliases. Standalone projects use the same containment rules without requiring Git.",
+        "{cite}`requirements.authoring.source_tools`",
         "",
         "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
         "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
@@ -300,12 +306,37 @@
         "",
         "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
         "",
-        "Run `habeas status [<glob>]` from within the project to list requirements and named examples needing attention and their validation findings, including FIXME judgments and their recorded references. `--all` shows every matching definition and its evidence state. Use `habeas info <glob>` to print matching detail pages as Markdown, including current texts, rationales, inputs, FIXME references, and findings. Both commands match whole full names; `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info` {cite}`requirements.references.definition_globs`",
+        "Run `habeas status [<glob>]` from within the project to list requirements and named",
+        "examples needing attention and their validation findings. FIXME judgments are",
+        "summarized by issue, for example:",
+        "",
+        "```text",
+        "- #123 — affects 22 judgments",
+        "- #45 — affects 3 judgments",
+        "- 16 judgments marked FIXME without an issue",
+        "```",
+        "",
+        "Each judgment counts once per issue, even if it repeats that reference. A judgment",
+        "with several issues counts in each group; the final group counts judgments with",
+        "no recognized issue reference. References may appear in explanatory text or",
+        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
+        "URLs are also recognized. Groups with the most affected judgments come first.",
+        "{cite}`requirements.cli.fixme_summary`",
+        "",
+        "Use `--verbose` to list the actual judgments in each group, with their full names,",
+        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
+        "evidence state. Stale or invalid FIXME evidence still reports its validation",
+        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
+        "including current texts, rationales, inputs, FIXME references, and findings. Both",
+        "commands match whole full names; `*` can span any number of characters, including",
+        "dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
+        "{cite}`requirements.references.definition_globs`",
         "",
         "```sh",
         "habeas info requirements.ci.inputs",
         "habeas info 'requirements.cli.*'",
         "habeas status 'requirements.cli.*' --all",
+        "habeas status --verbose",
         "```",
         "",
         "Agent skills installed by Habeas point to `habeas info` for looking up definition details.",
@@ -673,6 +704,359 @@
     },
     {
       "file": "md/reference.md",
+      "line_start": 1,
+      "line_end": 346,
+      "text": [
+        "# How it works",
+        "",
+        "Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `cargo test --workspace` checks the evidence; `mdbook build` renders links to it.",
+        "",
+        "## Requirements",
+        "",
+        "Write a colon-fenced `{req}` directive in a book chapter. For example, in `md/requirements.md`:",
+        "",
+        "```text",
+        ":::{req} check",
+        "The CLI MUST report invalid arguments.",
+        ":::",
+        "```",
+        "",
+        "The chapter path is part of the requirement's name, so this one is `requirements.check`. Everything between the opening and closing fences is its body, including headings and other Markdown.",
+        "",
+        "## Examples",
+        "",
+        "An example is a separate named definition for a concrete case. State the situation, action, and expected result, and cite the requirement it illustrates. This book contains a working example:",
+        "",
+        ":::{example} cli.unknown_command",
+        "Running `habeas unknown` fails with a nonzero exit status and prints a usage message. {cite}`requirements.cli.invocation`",
+        ":::",
+        "",
+        "Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The authoring harness records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the citations are current; the rationale explains why the tests are adequate.",
+        "",
+        "## Evidence",
+        "",
+        "Run `habeas author --all` to create and refresh evidence for requirements, examples,",
+        "and Rust function attestations. The harness writes `evidence/requirements.check.json`",
+        "for the requirement above and `evidence/reference.cli.unknown_command.json` for the",
+        "example. Each requirement or example evidence file records four fields:",
+        "",
+        "| Field | Meaning |",
+        "| --- | --- |",
+        "| `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |",
+        "| `determination` | `true`, `false`, or `{\"FIXME\": [\"#125\"]}` for explicitly documented gaps. |",
+        "| `rationale` | A Markdown explanation of that judgment. |",
+        "| `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or glob of definitions. |",
+        "",
+        "For a requirement, the model reviews whether the cited code implements its stated obligations",
+        "and whether tests cover the interesting design cases. If there are no tests,",
+        "its rationale explains why the logic is simple enough to need none or testing is impractical.",
+        "For an example, the model reviews whether tests cover its scenario and expected outcomes;",
+        "a true judgment requires a covered `{test}` reference. The assessment concerns",
+        "the named subject, using referenced requirements and definitions as context.",
+        "{cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`",
+        "",
+        "The model chooses `true` when that review supports the subject and FIXME when",
+        "source comments or tests explicitly acknowledge the remaining implementation or",
+        "testing gaps; otherwise it chooses `false` for gaps or missing information.",
+        "The FIXME array records the acknowledged gaps' issue references or other",
+        "identifying source content, with each gap and source location explained in the",
+        "rationale. The expected comment",
+        "convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may",
+        "appear elsewhere in the comment or test. The harness captures those source inputs.",
+        "{cite}`requirements.ci.outcomes`",
+        "",
+        "An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:",
+        "",
+        "```json",
+        "{\"file\":\"src/main.rs\",\"line_start\":1,\"line_end\":3,\"text\":[\"...\"]}",
+        "{\"rust_file\":\"src/main.rs\",\"rust_item\":\"fn[main]\",\"text\":[\"...\"]}",
+        "{\"requirements\":\"requirements.cli.*\",\"matches\":[\"requirements.cli.info\"],\"text\":[\"...\"]}",
+        "```",
+        "",
+        "`habeas author --all` captures source text and delegates judgments to the configured",
+        "model. The supervising agent fixes reported gaps and reruns the command; it does",
+        "not write evidence by hand. The lower-level `habeas add-input` command remains",
+        "available for selecting an additional input. A changed input leaves its",
+        "determination false until the authoring harness reassesses it.",
+        "{cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`",
+        "",
+        "```sh",
+        "habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20",
+        "habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26",
+        "habeas add-input --for-rust-item src/evidence.rs 'fn[validate_repository]' --requirements 'requirements.ci.*'",
+        "```",
+        "",
+        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`",
+        "",
+        "Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference.",
+        "",
+        "## Authoring evidence with a model",
+        "",
+        "`habeas author --all` fills in missing or stale evidence and reassesses invalid or",
+        "false records. It includes requirements, examples, and Rust function attestations,",
+        "preserving current accepted evidence, including FIXME judgments. Each assessment",
+        "gets its own conversation and usage record. Successful results are kept if",
+        "another assessment fails; the command reports failures and exits unsuccessfully.",
+        "A completed false judgment is saved and remains a validation failure.",
+        "{cite}`requirements.authoring.batch` {cite}`requirements.authoring.function_attestations`",
+        "",
+        "`habeas author <full-name>` assesses one requirement or example, records the",
+        "source inputs delivered to the model, and writes its judgment to the usual",
+        "evidence file. `author-evidence` remains an alias. Install `rg` (ripgrep) on your PATH for the model's search tool.",
+        "Choose a model that supports tool calls, either on Amazon Bedrock or an accessible",
+        "Ollama server. The server can run on another machine; Habeas does not need a GPU.",
+        "{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`",
+        "{cite}`requirements.authoring.text_search`",
+        "",
+        "In a Git worktree, stage new source files with `git add` before authoring. The",
+        "model can read unstaged edits to tracked files. Reads exclude untracked files,",
+        "generated `evidence/` content, and paths outside the project, including symlink",
+        "aliases. Standalone projects use the same containment rules without requiring Git.",
+        "{cite}`requirements.authoring.source_tools`",
+        "",
+        "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
+        "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
+        "relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local",
+        "and is not part of the project. Here is a complete configuration with two choices:",
+        "{cite}`requirements.configuration.user_location`",
+        "{cite}`requirements.authoring.configuration_documentation`",
+        "",
+        "```toml",
+        "version = 1",
+        "",
+        "[authoring]",
+        "default = \"cloud\"",
+        "",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\"",
+        "model = \"MODEL_ID\"",
+        "aws_profile = \"research\"",
+        "region = \"us-east-1\"",
+        "",
+        "[authoring.configs.local]",
+        "backend = \"ollama\"",
+        "model = \"MODEL_TAG\"",
+        "```",
+        "",
+        "Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,",
+        "`research` with your configured AWS profile, `us-east-1` with your region, and",
+        "`MODEL_TAG` with a model installed on your Ollama server. Omit `aws_profile` and",
+        "`region` to use standard AWS SDK resolution. Ollama defaults to",
+        "`http://localhost:11434`; add `endpoint = \"http://workstation:11434\"` to its table",
+        "for a remote server, replacing `workstation` with that server's host name. For",
+        "authentication, add `api_key_env = \"OLLAMA_API_KEY\"` and set that variable outside",
+        "the file. Credentials belong to AWS's credential sources or the named environment",
+        "variable. {cite}`requirements.authoring.configuration_precedence`",
+        "",
+        "Run from the project:",
+        "",
+        "```sh",
+        "habeas author --all",
+        "habeas author --all --config local",
+        "```",
+        "",
+        "For a single requirement or example, replace `requirements.check` with its full name:",
+        "",
+        "```sh",
+        "habeas author requirements.check",
+        "habeas author requirements.check --config local",
+        "habeas info requirements.check",
+        "```",
+        "",
+        "Use `--stdout` to emit the evidence JSON followed by a newline without creating",
+        "or changing evidence files or directories. The completion summary, usage-record",
+        "path, and diagnostics go to stderr, so stdout can be redirected or piped:",
+        "",
+        "```sh",
+        "habeas author requirements.check --stdout > /tmp/assessment.json",
+        "```",
+        "",
+        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
+        "assessment that fails before accepting a valid judgment emits no evidence JSON.",
+        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
+        "Usage is still recorded outside the project, with `evidence_output` identifying",
+        "the selected `file` or `stdout` destination and `evidence_written` reporting",
+        "whether the write succeeded.",
+        "{cite}`requirements.authoring.invocation`",
+        "{cite}`requirements.authoring.submission`",
+        "{cite}`requirements.authoring.persistence`",
+        "{cite}`requirements.authoring.usage_storage`",
+        "",
+        "Change `authoring.default` to switch the default, or add a per-project selection",
+        "using its canonical absolute path (replace `/absolute/path/to/project`):",
+        "",
+        "```toml",
+        "[authoring.projects.\"/absolute/path/to/project\"]",
+        "config = \"local\"",
+        "```",
+        "",
+        "The invocation's `--config` wins over that project selection, which wins over the",
+        "default. Remove the project table or default field to remove a selection. Delete",
+        "a configuration's table to remove it, updating selections that named it. Provider",
+        "inference options go under `[authoring.configs.<name>.options]`; supported keys",
+        "depend on the provider, and cannot replace the model, prompt, or tools. See the",
+        "[configuration reference](requirements/authoring.md#configuration) for the full",
+        "format. {cite}`requirements.authoring.configuration_storage`",
+        "{cite}`requirements.authoring.configuration_documentation`",
+        "",
+        "Bedrock runs assessments concurrently by default, using the available logical CPU",
+        "count. Ollama runs one at a time. Override either default with a positive",
+        "`concurrency` value alongside `backend` and `model` in its configuration table:",
+        "",
+        "```toml",
+        "[authoring.configs.cloud]",
+        "backend = \"bedrock\"",
+        "model = \"MODEL_ID\"",
+        "concurrency = 4",
+        "```",
+        "",
+        "Four is an example, not a fixed default. Authoring uses asynchronous tasks on a",
+        "fixed worker thread pool and limits simultaneous assessments to this value.",
+        "Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work",
+        "on records that still need attention. {cite}`requirements.authoring.concurrency`",
+        "",
+        "For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and",
+        "`stopSequences` directly in that options table. Habeas maps them to Converse's",
+        "`inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.",
+        "Use these flat keys without an `inferenceConfig` wrapper. For example:",
+        "",
+        "```toml",
+        "[authoring.configs.cloud.options]",
+        "temperature = 0.25",
+        "maxTokens = 321",
+        "topP = 0.75",
+        "stopSequences = [\"END\"]",
+        "```",
+        "",
+        "These values are illustrative choices, not Habeas defaults. Omit any setting to",
+        "leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`",
+        "go in the same options table; Rig places them in Ollama's native request.",
+        "{cite}`requirements.authoring.configuration_storage`",
+        "{cite}`requirements.authoring.rig_configuration_mapping`",
+        "",
+        "The command reports the evidence destination and usage-record path. Usage",
+        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
+        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
+        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
+        "book rendering remain deterministic and do not require model configuration or",
+        "credentials. {cite}`requirements.authoring.usage_storage`",
+        "{cite}`requirements.authoring.deterministic_validation`",
+        "",
+        "### Live Bedrock tests",
+        "",
+        "`cargo test` includes a live Bedrock integration test. It skips with a visible",
+        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing",
+        "Bedrock authoring configuration fails the test. A skip returns successfully, so",
+        "Cargo displays `ok` rather than `ignored`. Once credentials load, provider and",
+        "authoring errors fail the test. Local runs with credentials make billable model",
+        "requests and retain their usage records in the usual user state directory.",
+        "",
+        "Run just these tests with:",
+        "",
+        "```sh",
+        "cargo test --test live_bedrock",
+        "```",
+        "",
+        "The live test uses the project's or user's selected Bedrock configuration,",
+        "falling back to the first named Bedrock configuration in name order. To select",
+        "one explicitly:",
+        "",
+        "```sh",
+        "HABEAS_LIVE_CONFIG=sonnet cargo test --test live_bedrock",
+        "```",
+        "",
+        "The test uses a temporary project and stdout evidence output, leaving the",
+        "checkout's evidence unchanged. Any set `CI` environment variable disables live",
+        "testing before configuration or credential lookup, even if credentials are",
+        "available. For example, `CI=1 cargo test` runs the suite without live inference.",
+        "{cite}`requirements.integration.live_bedrock_test`",
+        "",
+        "## References",
+        "",
+        "Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:",
+        "",
+        "```text",
+        "{impl}`requirements.check`",
+        "{cite}`requirements.check`",
+        "{test}`requirements.check`",
+        "{test}`reference.cli.unknown_command`",
+        "```",
+        "",
+        "Each reference must name an existing requirement or example. Its evidence must include an input covering the line with the reference. In the book, references and definitions become linked badges.",
+        "",
+        "For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example cites a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit project requirement such as `internal-detail` and provide evidence explaining why it adds no otherwise unspecified user-visible behavior.",
+        "",
+        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
+        "",
+        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
+        "",
+        "## Checking and viewing",
+        "",
+        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
+        "",
+        "Run `habeas status [<glob>]` from within the project to list requirements and named",
+        "examples needing attention and their validation findings. FIXME judgments are",
+        "summarized by issue, for example:",
+        "",
+        "```text",
+        "- #123 — affects 22 judgments",
+        "- #45 — affects 3 judgments",
+        "- 16 judgments marked FIXME without an issue",
+        "```",
+        "",
+        "Each judgment counts once per issue, even if it repeats that reference. A judgment",
+        "with several issues counts in each group; the final group counts judgments with",
+        "no recognized issue reference. References may appear in explanatory text or",
+        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
+        "URLs are also recognized. Groups with the most affected judgments come first.",
+        "{cite}`requirements.cli.fixme_summary`",
+        "",
+        "Use `--verbose` to list the actual judgments in each group, with their full names,",
+        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
+        "evidence state. Stale or invalid FIXME evidence still reports its validation",
+        "findings. Use `habeas info <glob>` to print matching detail pages as Markdown,",
+        "including current texts, rationales, inputs, FIXME references, and findings. Both",
+        "commands match whole full names; `*` can span any number of characters, including",
+        "dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
+        "{cite}`requirements.references.definition_globs`",
+        "",
+        "```sh",
+        "habeas info requirements.ci.inputs",
+        "habeas info 'requirements.cli.*'",
+        "habeas status 'requirements.cli.*' --all",
+        "habeas status --verbose",
+        "```",
+        "",
+        "Agent skills installed by Habeas point to `habeas info` for looking up definition details.",
+        "",
+        "To add an evidence index, list a chapter in `SUMMARY.md` and put this directive in it:",
+        "",
+        "```text",
+        ":::{requirements-index}",
+        ":::",
+        "```",
+        "",
+        "The build fills that chapter with requirement and example states and adds an evidence page under it for each definition.",
+        "",
+        "## Using a local checkout",
+        "",
+        "To use a checkout instead of the registry package, install the CLI from that checkout and point setup at it:",
+        "",
+        "```sh",
+        "cargo install --path /path/to/habeas-codicem",
+        "habeas setup --path /path/to/habeas-codicem",
+        "```",
+        "",
+        "Run `habeas setup` in the consuming Cargo and mdBook project. Its book uses the installed `habeas mdbook` CLI; the repository-local `cargo habeas` alias is only for Habeas's own book.",
+        "",
+        "## Named definitions",
+        "",
+        "Use a definition for shared vocabulary. It has a stable chapter-qualified name,",
+        "a short display phrase, and an explanatory body:"
+      ]
+    },
+    {
+      "file": "md/reference.md",
       "line_start": 71,
       "line_end": 71,
       "text": [
@@ -721,11 +1105,11 @@
       "line_start": 281,
       "line_end": 285,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
         "// {impl}`requirements.ci.authoring_inputs`",
-        "fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {",
-        "    match selector {"
+        "pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {"
       ]
     },
     {
@@ -733,11 +1117,11 @@
       "line_start": 379,
       "line_end": 383,
       "text": [
-        "            InputSelector::Requirements {",
-        "                requirements: name.clone(),",
-        "            }",
-        "        });",
-        "    }"
+        "            .iter()",
+        "            .filter(|(_, declaration)| {",
+        "                declaration.file == file",
+        "                    && declaration.line_start <= reference.line",
+        "                    && reference.line <= declaration.line_end"
       ]
     },
     {
@@ -747,7 +1131,7 @@
       "text": [
         "        }),",
         "        json!({",
-        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Generated evidence under evidence/ is excluded from searches.\",",
+        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible project-local sources, tracked in Git worktrees. Generated evidence under evidence/ is excluded.\",",
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
         "        }),"
       ]
@@ -757,11 +1141,11 @@
       "line_start": 78,
       "line_end": 82,
       "text": [
-        "            integer(args, \"line_end\")?",
-        "        } else {",
         "            read_project_file(&sources.root, &file)?.1.lines().count()",
         "        };",
-        "        InputSelector::FileRange {"
+        "        InputSelector::FileRange {",
+        "            file,",
+        "            line_start,"
       ]
     },
     {
@@ -769,11 +1153,11 @@
       "line_start": 225,
       "line_end": 229,
       "text": [
+        "                last.1 = last.1.max(end);",
+        "            } else {",
         "                windows.push((start, end));",
         "            }",
-        "        }",
-        "        for (line_start, line_end) in windows {",
-        "            inputs.push(sources.read_selector(&InputSelector::FileRange {"
+        "        }"
       ]
     },
     {
@@ -894,11 +1278,11 @@
       "line_start": 206,
       "line_end": 210,
       "text": [
-        "            };",
-        "            let mode = if let Some(specification) = file_range {",
-        "                habeas::InputMode::FileRange(specification)",
-        "            } else if let Some(specification) = rust_item {",
-        "                habeas::InputMode::RustItemsAtLine(specification)"
+        "                let parts = for_rust_item.expect(\"clap requires a target\");",
+        "                habeas::InputTarget::RustFunction {",
+        "                    rust_file: parts[0].clone(),",
+        "                    rust_item: parts[1].clone(),",
+        "                }"
       ]
     },
     {
@@ -923,13 +1307,13 @@
       "line_start": 331,
       "line_end": 337,
       "text": [
-        "}",
-        "",
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.cli.add_input_requirements`",
-        "// {test}`requirements.references.selector_same_line`"
+        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
+        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
+        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
+        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
+        "    assert!(text.contains(\"input text changed\"), \"{text}\");",
+        "    assert!(text.contains(\"invalid JSON\"), \"{text}\");",
+        "    assert!(text.contains(\"no input covers\"), \"{text}\");"
       ]
     },
     {
@@ -937,13 +1321,13 @@
       "line_start": 364,
       "line_end": 370,
       "text": [
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--file-range\",",
-        "            \"src/main.rs:1-2\",",
-        "        ],",
-        "    );"
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.references.rust_function_coverage`",
+        "// {test}`requirements.references.rust_function_attestations`",
+        "// {test}`requirements.references.definition_globs`",
+        "#[test]",
+        "fn status_preserves_repository_wide_rust_findings_in_every_form() {",
+        "    let temp = fixture();"
       ]
     },
     {
@@ -1112,19 +1496,19 @@
       "line_start": 328,
       "line_end": 340,
       "text": [
-        "        assert_eq!(table[1].split('|').nth(1).unwrap().trim(), \"---\");",
-        "        assert_eq!(table[1].split('|').nth(2).unwrap().trim(), \"---\");",
+        "        );",
         "    }",
-        "}",
+        "    assert!(!text.contains(\"| `requirements.ready`\"), \"{text}\");",
+        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
+        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
+        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
+        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
+        "    assert!(text.contains(\"input text changed\"), \"{text}\");",
+        "    assert!(text.contains(\"invalid JSON\"), \"{text}\");",
+        "    assert!(text.contains(\"no input covers\"), \"{text}\");",
         "",
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.cli.add_input_requirements`",
-        "// {test}`requirements.references.selector_same_line`",
-        "// {test}`requirements.references.selector_raw_lines`",
-        "#[test]",
-        "fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {"
+        "    let output = habeas(&nested, &[\"status\", \"--all\"]);",
+        "    assert!(output.status.success(), \"{:?}\", output);"
       ]
     },
     {
@@ -1132,19 +1516,19 @@
       "line_start": 361,
       "line_end": 373,
       "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--file-range\",",
-        "            \"src/main.rs:1-2\",",
-        "        ],",
         "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let output = habeas(",
-        "        temp.path(),"
+        "}",
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.references.rust_function_coverage`",
+        "// {test}`requirements.references.rust_function_attestations`",
+        "// {test}`requirements.references.definition_globs`",
+        "#[test]",
+        "fn status_preserves_repository_wide_rust_findings_in_every_form() {",
+        "    let temp = fixture();",
+        "    let nested = temp.path().join(\"src/nested\");",
+        "    for flags in [",
+        "        [].as_slice(),"
       ]
     },
     {
@@ -1206,23 +1590,23 @@
       "line_start": 359,
       "line_end": 375,
       "text": [
-        "    )",
-        "    .unwrap();",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--file-range\",",
-        "            \"src/main.rs:1-2\",",
-        "        ],",
+        "            .any(|line| { line.starts_with(\"| `requirements.ready`\") && line.contains(\"| Valid\") }),",
+        "        \"{all}\"",
         "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\","
+        "}",
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.references.rust_function_coverage`",
+        "// {test}`requirements.references.rust_function_attestations`",
+        "// {test}`requirements.references.definition_globs`",
+        "#[test]",
+        "fn status_preserves_repository_wide_rust_findings_in_every_form() {",
+        "    let temp = fixture();",
+        "    let nested = temp.path().join(\"src/nested\");",
+        "    for flags in [",
+        "        [].as_slice(),",
+        "        [\"--all\"].as_slice(),",
+        "        [\"--verbose\"].as_slice(),"
       ]
     },
     {
@@ -1230,13 +1614,13 @@
       "line_start": 374,
       "line_end": 380,
       "text": [
-        ":::",
         "",
-        ":::{req} concurrency",
-        "Each named authoring configuration MUST accept an optional positive integer",
-        "`concurrency` in its configuration table. When omitted, the maximum number of",
-        "simultaneous assessments MUST default to the number of available logical CPUs",
-        "for Bedrock, falling back to one when that count is unavailable, and to one for"
+        ":::{req} configuration_serialization",
+        "The `[authoring]` table MUST serialize UserAuthoringConfig. Each",
+        "`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with",
+        "`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same",
+        "table. Backend-specific inference options MUST appear in its `options` subtable.",
+        "Within a present authoring section, `configs` MUST be present but MAY be empty;"
       ]
     },
     {
@@ -1272,13 +1656,13 @@
       "line_start": 33,
       "line_end": 39,
       "text": [
-        ":::",
+        "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+        "normalized reference; the group without an issue MUST follow them. A supplied",
+        "glob MUST restrict these counts to the selected subjects.",
         "",
-        ":::{req} add_input_file_range",
-        "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range.",
-        ":::",
-        "",
-        ":::{req} add_input_rust_item"
+        "`--verbose` MUST list the full name and kind of every judgment in each issue",
+        "group and in the group without an issue, along with its original FIXME strings.",
+        "The summary MUST include valid FIXME determinations even when other evidence"
       ]
     },
     {
@@ -1363,6 +1747,291 @@
         "                        lines.len()",
         "                    ));",
         "                }"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 551,
+      "line_end": 557,
+      "text": [
+        "            for cell in line.split('|').skip(1).take(2) {",
+        "                assert!(cell.starts_with(' ') && cell.ends_with(' '), \"{text}\");",
+        "                assert!(!cell[1..].starts_with(' '), \"{text}\");",
+        "            }",
+        "        }",
+        "        for column in 0..2 {",
+        "            let content_width = table"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 79,
+      "line_end": 81,
+      "text": [
+        "",
+        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 59,
+      "line_end": 61,
+      "text": [
+        "",
+        ":::{req} add_input_file_range",
+        "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range."
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 30,
+      "line_end": 32,
+      "text": [
+        "// {impl}`requirements.cli.add_input`",
+        "// {impl}`requirements.cli.add_input_file_range`",
+        "// {impl}`requirements.cli.add_input_rust_item`"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 69,
+      "line_end": 71,
+      "text": [
+        "// {impl}`requirements.cli.add_input`",
+        "// {impl}`requirements.cli.add_input_file_range`",
+        "// {impl}`requirements.cli.add_input_rust_item`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 520,
+      "line_end": 522,
+      "text": [
+        "        String::from_utf8_lossy(&status.stderr)",
+        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
+        "        \"{status:?}\""
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 68,
+      "line_end": 72,
+      "text": [
+        "",
+        ":::{req} rust_item_inputs",
+        "For a Rust-item input, Habeas MUST parse `rust_file` with `syn` and resolve `rust_item` to exactly one item. It MUST determine an inclusive range of complete raw source lines containing that item, including attached doc comments, attributes, and leading citation comments. It MUST compare `text` with those lines without serializing the `syn` tree, and derive the range again during validation for display and reference coverage. Moving unchanged lines because of edits earlier in the file MUST NOT invalidate the input. Habeas MUST report a missing file, parse failure, invalid or ambiguous selector, or changed lines.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 59,
+      "line_end": 63,
+      "text": [
+        "",
+        ":::{req} add_input_file_range",
+        "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 73,
+      "line_end": 77,
+      "text": [
+        "fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {",
+        "    match mode {",
+        "        InputMode::FileRange(specification) => {",
+        "            let (file, range) = specification.rsplit_once(':').ok_or_else(|| {",
+        "                invalid_input(\"file range must have the form <file>:<start>-<end>\")"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 211,
+      "line_end": 215,
+      "text": [
+        "            };",
+        "            let mode = if let Some(specification) = file_range {",
+        "                habeas::InputMode::FileRange(specification)",
+        "            } else if let Some(specification) = rust_item {",
+        "                habeas::InputMode::RustItemsAtLine(specification)"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 552,
+      "line_end": 556,
+      "text": [
+        "                assert!(cell.starts_with(' ') && cell.ends_with(' '), \"{text}\");",
+        "                assert!(!cell[1..].starts_with(' '), \"{text}\");",
+        "            }",
+        "        }",
+        "        for column in 0..2 {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 598,
+      "line_end": 604,
+      "text": [
+        "            .replace(\"IMPL\", \"{impl}\"),",
+        "    )",
+        "    .unwrap();",
+        "    let output = habeas(",
+        "        temp.path(),",
+        "        &[",
+        "            \"add-input\","
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 80,
+      "line_end": 80,
+      "text": [
+        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 60,
+      "line_end": 60,
+      "text": [
+        ":::{req} add_input_file_range"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 31,
+      "line_end": 31,
+      "text": [
+        "// {impl}`requirements.cli.add_input_file_range`"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 70,
+      "line_end": 70,
+      "text": [
+        "// {impl}`requirements.cli.add_input_file_range`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 568,
+      "line_end": 568,
+      "text": [
+        "        assert_eq!(table[1].split('|').nth(1).unwrap().trim(), \"---\");"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 32,
+      "line_end": 36,
+      "text": [
+        "// {impl}`requirements.cli.add_input_rust_item`",
+        "// {impl}`requirements.cli.add_input_requirements`",
+        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 219,
+      "line_end": 223,
+      "text": [
+        "            io::stdout()",
+        "                .lock()",
+        "                .write_all(habeas::add_input(&root, target, mode)?.as_bytes())?;",
+        "            Ok(())",
+        "        }"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 604,
+      "line_end": 610,
+      "text": [
+        "            \"add-input\",",
+        "            \"--for-requirement\",",
+        "            \"rules.ready\",",
+        "            \"--file-range\",",
+        "            \"src/main.rs:1-2\",",
+        "        ],",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 574,
+      "line_end": 574,
+      "text": [
+        "// {test}`requirements.cli.add_input_file_range`"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 555,
+      "line_end": 559,
+      "text": [
+        "            root.path().join(\"evidence/requirements.ready.json\"),",
+        "            json!({",
+        "                \"inputs\": [{\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1}]",
+        "            })",
+        "            .to_string(),"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 564,
+      "line_end": 568,
+      "text": [
+        "                .err()",
+        "                .unwrap()",
+        "                .contains(\"missing.txt\")",
+        "        );",
+        "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 140,
+      "line_end": 144,
+      "text": [
+        "    } else {",
+        "        json!({",
+        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
+        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
+        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 225,
+      "line_end": 229,
+      "text": [
+        "// {test}`requirements.authoring.usage_requests`",
+        "fn reply(calls: Vec<Value>) -> Value {",
+        "    json!({\"model\":MODEL,\"created_at\":\"2026-01-01T00:00:00Z\",",
+        "        \"message\":{\"role\":\"assistant\",\"content\":\"review complete\",\"tool_calls\":calls},",
+        "        \"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":11,\"eval_count\":7})"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 68,
+      "line_end": 73,
+      "text": [
+        "        ),",
+        "        (",
+        "            json!({\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"first\"]}),",
+        "            \"cannot open missing.txt\",",
+        "        ),",
+        "    ] {"
       ]
     }
   ]

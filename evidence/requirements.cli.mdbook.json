@@ -1,7 +1,7 @@
 {
   "requirement": "The `mdbook` subcommand MUST act as the mdBook preprocessor for HTML books, rendering requirement definitions and linked reference badges. This project's `book.toml` MUST configure `cargo habeas mdbook` as the `habeas` preprocessor, using a repository-local Cargo alias for `cargo run --release -p habeas --`. Consumer books MUST continue to invoke the installed `habeas mdbook` CLI directly.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.cli.mdbook`. The one weak spot is that no automated Rust test drives the stdin-to-stdout preprocessor path directly.\n\n**Implementation**\n- `src/main.rs`, in `main`: the `Command::Mdbook { command: None }` arm is annotated `{impl}`requirements.cli.mdbook``. It reads the book from stdin with `mdbook_preprocessor::parse_input`, calls `habeas::preprocess_book`, and writes the book JSON to stdout. This makes `mdbook` act as the preprocessor.\n- `src/main.rs`: the `supports` subcommand returns success only for `html`, which matches \"preprocessor for HTML books\".\n- `src/lib.rs`, `preprocess_book`: also annotated `{impl}`requirements.cli.mdbook``. It collects definitions (requirements and examples), renders definition badges, and replaces `{impl}`/`{cite}`/`{test}` references with linked badges. It also handles the evidence index.\n- `book.toml`: `[preprocessor.habeas] command = \"cargo habeas mdbook\"` with `renderers = [\"html\"]`. This is the project-level configuration the requirement asks for.\n- `.cargo/config.toml`: `habeas = \"run --release -p habeas --\"`. This is the repository-local Cargo alias the requirement names.\n- Consumer books: `tests/setup.rs` (`setup_is_repeatable`) asserts that the `book.toml` generated for a consumer contains `command = \"habeas mdbook\"`. So consumers still call the installed CLI directly rather than the cargo alias.\n\n**Test coverage**\n- `src/lib.rs` unit tests call `preprocess_book` on in-memory books.\n  - `references_in_nested_chapters_link_to_the_requirement_definition` checks that definition badges and reference badges are rendered and linked.\n  - `markdown_examples_and_escaped_references_stay_literal` checks that code spans and escaped references are left alone.\n  - `examples_are_distinct_definitions_and_tests_link_to_them` checks example definitions and their links.\n  - `links_preserve_requirement_names_containing_md` uses `requirements.cli.mdbook` itself as the name and checks that the links resolve.\n  - `src/index.rs` tests call `preprocess_book` with an index.\n- `tests/cli.rs` (`renderer_support_and_invalid_setup_option`) runs the real binary with `mdbook supports html` and with `mdbook supports epub`. It asserts success for `html` and failure for `epub`.\n- CI (`.github/workflows/ci.yml`) installs mdBook and runs `mdbook build` and `mdbook test`. This exercises the repository's own `book.toml` and the `cargo habeas mdbook` alias end to end.\n- No test cites `requirements.cli.mdbook` directly, and no Rust test pipes a book through the binary's stdin and checks the output. The wrapper in `main` is a few lines, and the CI `mdbook build` covers it in practice. The requirement is mostly configuration plus a thin wrapper around well-tested logic, so I judge this acceptable.\n\nI found no acknowledged FIXMEs or other gaps.",
+  "rationale": "**Verdict:** the requirement is met. The one weakness is test coverage of the stdin/stdout path (see Tests).\n\n**Implementation**\n- `src/main.rs`, `fn main`, tagged `{impl}requirements.cli.mdbook`:\n  - `Command::Mdbook { command: None }` reads the book from stdin with `mdbook_preprocessor::parse_input`.\n  - It calls `habeas::preprocess_book` and writes the book as JSON to stdout. That is the mdBook preprocessor protocol.\n  - `mdbook supports <renderer>` succeeds only for `html`, which matches \"preprocessor for HTML books\".\n- `src/lib.rs`, `preprocess_book`, tagged `{impl}requirements.cli.mdbook`:\n  - It collects req, example and term definitions, and builds the optional index.\n  - It renders definition badges and replaces `{impl}`, `{cite}` and `{test}` references with linked badges.\n- `book.toml` has `[preprocessor.habeas] command = \"cargo habeas mdbook\"` with `renderers = [\"html\"]`.\n- `.cargo/config.toml` defines `habeas = \"run --release -p habeas --\"`. This is the repository-local Cargo alias the requirement asks for.\n- Consumer books still call `habeas mdbook` directly. `tests/setup.rs` asserts that the generated consumer `book.toml` contains `command = \"habeas mdbook\"`, which covers that clause.\n\n**Tests**\n- The preprocessing behaviour is covered by unit tests in `src/lib.rs` and `src/index.rs` that call `preprocess_book`:\n  - Nested-chapter reference links and badge colours for impl/cite/test.\n  - Literal handling of code spans and fences.\n  - Example definitions.\n  - Longer colon fences.\n  - Links for names containing `.md` (the `requirements.cli.mdbook` case).\n  - The index paths in `src/index.rs`.\n- `tests/cli.rs` covers `mdbook supports html` (success) and `mdbook supports epub` (failure).\n- CI runs `mdbook build` and `mdbook test` (`.github/workflows/ci.yml`) using this repository's own `book.toml`. That exercises the alias, the preprocessor command and the stdin/stdout path end to end.\n\n**Gaps**\n- No test carries a `{test}requirements.cli.mdbook` reference.\n- No Rust integration test pipes a book through the `habeas mdbook` binary. The stdin/stdout glue is only exercised by the CI book build.\n- Nothing asserts that this repository's `book.toml` and alias are wired as specified, apart from that same CI build.\n- The glue is a few lines of straightforward code and the real logic is well covered, so I consider this acceptable. The gaps are not acknowledged with a FIXME.",
   "inputs": [
     {
       "requirements": "requirements.cli.mdbook",
@@ -126,10 +126,12 @@
         "        // {impl}`requirements.cli.setup`",
         "        Command::Setup { path } => setup::run(path.as_deref()),",
         "        // {impl}`requirements.cli.status`",
-        "        Command::Status { all, glob } => {",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status { all, glob, verbose } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_filtered(&root, all, glob.as_deref())?.as_bytes(),",
+        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                    .as_bytes(),",
         "            )?;",
         "            Ok(())",
         "        }",
@@ -282,6 +284,7 @@
       "line_start": 144,
       "line_end": 218,
       "text": [
+        "",
         "// {impl}`requirements.cli.mdbook`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
@@ -355,8 +358,7 @@
         "            chapter.path.as_deref(),",
         "            index.as_ref(),",
         "        );",
-        "        if let Some(path) = chapter.path.as_deref() {",
-        "            chapter.content = replace_references(&chapter.content, path, &definitions);"
+        "        if let Some(path) = chapter.path.as_deref() {"
       ]
     },
     {
@@ -364,13 +366,13 @@
       "line_start": 82,
       "line_end": 88,
       "text": [
+        "enum HookCommand {",
+        "    SessionStart,",
+        "}",
         "",
         "fn main() -> Result<(), Box<dyn Error>> {",
         "    // {impl}`requirements.cli.clap`",
-        "    match Cli::parse().command {",
-        "        // {impl}`requirements.cli.mdbook`",
-        "        Command::Mdbook { command: None } => {",
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;"
+        "    match Cli::parse().command {"
       ]
     },
     {
@@ -428,13 +430,13 @@
       "line_start": 141,
       "line_end": 147,
       "text": [
+        "    pub(crate) name: &'a str,",
         "    pub(crate) kind: ReferenceKind,",
         "}",
         "",
         "// {impl}`requirements.cli.mdbook`",
         "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.definitions.references`"
+        "// {impl}`requirements.definitions.declaration`"
       ]
     },
     {
@@ -442,6 +444,7 @@
       "line_start": 709,
       "line_end": 723,
       "text": [
+        "    #[test]",
         "    fn links_preserve_requirement_names_containing_md() {",
         "        let detail = chapter_href(",
         "            Path::new(\"requirements.md\"),",
@@ -455,8 +458,7 @@
         "            Path::new(\"requirements.md\"),",
         "            Some(\"habeas-req-requirements.cli.mdbook\"),",
         "        );",
-        "        assert_eq!(",
-        "            definition,"
+        "        assert_eq!("
       ]
     },
     {
@@ -464,13 +466,13 @@
       "line_start": 83,
       "line_end": 89,
       "text": [
+        "    SessionStart,",
+        "}",
+        "",
         "fn main() -> Result<(), Box<dyn Error>> {",
         "    // {impl}`requirements.cli.clap`",
         "    match Cli::parse().command {",
-        "        // {impl}`requirements.cli.mdbook`",
-        "        Command::Mdbook { command: None } => {",
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
-        "            habeas::preprocess_book(&mut book, &context.root)?;"
+        "        // {impl}`requirements.cli.mdbook`"
       ]
     },
     {
@@ -939,9 +941,9 @@
         "}",
         "",
         "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.fixme_summary`",
         "// {test}`requirements.cli.info`",
-        "fn habeas(dir: &Path, args: &[&str]) -> Output {",
-        "    Command::new(env!(\"CARGO_BIN_EXE_habeas\"))"
+        "fn habeas(dir: &Path, args: &[&str]) -> Output {"
       ]
     },
     {
@@ -949,11 +951,11 @@
       "line_start": 114,
       "line_end": 118,
       "text": [
+        "        .unwrap()",
         "}",
         "",
-        "// {test}`requirements.cli.status`",
-        "#[test]",
-        "fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {"
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.ci.outcomes`"
       ]
     },
     {
@@ -961,12 +963,12 @@
       "line_start": 172,
       "line_end": 177,
       "text": [
-        "}",
-        "",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.cli.definition_glob_search`",
-        "#[test]",
-        "fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {"
+        "        \"text\": source.lines().collect::<Vec<_>>()",
+        "    });",
+        "    for (kind, name, text, references) in declarations {",
+        "        let subject_key = if kind == \"example\" {",
+        "            \"example\"",
+        "        } else {"
       ]
     },
     {
@@ -974,13 +976,13 @@
       "line_start": 236,
       "line_end": 242,
       "text": [
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn commands_report_invalid_arguments_and_unmatched_selectors() {"
+        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
+        "        assert!(",
+        "            all.lines().any(",
+        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")",
+        "            ),",
+        "            \"{all}\"",
+        "        );"
       ]
     },
     {
@@ -988,11 +990,11 @@
       "line_start": 284,
       "line_end": 288,
       "text": [
-        "}",
-        "",
-        "// {test}`requirements.cli.status_table_alignment`",
-        "#[test]",
-        "fn status_tables_align_each_column_to_its_widest_cell() {"
+        "        \"rules.alpha\",",
+        "        \"rules.beta\",",
+        "        \"rules.unlinked\",",
+        "        \"#123\",",
+        "        \"rust-lang/rust\","
       ]
     },
     {
@@ -1000,16 +1002,16 @@
       "line_start": 331,
       "line_end": 340,
       "text": [
-        "}",
+        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
+        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
+        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
+        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
+        "    assert!(text.contains(\"input text changed\"), \"{text}\");",
+        "    assert!(text.contains(\"invalid JSON\"), \"{text}\");",
+        "    assert!(text.contains(\"no input covers\"), \"{text}\");",
         "",
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.cli.add_input_requirements`",
-        "// {test}`requirements.references.selector_same_line`",
-        "// {test}`requirements.references.selector_raw_lines`",
-        "#[test]",
-        "fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {"
+        "    let output = habeas(&nested, &[\"status\", \"--all\"]);",
+        "    assert!(output.status.success(), \"{:?}\", output);"
       ]
     },
     {
@@ -1518,8 +1520,8 @@
         "",
         "// {test}`requirements.ci.schema`",
         "// {test}`requirements.index.state`",
-        "#[test]",
-        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {"
+        "// {test}`requirements.cli.fixme_summary`",
+        "#[test]"
       ]
     },
     {
@@ -1527,13 +1529,13 @@
       "line_start": 195,
       "line_end": 201,
       "text": [
+        "    assert!(row.contains(\"Invalid\"), \"{row}\");",
+        "    assert!(status.contains(\"nonempty array\"), \"{status}\");",
+        "    assert!(!status.contains(\"affects\"), \"{status}\");",
         "}",
         "",
         "// {test}`requirements.ci.inputs`",
-        "// {test}`requirements.ci.fixme_stale_input`",
-        "// {test}`requirements.index.state`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {"
+        "// {test}`requirements.ci.fixme_stale_input`"
       ]
     },
     {
@@ -1541,12 +1543,12 @@
       "line_start": 229,
       "line_end": 234,
       "text": [
-        "}",
-        "",
-        "// {test}`requirements.references.rust_function_attestations`",
-        "// {test}`requirements.ci.determination`",
-        "#[test]",
-        "fn rust_function_attestations_still_require_boolean_true() {"
+        "    assert!(",
+        "        report",
+        "            .errors",
+        "            .iter()",
+        "            .any(|error| error.contains(\"no input covers\"))",
+        "    );"
       ]
     },
     {
@@ -1554,15 +1556,15 @@
       "line_start": 280,
       "line_end": 288,
       "text": [
+        "            .any(|error| error.contains(\"determination must be a boolean\"))",
+        "    );",
+        "    attestation[\"functions\"][0][\"determination\"] = json!(true);",
+        "    fs::write(attestation_path, attestation.to_string()).unwrap();",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();",
+        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "}",
         "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.index.state`",
-        "// {test}`requirements.index.detail_format`",
-        "// {test}`requirements.examples.index`",
-        "#[test]",
-        "fn valid_fixme_remains_visible_in_status_info_and_book() {"
+        "// {test}`requirements.cli.status`"
       ]
     },
     {
@@ -1751,7 +1753,7 @@
       "line_start": 149,
       "line_end": 149,
       "text": [
-        "pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {"
+        "// {impl}`requirements.definitions.selection`"
       ]
     },
     {
@@ -1759,7 +1761,7 @@
       "line_start": 679,
       "line_end": 679,
       "text": [
-        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,"
+        "    use super::{"
       ]
     },
     {
@@ -1767,7 +1769,7 @@
       "line_start": 790,
       "line_end": 790,
       "text": [
-        "        preprocess_book(&mut book, Path::new(\".\")).unwrap();"
+        ""
       ]
     },
     {
@@ -1775,7 +1777,7 @@
       "line_start": 821,
       "line_end": 821,
       "text": [
-        "        preprocess_book(&mut book, Path::new(\".\")).unwrap();"
+        ""
       ]
     },
     {
@@ -1783,7 +1785,7 @@
       "line_start": 891,
       "line_end": 891,
       "text": [
-        "        preprocess_book(&mut book, Path::new(\".\")).unwrap();"
+        "        ));"
       ]
     },
     {
@@ -1791,7 +1793,7 @@
       "line_start": 89,
       "line_end": 89,
       "text": [
-        "            habeas::preprocess_book(&mut book, &context.root)?;"
+        "        // {impl}`requirements.cli.mdbook`"
       ]
     },
     {
@@ -1841,6 +1843,7 @@
       "line_start": 670,
       "line_end": 920,
       "text": [
+        "            '\\'' => escaped.push_str(\"&#39;\"),",
         "            _ => escaped.push(character),",
         "        }",
         "    }",
@@ -2090,8 +2093,7 @@
         "}",
         "",
         "mod commands;",
-        "mod markdown;",
-        "pub use commands::{info_markdown, status_markdown, status_markdown_filtered};"
+        "mod markdown;"
       ]
     },
     {
@@ -2182,11 +2184,11 @@
       "line_start": 142,
       "line_end": 146,
       "text": [
+        "    pub(crate) kind: ReferenceKind,",
         "}",
         "",
         "// {impl}`requirements.cli.mdbook`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`"
+        "// {impl}`requirements.examples.definition`"
       ]
     },
     {
@@ -2194,11 +2196,11 @@
       "line_start": 710,
       "line_end": 714,
       "text": [
+        "    fn links_preserve_requirement_names_containing_md() {",
         "        let detail = chapter_href(",
         "            Path::new(\"requirements.md\"),",
         "            Path::new(\"requirements-index/requirements.cli.mdbook.md\"),",
-        "            None,",
-        "        );"
+        "            None,"
       ]
     },
     {
@@ -2206,13 +2208,13 @@
       "line_start": 716,
       "line_end": 722,
       "text": [
+        "        assert_eq!(detail, \"requirements-index/requirements.cli%2Emdbook.html\");",
         "",
         "        let definition = chapter_href(",
         "            Path::new(\"requirements-index/requirements.cli.mdbook.md\"),",
         "            Path::new(\"requirements.md\"),",
         "            Some(\"habeas-req-requirements.cli.mdbook\"),",
-        "        );",
-        "        assert_eq!("
+        "        );"
       ]
     },
     {
@@ -2220,11 +2222,11 @@
       "line_start": 84,
       "line_end": 88,
       "text": [
+        "}",
+        "",
+        "fn main() -> Result<(), Box<dyn Error>> {",
         "    // {impl}`requirements.cli.clap`",
-        "    match Cli::parse().command {",
-        "        // {impl}`requirements.cli.mdbook`",
-        "        Command::Mdbook { command: None } => {",
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;"
+        "    match Cli::parse().command {"
       ]
     },
     {
@@ -2245,6 +2247,56 @@
         "        .output()",
         "        .unwrap();",
         "    assert!(!unsupported.status.success());"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 143,
+      "line_end": 147,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.cli.mdbook`",
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 711,
+      "line_end": 715,
+      "text": [
+        "        let detail = chapter_href(",
+        "            Path::new(\"requirements.md\"),",
+        "            Path::new(\"requirements-index/requirements.cli.mdbook.md\"),",
+        "            None,",
+        "        );"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 717,
+      "line_end": 723,
+      "text": [
+        "",
+        "        let definition = chapter_href(",
+        "            Path::new(\"requirements-index/requirements.cli.mdbook.md\"),",
+        "            Path::new(\"requirements.md\"),",
+        "            Some(\"habeas-req-requirements.cli.mdbook\"),",
+        "        );",
+        "        assert_eq!("
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 87,
+      "line_end": 91,
+      "text": [
+        "    // {impl}`requirements.cli.clap`",
+        "    match Cli::parse().command {",
+        "        // {impl}`requirements.cli.mdbook`",
+        "        Command::Mdbook { command: None } => {",
+        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;"
       ]
     }
   ]

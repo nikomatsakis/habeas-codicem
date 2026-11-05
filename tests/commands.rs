@@ -104,6 +104,7 @@ fn fixture() -> TempDir {
 }
 
 // {test}`requirements.cli.status`
+// {test}`requirements.cli.fixme_summary`
 // {test}`requirements.cli.info`
 fn habeas(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_habeas"))
@@ -111,6 +112,195 @@ fn habeas(dir: &Path, args: &[&str]) -> Output {
         .args(args)
         .output()
         .unwrap()
+}
+
+// {test}`requirements.cli.fixme_summary`
+// {test}`requirements.ci.outcomes`
+// {test}`requirements.ci.determination`
+// {test}`requirements.ci.schema`
+// {test}`requirements.integration.report_api`
+fn fixme_fixture() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir(temp.path().join("md")).unwrap();
+    fs::create_dir(temp.path().join("evidence")).unwrap();
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = 'fixture'\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+    let example = "A concrete case. CITE`rules.alpha`.".replace("CITE", "{cite}");
+    let declarations = [
+        (
+            "req",
+            "alpha",
+            "Alpha MUST work.",
+            vec![
+                "FIXME(#00123)",
+                "Repeated #123 and rust-lang/rust#000456.",
+                "https://github.com/rust-lang/rust/issues/456",
+                "Unlinked extra detail",
+            ],
+        ),
+        (
+            "req",
+            "beta",
+            "Beta MUST work.",
+            vec!["#123", "#45", "Rust-Lang/rust#456", "An unrelated note"],
+        ),
+        ("example", "case", &example, vec!["FIXME(#45)"]),
+        (
+            "req",
+            "unlinked",
+            "Unlinked MUST work.",
+            vec![
+                "No ticket for <script>alert(1)</script>",
+                "#000 is not an issue",
+                "#12abc and ##123 are not complete issue references",
+            ],
+        ),
+    ];
+    let source: String = declarations
+        .iter()
+        .map(|(kind, name, text, _)| format!(":::{{{kind}}} {name}\n{text}\n:::\n\n"))
+        .collect();
+    fs::write(temp.path().join("md/rules.md"), &source).unwrap();
+    let input = json!({
+        "file": "md/rules.md",
+        "line_start": 1,
+        "line_end": source.lines().count(),
+        "text": source.lines().collect::<Vec<_>>()
+    });
+    for (kind, name, text, references) in declarations {
+        let subject_key = if kind == "example" {
+            "example"
+        } else {
+            "requirement"
+        };
+        fs::write(
+            temp.path().join(format!("evidence/rules.{name}.json")),
+            json!({
+                subject_key: text,
+                "determination": {"FIXME": references},
+                "rationale": "The fixture records acknowledged implementation gaps.",
+                "inputs": [input]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let report = habeas::validate_repository(temp.path()).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    temp
+}
+
+// {test}`requirements.cli.status`
+// {test}`requirements.cli.fixme_summary`
+#[test]
+fn status_groups_fixme_judgments_by_distinct_normalized_issue() {
+    let temp = fixme_fixture();
+    let output = habeas(temp.path(), &["status"]);
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let summaries: Vec<_> = text
+        .lines()
+        .filter(|line| line.contains("affects"))
+        .collect();
+    assert_eq!(summaries.len(), 4, "{text}");
+    for (line, reference, count) in [
+        (summaries[0], "#123", "affects 2 judgments"),
+        (summaries[1], "#45", "affects 2 judgments"),
+        (summaries[2], "Rust-Lang/rust#456", "affects 1 judgment"),
+        (summaries[3], "rust-lang/rust#456", "affects 1 judgment"),
+    ] {
+        assert!(line.contains(reference) && line.contains(count), "{text}");
+    }
+    assert!(
+        text.lines()
+            .any(|line| line.contains("1 judgment") && line.contains("without an issue")),
+        "{text}"
+    );
+    assert!(!text.contains("#00123"), "{text}");
+    assert!(!text.contains("#000456"), "{text}");
+    assert!(
+        text.find("without an issue").unwrap() > text.find(summaries[3]).unwrap(),
+        "{text}"
+    );
+    for name in ["alpha", "beta", "case", "unlinked"] {
+        assert!(!text.contains(&format!("rules.{name}")), "{text}");
+    }
+
+    let output = habeas(temp.path(), &["status", "--all"]);
+    assert!(output.status.success(), "{output:?}");
+    let all = String::from_utf8(output.stdout).unwrap();
+    for name in ["alpha", "beta", "case", "unlinked"] {
+        assert!(
+            all.lines().any(
+                |line| line.starts_with(&format!("| `rules.{name}`")) && line.contains("FIXME")
+            ),
+            "{all}"
+        );
+    }
+    for summary in summaries {
+        assert!(all.contains(summary), "{all}");
+    }
+}
+
+// {test}`requirements.cli.status`
+// {test}`requirements.cli.fixme_summary`
+// {test}`requirements.references.definition_globs`
+#[test]
+fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {
+    let temp = fixme_fixture();
+    let output = habeas(temp.path(), &["status", "--verbose"]);
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    for name in ["alpha", "beta", "case", "unlinked"] {
+        assert!(text.contains(&format!("rules.{name}")), "{text}");
+    }
+    for detail in [
+        "requirement",
+        "example",
+        "FIXME(#00123)",
+        "Repeated #123 and rust-lang/rust#000456.",
+        "https://github.com/rust-lang/rust/issues/456",
+        "Unlinked extra detail",
+        "An unrelated note",
+        "&lt;script&gt;alert(1)&lt;/script&gt;",
+    ] {
+        assert!(text.contains(detail), "{text}");
+    }
+    assert!(!text.contains("<script>"), "{text}");
+
+    let output = habeas(temp.path(), &["status", "rules.case", "--verbose"]);
+    assert!(output.status.success(), "{output:?}");
+    let filtered = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        filtered.contains("#45") && filtered.contains("affects 1 judgment"),
+        "{filtered}"
+    );
+    assert!(filtered.contains("rules.case"), "{filtered}");
+    for excluded in [
+        "rules.alpha",
+        "rules.beta",
+        "rules.unlinked",
+        "#123",
+        "rust-lang/rust",
+    ] {
+        assert!(!filtered.contains(excluded), "{filtered}");
+    }
+
+    let output = habeas(temp.path(), &["status", "--verbose", "rules.unlinked"]);
+    assert!(output.status.success(), "{output:?}");
+    let unlinked = String::from_utf8(output.stdout).unwrap();
+    assert!(unlinked.contains("rules.unlinked"), "{unlinked}");
+    assert!(
+        unlinked
+            .lines()
+            .any(|line| line.contains("1 judgment") && line.contains("without an issue")),
+        "{unlinked}"
+    );
+    assert!(!unlinked.contains("affects"), "{unlinked}");
 }
 
 // {test}`requirements.cli.status`
@@ -169,6 +359,45 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
             .any(|line| { line.starts_with("| `requirements.ready`") && line.contains("| Valid") }),
         "{all}"
     );
+}
+
+// {test}`requirements.cli.status`
+// {test}`requirements.references.rust_function_coverage`
+// {test}`requirements.references.rust_function_attestations`
+// {test}`requirements.references.definition_globs`
+#[test]
+fn status_preserves_repository_wide_rust_findings_in_every_form() {
+    let temp = fixture();
+    let nested = temp.path().join("src/nested");
+    for flags in [
+        [].as_slice(),
+        ["--all"].as_slice(),
+        ["--verbose"].as_slice(),
+        ["--all", "--verbose"].as_slice(),
+    ] {
+        for selection in [None, Some("requirements.ready")] {
+            let mut args = vec!["status"];
+            args.extend_from_slice(flags);
+            args.extend(selection);
+            let output = habeas(&nested, &args);
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                text.contains("## Other validation findings"),
+                "{args:?}: {text}"
+            );
+            assert!(
+                text.contains(
+                    "src/main.rs:1: function main has no requirement or example citation"
+                ),
+                "{args:?}: {text}"
+            );
+            assert!(
+                text.contains("src/main.rs:1 fn[main]: missing Rust function attestation file"),
+                "{args:?}: {text}"
+            );
+        }
+    }
 }
 
 // {test}`requirements.cli.info`
@@ -254,12 +483,14 @@ fn commands_report_invalid_arguments_and_unmatched_selectors() {
             "{args:?}: {output:?}"
         );
     }
-    let invalid = habeas(temp.path(), &["info", "["]);
-    assert!(!invalid.status.success());
-    assert!(
-        String::from_utf8_lossy(&invalid.stderr).contains("invalid definition glob"),
-        "{invalid:?}"
-    );
+    for command in ["info", "status"] {
+        let invalid = habeas(temp.path(), &[command, "["]);
+        assert!(!invalid.status.success());
+        assert!(
+            String::from_utf8_lossy(&invalid.stderr).contains("invalid definition glob"),
+            "{command}: {invalid:?}"
+        );
+    }
     let unmatched = habeas(temp.path(), &["info", "nothing.*"]);
     assert!(!unmatched.status.success());
     assert!(
@@ -281,6 +512,15 @@ fn commands_report_invalid_arguments_and_unmatched_selectors() {
     let no_status = habeas(temp.path(), &["status", "nothing.*"]);
     assert!(!no_status.status.success());
     assert!(String::from_utf8_lossy(&no_status.stderr).contains("no definitions match"));
+
+    let outside_project = TempDir::new().unwrap();
+    let status = habeas(outside_project.path(), &["status"]);
+    assert!(!status.status.success(), "{status:?}");
+    assert!(
+        String::from_utf8_lossy(&status.stderr)
+            .contains("cannot find a project with Cargo.toml and book.toml"),
+        "{status:?}"
+    );
 }
 
 // {test}`requirements.cli.status_table_alignment`

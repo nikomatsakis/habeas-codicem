@@ -9,8 +9,8 @@
           "name": "requirements.ci.input_containment"
         }
       ],
-      "determination": false,
-      "rationale": "**Verdict: the citation set is incomplete.** `check_project_file` (src/inputs.rs ~231–253) cites only `requirements.ci.input_containment`. It also enforces `requirements.ci.schema`, and that requirement is not cited.\n\n**How I identified the applicable set.** I read the whole function and the full `*` requirements input, which includes every `requirements.ci.*` declaration. I then checked how neighbouring functions in src/inputs.rs cite requirements.\n\n**What the function does.**\n1. It rejects an empty path, or one with any component other than `Normal` or `CurDir`. That rules out absolute paths, `..` and prefixes. The error is \"file must be a path relative to the repository\".\n2. It canonicalizes the root and the joined path. A failure is reported as \"cannot open ...\", which is the missing-or-unreadable-file case.\n3. It rejects a path that resolves outside the root.\n4. It rejects a path that is not a regular file.\n\n**What the existing citation covers.** `requirements.ci.input_containment` governs steps 2–3. It requires files to resolve within the project root, including through symlinks, and requires a missing or unreadable file and an outside-root path to be reported.\n\n**What is missing.**\n- **`requirements.ci.schema`.** It says \"File paths MUST be repository-relative\". Step 1 is an observable error branch that enforces exactly this rule for file-range, Rust-item and definition inputs. The ordinary `input_containment` text says nothing about absolute paths or `..`, so it does not explain this branch. Other functions in the same file (`InputSelector`, `from_input`) already cite `schema` for evidence-input path shape. This function should cite it alongside `input_containment`, with an explanation of how the two texts jointly account for the behaviour.\n- **`requirements.ci.inputs` / `requirements.ci.rust_item_inputs`.** These say missing files must be reported. I treat that as secondary, because `input_containment` already requires missing-file reporting here. It is not what makes the citation set incomplete.\n\nBecause at least one clearly applicable requirement (`requirements.ci.schema`) is not cited, the function does not cite every applicable requirement.",
+      "determination": true,
+      "rationale": "**Result:** `check_project_file` (src/inputs.rs, about lines 231–256) already cites every requirement that applies to it. I read the whole function and the full `*` requirements and examples input. I also read the `requirements.ci.*` input and the other recorded src/inputs.rs ranges that show the callers.\n\n**What the function does, branch by branch:**\n- It rejects an empty path, and any path with absolute, parent (`..`) or prefix components. The error is \"file must be a path relative to the repository\".\n- It canonicalizes the root and the joined path. This resolves symlinks. A failure to open the file produces \"cannot open …\", which is the missing or unreadable file error.\n- It rejects a resolved path that does not start with the root (\"resolves outside the repository\").\n- It rejects anything that is not a regular file (\"is not a project file\").\n\n**Applicable requirement:** `requirements.ci.input_containment` says every project file named by an evidence input must resolve within the project root, including through symlinks. It also says validation must report a missing or unreadable file and a path that resolves outside the project. That covers all four branches above, so the existing `{impl}` citation fits.\n\n**Requirements that do not need citing:**\n- `requirements.ci.inputs`, `requirements.ci.rust_item_inputs` and `requirements.ci.requirements_inputs`: these describe line-range, text and glob checking. Those behaviours live in callers such as `resolve` and `raw_lines`. The helper only checks the path. Its sibling `read_project_file` cites only `input_containment` for the same reason.\n- `requirements.authoring.source_tools` and `requirements.authoring.mandatory_inputs`: these require a Git-index check and exclusion of `evidence/`. This function does neither. That logic sits in `SourceAccess` (src/authoring/access.rs), which carries those citations.\n- `requirements.ci.diagnostics` and `requirements.ci.errors`: these govern how validation reports errors. The function only returns error strings, and callers format them.\n- The remaining authoring, CLI, definitions, examples, index, configuration and references requirements concern other behaviour.\n\nI found no applicable requirement or example missing from the citation list.",
       "inputs": [
         {
           "rust_file": "src/inputs.rs",
@@ -108,6 +108,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -410,8 +411,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -579,7 +582,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -659,8 +669,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -937,6 +948,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -982,7 +1018,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -1959,6 +1995,495 @@
             "fn raw_lines(content: &str) -> Vec<String> {",
             "    content"
           ]
+        },
+        {
+          "file": "src/add_input.rs",
+          "line_start": 10,
+          "line_end": 10,
+          "text": [
+            "use crate::inputs::{InputSelector, read_project_file};"
+          ]
+        },
+        {
+          "file": "src/add_input.rs",
+          "line_start": 104,
+          "line_end": 104,
+          "text": [
+            "            let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;"
+          ]
+        },
+        {
+          "file": "src/add_input.rs",
+          "line_start": 191,
+          "line_end": 191,
+          "text": [
+            "    let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 9,
+          "line_end": 9,
+          "text": [
+            "use crate::inputs::{InputSelector, read_project_file};"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 168,
+          "line_end": 168,
+          "text": [
+            "        let (_, source) = read_project_file(&root, rust_file)?;"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 355,
+          "line_end": 355,
+          "text": [
+            "        let (_, source) = read_project_file(root, &file)?;"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 397,
+          "line_end": 397,
+          "text": [
+            "    let (_, source) = read_project_file(root, &file)?;"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 9,
+          "line_end": 9,
+          "text": [
+            "use crate::inputs::{InputSelector, read_project_file};"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 78,
+          "line_end": 78,
+          "text": [
+            "            read_project_file(&sources.root, &file)?.1.lines().count()"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 212,
+          "line_end": 212,
+          "text": [
+            "        let (_, source) = read_project_file(&sources.root, &file)?;"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 126,
+          "line_end": 126,
+          "text": [
+            "                let (_, content) = read_project_file(root, file)?;"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 155,
+          "line_end": 155,
+          "text": [
+            "                let (_, content) = read_project_file(root, rust_file)?;"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 181,
+          "line_end": 181,
+          "text": [
+            "                check_project_file(root, &target.file)?;"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 204,
+          "line_end": 204,
+          "text": [
+            "                    check_project_file(root, &definition.file)?;"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 233,
+          "line_end": 233,
+          "text": [
+            "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 258,
+          "line_end": 259,
+          "text": [
+            "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
+            "    let path = check_project_file(root, file)?;"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 11,
+          "line_end": 15,
+          "text": [
+            "",
+            "impl SourceAccess {",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    pub(crate) fn load(root: &Path) -> Result<Self, String> {",
+            "        let mut has_git_marker = false;"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 73,
+          "line_end": 77,
+          "text": [
+            "    }",
+            "",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    // {impl}`requirements.authoring.file_discovery`",
+            "    // {impl}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 101,
+          "line_end": 105,
+          "text": [
+            "    }",
+            "",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    // {impl}`requirements.authoring.mandatory_inputs`",
+            "    pub(crate) fn file(&self, root: &Path, relative: &Path) -> Result<PathBuf, String> {"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 112,
+          "line_end": 116,
+          "text": [
+            "",
+            "    // {impl}`requirements.authoring.file_discovery`",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    // {impl}`requirements.authoring.text_search`",
+            "    fn has_source_under(&self, root: &Path, directory: &Path) -> bool {"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 127,
+          "line_end": 131,
+          "text": [
+            "    }",
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.file_discovery`"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 163,
+          "line_end": 167,
+          "text": [
+            "pub(super) mod tests {",
+            "    use super::*;",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    pub(crate) fn git(root: &Path, args: &[&str]) {"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 177,
+          "line_end": 181,
+          "text": [
+            "        );",
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    #[test]"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 194,
+          "line_end": 198,
+          "text": [
+            "        assert!(access.file(&root, Path::new(\"outside.txt\")).is_err());",
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    #[test]"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 206,
+          "line_end": 210,
+          "text": [
+            "        assert!(error.contains(\"cannot read Git index\"), \"{error}\");",
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    #[test]"
+          ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 221,
+          "line_end": 225,
+          "text": [
+            "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());",
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    #[test]"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 257,
+          "line_end": 261,
+          "text": [
+            "    }",
+            "",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    // {impl}`requirements.authoring.text_search`",
+            "    pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 265,
+          "line_end": 269,
+          "text": [
+            "",
+            "    // {impl}`requirements.definitions.authoring_inputs`",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    // {impl}`requirements.authoring.text_search`",
+            "    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 279,
+          "line_end": 283,
+          "text": [
+            "",
+            "// {impl}`requirements.authoring.mandatory_inputs`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 292,
+          "line_end": 296,
+          "text": [
+            "",
+            "// {impl}`requirements.authoring.mandatory_inputs`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.ci.authoring_inputs`",
+            "fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 305,
+          "line_end": 309,
+          "text": [
+            "",
+            "// {impl}`requirements.authoring.mandatory_inputs`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.definitions.authoring_inputs`",
+            "// {impl}`requirements.ci.authoring_inputs`"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 707,
+          "line_end": 711,
+          "text": [
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    // {test}`requirements.authoring.mandatory_inputs`",
+            "    // {test}`requirements.definitions.authoring_inputs`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 14,
+          "line_end": 18,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 45,
+          "line_end": 49,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 64,
+          "line_end": 68,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.definitions.authoring_inputs`",
+            "// {impl}`requirements.authoring.delivered_inputs`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 109,
+          "line_end": 113,
+          "text": [
+            "",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "fn list_files(",
+            "    sources: &AssessmentSources,"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 152,
+          "line_end": 156,
+          "text": [
+            "",
+            "// {impl}`requirements.authoring.text_search`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDelivery, String> {",
+            "    check_keys(args, &[\"pattern\", \"path\", \"context\"])?;"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 242,
+          "line_end": 246,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 254,
+          "line_end": 258,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.text_search`",
+            "fn string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 262,
+          "line_end": 266,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.text_search`",
+            "fn integer(args: &Map<String, Value>, key: &str) -> Result<usize, String> {"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 284,
+          "line_end": 288,
+          "text": [
+            "// {impl}`requirements.authoring.text_search`",
+            "// {impl}`requirements.ci.input_containment`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "fn project_path(sources: &AssessmentSources, relative: &str) -> Result<PathBuf, String> {",
+            "    sources.access.path(&sources.root, Path::new(relative))"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 309,
+          "line_end": 313,
+          "text": [
+            "",
+            "    // {test}`requirements.authoring.additional_read`",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    // {test}`requirements.authoring.file_discovery`",
+            "    // {test}`requirements.authoring.delivered_inputs`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 437,
+          "line_end": 441,
+          "text": [
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    // {test}`requirements.authoring.file_discovery`",
+            "    // {test}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 556,
+          "line_end": 560,
+          "text": [
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    // {test}`requirements.authoring.file_discovery`",
+            "    // {test}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 598,
+          "line_end": 602,
+          "text": [
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    // {test}`requirements.authoring.file_discovery`",
+            "    // {test}`requirements.authoring.text_search`"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 664,
+          "line_end": 668,
+          "text": [
+            "    }",
+            "",
+            "    // {test}`requirements.authoring.source_tools`",
+            "    // {test}`requirements.authoring.file_discovery`",
+            "    // {test}`requirements.authoring.text_search`"
+          ]
         }
       ]
     },
@@ -1971,7 +2496,7 @@
         }
       ],
       "determination": true,
-      "rationale": "**Function:** `raw_lines` (src/inputs.rs:265-271) splits a string into lines and strips a trailing `\\r` from each. It has no branches or error cases. It is private and returns `Vec<String>`.\n\n**Callers:** A search for `raw_lines(` in `src` finds one call site, in `resolve` at src/inputs.rs:127. That call is in the file-range input arm. There it supplies the \"current raw lines\" used for the range check (`line_start == 0`, `line_end < line_start`, `line_end > lines.len()`) and for comparing against the recorded `text`.\n\n**Applicable requirement:** `requirements.ci.inputs` says file-range `text` must exactly match the current raw lines in the range. It also says missing files, invalid ranges and changed lines must be reported. `raw_lines` defines what a \"raw line\" is for that comparison. The function cites this requirement as `{impl}` in its leading comment.\n\n**Other requirements considered and rejected:**\n- `requirements.ci.rust_item_inputs`, `requirements.ci.requirements_inputs` and `requirements.definitions.inputs` also mention raw lines. This function is not used for them. The definition and requirements code builds its own `raw_lines` vectors from declarations elsewhere.\n- `requirements.ci.schema`, `requirements.ci.input_containment` and `requirements.ci.diagnostics` concern record structure, file containment and error reporting. They are handled by the caller or by other functions. `raw_lines` produces no errors and does no file I/O.\n- The authoring and CLI requirements do not govern this helper's behavior.\n\n**Coverage of the set:** The mandatory inputs include all requirement and example declarations (`*`) and `requirements.ci.*`. I reviewed them against the function's only observable behavior, line splitting with CR stripping. `requirements.ci.inputs` is the only one that applies, and it is already cited.",
+      "rationale": "`raw_lines` (src/inputs.rs:265-271) splits content into lines and strips a trailing `\\r` from each. It has no error cases and no other observable branches.\n\nI searched `src` for callers. The only one is `ResolvedInput::resolve` at src/inputs.rs:127, in the `FileRange` arm. That arm uses the line count to check the inclusive range and uses the lines as the \"current raw lines\" to compare with `text`. This is exactly what `requirements.ci.inputs` governs: \"`text` exactly matches the current raw lines in that range\", plus reporting invalid ranges and changed lines. The function already cites that requirement as `impl`.\n\nThe other candidates do not apply:\n- `ci.rust_item_inputs` and `ci.requirements_inputs`: the helper is not used for Rust-item or requirements inputs. Declaration lines are split separately at src/evidence.rs:273.\n- `ci.schema`: it concerns the JSON shape, which `raw_lines` does not touch.\n- `ci.diagnostics`: the helper builds no error message.\n- `cli.add_input_file_range`: `resolve` is shared, but this helper only splits lines. The caller `resolve` carries the broader citations (src/inputs.rs:110-114). Its `Self::FileRange` arm is the part that needs the add-input citation, not this splitter.\n- Authoring requirements: they concern harness behavior, and `raw_lines` has none.\n\nI reviewed the full requirements set (`*`) and the `requirements.ci.*` input. The one existing citation covers the function's single behavior, so the citations are complete.",
       "inputs": [
         {
           "rust_file": "src/inputs.rs",
@@ -2052,6 +2577,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -2354,8 +2880,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -2523,7 +3051,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -2603,8 +3138,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -2881,6 +3417,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -2926,7 +3487,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -3757,6 +4318,46 @@
             "    content",
             "        .lines()"
           ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 108,
+          "line_end": 140,
+          "text": [
+            "    }",
+            "",
+            "    // {impl}`requirements.ci.inputs`",
+            "    // {impl}`requirements.ci.rust_item_inputs`",
+            "    // {impl}`requirements.ci.requirements_inputs`",
+            "    // {impl}`requirements.definitions.inputs`",
+            "    // {impl}`requirements.definitions.selection`",
+            "    pub(crate) fn resolve(",
+            "        &self,",
+            "        root: &Path,",
+            "        definitions: &BTreeMap<String, Declaration>,",
+            "    ) -> Result<ResolvedInput, String> {",
+            "        match self {",
+            "            Self::FileRange {",
+            "                file,",
+            "                line_start,",
+            "                line_end,",
+            "            } => {",
+            "                let (_, content) = read_project_file(root, file)?;",
+            "                let lines = raw_lines(&content);",
+            "                if *line_start == 0 || *line_end < *line_start || *line_end > lines.len() {",
+            "                    return Err(format!(",
+            "                        \"{file}:{line_start}-{line_end} is not an inclusive range within the file's {} lines\",",
+            "                        lines.len()",
+            "                    ));",
+            "                }",
+            "                Ok(ResolvedInput {",
+            "                    ranges: vec![SourceRange {",
+            "                        file: file.clone(),",
+            "                        line_start: *line_start,",
+            "                        line_end: *line_end,",
+            "                        name: None,",
+            "                    }],"
+          ]
         }
       ]
     },
@@ -3769,7 +4370,7 @@
         }
       ],
       "determination": true,
-      "rationale": "**Function (src/inputs.rs, `read_project_file`).** It does two things:\n1. It calls `check_project_file(root, file)?`. That call enforces that the file is a project file contained in the root, and it propagates the error.\n2. It reads the file with `fs::read_to_string`. A failure becomes `cannot read {file}: ...`, and success returns `(path, content)`.\n\n**How I identified the applicable set.** I read the whole `*` requirements input and the `requirements.ci.*` input. I then checked each requirement and example for obligations that this helper's observable behavior would trigger. The helper's only observable outcomes are \"rejected as not a project file or outside the root\", \"cannot read\", and \"success\".\n\n**Cited requirement.** `requirements.ci.input_containment` (cited at the `// {impl}` comment directly above the function) says:\n- Every project file named by an evidence input must resolve within the project root, including through symlinks.\n- Validation must report a missing or unreadable file and a path that resolves outside the project.\n\nThis covers both error branches of the function: the containment rejection delegated to `check_project_file`, and the unreadable-file error from `read_to_string`. It also covers the success path.\n\n**Requirements considered and not applicable.**\n- `requirements.ci.inputs` and `requirements.ci.rust_item_inputs` govern range checks, parsing, and text comparison. Those happen in the callers, for example the `FileRange` and `RustItem` arms of the resolver at src/inputs.rs lines 120–161, which call this helper. The helper itself does none of that, so those requirements are cited at the caller sites.\n- The authoring requirements (`source_tools`, `file_discovery`, `text_search`) and the `add_input` requirements describe tool and CLI behavior. They are implemented by callers that consume this helper, such as src/authoring/tools.rs and src/add_input.rs. The helper adds no behavior of its own for them.\n- The `rust_function_coverage` and `rust_function_attestations` requirements concern the citation mechanism itself, not this function's behavior.\n\n**Conclusion.** The single citation accounts for all of the function's observable behavior, including its error cases, and I found no other applicable requirement or example that is missing.",
+      "rationale": "**Verdict:** the one citation, `requirements.ci.input_containment`, is the only applicable one, so the citation set is complete.\n\n**What the function does.** `read_project_file` is at `src/inputs.rs:259-264`. It does three things:\n- It calls `check_project_file` (lines 232-256). That call rejects empty or non-relative paths, resolves symlinks, rejects paths outside the root, and rejects paths that are not files.\n- It reads the file and returns `cannot read {file}: ...` if the read fails.\n- It returns the resolved path and the content.\n\n**How I identified the applicable set.** I reviewed the full `*` requirements input and the `requirements.ci.*` input, and I read the surrounding source, including `check_project_file`.\n- `requirements.ci.input_containment` says every project file named by an evidence input must resolve within the project root, including through symlinks. It also says validation must report a missing or unreadable file and a path that resolves outside the project. That covers every branch here: the containment check, the missing-file error from canonicalize, and the unreadable-file error from `read_to_string`.\n- `requirements.authoring.source_tools` adds a Git-index check and an `evidence/` exclusion. Those checks are not in this function or in `check_project_file`. They are in the authoring `SourceAccess` layer, which `src/authoring/tools.rs` calls before `read_project_file` (`sources.access.file(...)`). So that requirement does not apply here.\n- `requirements.ci.inputs`, `requirements.ci.rust_item_inputs`, `requirements.cli.add_input_file_range` and similar requirements govern callers that apply range, selector or parse logic. This function performs none of that, so those citations belong on the callers.\n- The function has no other observable behavior, such as output, configuration, or schema handling, that another requirement would govern.\n\nThe existing citation accounts for all of its behavior.",
       "inputs": [
         {
           "rust_file": "src/inputs.rs",
@@ -3850,6 +4451,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -4152,8 +4754,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -4321,7 +4925,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -4401,8 +5012,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -4679,6 +5291,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -4724,7 +5361,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -5419,14 +6056,14 @@
             "",
             "use serde_json::{Value, json};",
             "",
+            "use super::access::SourceAccess;",
             "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
             "use crate::inputs::{InputSelector, read_project_file};",
             "use crate::{DefinitionKind, ReferenceKind};",
             "",
             "pub(crate) enum AssessmentKind {",
             "    Definition(DefinitionKind),",
-            "    RustFunction {",
-            "        rust_item: String,"
+            "    RustFunction {"
           ]
         },
         {
@@ -5434,19 +6071,19 @@
           "line_start": 152,
           "line_end": 164,
           "text": [
+            "    }",
+            "",
+            "    // {impl}`requirements.authoring.function_attestations`",
+            "    // {impl}`requirements.authoring.mandatory_inputs`",
+            "    // {impl}`requirements.ci.authoring_inputs`",
+            "    // {impl}`requirements.references.rust_function_attestations`",
+            "    // {impl}`requirements.definitions.authoring_inputs`",
+            "    pub(crate) fn prepare_function(",
+            "        root: &Path,",
+            "        rust_file: &str,",
             "        rust_item: &str,",
             "    ) -> Result<Self, String> {",
-            "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
-            "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;",
-            "        if generated_evidence_path(&root, Path::new(rust_file)) {",
-            "            return Err(\"generated evidence is output, not assessment source\".to_owned());",
-            "        }",
-            "        let (_, source) = read_project_file(&root, rust_file)?;",
-            "        let (_, citations) = crate::rust_items::function_citations(&source, &definitions)",
-            "            .map_err(|error| format!(\"{rust_file}: cannot parse Rust source: {error}\"))?",
-            "            .into_iter()",
-            "            .find(|(item, _)| item.selector == rust_item)",
-            "            .ok_or_else(|| format!(\"{rust_file}: no function matches Rust item {rust_item:?}\"))?;"
+            "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;"
           ]
         },
         {
@@ -5454,19 +6091,19 @@
           "line_start": 332,
           "line_end": 344,
           "text": [
-            "        .strip_prefix(root)",
-            "        .map_err(|_| \"reference is outside project root\".to_owned())?",
-            "        .to_str()",
-            "        .ok_or_else(|| \"reference path is not UTF-8\".to_owned())?",
-            "        .to_owned();",
-            "    if reference",
-            "        .file",
-            "        .extension()",
-            "        .is_some_and(|extension| extension == \"rs\")",
-            "    {",
-            "        let (_, source) = read_project_file(root, &file)?;",
-            "        let items = crate::rust_items::parse_items(&source)",
-            "            .map_err(|error| format!(\"{file}: cannot parse referenced Rust source: {error}\"))?;"
+            "    if !selectors.contains(&selector) {",
+            "        selectors.push(selector);",
+            "    }",
+            "}",
+            "",
+            "// {impl}`requirements.references.authoring_inputs`",
+            "fn reference_selector(",
+            "    root: &Path,",
+            "    definitions: &BTreeMap<String, Declaration>,",
+            "    reference: &SourceReference,",
+            ") -> Result<InputSelector, String> {",
+            "    let file = reference",
+            "        .file"
           ]
         },
         {
@@ -5474,19 +6111,19 @@
           "line_start": 374,
           "line_end": 386,
           "text": [
-            "        return Ok(if declaration.kind == DefinitionKind::Term {",
-            "            InputSelector::Definition {",
-            "                definition: name.clone(),",
-            "            }",
-            "        } else {",
-            "            InputSelector::Requirements {",
-            "                requirements: name.clone(),",
-            "            }",
-            "        });",
-            "    }",
-            "    let (_, source) = read_project_file(root, &file)?;",
-            "    Ok(InputSelector::FileRange {",
-            "        file,"
+            "    if reference",
+            "        .file",
+            "        .extension()",
+            "        .is_some_and(|extension| extension == \"md\")",
+            "        && let Some((name, declaration)) = definitions",
+            "            .iter()",
+            "            .filter(|(_, declaration)| {",
+            "                declaration.file == file",
+            "                    && declaration.line_start <= reference.line",
+            "                    && reference.line <= declaration.line_end",
+            "            })",
+            "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)",
+            "    {"
           ]
         },
         {
@@ -5499,7 +6136,7 @@
             "",
             "use serde_json::{Map, Value, json};",
             "",
-            "use super::inputs::{AssessmentSources, generated_evidence_path};",
+            "use super::inputs::AssessmentSources;",
             "use crate::inputs::{InputSelector, read_project_file};",
             "",
             "pub(crate) struct ToolDelivery {",
@@ -5515,9 +6152,7 @@
           "line_end": 84,
           "text": [
             "        let file = string(args, \"file\")?.to_owned();",
-            "        if generated_evidence_path(&sources.root, Path::new(&file)) {",
-            "            return Err(\"generated evidence is output, not assessment source\".to_owned());",
-            "        }",
+            "        sources.access.file(&sources.root, Path::new(&file))?;",
             "        let line_start = integer(args, \"line_start\")?;",
             "        let line_end = if args.contains_key(\"line_end\") {",
             "            integer(args, \"line_end\")?",
@@ -5526,7 +6161,9 @@
             "        };",
             "        InputSelector::FileRange {",
             "            file,",
-            "            line_start,"
+            "            line_start,",
+            "            line_end,",
+            "        }"
           ]
         },
         {
@@ -5534,6 +6171,8 @@
           "line_start": 202,
           "line_end": 214,
           "text": [
+            "        }",
+            "        let number = event[\"data\"][\"line_number\"]",
             "            .as_u64()",
             "            .and_then(|number| usize::try_from(number).ok())",
             "            .ok_or_else(|| \"ripgrep returned an invalid line number\".to_owned())?;",
@@ -5544,9 +6183,7 @@
             "    for (file, mut lines) in matches {",
             "        let (_, source) = read_project_file(&sources.root, &file)?;",
             "        let count = source.lines().count();",
-            "        lines.sort_unstable();",
-            "        let mut windows: Vec<(usize, usize)> = Vec::new();",
-            "        for line in lines {"
+            "        lines.sort_unstable();"
           ]
         },
         {
@@ -5628,6 +6265,54 @@
             "}",
             ""
           ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 225,
+          "line_end": 265,
+          "text": [
+            "                    matches,",
+            "                })",
+            "            }",
+            "        }",
+            "    }",
+            "}",
+            "",
+            "// {impl}`requirements.ci.input_containment`",
+            "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
+            "    let relative = Path::new(file);",
+            "    if file.is_empty()",
+            "        || !relative",
+            "            .components()",
+            "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+            "    {",
+            "        return Err(format!(",
+            "            \"{file:?}: file must be a path relative to the repository\"",
+            "        ));",
+            "    }",
+            "    let root =",
+            "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
+            "    let path = fs::canonicalize(root.join(relative))",
+            "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
+            "    if !path.starts_with(root) {",
+            "        return Err(format!(\"{file} resolves outside the repository\"));",
+            "    }",
+            "    if !path.is_file() {",
+            "        return Err(format!(\"{file} is not a project file\"));",
+            "    }",
+            "    Ok(path)",
+            "}",
+            "",
+            "// {impl}`requirements.ci.input_containment`",
+            "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
+            "    let path = check_project_file(root, file)?;",
+            "    let content =",
+            "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;",
+            "    Ok((path, content))",
+            "}",
+            "",
+            "// {impl}`requirements.ci.inputs`"
+          ]
         }
       ]
     },
@@ -5644,7 +6329,7 @@
         }
       ],
       "determination": true,
-      "rationale": "**Function behavior (src/inputs.rs, `InputSelector::from_input`, about lines 51–74).** It does only structural classification of an evidence-input JSON value. It returns `None` unless the value is an object. It then picks one of four selector variants:\n- a `file` string, with required `line_start` and `line_end`, gives `FileRange`;\n- a `rust_file` string, with required `rust_item`, gives `RustItem`;\n- a `definition` string gives `Definition`;\n- otherwise a required `requirements` string gives `Requirements`.\n\nMissing or ill-typed fields give `None`. The function does not read files, resolve selectors, compare text, check ranges, or match globs. It also produces no user-visible output or errors itself. Callers in `add_input.rs`, `authoring/inputs.rs`, `evidence.rs`, `index.rs` and `terms.rs` handle the `None` case.\n\n**How I identified the applicable set.** I went through the full `*` requirements and examples input and asked which ones govern this parsing step.\n- `requirements.ci.schema` defines the four evidence-input forms and their exact field names: file-range, Rust-item, requirements and definition. This matches the four branches and their required fields, including the error-case `None` results for missing fields. It is cited.\n- `requirements.definitions.inputs` defines the definition form (`definition` plus `text`). It covers the `Definition` branch and is cited.\n- `requirements.ci.inputs`, `requirements.ci.rust_item_inputs` and `requirements.ci.requirements_inputs` govern verifying and resolving each kind of input: line-range checks, `syn` resolution, glob matching and text comparison. Those obligations are implemented in `resolve` (cited there, around lines 108–116) and on `ResolvedInput`, not in `from_input`. The field-shape portion of those forms is already covered by `ci.schema`.\n- `requirements.cli.add_input` and the `authoring.*` requirements concern callers. `to_input` cites `cli.add_input`, but `from_input` does not produce or write inputs.\n- `requirements.ci.diagnostics` and `requirements.ci.errors` apply to reporting validation errors. `from_input` reports nothing, and its callers handle `None`.\n- The remaining requirements and examples (CLI, index, configuration, selectors, glob and similar) are unrelated to this function.\n\n**Conclusion.** The two existing citations account for every observable branch of the function: the four-form schema and the definition form. I found no further applicable requirement or example that is missing.",
+      "rationale": "**Method.** I read `InputSelector::from_input` (src/inputs.rs:51-74) in full. I then checked it against every requirement and example in the supplied `*` input, with a closer look at `requirements.ci.*` and `requirements.definitions.inputs`.\n\n**What the function does.** It only classifies a JSON evidence input into one of four selector forms.\n- It returns `None` if the input is not an object.\n- A `file` key gives `FileRange`. It requires `line_start` and `line_end` as `usize` values and returns `None` otherwise.\n- A `rust_file` key gives `RustItem`. It requires `rust_item` as a string.\n- A `definition` key gives `Definition`.\n- Otherwise it falls through to `Requirements`, which needs a `requirements` string.\n\nIt does no file I/O, glob matching, text comparison, or validation reporting. It adds no CLI output and does not write evidence.\n\n**How the citations account for it.**\n- `requirements.ci.schema` defines exactly the four input forms (file-range, Rust-item, requirements, definition) and their fields. The function's branches mirror these forms.\n- `requirements.definitions.inputs` defines the definition form with exactly `definition` and `text`. That covers the `Definition` branch.\n\n**Requirements I considered and excluded.**\n- `requirements.ci.inputs`, `ci.rust_item_inputs`, `ci.requirements_inputs`, and `definitions.selection` govern resolving and verifying inputs against current sources: ranges, text comparison, glob matching. That work is done by `resolve` in the same file, which cites them (src/inputs.rs:108-116). The parser here does not do it.\n- `ci.input_containment` is cited on the file-reading helpers, not here.\n- `ci.diagnostics` and `ci.errors` do not apply because this function reports no errors; it only returns `None`.\n- `cli.add_input` and the authoring requirements concern callers of `from_input` (src/add_input.rs, src/authoring/inputs.rs, src/index.rs, src/terms.rs). They are not behavior of this function.\n- The remaining requirements and examples (configuration, index, symposium, setup, status, selectors, and so on) do not touch this parsing logic.\n\n**Conclusion.** The two existing citations cover the schema-level obligations for the function's observable branches. I found no other applicable requirement or example.",
       "inputs": [
         {
           "rust_file": "src/inputs.rs",
@@ -5743,6 +6428,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -6045,8 +6731,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -6214,7 +6902,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -6294,8 +6989,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -6572,6 +7268,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -6617,7 +7338,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -7398,6 +8119,9 @@
           "line_start": 102,
           "line_end": 114,
           "text": [
+            "                let inputs = evidence",
+            "                    .get(\"inputs\")",
+            "                    .and_then(Value::as_array)",
             "                    .ok_or_else(|| {",
             "                        format!(",
             "                            \"{}: existing evidence inputs must be an array\",",
@@ -7407,10 +8131,7 @@
             "                for (index, input) in inputs.iter().enumerate() {",
             "                    let selector = InputSelector::from_input(input).ok_or_else(|| {",
             "                        format!(",
-            "                            \"{}: inputs[{index}] has no resolvable selector\",",
-            "                            evidence_path.display()",
-            "                        )",
-            "                    })?;"
+            "                            \"{}: inputs[{index}] has no resolvable selector\","
           ]
         },
         {
@@ -7418,19 +8139,19 @@
           "line_start": 183,
           "line_end": 195,
           "text": [
+            "        let path = root.join(\"evidence/rust\").join(format!(\"{rust_file}.json\"));",
+            "        match fs::read_to_string(&path) {",
+            "            Ok(content) => {",
+            "                let sidecar: Value = serde_json::from_str(&content)",
+            "                    .map_err(|error| format!(\"{}: {error}\", path.display()))?;",
+            "                let functions = sidecar[\"functions\"].as_array().ok_or_else(|| {",
+            "                    format!(\"{}: existing functions must be an array\", path.display())",
+            "                })?;",
+            "                if let Some(entry) = functions",
             "                    .iter()",
             "                    .find(|entry| entry[\"rust_item\"] == rust_item)",
             "                {",
-            "                    let inputs = entry[\"inputs\"].as_array().ok_or_else(|| {",
-            "                        format!(\"{}: existing inputs must be an array\", path.display())",
-            "                    })?;",
-            "                    for (index, input) in inputs.iter().enumerate() {",
-            "                        let selector = InputSelector::from_input(input).ok_or_else(|| {",
-            "                            format!(",
-            "                                \"{}: inputs[{index}] has no resolvable selector\",",
-            "                                path.display()",
-            "                            )",
-            "                        })?;"
+            "                    let inputs = entry[\"inputs\"].as_array().ok_or_else(|| {"
           ]
         },
         {
@@ -7540,7 +8261,7 @@
         }
       ],
       "determination": false,
-      "rationale": "**Verdict: the citations are incomplete.**\n\n**How I identified the applicable set.** I read all of `InputSelector::resolve` (src/inputs.rs, lines ~109–225) and the full `*` requirement and example list supplied as inputs. I went through each of the four match arms and each error path.\n\n**What the five current citations cover.**\n- `requirements.ci.inputs` covers the `FileRange` arm. That arm rejects a missing file and an invalid or out-of-order range.\n- `requirements.ci.rust_item_inputs` covers the `RustItem` arm. It requires a `.rs` file, reports parse failures, and reports missing or ambiguous selectors. It also covers the line range computed by `item_lines`.\n- `requirements.ci.requirements_inputs` covers the `Requirements` arm. It matches the glob, sorts names via the `BTreeMap`, joins declarations with a blank line, and errors when nothing matches.\n- `requirements.definitions.inputs` covers the `Definition` arm, including the missing-definition error.\n- `requirements.definitions.selection` covers the exclusion of named definitions from requirements globs. See the `DefinitionKind::Term` filter.\n\n**Applicable requirements that are not cited.**\n1. `requirements.ci.input_containment` is missing.\n   - The requirement says every project file named by an input or resolved from its selector must resolve within the project root, symlinks included. Missing or unreadable files and paths outside the project must be reported.\n   - `resolve` enforces this directly in two arms by calling `check_project_file(root, &target.file)` in `Definition` and `check_project_file(root, &definition.file)` in `Requirements`.\n   - It enforces it indirectly in the other two arms through `read_project_file`.\n   - The helpers `check_project_file` and `read_project_file` each cite the requirement. `validate_input` and `validate_resolved_input` in src/evidence.rs also cite it, so the project's own convention is to cite it wherever this containment behaviour is invoked.\n   - The observable containment error cases in `resolve` are therefore governed by a requirement that `resolve` does not cite.\n2. `requirements.references.definition_globs` is probably also missing.\n   - In the `Requirements` arm, `resolve` calls `definition_glob::validate(requirements)?` and `definition_glob::matches(requirements, name)`.\n   - The requirement says an empty glob is invalid, `*` matches zero or more characters including dots, and requirements evidence inputs use this same matching rule. That is directly the glob validity and matching behaviour exercised here.\n   - `requirements_inputs` mentions the glob only in general terms and does not define the matching rule or the empty-glob error.\n\nBecause at least `requirements.ci.input_containment` is applicable and uncited, the function does not cite every applicable requirement.",
+      "rationale": "**Verdict: citations are incomplete.**\n\n**How I identified the applicable set.** I read all of `InputSelector::resolve` in `src/inputs.rs` (the `// {impl}` block above `resolve`). I checked each branch against the full `*` requirement and example set supplied. I also searched `src/` to see how callers and helpers of the same logic are cited.\n\n**What the current citations cover.**\n- `requirements.ci.inputs` covers the file-range branch, including the inclusive-range check.\n- `requirements.ci.rust_item_inputs` covers the Rust-item branch: the `.rs` check, parse failure, no match, and ambiguous selector.\n- `requirements.ci.requirements_inputs` covers the requirements branch: concatenating declarations with a blank line between them, sorted `matches`, and an error when the glob matches nothing.\n- `requirements.definitions.inputs` covers the definition branch.\n- `requirements.definitions.selection` covers excluding named definitions (`DefinitionKind::Term`) from glob matches.\n\n**Applicable requirements that are not cited.**\n1. `requirements.ci.input_containment`. It says every project file named by an input, or resolved from its selector, MUST resolve within the project root, and that validation MUST report a missing or unreadable file or a path outside the project. `resolve` is the place where this happens. The `FileRange`, `RustItem` and `Definition` branches each call `read_project_file` or `check_project_file`. The `Requirements` branch calls `check_project_file` for every matched definition. Each of these can return an observable containment error. Comparable code cites this requirement: `check_project_file`, `read_project_file`, `validate_input`, and `validate_input_lines` all carry `{impl}requirements.ci.input_containment`. The call sites in `resolve`, which cover four branches and their error cases, do not.\n2. `requirements.references.definition_globs`. The `Requirements` branch calls `definition_glob::validate`, which rejects an empty glob. It then calls `definition_glob::matches` to apply the whole-name, `*`-crosses-dots rule across requirements and examples. The requirement states exactly those rules, and `ci.requirements_inputs` does not define them. The helpers in `src/definition_glob.rs` and the caller `status_markdown_with_options` in `src/commands.rs` already cite this requirement. `resolve` does not.\n3. `requirements.references.rust_item_selectors`. The Rust-item branch resolves `rust_item` by comparing it to the selectors that `parse_items` derives, and reports a no-match or ambiguous-selector error. The requirement defines what a selector is and what disambiguates duplicates, so it is the semantic basis for that match. `parse_items` cites it, but `resolve` does not. This one is less clear-cut than the other two.\n\n**Conclusion.** The five existing citations account for each branch's resolution and comparison behavior. They do not account for the project-containment errors or for the glob validation and matching rules, and they arguably omit the selector semantics. The function therefore does not cite every applicable requirement.",
       "inputs": [
         {
           "rust_file": "src/inputs.rs",
@@ -7734,6 +8455,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -8036,8 +8758,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -8205,7 +8929,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -8285,8 +9016,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -8563,6 +9295,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -8608,7 +9365,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -9262,6 +10019,8 @@
           "line_start": 275,
           "line_end": 287,
           "text": [
+            "fn optional_path(args: &Map<String, Value>) -> Result<&str, String> {",
+            "    if args.contains_key(\"path\") {",
             "        string(args, \"path\")",
             "    } else {",
             "        Ok(\".\")",
@@ -9272,9 +10031,7 @@
             "// {impl}`requirements.authoring.text_search`",
             "// {impl}`requirements.ci.input_containment`",
             "// {impl}`requirements.authoring.source_tools`",
-            "fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {",
-            "    if relative.is_empty()",
-            "        || !Path::new(relative)"
+            "fn project_path(sources: &AssessmentSources, relative: &str) -> Result<PathBuf, String> {"
           ]
         },
         {
@@ -9472,6 +10229,323 @@
             "                match value.as_str() {",
             "                    Some(name) => names.push(name.to_owned()),"
           ]
+        },
+        {
+          "file": "src/authoring/access.rs",
+          "line_start": 130,
+          "line_end": 136,
+          "text": [
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.text_search`",
+            "// {impl}`requirements.ci.input_containment`",
+            "fn resolve(root: &Path, relative: &Path) -> Result<(PathBuf, PathBuf), String> {",
+            "    if relative.as_os_str().is_empty()",
+            "        || !relative"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
+          "line_start": 282,
+          "line_end": 288,
+          "text": [
+            "",
+            "// {impl}`requirements.authoring.file_discovery`",
+            "// {impl}`requirements.authoring.text_search`",
+            "// {impl}`requirements.ci.input_containment`",
+            "// {impl}`requirements.authoring.source_tools`",
+            "fn project_path(sources: &AssessmentSources, relative: &str) -> Result<PathBuf, String> {",
+            "    sources.access.path(&sources.root, Path::new(relative))"
+          ]
+        },
+        {
+          "file": "src/commands.rs",
+          "line_start": 26,
+          "line_end": 32,
+          "text": [
+            "// {impl}`requirements.cli.fixme_summary`",
+            "// {impl}`requirements.cli.shared_status_rendering`",
+            "// {impl}`requirements.definitions.selection`",
+            "// {impl}`requirements.references.definition_globs`",
+            "pub fn status_markdown_with_options(",
+            "    root: &Path,",
+            "    all: bool,"
+          ]
+        },
+        {
+          "file": "src/definition_glob.rs",
+          "line_start": 1,
+          "line_end": 4,
+          "text": [
+            "// {impl}`requirements.references.definition_globs`",
+            "pub(crate) fn validate(pattern: &str) -> Result<(), String> {",
+            "    if pattern.is_empty() {",
+            "        return Err(\"definition glob must not be empty\".to_owned());"
+          ]
+        },
+        {
+          "file": "src/definition_glob.rs",
+          "line_start": 13,
+          "line_end": 19,
+          "text": [
+            "    Ok(())",
+            "}",
+            "",
+            "// {impl}`requirements.references.definition_globs`",
+            "pub(crate) fn matches(pattern: &str, name: &str) -> bool {",
+            "    let bytes = name.as_bytes();",
+            "    let mut previous = vec![false; bytes.len() + 1];"
+          ]
+        },
+        {
+          "file": "src/definition_glob.rs",
+          "line_start": 39,
+          "line_end": 45,
+          "text": [
+            "mod tests {",
+            "    use super::{matches, validate};",
+            "",
+            "    // {test}`requirements.references.definition_globs`",
+            "    // {test}`requirements.references.definition_glob_cases`",
+            "    #[test]",
+            "    fn wildcard_crosses_dot_segments_and_matches_the_whole_name() {"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 482,
+          "line_end": 488,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "// {impl}`requirements.ci.input_containment`",
+            "// {impl}`requirements.ci.rust_item_inputs`",
+            "// {impl}`requirements.ci.requirements_inputs`",
+            "// {impl}`requirements.definitions.inputs`"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 703,
+          "line_end": 709,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.inputs`",
+            "// {impl}`requirements.ci.input_containment`",
+            "fn validate_input_lines(",
+            "    root: &Path,",
+            "    file: &str,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 1505,
+          "line_end": 1511,
+          "text": [
+            "    // {test}`requirements.integration.report_api`",
+            "    // {test}`requirements.ci.errors`",
+            "    // {test}`requirements.ci.diagnostics`",
+            "    // {test}`requirements.ci.input_containment`",
+            "    // {test}`requirements.ci.definition_errors`",
+            "    #[test]",
+            "    fn collects_missing_orphan_format_false_and_changed_line_errors() {"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 229,
+          "line_end": 235,
+          "text": [
+            "    }",
+            "}",
+            "",
+            "// {impl}`requirements.ci.input_containment`",
+            "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
+            "    let relative = Path::new(file);",
+            "    if file.is_empty()"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 254,
+          "line_end": 260,
+          "text": [
+            "    Ok(path)",
+            "}",
+            "",
+            "// {impl}`requirements.ci.input_containment`",
+            "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
+            "    let path = check_project_file(root, file)?;",
+            "    let content ="
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 8,
+          "line_end": 14,
+          "text": [
+            "use crate::reference_roles;",
+            "use crate::rust_coverage::{attached_comment_indices, comments};",
+            "",
+            "// {impl}`requirements.references.rust_item_selectors`",
+            "// {impl}`requirements.ci.rust_item_inputs`",
+            "#[derive(Clone, Debug)]",
+            "pub(crate) struct RustItem {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 22,
+          "line_end": 28,
+          "text": [
+            "    pub(crate) byte_end: usize,",
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_item_selectors`",
+            "struct ItemNode {",
+            "    parent: Option<usize>,",
+            "    base: String,"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 34,
+          "line_end": 40,
+          "text": [
+            "    byte_end: usize,",
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_item_selectors`",
+            "struct ItemCollector<'a> {",
+            "    source: &'a str,",
+            "    nodes: Vec<ItemNode>,"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 42,
+          "line_end": 48,
+          "text": [
+            "}",
+            "",
+            "impl ItemCollector<'_> {",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn add(",
+            "        &mut self,",
+            "        base: String,"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 67,
+          "line_end": 85,
+          "text": [
+            "        index",
+            "    }",
+            "",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn source_at(&self, span: Span) -> &str {",
+            "        self.source.get(span.byte_range()).unwrap_or(\"\")",
+            "    }",
+            "",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn named(&self, kind: &str, name: &syn::Ident) -> String {",
+            "        format!(\"{kind}[{}]\", escape_segment(&name.to_string()))",
+            "    }",
+            "}",
+            "",
+            "impl<'ast> Visit<'ast> for ItemCollector<'_> {",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn visit_item(&mut self, item: &'ast syn::Item) {",
+            "        use syn::Item;",
+            "        let (base, declaration, name, is_function, ordinal_always) = match item {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 245,
+          "line_end": 251,
+          "text": [
+            "        self.parents.pop();",
+            "    }",
+            "",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {",
+            "        use syn::ImplItem;",
+            "        let (base, declaration, name, is_function, ordinal_always) = match item {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 298,
+          "line_end": 304,
+          "text": [
+            "        self.parents.pop();",
+            "    }",
+            "",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {",
+            "        use syn::TraitItem;",
+            "        let (base, declaration, name, is_function, ordinal_always) = match item {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 351,
+          "line_end": 357,
+          "text": [
+            "        self.parents.pop();",
+            "    }",
+            "",
+            "    // {impl}`requirements.references.rust_item_selectors`",
+            "    fn visit_foreign_item(&mut self, item: &'ast syn::ForeignItem) {",
+            "        use syn::ForeignItem;",
+            "        let (base, declaration, name, is_function, ordinal_always) = match item {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 405,
+          "line_end": 411,
+          "text": [
+            "    }",
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_item_selectors`",
+            "fn escape_segment(source: &str) -> String {",
+            "    let mut escaped = String::new();",
+            "    for character in source.chars() {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 420,
+          "line_end": 426,
+          "text": [
+            "    escaped",
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_item_selectors`",
+            "// {impl}`requirements.ci.rust_item_inputs`",
+            "pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {",
+            "    let syntax = syn::parse_file(source)?;"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 563,
+          "line_end": 569,
+          "text": [
+            "mod tests {",
+            "    use super::parse_items;",
+            "",
+            "    // {test}`requirements.references.rust_item_selectors`",
+            "    // {test}`requirements.references.selector_nested`",
+            "    // {test}`requirements.references.selector_impl_and_trait`",
+            "    // {test}`requirements.references.selector_inline_and_foreign`"
+          ]
         }
       ]
     },
@@ -9488,7 +10562,7 @@
         }
       ],
       "determination": false,
-      "rationale": "**Verdict: not complete. `to_input` is missing a citation to `requirements.ci.schema`.**\n\n**What the function does** (`src/inputs.rs`, `impl InputSelector`, `fn to_input`, about lines 76–107). It builds the JSON object for an evidence input from a selector and its resolved text. There are four branches, one per input kind:\n- File range: `file`, `line_start`, `line_end`, `text`.\n- Rust item: `rust_file`, `rust_item`, `text`.\n- Definition: `definition`, `text`.\n- Requirements: `requirements`, `matches`, `text`.\n\nIts callers are in `src/add_input.rs`, which builds and refreshes evidence inputs.\n\n**How I identified the applicable set.** I read the full `*` requirements input, which covers all requirements and examples. I matched each observable branch of the function against it.\n- `requirements.cli.add_input` is cited. It covers add-input producing inputs with the shared schema.\n- `requirements.definitions.inputs` is cited. It covers the definition form with exactly `definition` and `text`.\n- `requirements.ci.schema` is applicable but not cited. It says every evidence input MUST have exactly one of four forms, with exactly these field sets. That is the contract `to_input` implements across all four branches.\n\n**Evidence that the omission is a gap.**\n- The sibling function `from_input`, which parses the same four forms, cites `requirements.ci.schema` together with `requirements.definitions.inputs` (lines 51–52).\n- The `ResolvedInput` struct and `judgment.rs` also cite `ci.schema`.\n- `to_input` is the serializing counterpart and is the only one of these that lacks it.\n\n**Other requirements.** `requirements.ci.inputs`, `ci.rust_item_inputs` and `ci.requirements_inputs` govern resolution and validation of text, ranges and matches. Those are handled by `resolve`, which cites them. `to_input` only copies already-resolved values. I do not require them here, though `ci.schema` is clearly required.\n\nBecause `requirements.ci.schema` is applicable and absent, the citation set is incomplete.",
+      "rationale": "**Verdict: the citations are incomplete.** `InputSelector::to_input` (src/inputs.rs, lines 77–109) cites `requirements.cli.add_input` and `requirements.definitions.inputs`, but it also needs `requirements.ci.schema`.\n\n**How I identified the applicable set.** I read the function and all the requirement and example declarations supplied (`*`).\n\n**What the function does.** It serializes a selector and its resolved input into one of the four JSON evidence-input forms:\n- File-range: `file`, `line_start`, `line_end`, `text`.\n- Rust-item: `rust_file`, `rust_item`, `text`.\n- Definition: `definition`, `text`.\n- Requirements: `requirements`, `matches`, `text`.\n\n**What the current citations cover.**\n- `requirements.cli.add_input` covers the `add-input` command, which uses the shared input schema. The callers are src/add_input.rs lines 43–49 and 301–307.\n- `requirements.definitions.inputs` covers the `definition` form, which has exactly `definition` and `text`.\n\n**What is missing.**\n- `requirements.ci.schema` defines the exact four input forms and their field names. The function's `match` arms produce exactly those forms, with the field names and types the schema requires.\n- The sibling `from_input` (src/inputs.rs, lines 50–52) parses the same four forms. It cites `requirements.ci.schema` together with `requirements.definitions.inputs`. `to_input` is the inverse of that function and builds the same schema, but it omits the schema citation.\n\n`requirements.cli.add_input` says the command \"MUST use the same input schema\", but it does not define that schema. `requirements.ci.schema` does. So the two existing citations do not account for the file-range, Rust-item and requirements shapes.\n\n**Other requirements.** The `ci.inputs`, `ci.rust_item_inputs` and `ci.requirements_inputs` requirements govern text validation and resolution, which `resolve` handles. I did not treat them as applicable here, because `to_input` only serializes the already-resolved values.\n\nThe missing `requirements.ci.schema` citation is enough to fail the completeness check.",
       "inputs": [
         {
           "rust_file": "src/inputs.rs",
@@ -9594,6 +10668,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -9896,8 +10971,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -10065,7 +11142,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -10145,8 +11229,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -10423,6 +11508,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -10468,7 +11578,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -10878,6 +11988,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -10925,6 +12036,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -10970,7 +12106,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -11024,13 +12160,13 @@
           "line_start": 307,
           "line_end": 313,
           "text": [
-            "    if resolved",
-            "        .ranges",
-            "        .iter()",
-            "        .any(|range| generated_evidence_path(root, Path::new(&range.file)))",
-            "    {",
-            "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
-            "    }"
+            "// {impl}`requirements.authoring.source_tools`",
+            "// {impl}`requirements.definitions.authoring_inputs`",
+            "// {impl}`requirements.ci.authoring_inputs`",
+            "fn source_input(",
+            "    root: &Path,",
+            "    access: &SourceAccess,",
+            "    definitions: &BTreeMap<String, Declaration>,"
           ]
         },
         {

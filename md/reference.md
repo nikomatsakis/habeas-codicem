@@ -99,6 +99,12 @@ Ollama server. The server can run on another machine; Habeas does not need a GPU
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
 {cite}`requirements.authoring.text_search`
 
+In a Git worktree, stage new source files with `git add` before authoring. The
+model can read unstaged edits to tracked files. Reads exclude untracked files,
+generated `evidence/` content, and paths outside the project, including symlink
+aliases. Standalone projects use the same containment rules without requiring Git.
+{cite}`requirements.authoring.source_tools`
+
 Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
 `$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or
 relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local
@@ -279,12 +285,37 @@ Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`
 
 The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
-Run `habeas status [<glob>]` from within the project to list requirements and named examples needing attention and their validation findings, including FIXME judgments and their recorded references. `--all` shows every matching definition and its evidence state. Use `habeas info <glob>` to print matching detail pages as Markdown, including current texts, rationales, inputs, FIXME references, and findings. Both commands match whole full names; `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info` {cite}`requirements.references.definition_globs`
+Run `habeas status [<glob>]` from within the project to list requirements and named
+examples needing attention and their validation findings. FIXME judgments are
+summarized by issue, for example:
+
+```text
+- #123 — affects 22 judgments
+- #45 — affects 3 judgments
+- 16 judgments marked FIXME without an issue
+```
+
+Each judgment counts once per issue, even if it repeats that reference. A judgment
+with several issues counts in each group; the final group counts judgments with
+no recognized issue reference. References may appear in explanatory text or
+`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue
+URLs are also recognized. Groups with the most affected judgments come first.
+{cite}`requirements.cli.fixme_summary`
+
+Use `--verbose` to list the actual judgments in each group, with their full names,
+kinds, and recorded FIXME strings. `--all` shows every matching definition and its
+evidence state. Stale or invalid FIXME evidence still reports its validation
+findings. Use `habeas info <glob>` to print matching detail pages as Markdown,
+including current texts, rationales, inputs, FIXME references, and findings. Both
+commands match whole full names; `*` can span any number of characters, including
+dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`
+{cite}`requirements.references.definition_globs`
 
 ```sh
 habeas info requirements.ci.inputs
 habeas info 'requirements.cli.*'
 habeas status 'requirements.cli.*' --all
+habeas status --verbose
 ```
 
 Agent skills installed by Habeas point to `habeas info` for looking up definition details.

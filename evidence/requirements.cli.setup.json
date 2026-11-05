@@ -1,7 +1,7 @@
 {
   "requirement": "Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills.",
   "determination": false,
-  "rationale": "The implementation looks correct, but one MUST NOT in the requirement has no test, and no FIXME acknowledges the gap.\n\n**Implementation (matches the requirement)**\n- `setup::run` in `src/setup.rs` runs `cargo add --dev habeas`, but only when the dev dependency is absent. Repeating setup therefore doesn't duplicate it.\n- It sets `preprocessor.habeas.command = \"habeas mdbook\"` and adds the badge stylesheet to `additional-css`. The stylesheet entry is added only if it isn't already listed.\n- It writes `tests/habeas.rs` containing `habeas::validate()`.\n- Before changing anything, `run` checks whether `habeas.css` or `tests/habeas.rs` already exists with different content, and returns an error if so. `write_new_or_same` repeats that check.\n- Setup never touches agent skills.\n- `src/main.rs` routes `Command::Setup` to `setup::run`.\n\n**Tests that exist (`tests/setup.rs`)**\n- `setup_is_repeatable` runs setup twice and checks the following:\n  - the dev dependency is present;\n  - the preprocessor command is set;\n  - the stylesheet entry appears exactly once;\n  - `tests/habeas.rs` has the exact expected content;\n  - the CSS file exists;\n  - no `.agents/skills` directory is created.\n- `setup_preserves_existing_agent_skills` checks that an existing custom skill is left unchanged.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` and `setup_rejects_invalid_book_configuration` cover the book-source and configuration edge cases.\n- `session_start_advises_only_when_setup_is_incomplete` covers the related hook.\n\n**Gap**\n- The requirement says repeating setup \"MUST NOT overwrite a differing test or stylesheet\". No test pre-creates `tests/habeas.rs` or `md/habeas.css` with different content and checks that setup fails and leaves the file untouched.\n- The `ripgrep` search of `tests/` for \"already exists\" or \"different\" found no such test.\n- `setup_is_repeatable` runs setup twice, but both runs use identical content, so the preserve-on-difference branches in `run` and `write_new_or_same` are never exercised.\n- Neither the code nor the tests contain a FIXME or issue reference for this gap.\n\nAn explicit MUST NOT with no test, and no acknowledgement of that, means the requirement is not fully covered.",
+  "rationale": "**Implementation: sound.** `src/setup.rs::run` covers each part of the requirement.\n- It adds the dev dependency with `cargo add --dev habeas`, and skips this if `has_habeas_dev_dependency` is true.\n- It sets `preprocessor.habeas.command = \"habeas mdbook\"` and `renderers = [\"html\"]`. Assigning these keys again on a repeat run does not duplicate them.\n- It appends `<src>/habeas.css` to `additional-css` only if it is not already listed.\n- It writes `tests/habeas.rs` with `TEST_SOURCE`, which calls `habeas::validate()`.\n- Before changing anything, `run` checks whether the CSS and test files already exist with different content, and returns an error if so. `write_new_or_same` repeats that check.\n- Setup contains no code that touches agent skills.\n- `tests/cli.rs` appears to reject `--install-skills`, though I could not read the full file to confirm.\n\n**Tests: partial.**\n- `tests/setup.rs::setup_is_repeatable` runs setup twice. It checks the dev dependency, the preprocessor command, that `md/habeas.css` appears exactly once alongside the existing `md/custom.css`, the exact contents of `tests/habeas.rs`, the CSS file's existence, and that `.agents/skills` is never created.\n- `setup_preserves_existing_agent_skills` checks that a pre-existing skill file is left untouched.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` and `setup_rejects_invalid_book_configuration` cover the default source directory and invalid book configuration.\n\n**Gap.** The requirement says repeating setup \"MUST NOT overwrite a differing test or stylesheet\". No test creates a `tests/habeas.rs` or `habeas.css` with different content. None checks that setup fails and leaves that file unchanged. A search of `tests/` for \"already exists\" or \"different\" finds nothing relevant. This MUST NOT clause is an explicit behavior with a straightforward error path, and it is untested. The tests also don't check that the preprocessor entry stays single across repeats. They only check the CSS entry count.\n\nNo `FIXME` in the setup sources or tests acknowledges this gap, so `FIXME` is not an option. The determination is false because of the missing test coverage for the non-overwrite guarantee.",
   "inputs": [
     {
       "requirements": "requirements.cli.setup",
@@ -41,10 +41,12 @@
         "        // {impl}`requirements.cli.setup`",
         "        Command::Setup { path } => setup::run(path.as_deref()),",
         "        // {impl}`requirements.cli.status`",
-        "        Command::Status { all, glob } => {",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status { all, glob, verbose } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_filtered(&root, all, glob.as_deref())?.as_bytes(),",
+        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                    .as_bytes(),",
         "            )?;",
         "            Ok(())",
         "        }",
@@ -500,8 +502,8 @@
       "line_start": 99,
       "line_end": 100,
       "text": [
-        "            } else {",
-        "                std::process::exit(1)"
+        "        } => {",
+        "            if renderer == \"html\" {"
       ]
     },
     {
@@ -1102,7 +1104,7 @@
       "line_start": 103,
       "line_end": 103,
       "text": [
-        "        // {impl}`requirements.cli.setup`"
+        "                std::process::exit(1)"
       ]
     },
     {
@@ -1294,6 +1296,469 @@
         "    fs::remove_file(project.join(\"book.toml\")).unwrap();",
         "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
         "}"
+      ]
+    },
+    {
+      "file": "tests/cli.rs",
+      "line_start": 21,
+      "line_end": 23,
+      "text": [
+        "        [\"setup\", \"--wrong\"].as_slice(),",
+        "        [\"setup\", \"--install-skills\"].as_slice(),",
+        "        [\"setup\", \"--path\", \".\", \"--install-skills\"].as_slice(),"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 85,
+      "line_end": 85,
+      "text": [
+        "    run(project, &[\"setup\", \"--path\", local_crate]);"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 87,
+      "line_end": 87,
+      "text": [
+        "    run(project, &[\"setup\", \"--path\", local_crate]);"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 116,
+      "line_end": 116,
+      "text": [
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 130,
+      "line_end": 131,
+      "text": [
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        assert!(project.join(\"src/habeas.css\").is_file());"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 167,
+      "line_end": 167,
+      "text": [
+        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 184,
+      "line_end": 184,
+      "text": [
+        "        .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 203,
+      "line_end": 203,
+      "text": [
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 197,
+      "line_end": 197,
+      "text": [
+        "            [runner, \"setup\", \"--path\", str(repo)], cwd=project, check=True"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 118,
+      "line_end": 122,
+      "text": [
+        "enabled = true",
+        "labels = [\"a\", \"b\"]",
+        "[authoring.configs.Cloud.options.custom]",
+        "arbitrary = \"provider-defined\"",
+        "[authoring.configs.local]"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 138,
+      "line_end": 142,
+      "text": [
+        "    assert_eq!(local.model_ref().backend, BackendKind::Ollama);",
+        "    let json = authoring.configs[\"Cloud\"].backend.options_json().unwrap();",
+        "    assert_eq!(json[\"custom\"][\"arbitrary\"], \"provider-defined\");",
+        "    assert_eq!(json[\"max_tokens\"], 777);",
+        "    let serialized = config.to_toml().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 21,
+      "line_end": 25,
+      "text": [
+        "    fs::write(",
+        "        temp.path().join(\"book.toml\"),",
+        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
+        "    )",
+        "    .unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 94,
+      "line_end": 98,
+      "text": [
+        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
+        "    assert!(book.contains(\"md/habeas.css\"));",
+        "    assert!(book.contains(\"md/custom.css\"));",
+        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
+        "    assert_eq!("
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 112,
+      "line_end": 119,
+      "text": [
+        "    let skill = project.join(\".agents/skills/habeas-requirements/SKILL.md\");",
+        "    fs::create_dir_all(skill.parent().unwrap()).unwrap();",
+        "    fs::write(&skill, \"custom skill\\n\").unwrap();",
+        "",
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "    assert_eq!(fs::read_to_string(skill).unwrap(), \"custom skill\\n\");",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 279,
+      "line_end": 281,
+      "text": [
+        "            \"pub fn beta()\",",
+        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\",",
+        "        ),"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 295,
+      "line_end": 297,
+      "text": [
+        "    let mut beta = fixture.evidence(\"requirements.beta\");",
+        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});",
+        "    beta[\"rationale\"] = \"The source explicitly acknowledges the missing beta test.\".into();"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 148,
+      "line_end": 150,
+      "text": [
+        "        .unwrap();",
+        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 273,
+      "line_end": 275,
+      "text": [
+        "            json!({",
+        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),",
+        "        )]),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 340,
+      "line_end": 342,
+      "text": [
+        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
+        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));",
+        "    assert_eq!(evidence[\"requirement\"], REQUIREMENT);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 375,
+      "line_end": 377,
+      "text": [
+        "    assert_eq!(usage[\"outcome\"], \"completed\");",
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
+        "    assert_eq!(usage[\"evidence_written\"], true);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 428,
+      "line_end": 430,
+      "text": [
+        "        \"submit_judgment\",",
+        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
+        "    )])]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 432,
+      "line_end": 434,
+      "text": [
+        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
+        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
+        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 442,
+      "line_end": 444,
+      "text": [
+        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
+        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
+        "    assert!(prompt.contains(\"queue[0] = value\"));"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 453,
+      "line_end": 455,
+      "text": [
+        "    );",
+        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
+        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 467,
+      "line_end": 469,
+      "text": [
+        "        (json!(false), \"false\", true),",
+        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true),",
+        "        (json!(true), \"true\", false),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 549,
+      "line_end": 551,
+      "text": [
+        "            \"submit_judgment\",",
+        "            json!({\"determination\":{\"FIXME\":[]},\"rationale\":\"No gap identified.\"}),",
+        "        )],"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 746,
+      "line_end": 748,
+      "text": [
+        "            .find(|outcome| outcome[\"type\"] == \"object\")",
+        "            .unwrap()[\"properties\"][\"FIXME\"];",
+        "        assert_eq!(fixme[\"type\"], \"array\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 795,
+      "line_end": 797,
+      "text": [
+        "            json!({",
+        "                \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"The source documents the remaining gap.\"",
+        "            }),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 814,
+      "line_end": 816,
+      "text": [
+        "    assert_eq!(usage[\"outcome\"], \"failed\");",
+        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
+        "    assert_eq!(usage[\"evidence_written\"], false);"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 138,
+      "line_end": 140,
+      "text": [
+        "            vec![",
+        "                \"FIXME(#00123)\",",
+        "                \"Repeated #123 and rust-lang/rust#000456.\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 150,
+      "line_end": 152,
+      "text": [
+        "        ),",
+        "        (\"example\", \"case\", &example, vec![\"FIXME(#45)\"]),",
+        "        ("
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 183,
+      "line_end": 185,
+      "text": [
+        "                subject_key: text,",
+        "                \"determination\": {\"FIXME\": references},",
+        "                \"rationale\": \"The fixture records acknowledged implementation gaps.\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 238,
+      "line_end": 240,
+      "text": [
+        "            all.lines().any(",
+        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")",
+        "            ),"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 263,
+      "line_end": 265,
+      "text": [
+        "        \"example\",",
+        "        \"FIXME(#00123)\",",
+        "        \"Repeated #123 and rust-lang/rust#000456.\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 34,
+      "line_end": 36,
+      "text": [
+        "    .unwrap();",
+        "    let source = \"// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).\";",
+        "    fs::write(temp.path().join(\"observed.txt\"), format!(\"{source}\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 58,
+      "line_end": 60,
+      "text": [
+        "            \"example\": example,",
+        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },",
+        "            \"rationale\": \"The recorded comments acknowledge the missing timeout tests.\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 90,
+      "line_end": 93,
+      "text": [
+        "        json!(false),",
+        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
+        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 97,
+      "line_end": 107,
+      "text": [
+        "        Value::Null,",
+        "        json!(\"FIXME\"),",
+        "        json!([\"#125\"]),",
+        "        json!({}),",
+        "        json!({ \"FIXME\": [] }),",
+        "        json!({ \"FIXME\": [\"\"] }),",
+        "        json!({ \"FIXME\": [\"   \"] }),",
+        "        json!({ \"FIXME\": [\"#125\", 125] }),",
+        "        json!({ \"FIXME\": \"#125\" }),",
+        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
+        "        json!({ \"fixme\": [\"#125\"] }),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 150,
+      "line_end": 157,
+      "text": [
+        "        (",
+        "            \"// FIXME(#125): capacity-zero insertion does not return Full yet.\",",
+        "            json!({ \"FIXME\": [\"#125\"] }),",
+        "        ),",
+        "        (",
+        "            \"// FIXME: cancellation races are not tested on Windows.\",",
+        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
+        "        ),"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 181,
+      "line_end": 183,
+      "text": [
+        "    let temp = fixture();",
+        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
+        "    let report = habeas::validate_repository(temp.path()).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 264,
+      "line_end": 266,
+      "text": [
+        "            \"citations\": [{\"role\": \"impl\", \"name\": \"requirements.ready\"}],",
+        "            \"determination\": {\"FIXME\": [\"#125\"]},",
+        "            \"rationale\": \"The function's citations were reviewed.\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 299,
+      "line_end": 301,
+      "text": [
+        "        assert_eq!(status.contains(\"requirements.timeout\"), all, \"{status}\");",
+        "        assert!(status.contains(\"FIXME\"));",
+        "        assert!(status.contains(\"#125\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 309,
+      "line_end": 311,
+      "text": [
+        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
+        "    assert!(info.contains(\"## FIXME references\"));",
+        "    assert!(info.contains(\"rust-lang/rust#123\"));"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 327,
+      "line_end": 329,
+      "text": [
+        "    let index = book.chapters().nth(1).unwrap();",
+        "    assert!(index.content.contains(\"FIXME\"));",
+        "    let detail = index"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 336,
+      "line_end": 339,
+      "text": [
+        "        .unwrap();",
+        "    assert!(detail.content.contains(\"evidence-FIXME\"));",
+        "    assert!(detail.content.contains(\"## FIXME references\"));",
+        "    assert!(detail.content.contains(\"rust-lang/rust#123\"));"
       ]
     }
   ]

@@ -18,7 +18,7 @@
         }
       ],
       "determination": true,
-      "rationale": "**Applicable set.** I read `author_all` in full (src/authoring/batch.rs, from the citation comments at lines 20–22 to the end of the function). I then compared each of its observable branches with the full `*` requirements input. That input covers every requirement and example declaration, including the `batch`, `concurrency`, `configuration_precedence`, `function_attestations`, `persistence` and `usage_storage` requirements.\n\n**How the cited requirements account for the behavior**\n- `requirements.authoring.batch` covers most of the function:\n  - It fails with an error when discovery errors exist, so there is no empty batch that looks successful.\n  - It skips terms, and counts Valid or FIXME definitions and valid Rust functions as `unchanged`, so no model is invoked for current records.\n  - It returns early, before `config::resolve_authoring`, when `subjects` is empty.\n  - Each subject gets its own `prepare_assessment` call.\n  - Each success or failure is reported, successful writes are kept when another assessment fails, and failures are returned in the outcome.\n  - A single collector writes records, so concurrent assessments in one source file are merged without losing entries.\n  - The cancelled-batch failure entry is also a batch matter.\n- `requirements.authoring.concurrency` covers `config.effective_concurrency()` and the `JoinSet` loop. The loop keeps `tasks.len() < concurrency`, and task or provider errors go through the ordinary failure path.\n- `requirements.authoring.configuration_precedence` covers `config::resolve_authoring(&root, selection)`, where `selection` is the `--config` choice. This is also the point that resolves configuration only when work is needed.\n\n**Delegated obligations.** The remaining requirements that touch this flow are met in functions that cite them separately:\n- `write_record` cites `batch`, `function_attestations` and `persistence`.\n- `PendingAssessment::persisted` and `failed` cite `persistence` and `usage_storage`.\n- `AuthoringSubject::label` cites `function_attestations`.\n- `prepare_assessment` and `AssessmentSources` cite the prompt, mandatory-input and tool requirements.\n- `main.rs` cites `invocation` for the `--all` exclusivity rules.\n\n`author_all` only classifies Rust-function subjects and dispatches them, so it does not need to repeat those citations.\n\n**Conclusion.** `batch`, `concurrency` and `configuration_precedence` account for every observable branch of the function itself. I found no other requirement or example whose obligation is implemented directly in this function body, so the citation set is complete.",
+      "rationale": "I judge the three citations on `author_all` (src/authoring/batch.rs:21-23) to be complete. I compared each observable branch of the function with the full set of requirement and example declarations supplied (`requirements.*`).\n\n**Behavior and the requirements that cover it**\n- **Repository discovery** (`inspect_repository`, returning an error on `discovery_errors`): `requirements.authoring.batch` says failure to discover declarations or parse sources MUST be an error, not an empty batch. This is cited.\n- **Subject selection**: terms are skipped, and Valid or FIXME definitions and valid Rust functions are counted as `unchanged`. Everything else becomes a subject. This is the batch rule to author missing, stale, invalid or false subjects and preserve accepted records, including FIXME, without invoking a model. This is cited.\n- **Early return when `subjects.is_empty()`**: this happens before `config::resolve_authoring`. It matches the batch rule that a batch with nothing to assess succeeds without resolving model configuration or credentials. This is cited.\n- **Configuration resolution** (`resolve_authoring(&root, selection)`): `requirements.authoring.configuration_precedence` covers `--config` selection, then the project selection, then the default. This is cited.\n- **Concurrency** (`effective_concurrency()`, `JoinSet`, and the `tasks.len() < concurrency` bound): `requirements.authoring.concurrency` is cited.\n- **Independent assessments, per-subject reporting, retained writes and failure collection**: these are in `requirements.authoring.batch`, which is cited. The sole-writer collector comment matches its rule on merging concurrent same-file function assessments.\n- **Cancellation handling**: no requirement specifically covers the \"cancelled; N assessments not started\" behavior. The nearest text is the general batch failure reporting, which is cited.\n\n**Requirements cited by `requirements.authoring.batch` and not cited here**\nThese are `function_attestations`, `usage_storage` and `persistence`. They are implemented in the delegated helpers, not in `author_all`:\n- `write_record` (batch.rs:134-138) cites `function_attestations` and `persistence`.\n- `AuthoringSubject` methods and `PendingAssessment` methods (src/authoring/mod.rs) cite `usage_storage`.\n- `author_all` only calls those helpers and prints the usage path they return. It does not itself build function attestations, write evidence, or write usage records.\n\nThe other requirements all concern provider calls, tool definitions, prompts, mandatory inputs or validation. They are implemented in `prepare_assessment`, the tools module and the providers module, not in this function. None of them apply to this orchestration function.\n\nThe requirements input in the mandatory inputs (`*`) lists every requirement and example, so I could check the applicable set against all of them.",
       "inputs": [
         {
           "rust_file": "src/authoring/batch.rs",
@@ -205,6 +205,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -507,8 +508,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -676,7 +679,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -756,8 +766,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -1034,6 +1045,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -1079,7 +1115,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -1511,12 +1547,12 @@
           "line_start": 18,
           "line_end": 23,
           "text": [
+            "}",
             "",
             "impl AssessmentKind {",
             "    // {impl}`requirements.authoring.function_attestations`",
             "    // {impl}`requirements.authoring.usage_storage`",
-            "    // {impl}`requirements.authoring.initial_prompt`",
-            "    pub(crate) fn noun(&self) -> &'static str {"
+            "    // {impl}`requirements.authoring.initial_prompt`"
           ]
         },
         {
@@ -1524,13 +1560,13 @@
           "line_start": 38,
           "line_end": 44,
           "text": [
+            "    mandatory: Vec<Value>,",
+            "    recorded: Vec<Value>,",
             "}",
             "",
             "impl AssessmentSources {",
             "    // {impl}`requirements.authoring.invocation`",
-            "    // {impl}`requirements.authoring.mandatory_inputs`",
-            "    // {impl}`requirements.authoring_input`",
-            "    // {impl}`requirements.examples.authoring_inputs`"
+            "    // {impl}`requirements.authoring.mandatory_inputs`"
           ]
         },
         {
@@ -1538,12 +1574,12 @@
           "line_start": 141,
           "line_end": 146,
           "text": [
-            "        })",
-            "    }",
-            "",
-            "    // {impl}`requirements.authoring.function_attestations`",
-            "    // {impl}`requirements.authoring.mandatory_inputs`",
-            "    // {impl}`requirements.ci.authoring_inputs`"
+            "            }",
+            "        }",
+            "        Ok(Self {",
+            "            root,",
+            "            access,",
+            "            subject_name: subject_name.to_owned(),"
           ]
         },
         {
@@ -1551,21 +1587,21 @@
           "line_start": 227,
           "line_end": 241,
           "text": [
+            "            subject_kind: AssessmentKind::RustFunction {",
+            "                rust_item: rust_item.to_owned(),",
+            "                citations: citations",
+            "                    .into_iter()",
+            "                    .map(|(role, name)| json!({\"role\": role, \"name\": name}))",
+            "                    .collect(),",
+            "            },",
+            "            subject_text: String::new(),",
+            "            mandatory,",
+            "            recorded: Vec::new(),",
             "        })",
             "    }",
             "",
             "    // {impl}`requirements.authoring.mandatory_inputs`",
-            "    pub(crate) fn mandatory_inputs(&self) -> &[Value] {",
-            "        &self.mandatory",
-            "    }",
-            "",
-            "    // {impl}`requirements.authoring.delivered_inputs`",
-            "    pub(crate) fn recorded_inputs(&self) -> &[Value] {",
-            "        &self.recorded",
-            "    }",
-            "",
-            "    // {impl}`requirements.authoring.delivered_inputs`",
-            "    pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {"
+            "    pub(crate) fn mandatory_inputs(&self) -> &[Value] {"
           ]
         },
         {
@@ -1573,11 +1609,11 @@
           "line_start": 246,
           "line_end": 250,
           "text": [
-            "        }",
+            "    pub(crate) fn recorded_inputs(&self) -> &[Value] {",
+            "        &self.recorded",
             "    }",
             "",
-            "    // {impl}`requirements.authoring.source_tools`",
-            "    // {impl}`requirements.authoring.text_search`"
+            "    // {impl}`requirements.authoring.delivered_inputs`"
           ]
         },
         {
@@ -1585,12 +1621,12 @@
           "line_start": 253,
           "line_end": 258,
           "text": [
-            "        source_input(&self.root, &definitions, selector)",
+            "            if !self.recorded.contains(input) {",
+            "                self.recorded.push(input.clone());",
+            "            }",
+            "        }",
             "    }",
-            "",
-            "    // {impl}`requirements.definitions.authoring_inputs`",
-            "    // {impl}`requirements.authoring.source_tools`",
-            "    // {impl}`requirements.authoring.text_search`"
+            ""
           ]
         },
         {
@@ -1598,14 +1634,14 @@
           "line_start": 264,
           "line_end": 271,
           "text": [
-            "            .collect())",
             "    }",
-            "}",
             "",
-            "// {impl}`requirements.authoring.mandatory_inputs`",
-            "// {impl}`requirements.authoring.source_tools`",
-            "// {impl}`requirements.authoring.file_discovery`",
-            "// {impl}`requirements.authoring.text_search`"
+            "    // {impl}`requirements.definitions.authoring_inputs`",
+            "    // {impl}`requirements.authoring.source_tools`",
+            "    // {impl}`requirements.authoring.text_search`",
+            "    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {",
+            "        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;",
+            "        Ok("
           ]
         },
         {
@@ -1613,12 +1649,12 @@
           "line_start": 276,
           "line_end": 281,
           "text": [
-            "    path.starts_with(&evidence)",
-            "        || fs::canonicalize(&path)",
-            "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
+            "        )",
+            "    }",
             "}",
             "",
-            "// {impl}`requirements.authoring.mandatory_inputs`"
+            "// {impl}`requirements.authoring.mandatory_inputs`",
+            "// {impl}`requirements.authoring.source_tools`"
           ]
         },
         {
@@ -1626,12 +1662,12 @@
           "line_start": 289,
           "line_end": 294,
           "text": [
-            "        } => generated_evidence_path(root, Path::new(file)),",
-            "        InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,",
-            "    }",
+            "        || fs::canonicalize(&path)",
+            "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
             "}",
             "",
-            "// {impl}`requirements.authoring.mandatory_inputs`"
+            "// {impl}`requirements.authoring.mandatory_inputs`",
+            "// {impl}`requirements.authoring.source_tools`"
           ]
         },
         {
@@ -1639,11 +1675,11 @@
           "line_start": 311,
           "line_end": 315,
           "text": [
-            "    {",
-            "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
-            "    }",
-            "    Ok(selector.to_input(&resolved))",
-            "}"
+            "    root: &Path,",
+            "    access: &SourceAccess,",
+            "    definitions: &BTreeMap<String, Declaration>,",
+            "    selector: &InputSelector,",
+            ") -> Result<Value, String> {"
           ]
         },
         {
@@ -1651,11 +1687,11 @@
           "line_start": 387,
           "line_end": 391,
           "text": [
-            "        line_start: 1,",
-            "        line_end: source.lines().count(),",
-            "    })",
-            "}",
-            ""
+            "        return Ok(if declaration.kind == DefinitionKind::Term {",
+            "            InputSelector::Definition {",
+            "                definition: name.clone(),",
+            "            }",
+            "        } else {"
           ]
         },
         {
@@ -1663,16 +1699,16 @@
           "line_start": 408,
           "line_end": 417,
           "text": [
-            "}",
-            "",
-            "#[cfg(test)]",
-            "pub(super) mod tests {",
-            "    use super::*;",
-            "",
-            "    // {test}`requirements.authoring.mandatory_inputs`",
-            "    pub(crate) fn role(kind: &str, name: &str) -> String {",
-            "        format!(\"{{{kind}}}`{name}`\")",
-            "    }"
+            "    root: &Path,",
+            "    access: &SourceAccess,",
+            "    definitions: &BTreeMap<String, Declaration>,",
+            "    inputs: &[Value],",
+            "    subject: Option<&str>,",
+            ") -> Result<Vec<Value>, String> {",
+            "    let record = json!({ \"inputs\": inputs });",
+            "    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)?",
+            "        .into_iter()",
+            "        .map(|definition| {"
           ]
         },
         {
@@ -1680,13 +1716,13 @@
           "line_start": 432,
           "line_end": 438,
           "text": [
-            "            \":::{req} ready\\nThe project MUST be ready.\\n:::\\n\",",
-            "        )",
-            "        .unwrap();",
-            "        root",
             "    }",
             "",
-            "    // {test}`requirements.authoring.complete_initial_bundle`"
+            "    // {test}`requirements.authoring.mandatory_inputs`",
+            "    pub(crate) fn project() -> tempfile::TempDir {",
+            "        let root = tempfile::tempdir().unwrap();",
+            "        fs::create_dir_all(root.path().join(\"md\")).unwrap();",
+            "        fs::create_dir_all(root.path().join(\"src\")).unwrap();"
           ]
         },
         {
@@ -1694,11 +1730,11 @@
           "line_start": 527,
           "line_end": 531,
           "text": [
-            "        assert_eq!(",
-            "            example.mandatory_inputs()[0][\"requirements\"],",
-            "            \"requirements.case\"",
+            "            2",
             "        );",
-            "    }"
+            "        assert!(inputs.iter().any(",
+            "            |input| input[\"file\"] == \"notes.txt\" && input[\"text\"] == json!([\"new source text\"])",
+            "        ));"
           ]
         },
         {
@@ -1706,12 +1742,12 @@
           "line_start": 550,
           "line_end": 555,
           "text": [
-            "                .unwrap()",
-            "                .contains(\"missing.txt\")",
-            "        );",
-            "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());",
-            "    }",
-            ""
+            "    #[test]",
+            "    fn unresolved_existing_selector_fails_before_inference() {",
+            "        let root = project();",
+            "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
+            "        fs::write(",
+            "            root.path().join(\"evidence/requirements.ready.json\"),"
           ]
         },
         {
@@ -1719,12 +1755,12 @@
           "line_start": 632,
           "line_end": 637,
           "text": [
-            "                .contains(\"OLD_PRIVATE_RATIONALE\")",
-            "        );",
+            "        assert!(inputs.iter().any(|input| input[\"requirements\"] == \"*\"",
+            "            && input[\"matches\"] == json!([\"requirements.ready\", \"requirements.uncited\"])));",
             "        assert!(",
-            "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[missing]\").is_err()",
-            "        );",
-            "    }"
+            "            inputs",
+            "                .iter()",
+            "                .any(|input| input[\"definition\"] == \"terms.unit\")"
           ]
         },
         {
@@ -1732,12 +1768,12 @@
           "line_start": 43,
           "line_end": 48,
           "text": [
+            "}",
             "",
             "impl AuthoringSubject {",
             "    // {impl}`requirements.authoring.batch`",
             "    // {impl}`requirements.authoring.function_attestations`",
-            "    // {impl}`requirements.authoring.usage_storage`",
-            "    pub(crate) fn label(&self) -> String {"
+            "    // {impl}`requirements.authoring.usage_storage`"
           ]
         },
         {
@@ -1745,13 +1781,13 @@
           "line_start": 64,
           "line_end": 70,
           "text": [
+            "    usage: UsageLog,",
             "}",
             "",
             "impl PendingAssessment {",
             "    // {impl}`requirements.authoring.batch`",
             "    // {impl}`requirements.authoring.persistence`",
-            "    // {impl}`requirements.authoring.usage_storage`",
-            "    // {impl}`requirements.configuration.state_location`"
+            "    // {impl}`requirements.authoring.usage_storage`"
           ]
         },
         {
@@ -1759,12 +1795,12 @@
           "line_start": 79,
           "line_end": 84,
           "text": [
+            "            ))",
             "        })?;",
             "        Ok(self.outcome)",
             "    }",
             "",
-            "    // {impl}`requirements.authoring.batch`",
-            "    // {impl}`requirements.authoring.usage_storage`"
+            "    // {impl}`requirements.authoring.batch`"
           ]
         },
         {
@@ -1772,11 +1808,11 @@
           "line_start": 101,
           "line_end": 105,
           "text": [
+            "#[derive(Clone, Copy)]",
             "pub enum EvidenceOutput {",
             "    File,",
             "    Stdout,",
-            "}",
-            ""
+            "}"
           ]
         },
         {
@@ -1784,12 +1820,12 @@
           "line_start": 110,
           "line_end": 115,
           "text": [
+            "    subject: &str,",
             "    selection: Option<&str>,",
             ") -> io::Result<AuthoringOutcome> {",
             "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
             "}",
-            "",
-            "// {impl}`requirements.authoring.invocation`"
+            ""
           ]
         },
         {
@@ -1797,13 +1833,13 @@
           "line_start": 162,
           "line_end": 168,
           "text": [
+            "            error.kind(),",
             "            format!(\"{error}; usage: {}\", usage.path.display()),",
             "        )",
             "    })",
             "}",
             "",
-            "// {impl}`requirements.authoring.batch`",
-            "// {impl}`requirements.authoring.function_attestations`"
+            "// {impl}`requirements.authoring.batch`"
           ]
         },
         {
@@ -1811,6 +1847,7 @@
           "line_start": 226,
           "line_end": 234,
           "text": [
+            "                format!(\"{error}; usage: {}\", usage.path.display()),",
             "            ))",
             "        }",
             "    }",
@@ -1818,8 +1855,7 @@
             "",
             "// {impl}`requirements.authoring.invocation`",
             "// {impl}`requirements.authoring.configuration_precedence`",
-            "// {impl}`requirements.authoring.rig_configuration_mapping`",
-            "// {impl}`requirements.authoring.usage_storage`"
+            "// {impl}`requirements.authoring.rig_configuration_mapping`"
           ]
         },
         {
@@ -1827,6 +1863,7 @@
           "line_start": 273,
           "line_end": 281,
           "text": [
+            "        evidence_path,",
             "        usage_path: usage.path.clone(),",
             "        determination,",
             "    })",
@@ -1834,8 +1871,7 @@
             "",
             "// {impl}`requirements.authoring.invocation`",
             "// {impl}`requirements.authoring.function_attestations`",
-            "// {impl}`requirements.authoring.configuration_precedence`",
-            "// {impl}`requirements.authoring.rig_configuration_mapping`"
+            "// {impl}`requirements.authoring.configuration_precedence`"
           ]
         },
         {
@@ -1843,12 +1879,12 @@
           "line_start": 314,
           "line_end": 319,
           "text": [
+            "            io::Error::other(format!(",
             "                \"{}: authoring.configs.{}: {error}\",",
             "                config.config_path.display(),",
             "                config.name",
             "            ))",
-            "        })?;",
-            "    assess(&provider, &mut sources, usage).await"
+            "        })?;"
           ]
         },
         {
@@ -1856,12 +1892,12 @@
           "line_start": 348,
           "line_end": 353,
           "text": [
+            "    Ok(template",
             "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())",
             "        .replace(\"{{subject_name}}\", &sources.subject_name)",
             "        .replace(\"{{citations}}\", &citations)",
             "        .replace(",
-            "            \"{{mandatory_inputs}}\",",
-            "            &serde_json::to_string_pretty(sources.mandatory_inputs())?,"
+            "            \"{{mandatory_inputs}}\","
           ]
         },
         {
@@ -1869,13 +1905,13 @@
           "line_start": 375,
           "line_end": 381,
           "text": [
+            "        ));",
             "    }",
             "    let judgment = Judgment::from_value(&object[\"determination\"]).map_err(io::Error::other)?;",
             "    let rationale = object[\"rationale\"]",
             "        .as_str()",
             "        .filter(|s| !s.trim().is_empty())",
-            "        .ok_or_else(|| io::Error::other(\"submit_judgment rationale must be nonempty Markdown\"))?;",
-            "    Ok((judgment, rationale.to_owned()))"
+            "        .ok_or_else(|| io::Error::other(\"submit_judgment rationale must be nonempty Markdown\"))?;"
           ]
         },
         {
@@ -1883,6 +1919,7 @@
           "line_start": 395,
           "line_end": 405,
           "text": [
+            "    definitions.push(json!({\"name\": \"submit_judgment\", \"description\": \"Submit your final judgment exactly once. No other message supplies the result.\",",
             "        \"parameters\": {\"type\":\"object\", \"additionalProperties\": false, \"required\":[\"determination\",\"rationale\"], \"properties\": {",
             "            \"determination\": determination,",
             "            \"rationale\":{\"type\":\"string\",\"minLength\":1}}}}));",
@@ -1892,8 +1929,7 @@
             "        .collect()",
             "}",
             "",
-            "// {impl}`requirements.authoring.submission`",
-            "// {impl}`requirements.authoring.initial_prompt`"
+            "// {impl}`requirements.authoring.submission`"
           ]
         },
         {
@@ -1901,12 +1937,12 @@
           "line_start": 516,
           "line_end": 521,
           "text": [
+            "}",
             "",
             "#[cfg(test)]",
             "mod tests {",
             "    use rig_core::completion::{CompletionResponse, FinishReason, Usage};",
-            "    use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};",
-            ""
+            "    use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};"
           ]
         },
         {
@@ -1914,14 +1950,14 @@
           "line_start": 543,
           "line_end": 550,
           "text": [
+            "                    ToolFunction::new(",
             "                        ToolName::new(\"submit_judgment\").unwrap(),",
             "                        json!({\"determination\": self.0, \"rationale\": \"The supplied source accounts for this citation set.\"}),",
             "                    ),",
             "                ))],",
             "                Usage::default(),",
             "                Origin::new(\"fixture\", \"fixture\", \"fixture\"),",
-            "                Value::Null,",
-            "            ).with_finish_reason(FinishReason::ToolCalls))"
+            "                Value::Null,"
           ]
         },
         {
@@ -2087,12 +2123,12 @@
           "line_start": 108,
           "line_end": 113,
           "text": [
-            "    inputs.extend(definitions);",
-            "    Ok(ToolDelivery { result, inputs })",
             "}",
             "",
             "// {impl}`requirements.authoring.file_discovery`",
-            "// {impl}`requirements.authoring.source_tools`"
+            "// {impl}`requirements.authoring.source_tools`",
+            "fn list_files(",
+            "    sources: &AssessmentSources,"
           ]
         },
         {
@@ -2100,12 +2136,12 @@
           "line_start": 147,
           "line_end": 152,
           "text": [
+            "                .collect(),",
+            "        ),",
             "        inputs: Vec::new(),",
             "    })",
             "}",
-            "",
-            "// {impl}`requirements.authoring.text_search`",
-            "// {impl}`requirements.authoring.source_tools`"
+            ""
           ]
         },
         {
@@ -2113,13 +2149,13 @@
           "line_start": 238,
           "line_end": 244,
           "text": [
+            "    let definitions = sources.additional_definitions(&inputs)?;",
+            "    let result = json!({\"inputs\":inputs,\"definitions\":definitions});",
             "    inputs.extend(definitions);",
             "    Ok(ToolDelivery { result, inputs })",
             "}",
             "",
-            "// {impl}`requirements.authoring.source_tools`",
-            "// {impl}`requirements.authoring.file_discovery`",
-            "// {impl}`requirements.authoring.text_search`"
+            "// {impl}`requirements.authoring.source_tools`"
           ]
         },
         {
@@ -2127,12 +2163,12 @@
           "line_start": 250,
           "line_end": 255,
           "text": [
+            "            return Err(format!(\"unexpected tool argument {key:?}\"));",
+            "        }",
             "    }",
             "    Ok(())",
             "}",
-            "",
-            "// {impl}`requirements.authoring.source_tools`",
-            "// {impl}`requirements.authoring.text_search`"
+            ""
           ]
         },
         {
@@ -2140,12 +2176,12 @@
           "line_start": 258,
           "line_end": 263,
           "text": [
+            "fn string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {",
+            "    args.get(key)",
             "        .and_then(Value::as_str)",
             "        .ok_or_else(|| format!(\"{key} must be a string\"))",
             "}",
-            "",
-            "// {impl}`requirements.authoring.source_tools`",
-            "// {impl}`requirements.authoring.text_search`"
+            ""
           ]
         },
         {
@@ -2153,12 +2189,12 @@
           "line_start": 267,
           "line_end": 272,
           "text": [
+            "    args.get(key)",
+            "        .and_then(Value::as_u64)",
             "        .and_then(|value| usize::try_from(value).ok())",
             "        .ok_or_else(|| format!(\"{key} must be a nonnegative integer\"))",
             "}",
-            "",
-            "// {impl}`requirements.authoring.file_discovery`",
-            "// {impl}`requirements.authoring.text_search`"
+            ""
           ]
         },
         {
@@ -2166,23 +2202,10 @@
           "line_start": 277,
           "line_end": 284,
           "text": [
+            "        string(args, \"path\")",
+            "    } else {",
             "        Ok(\".\")",
             "    }",
-            "}",
-            "",
-            "// {impl}`requirements.authoring.file_discovery`",
-            "// {impl}`requirements.authoring.text_search`",
-            "// {impl}`requirements.ci.input_containment`",
-            "// {impl}`requirements.authoring.source_tools`"
-          ]
-        },
-        {
-          "file": "src/authoring/tools.rs",
-          "line_start": 300,
-          "line_end": 305,
-          "text": [
-            "    }",
-            "    Ok(path)",
             "}",
             "",
             "// {impl}`requirements.authoring.file_discovery`",
@@ -2191,17 +2214,30 @@
         },
         {
           "file": "src/authoring/tools.rs",
+          "line_start": 300,
+          "line_end": 305,
+          "text": [
+            "        .map(str::to_owned)",
+            "        .ok_or_else(|| \"path is not UTF-8\".to_owned())",
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {"
+          ]
+        },
+        {
+          "file": "src/authoring/tools.rs",
           "line_start": 318,
           "line_end": 325,
           "text": [
-            "mod tests {",
-            "    use super::*;",
-            "    use crate::authoring::inputs::tests::{project, role};",
-            "",
-            "    // {test}`requirements.authoring.additional_read`",
-            "    // {test}`requirements.authoring.source_tools`",
-            "    // {test}`requirements.authoring.file_discovery`",
-            "    // {test}`requirements.authoring.delivered_inputs`"
+            "        fs::write(",
+            "            root.path().join(\"md/terms.md\"),",
+            "            \":::{definition} value\\n:phrase: value\\nA useful value.\\n:::\\n\",",
+            "        )",
+            "        .unwrap();",
+            "        fs::write(",
+            "            root.path().join(\"src/lib.rs\"),",
+            "            format!(\"// {}\\nfn work() {{}}\\n\", role(\"term\", \"terms.value\")),"
           ]
         },
         {
@@ -2209,12 +2245,12 @@
           "line_start": 397,
           "line_end": 402,
           "text": [
-            "        );",
-            "        assert!(dispatch(&sources, \"habeas\", &json!({\"definition\":\"terms.value\"})).is_ok());",
-            "    }",
-            "",
-            "    // {test}`requirements.authoring.text_search`",
-            "    // {test}`requirements.authoring.additional_read`"
+            "        fs::write(root.path().join(\".hidden.txt\"), \"needle\\n\").unwrap();",
+            "        let lines = (1..=20)",
+            "            .map(|number| {",
+            "                if number == 2 || number == 6 {",
+            "                    \"needle\".to_owned()",
+            "                } else {"
           ]
         },
         {
@@ -2222,13 +2258,13 @@
           "line_start": 446,
           "line_end": 452,
           "text": [
-            "        );",
-            "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"../\"})).is_err());",
-            "    }",
-            "",
-            "    // {test}`requirements.authoring.source_tools`",
-            "    // {test}`requirements.authoring.file_discovery`",
-            "    // {test}`requirements.authoring.text_search`"
+            "        fs::create_dir(root.path().join(\"src/evidence\")).unwrap();",
+            "        fs::write(",
+            "            root.path().join(\"evidence/old.json\"),",
+            "            \"needle in a previous judgment\\n\",",
+            "        )",
+            "        .unwrap();",
+            "        fs::write("
           ]
         },
         {
@@ -2736,13 +2772,13 @@
           "line_start": 119,
           "line_end": 125,
           "text": [
+            "        Command::Info { selector } => {",
+            "            let root = setup::project_root()?;",
+            "            io::stdout()",
+            "                .lock()",
+            "                .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;",
             "            Ok(())",
-            "        }",
-            "        // {impl}`requirements.authoring.invocation`",
-            "        // {impl}`requirements.authoring.batch`",
-            "        // {impl}`requirements.authoring.concurrency`",
-            "        Command::Author {",
-            "            subject,"
+            "        }"
           ]
         }
       ]
@@ -2764,7 +2800,7 @@
         }
       ],
       "determination": true,
-      "rationale": "**Applicable set.** I read `write_record` in `src/authoring/batch.rs` in full. I then compared its observable behavior with the full `requirements.*` declarations supplied, which are the `*` glob over every requirement and example.\n\nWhat the function does:\n- It writes one completed assessment record to disk.\n- For a `Definition` subject, it writes `evidence/<name>.json`.\n- For a `RustFunction` subject, it reads the existing `evidence/rust/<file>.json`.\n  - A missing file is treated as empty.\n  - Other read errors, JSON parse errors, and a non-array `functions` value are returned as errors.\n  - It removes any old entry for the same `rust_item`, adds the new entry, and sorts the entries.\n  - It writes `{rust_file, functions}`.\n- It creates the parent directory.\n- It writes the record to a temporary file in that directory and persists it over the target, so concurrent readers see either the old or the new complete file.\n\n**How the cited declarations account for this:**\n- `requirements.authoring.batch` says concurrent function assessments in one source file must be merged into that file's attestation record without losing other entries. It also says readers must see a complete version while results are saved. This matches the read-merge-sort logic and the atomic temp-file persist. The same requirement says successful writes are retained and errors are reported, which covers the error returns.\n- `requirements.authoring.function_attestations` covers authoring Rust function attestations. The `{rust_file, functions}` shape, with the entry keyed by `rust_item`, follows the attestation schema it references.\n- `requirements.authoring.persistence` says that after a valid judgment the harness writes the evidence file in the existing schema. This covers the definition and requirement path to `evidence/<name>.json`, and file writing generally.\n\n**Requirements I considered and excluded:**\n- `requirements.authoring.concurrency` is about the configuration value and task limits, not file writing.\n- `requirements.authoring.usage_storage` concerns usage records outside the project, not evidence records.\n- `requirements.authoring.submission` concerns validating the submitted judgment, which happens before this function is called.\n- `requirements.authoring.delivered_inputs` concerns recording inputs, which the caller assembles.\n- `requirements.ci.schema` and `requirements.references.rust_function_attestations` define the schema the function emits. They are reached through the cited persistence and function_attestations requirements, which explicitly incorporate them. `write_record` does not itself validate or enforce those schemas.\n- The `--stdout` path is not handled here, so no stdout obligation applies.\n- The remaining requirements cover CLI, configuration, mdBook rendering, CI validation, and similar topics, and none governs this function's behavior.\n\nThe three existing citations cover the function's observable behavior, including its error branches, so no applicable requirement or example is missing.",
+      "rationale": "**Applicable set.** I read `write_record` in full (`src/authoring/batch.rs`, about lines 134–180). I compared its behavior with every requirement and example declaration supplied under `*`. I also looked at its caller in `author_all` (lines ~98–102) for context.\n\n**What the function does:**\n- For a requirement or example subject, it writes `evidence/<name>.json` with the pending record.\n- For a Rust function subject, it reads any existing `evidence/rust/<file>.json` and fails if `functions` is not an array.\n- It treats a missing file as an empty list. It replaces the entry for the same `rust_item`, sorts the entries, and rebuilds the `{rust_file, functions}` object.\n- It creates the parent directory and writes through a temporary file that it persists over the target. This lets concurrent readers see a complete version.\n- It propagates I/O and JSON errors to the caller.\n\n**How the three citations cover this:**\n- `requirements.authoring.batch` covers merging function assessments in one source file into that file's attestation record without losing entries. It also covers readers seeing a complete version while results are saved. It covers retaining successful writes and reporting failures, since errors go back through the `Result` to the collector.\n- `requirements.authoring.function_attestations` covers authoring Rust function attestations under the schema in `references.rust_function_attestations`. That schema is the `{rust_file, functions}` file shape.\n- `requirements.authoring.persistence` covers writing the determination, rationale and inputs to the subject's evidence file using the existing schema (`ci.schema`). The `--stdout` obligations are handled by other code paths, not by this file-writing function.\n\n**Other requirements considered and judged inapplicable:**\n- Configuration, concurrency limits, submission, usage records, tools, mandatory inputs and prompt requirements concern other stages.\n- The `ci.*` and `references.*` requirements are validation-side rules. Their relevant parts (schema and attestation layout) are reached through the cited persistence and function_attestations requirements.\n- `authoring.concurrency` governs task and worker limits, which this synchronous function does not implement. The caller's comment says the collector is the sole writer, and that is covered by `batch`.\n\nThe reviewed requirements input contains every requirement and example, so no applicable declaration was missing from review. I found no applicable requirement left uncited.",
       "inputs": [
         {
           "rust_file": "src/authoring/batch.rs",
@@ -2885,6 +2921,7 @@
             "requirements.cli.bootstrap_skill",
             "requirements.cli.clap",
             "requirements.cli.definition_glob_search",
+            "requirements.cli.fixme_summary",
             "requirements.cli.function_attestation_guidance",
             "requirements.cli.info",
             "requirements.cli.internal_detail_guidance",
@@ -3187,8 +3224,10 @@
             "directory, returning project-relative paths. The model can list a returned",
             "directory in another call to explore further. A failed listing MUST return an",
             "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-            "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "requesting that directory or an alias to it MUST return a tool error.",
+            "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+            "In a Git worktree, directories MUST have at least one eligible tracked source",
+            "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+            "tool error.",
             ":::",
             "",
             ":::{req} function_attestations",
@@ -3356,7 +3395,14 @@
             "",
             "Rust file and selector arguments MUST use the syntax defined by",
             "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-            "project working tree, including uncommitted and untracked sources.",
+            "project working tree, including unstaged changes to tracked files and staged new",
+            "files. All source inputs, including mandatory inputs, MUST stay within the",
+            "project root after resolving symlinks. In a Git worktree, both the requested file",
+            "and its resolved target MUST be present in the Git index. Untracked mandatory",
+            "inputs and explicit reads MUST fail with guidance to stage the file using",
+            "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+            "boundaries without requiring an index; failure to read an existing repository's",
+            "index MUST be reported as an error.",
             "The project-root `evidence/` directory contains generated output and MUST be",
             "excluded from source reads, including paths that resolve there through symlinks.",
             "",
@@ -3436,8 +3482,9 @@
             "resulting window MUST be returned as a file-range input with its source path,",
             "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
             "Setting `context` to zero MUST return only matching lines.",
-            "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-            "explicitly requesting those output paths MUST return a tool error.",
+            "Search results MUST exclude files disallowed by",
+            "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+            "path MUST return a tool error.",
             "Required terminology MUST be included under",
             "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
             "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -3714,6 +3761,31 @@
             "Given a requirement `foo.ready` and a named example `foo.case`, `habeas info 'foo.*'` displays both, and `habeas status 'foo.*' --all` lists both with their kinds and evidence states. {cite}`requirements.cli.info` {cite}`requirements.cli.status`",
             ":::",
             "",
+            ":::{req} fixme_summary",
+            "`habeas status` MUST group the selected requirement and example judgments marked",
+            "FIXME by issue reference and report how many distinct judgments each issue",
+            "affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME",
+            "strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as",
+            "`https://github.com/owner/repo/issues/123` MUST identify the same issue as",
+            "`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with",
+            "leading zeros normalized; repository spelling MUST remain case-sensitive, and",
+            "unqualified and qualified references MUST remain distinct.",
+            "",
+            "A judgment MUST count at most once for each issue, even when that issue occurs",
+            "repeatedly or in several FIXME strings. A judgment naming several issues MUST",
+            "count in each corresponding group. Judgments with no recognized issue in any",
+            "FIXME string MUST be counted once in a separate \"FIXME without an issue\" group.",
+            "Issue groups MUST be ordered by decreasing affected-judgment count, then by",
+            "normalized reference; the group without an issue MUST follow them. A supplied",
+            "glob MUST restrict these counts to the selected subjects.",
+            "",
+            "`--verbose` MUST list the full name and kind of every judgment in each issue",
+            "group and in the group without an issue, along with its original FIXME strings.",
+            "The summary MUST include valid FIXME determinations even when other evidence",
+            "checks fail; grouping MUST NOT hide their validation findings. Malformed",
+            "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
+            ":::",
+            "",
             ":::{req} function_attestation_guidance",
             "Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`",
             ":::",
@@ -3759,7 +3831,7 @@
             ":::",
             "",
             ":::{req} status",
-            "`habeas status [<glob>]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. It MUST list matching definitions in full-name order when their evidence is missing, has a false or FIXME determination, or fails the same evidence and reference checks as `habeas::validate()`. `habeas status [<glob>] --all` MUST list every matching definition with its kind and evidence state. Both forms MUST show the recorded FIXME strings for FIXME judgments and validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
+            "`habeas status [<glob>] [--all] [--verbose]` MUST consider requirements and named examples whose complete full names match the glob defined by `references.definition_globs`; without a glob it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust attestation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied glob matching no definition clearly.",
             ":::",
             "",
             ":::{req} status_table_alignment",
@@ -4156,6 +4228,280 @@
             "{test}`requirements.references.targets`",
             "```",
             ":::"
+          ]
+        },
+        {
+          "file": "src/add_input.rs",
+          "line_start": 179,
+          "line_end": 183,
+          "text": [
+            "",
+            "// {impl}`requirements.cli.add_input`",
+            "// {impl}`requirements.references.rust_function_attestations`",
+            "// {impl}`requirements.cli.function_attestation_guidance`",
+            "// {impl}`requirements.definitions.capture`"
+          ]
+        },
+        {
+          "file": "src/authoring/inputs.rs",
+          "line_start": 155,
+          "line_end": 159,
+          "text": [
+            "    // {impl}`requirements.authoring.mandatory_inputs`",
+            "    // {impl}`requirements.ci.authoring_inputs`",
+            "    // {impl}`requirements.references.rust_function_attestations`",
+            "    // {impl}`requirements.definitions.authoring_inputs`",
+            "    pub(crate) fn prepare_function("
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 126,
+          "line_end": 130,
+          "text": [
+            "    // {impl}`requirements.references.rust_function_coverage`",
+            "    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);",
+            "    // {impl}`requirements.references.rust_function_attestations`",
+            "    let rust_functions =",
+            "        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 368,
+          "line_end": 372,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "// {impl}`requirements.examples.evidence`",
+            "// {impl}`requirements.definitions.dependencies`"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 482,
+          "line_end": 486,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "// {impl}`requirements.ci.input_containment`",
+            "// {impl}`requirements.ci.rust_item_inputs`"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 572,
+          "line_end": 576,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "// {impl}`requirements.ci.inputs`",
+            "fn validate_file_range_input("
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 634,
+          "line_end": 638,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "fn text_field(",
+            "    object: &Map<String, Value>,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 786,
+          "line_end": 790,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "fn check_keys(",
+            "    object: &Map<String, Value>,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 800,
+          "line_end": 804,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "fn string_field<'a>(",
+            "    object: &'a Map<String, Value>,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 820,
+          "line_end": 824,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "fn boolean_field(",
+            "    object: &Map<String, Value>,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 840,
+          "line_end": 844,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "fn positive_integer_field(",
+            "    object: &Map<String, Value>,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 862,
+          "line_end": 866,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "fn array_field<'a>(",
+            "    object: &'a Map<String, Value>,"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 1104,
+          "line_end": 1108,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_function_attestations`",
+            "// {impl}`requirements.ci.orphans`",
+            "// {impl}`requirements.authoring.batch`"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 1172,
+          "line_end": 1177,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_function_attestations`",
+            "// {impl}`requirements.ci.schema`",
+            "// {impl}`requirements.ci.determination`",
+            "// {impl}`requirements.definitions.dependencies`"
+          ]
+        },
+        {
+          "file": "src/evidence.rs",
+          "line_start": 1778,
+          "line_end": 1782,
+          "text": [
+            "    // {test}`requirements.examples.definition`",
+            "    // {test}`requirements.examples.evidence`",
+            "    // {test}`requirements.ci.schema`",
+            "    // {test}`requirements.references.evidence_coverage`",
+            "    // {test}`requirements.references.attestation_reassessment`"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 9,
+          "line_end": 13,
+          "text": [
+            "use crate::rust_items::{item_lines, parse_items};",
+            "",
+            "// {impl}`requirements.ci.schema`",
+            "#[derive(Clone, Debug, PartialEq, Eq)]",
+            "pub(crate) enum InputSelector {"
+          ]
+        },
+        {
+          "file": "src/inputs.rs",
+          "line_start": 49,
+          "line_end": 53,
+          "text": [
+            "",
+            "impl InputSelector {",
+            "    // {impl}`requirements.ci.schema`",
+            "    // {impl}`requirements.definitions.inputs`",
+            "    pub(crate) fn from_input(input: &Value) -> Option<Self> {"
+          ]
+        },
+        {
+          "file": "src/judgment.rs",
+          "line_start": 11,
+          "line_end": 15,
+          "text": [
+            "impl Judgment {",
+            "    // {impl}`requirements.ci.outcomes`",
+            "    // {impl}`requirements.ci.schema`",
+            "    pub fn from_value(value: &Value) -> Result<Self, String> {",
+            "        match value {"
+          ]
+        },
+        {
+          "file": "src/rust_items.rs",
+          "line_start": 501,
+          "line_end": 509,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.references.rust_function_attestations`",
+            "// {impl}`requirements.references.rust_function_coverage`",
+            "pub(crate) type CitationSet = BTreeSet<(String, String)>;",
+            "",
+            "// {impl}`requirements.references.rust_function_attestations`",
+            "// {impl}`requirements.definitions.references`",
+            "pub(crate) fn function_citations("
+          ]
+        },
+        {
+          "file": "src/authoring/batch.rs",
+          "line_start": 18,
+          "line_end": 24,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.batch`",
+            "// {impl}`requirements.authoring.concurrency`",
+            "// {impl}`requirements.authoring.configuration_precedence`",
+            "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
+            "    let root = fs::canonicalize(root)?;"
+          ]
+        },
+        {
+          "file": "src/authoring/batch.rs",
+          "line_start": 98,
+          "line_end": 102,
+          "text": [
+            "            // This collector is the sole writer: functions in the same source",
+            "            // file can finish concurrently without replacing each other's entries.",
+            "            match write_record(&root, &pending) {",
+            "                Ok(path) => pending.persisted(path),",
+            "                Err(error) => Err(pending.failed(error)),"
+          ]
+        },
+        {
+          "file": "src/authoring/batch.rs",
+          "line_start": 132,
+          "line_end": 139,
+          "text": [
+            "}",
+            "",
+            "// {impl}`requirements.authoring.batch`",
+            "// {impl}`requirements.authoring.function_attestations`",
+            "// {impl}`requirements.authoring.persistence`",
+            "fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {",
+            "    let (path, record) = match &pending.subject {",
+            "        AuthoringSubject::Definition(name) => ("
           ]
         }
       ]

@@ -1,7 +1,7 @@
 {
   "requirement": "Each configurable feature MUST define the name and typed data structure of its\nuser section and any supported project section, citing these common configuration\nrequirements. The feature MUST specify its supported keys, value types, defaults,\nvalidation rules, and the precedence or combination rules for user settings,\nproject settings, and invocation options. It MUST specify the behavior of an\nabsent section and which operations require that section.\n\nFeature-specific fields MUST stay within the feature's section. A feature MUST\nNOT reinterpret another feature's settings or change the shared file locations\nor schema version. A feature MAY define a provider-owned options map, but MUST\ndocument that boundary and how those options are validated.",
   "determination": true,
-  "rationale": "The only configurable feature is evidence authoring. It satisfies each obligation of `requirements.configuration.feature_sections`. The requirement is mostly a documentation obligation on features, and the code and tests back the documented rules.\n\n**Section name and typed structure**\n- `md/requirements/authoring.md` (`configuration`, lines ~300-310) cites `user_location`, `structure` and `feature_sections`.\n- It names the `[authoring]` section and says it defines no shared project section.\n- `configuration_structure` gives the typed schema: `UserAuthoringConfig`, `ProjectSelection`, `AuthoringConfig`, the Bedrock and Ollama configs, `OptionValue` and `ModelRef`.\n- `md/requirements/configuration.md` shows `UserConfig.authoring` as an optional field and an empty `ProjectConfig`.\n- `src/config.rs` mirrors this exactly with serde types. The `ProjectConfig {}` struct has `deny_unknown_fields`, so `[habeas]` accepts no feature keys. The test `absent_and_minimal_configuration_are_distinct_and_read_only` checks that `[habeas] version = 1` is rejected.\n\n**Keys, value types, defaults, validation**\n- `configuration_serialization`, `configuration_storage` and `concurrency` specify these, and the examples document them.\n- The Ollama endpoint defaults to localhost, and `concurrency` has per-backend defaults.\n- The validation rules cover config-name syntax, nonempty model IDs, the `api_key_env` rules, finite floats, positive concurrency, and canonical absolute project keys.\n- The code is in `src/config.rs`: `UserAuthoringConfig::validate`, `BackendConfig::validate`, `OptionValue::validate`, `validate_name` and `effective_concurrency`.\n- `tests/configuration.rs` covers these cases:\n  - `backend_configuration_round_trips_without_materializing_defaults`\n  - `authoring_concurrency_defaults_overrides_and_invalid_values`, including 0, -1, 1.5 and a string\n  - `invalid_schema_and_feature_values_report_the_configuration_path`, which has about 13 invalid inputs, each of which must name the file in the error\n\n**Precedence and combination**\n- `configuration_precedence` sets the order: `--config`, then the per-project selection, then the default. The chosen configuration is used as a whole unit.\n- `resolve_authoring_from` implements this order.\n- `explicit_project_and_default_selections_choose_whole_configs` tests each level and the error on an unknown name.\n- No project settings exist for authoring, so there is nothing to combine with them.\n- `authoring_cli.rs` and `live_bedrock.rs` exercise the `--config` selection end to end.\n\n**Absent section and which operations need it**\n- A missing configuration or an unknown selection must produce an error that names the user file and points to the examples.\n- `resolve_authoring_from` returns \"no authoring configuration; see …#editing-the-file\" when the section is absent. `explicit_project_and_default_selections_choose_whole_configs` asserts that message.\n- The `batch` requirement says a batch with no assessments needed must not resolve configuration. `tests/authoring_batch.rs` (~466-472) checks that configuration diagnostics are not reported and no state or evidence is created.\n- `author` requires the section, and the `resolve_authoring` call path only runs for operations that use it.\n- A minimal file with only `version = 1` loads with `authoring` as `None`, which keeps \"absent\" distinct from explicit settings.\n\n**Stays within its section**\n- The authoring fields live only under `authoring`. The root struct has `deny_unknown_fields`, and the project config is empty.\n- The shared locations and the version check are unchanged.\n- The code and docs do not reinterpret any other feature's settings.\n\n**Provider-owned options map**\n- `configuration_storage` documents the `options` map as backend-defined, passed through Rig, with rejection reported by Rig or the provider. It must not replace the model, prompt or tools.\n- The code enforces the reserved-key rejection (`model`, `prompt`, `tools` and similar) and validates option values recursively.\n- The tests cover an arbitrary nested custom option round-tripping, a reserved `model` key being rejected, and `nan` being rejected.\n\n**Gaps**\n- I found no FIXME or acknowledged gap related to this requirement.\n- A minor possible improvement is a more explicit sentence in the authoring documentation on \"absent `[authoring]` section\", but the behavior is fully specified by `configuration_precedence` and tested.",
+  "rationale": "**Judgment: true.** `feature_sections` is a meta-requirement on how a feature specifies its configuration. The only configurable feature today is evidence authoring. Its specification and implementation cover each obligation.\n\n**Specification in `md/requirements/authoring.md`**\n- **Section name and types.** `authoring.configuration` (line ~310) puts the feature in `[authoring]` of the user file and cites `user_location`, `structure` and `feature_sections`. `configuration_structure` defines `UserAuthoringConfig`, `ProjectSelection`, `AuthoringConfig`, `BedrockConfig`, `OllamaConfig`, `OptionValue` and `ModelRef`. `configuration_serialization` gives the TOML mapping.\n- **Project section.** `authoring.configuration` says \"It defines no shared project configuration section.\" `ProjectConfig` in `md/requirements/configuration.md` is an empty struct.\n- **Keys, types, defaults, validation.**\n  - Defaults: the Ollama endpoint defaults to `http://localhost:11434`. Concurrency defaults to the logical CPU count for Bedrock and to one for Ollama.\n  - Validation: `configuration_storage` covers name syntax, nonempty model IDs, `api_key_env` rules and the options restrictions. `concurrency` rejects zero.\n- **Precedence.** `configuration_precedence` orders the sources as `--config`, then the per-project selection, then the default. It takes the chosen config as a unit and defines the AWS and Ollama overrides.\n- **Absent section.** A missing configuration or an unknown selection is an error that names the user file and points to the examples. `batch` says a batch with no assessments needed succeeds without resolving configuration. `deterministic_validation` says ordinary validation, status and rendering do not need authoring configuration. Together these say which operations need the section.\n- **Provider-owned options.** `configuration_storage` documents the boundary: `options` is a pass-through map for backend-defined settings, rejected by Rig or the provider. It must not replace the model, prompt or tools.\n- **Documentation.** `configuration_documentation` and the \"Editing the file\" section give copyable examples.\n\n**Implementation in `src/config.rs`**\n- The types mirror the spec, and `#[serde(deny_unknown_fields)]` keeps fields inside their section.\n- `UserAuthoringConfig::validate` and `BackendConfig::validate` implement the validation rules. That includes the reserved option keys (`model`, `prompt`, `tools` and similar), finite-float checks and the canonical project path check.\n- `resolve_authoring_from` implements the precedence order and returns an error for an absent section, no selection, or an unknown selection. Each error names the file and the examples anchor.\n- `ProjectConfig::from_book_toml` treats an absent `[habeas]` table as `None`, which is distinguishable from an empty table. `resolve_authoring` parses `book.toml` but does not read any authoring setting from it.\n- Authoring does not change the file locations or the schema version. `UserConfig::validate` enforces `version == 1`.\n\n**Tests**\n- `tests/configuration.rs` covers:\n  - absent versus minimal configuration and read-only loading;\n  - the `[habeas]` table in `book.toml` being absent, empty, or invalid (`version` under `[habeas]` is rejected);\n  - round trips without materialized defaults;\n  - concurrency defaults, overrides and invalid values;\n  - explicit, project and default precedence, with unknown and absent-section errors;\n  - a table of invalid values, each of which must report the file path;\n  - Ollama credential-source resolution.\n- `tests/authoring_cli.rs` and `tests/authoring_batch.rs` exercise end-to-end resolution and the absent-configuration diagnostics. They also check that failed runs create no state or evidence.\n\n**Gaps**\n- No test or `{impl}` comment cites `feature_sections` directly. The only reference is the `{cite}` from `authoring.configuration`. I think that is justified: the obligation is on the content of the feature's requirements, and the tests and `{impl}` markers on `authoring.configuration_*` and `configuration.loading` cover the observable behavior.\n- No gap is acknowledged with a FIXME.",
   "inputs": [
     {
       "requirements": "requirements.configuration.feature_sections",
@@ -47,16 +47,16 @@
       "line_start": 211,
       "line_end": 220,
       "text": [
-        "Subject: {{subject_kind}} {{subject_name}}",
+        "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+        "or `example`, `{{subject_name}}` with the full subject name, and",
+        "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
+        "the existing evidence-input formats. The template MUST otherwise be used as",
+        "written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,",
+        "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.",
         "",
-        "Read the subject and mandatory inputs below. Use habeas to request any additional",
-        "source information you need. Use list_files to discover files and directories,",
-        "and ripgrep to search file contents.",
-        "The harness records source inputs for you; directory listings are not evidence.",
-        "",
-        "Assess only the named subject, using cited requirements and definitions as context.",
-        "For a requirement, check that the cited code implements it as stated and that",
-        "tests cover the interesting points in the design space. If there are no tests,"
+        "```text",
+        "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
+        ""
       ]
     },
     {
@@ -298,7 +298,14 @@
         "",
         "Rust file and selector arguments MUST use the syntax defined by",
         "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-        "project working tree, including uncommitted and untracked sources.",
+        "project working tree, including unstaged changes to tracked files and staged new",
+        "files. All source inputs, including mandatory inputs, MUST stay within the",
+        "project root after resolving symlinks. In a Git worktree, both the requested file",
+        "and its resolved target MUST be present in the Git index. Untracked mandatory",
+        "inputs and explicit reads MUST fail with guidance to stage the file using",
+        "`git add`. Projects outside Git MUST use the same project-root and generated-output",
+        "boundaries without requiring an index; failure to read an existing repository's",
+        "index MUST be reported as an error.",
         "The project-root `evidence/` directory contains generated output and MUST be",
         "excluded from source reads, including paths that resolve there through symlinks.",
         "",
@@ -345,8 +352,10 @@
         "directory, returning project-relative paths. The model can list a returned",
         "directory in another call to explore further. A failed listing MUST return an",
         "explanatory tool error. Directory listings MUST NOT become evidence inputs.",
-        "Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;",
-        "requesting that directory or an alias to it MUST return a tool error.",
+        "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+        "In a Git worktree, directories MUST have at least one eligible tracked source",
+        "descendant to be listed. Explicitly requesting an excluded path MUST return a",
+        "tool error.",
         ":::",
         "",
         "### Search file contents: `ripgrep`",
@@ -372,8 +381,9 @@
         "resulting window MUST be returned as a file-range input with its source path,",
         "inclusive line range, and complete text under {cite}`requirements.ci.inputs`.",
         "Setting `context` to zero MUST return only matching lines.",
-        "Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;",
-        "explicitly requesting those output paths MUST return a tool error.",
+        "Search results MUST exclude files disallowed by",
+        "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+        "path MUST return a tool error.",
         "Required terminology MUST be included under",
         "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
         "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
@@ -758,17 +768,7 @@
         "rerunning `habeas author --all` preserves current accepted results and retries",
         "records that still need attention.",
         "",
-        "Backend options belong under",
-        "`[authoring.configs.<name>.options]`. For an authenticated Ollama server, put",
-        "`api_key_env = \"OLLAMA_API_KEY\"` in its configuration table and set that variable",
-        "outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an",
-        "Ollama endpoint to use localhost.",
-        "",
-        "## Recording results",
-        "",
-        ":::{req} delivered_inputs",
-        "The harness MUST record the source text it supplies to the model, including",
-        "mandatory inputs and additional reads, using the existing evidence input formats"
+        "Backend options belong under"
       ]
     },
     {
@@ -776,11 +776,11 @@
       "line_start": 302,
       "line_end": 306,
       "text": [
-        "{cite}`requirements.configuration.user_location`",
-        "{cite}`requirements.configuration.structure`",
-        "{cite}`requirements.configuration.feature_sections`",
-        "It MUST support named configurations and a user-local selection for each project.",
-        "It defines no shared project configuration section. Credentials MUST be obtained"
+        "## Configuration",
+        "",
+        ":::{req} provider",
+        "The authoring harness MUST use Rig and support Bedrock and Ollama. Users MUST be",
+        "able to select a backend and model through configuration without changing the"
       ]
     },
     {
@@ -1855,7 +1855,7 @@
       "line_start": 304,
       "line_end": 304,
       "text": [
-        "{cite}`requirements.configuration.feature_sections`"
+        ":::{req} provider"
       ]
     },
     {
@@ -2031,9 +2031,9 @@
       "line_start": 391,
       "line_end": 393,
       "text": [
+        "        json!({\"type\": \"boolean\"})",
         "    } else {",
-        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
-        "    };"
+        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})"
       ]
     },
     {
@@ -2041,9 +2041,9 @@
       "line_start": 570,
       "line_end": 572,
       "text": [
+        "        .unwrap();",
         "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
-        "            let mut sources ="
+        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {"
       ]
     },
     {
@@ -2071,9 +2071,9 @@
       "line_start": 86,
       "line_end": 88,
       "text": [
-        "    if !fixmes.is_empty() {",
-        "        output.push_str(\"\\n## FIXME references\\n\");",
-        "        output.push_str(&fixmes);"
+        "    if rows.is_empty() {",
+        "        output.push_str(if all {",
+        "            \"No definitions found.\\n\""
       ]
     },
     {
@@ -2148,6 +2148,294 @@
         "            Self::False => \"false\",",
         "            Self::Fixme(_) => \"FIXME\",",
         "        }"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 107,
+      "line_end": 111,
+      "text": [
+        "",
+        "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or",
+        "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
+        "relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local",
+        "and is not part of the project. Here is a complete configuration with two choices:"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 312,
+      "line_end": 316,
+      "text": [
+        "{cite}`requirements.configuration.user_location`",
+        "{cite}`requirements.configuration.structure`",
+        "{cite}`requirements.configuration.feature_sections`",
+        "It MUST support named configurations and a user-local selection for each project.",
+        "It defines no shared project configuration section. Credentials MUST be obtained"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 322,
+      "line_end": 326,
+      "text": [
+        "",
+        "The shared `UserConfig.authoring` field contains `UserAuthoringConfig`.",
+        "`Optional<T>` means a field may be absent; `Map<K, V>` is a table keyed by `K`.",
+        "",
+        ":::{req} configuration_structure"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 98,
+      "line_end": 102,
+      "text": [
+        "",
+        ":::{req} book_source",
+        "Validation MUST read the mdBook source directory from `[book].src` in `book.toml`, using `src` when the setting is absent. It MUST report an unreadable or malformed book configuration and reject an empty, absolute, or parent-traversing source path.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 95,
+      "line_end": 99,
+      "text": [
+        "",
+        ":::{req} setup_project",
+        "`habeas setup` MUST find an ancestor containing both `Cargo.toml` and `book.toml`, require a nonempty relative mdBook source path without parent components and a `SUMMARY.md` at that path, and report an error when these prerequisites are absent or invalid.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 48,
+      "line_end": 52,
+      "text": [
+        "",
+        "The following schema notation describes the serialized data. `Optional<T>` means",
+        "the field may be absent. Feature fields use the types defined by that feature's",
+        "requirements; the current feature is [evidence authoring](authoring.md).",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 77,
+      "line_end": 81,
+      "text": [
+        "Shared project configuration MUST serialize ProjectConfig under `[habeas]` in",
+        "`book.toml`, with each feature in `[habeas.<feature>]`. The `[habeas]` table and",
+        "its feature tables MAY be absent. The user-file version MUST NOT be required in",
+        "`book.toml`. The absence of an optional feature section MUST be distinguishable",
+        "from that feature's explicit settings and interpreted according to its own"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 102,
+      "line_end": 106,
+      "text": [
+        "validation rules, and the precedence or combination rules for user settings,",
+        "project settings, and invocation options. It MUST specify the behavior of an",
+        "absent section and which operations require that section.",
+        "",
+        "Feature-specific fields MUST stay within the feature's section. A feature MUST"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 127,
+      "line_end": 131,
+      "text": [
+        ":::{req} loading",
+        "An operation MUST load user configuration only when its requirements call for",
+        "user settings. A missing user file MUST represent absent user configuration;",
+        "whether the operation can proceed MUST be defined by the feature. Loading MUST",
+        "NOT create a file, repair malformed input, or supply an undocumented selection."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 313,
+      "line_end": 315,
+      "text": [
+        "{cite}`requirements.configuration.structure`",
+        "{cite}`requirements.configuration.feature_sections`",
+        "It MUST support named configurations and a user-local selection for each project."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 314,
+      "line_end": 318,
+      "text": [
+        "{cite}`requirements.configuration.feature_sections`",
+        "It MUST support named configurations and a user-local selection for each project.",
+        "It defines no shared project configuration section. Credentials MUST be obtained",
+        "through the selected backend's credential mechanism; saved configuration MUST",
+        "contain credential-source references rather than credential values."
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 79,
+      "line_end": 83,
+      "text": [
+        "",
+        ":::{req} requirements_review_skill",
+        "The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 75,
+      "line_end": 81,
+      "text": [
+        "`version = 1` MUST be valid common configuration.",
+        "",
+        "Shared project configuration MUST serialize ProjectConfig under `[habeas]` in",
+        "`book.toml`, with each feature in `[habeas.<feature>]`. The `[habeas]` table and",
+        "its feature tables MAY be absent. The user-file version MUST NOT be required in",
+        "`book.toml`. The absence of an optional feature section MUST be distinguishable",
+        "from that feature's explicit settings and interpreted according to its own"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 98,
+      "line_end": 106,
+      "text": [
+        ":::{req} feature_sections",
+        "Each configurable feature MUST define the name and typed data structure of its",
+        "user section and any supported project section, citing these common configuration",
+        "requirements. The feature MUST specify its supported keys, value types, defaults,",
+        "validation rules, and the precedence or combination rules for user settings,",
+        "project settings, and invocation options. It MUST specify the behavior of an",
+        "absent section and which operations require that section.",
+        "",
+        "Feature-specific fields MUST stay within the feature's section. A feature MUST"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 119,
+      "line_end": 123,
+      "text": [
+        "",
+        "Loading configuration or running a configured feature MUST NOT rewrite the user",
+        "or project configuration as a side effect. Resolved credentials and live runtime",
+        "objects MUST NOT enter the serialized data structures.",
+        ":::"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 148,
+      "line_end": 152,
+      "text": [
+        "",
+        ":::{req} documentation",
+        "Habeas MUST document the user and project configuration locations, the common",
+        "file structure and schema version, and how to create and edit the files by hand.",
+        "Each configurable feature MUST document its fields, defaults, resolution rules,"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 536,
+      "line_end": 620,
+      "text": [
+        "records that still need attention.",
+        "",
+        "Backend options belong under",
+        "`[authoring.configs.<name>.options]`. For an authenticated Ollama server, put",
+        "`api_key_env = \"OLLAMA_API_KEY\"` in its configuration table and set that variable",
+        "outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an",
+        "Ollama endpoint to use localhost.",
+        "",
+        "## Recording results",
+        "",
+        ":::{req} delivered_inputs",
+        "The harness MUST record the source text it supplies to the model, including",
+        "mandatory inputs and additional reads, using the existing evidence input formats",
+        "defined by {cite}`requirements.ci.inputs`,",
+        "{cite}`requirements.ci.rust_item_inputs`,",
+        "{cite}`requirements.ci.requirements_inputs`, and",
+        "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
+        "itself so ordinary evidence validation can check them later.",
+        ":::",
+        "",
+        ":::{req} persistence",
+        "After one valid judgment, the harness MUST write the subject text, submitted",
+        "determination and rationale, and recorded inputs using the existing evidence",
+        "schema. {cite}`requirements.ci.schema`",
+        "By default, it MUST write the subject's evidence file. With `--stdout`, it MUST",
+        "emit a single evidence JSON object followed by a newline to stdout and MUST NOT",
+        "create or change evidence files or directories. All three outcomes MUST be",
+        "written to the selected destination as completed assessments; their validation",
+        "status MUST follow {cite}`requirements.ci.determination`.",
+        ":::",
+        "",
+        "### Usage history",
+        "",
+        ":::{req} usage_storage",
+        "Each assessment MUST have a separate JSON usage record under",
+        "`<state-root>/authoring/usage/<run-id>.json` using",
+        "{cite}`requirements.configuration.state_location`.",
+        "It MUST identify its format version, run, project root, subject kind and full",
+        "name, start time, backend and model when known, end time when finished, outcome,",
+        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
+        "whether evidence was written. It MUST record the selected output destination in",
+        "`evidence_output` as `file` or `stdout`; a successful write to either destination",
+        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
+        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
+        "Failed, cancelled, or unfinished",
+        "runs MUST remain distinguishable from completed judgments. Records MUST persist",
+        "for later review without storing source text, prompts, responses, or rationale.",
+        ":::",
+        "",
+        ":::{req} usage_inputs",
+        "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8",
+        "bytes and lines, and the same information for additional inputs requested through",
+        "`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.",
+        "Usage MUST distinguish unique inputs from repeated reads, successful from",
+        "failed reads, and prepared inputs from those actually sent to the model.",
+        "File-discovery calls MUST count as tool calls without recording directory",
+        "listings as evidence or source inputs.",
+        ":::",
+        "",
+        ":::{req} usage_requests",
+        "Usage MUST record each provider request's outcome and available input/output",
+        "token counts, including retries, with cached or reasoning-token counts when",
+        "provided. Missing measurements MUST be recorded as unavailable, not zero.",
+        "Run totals MUST include request and tool-call counts by tool, elapsed time, and",
+        "available token usage, identifying incomplete totals without double counting",
+        "provider counters that overlap.",
+        ":::",
+        "",
+        "### CI without inference",
+        "",
+        ":::{req} deterministic_validation",
+        "Ordinary evidence validation, status inspection, and book rendering MUST continue",
+        "to check evidence using the existing rules without invoking models, contacting",
+        "providers, or requiring authoring configuration or credentials. Missing or stale",
+        "evidence MUST remain a validation failure rather than trigger authoring.",
+        ":::",
+        "",
+        "## Examples",
+        "",
+        ":::{example} complete_initial_bundle",
+        "A requirement has an implementation citation in one function, a test citation in",
+        "another, and a terminology reference. The initial prompt contains the complete",
+        "requirement, both functions, and the required definition as evidence inputs.",
+        "{cite}`requirements.authoring_input`",
+        "{cite}`requirements.references.authoring_inputs`"
       ]
     }
   ]

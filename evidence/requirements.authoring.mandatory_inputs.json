@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST construct each assessment's mandatory input set by combining\nthe contributions specified by the requirements applicable to that subject and\nits inputs. A requirement that contributes inputs MUST cite this requirement and\ndefine which sources it contributes and when. The harness MUST include every\napplicable contribution, deduplicate identical selections, and report\nunresolvable mandatory inputs before inference. The complete set MUST be supplied\nin the initial model request.\nGenerated output under project-root `evidence/`, including symlink aliases, MUST\nbe omitted even when a previous evidence record lists it as an input.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is implemented and tested.**\n\n**Implementation**\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the set for requirement and example subjects. It combines these contributions:\n  - the subject's own declaration;\n  - the declarations it references directly;\n  - every source that references it, resolved to the smallest enclosing Rust item or Markdown declaration through `reference_selector`;\n  - the current resolutions of the selectors in any existing evidence;\n  - the transitive terminology definitions, added through `definition_inputs`.\n- `prepare_function` does the same for function attestations. It adds the function, the `*` requirements selector, the existing sidecar selectors and the definitions.\n- `insert_selector` removes identical selectors. The definition merge also skips inputs already in the set (`!mandatory.contains`).\n- Unresolvable inputs fail early. `source_input` calls `selector.resolve(...)?`, and `prepare` and `prepare_function` propagate the error. `configured_record` in `src/authoring/mod.rs` calls them before `RigProvider::connect` and before `assess`, so no inference happens first.\n- Generated `evidence/` output is excluded:\n  - `generated_evidence_path` checks both the lexical path and the canonicalized path, so symlink aliases are caught.\n  - `generated_evidence_selector` drops evidence selectors before resolution.\n  - `source_input` rejects any resolved range that lands in `evidence/`.\n- The old determination and rationale are never read into the input set.\n- The complete set goes into the initial request. `initial_prompt` substitutes `serde_json::to_string_pretty(sources.mandatory_inputs())` into `{{mandatory_inputs}}`. `assess` builds the first `CompletionRequest` from that prompt.\n\n**Tests**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` covers:\n  - the impl and test references, selected as the smallest enclosing item (`impl[Thing]/fn[run]` is included, `impl[Thing]` is not);\n  - direct references (`base` is included, `distant` is not);\n  - the example declaration;\n  - the transitive definitions (exactly 2);\n  - the current text of `notes.txt` rather than the old text;\n  - the old judgment text staying out of the inputs;\n  - a named example as subject.\n- `unresolved_existing_selector_fails_before_inference` checks that a missing file produces an error naming it, and that an unknown subject also errors.\n- `existing_generated_evidence_inputs_are_omitted_before_resolution` covers:\n  - evidence files, a removed evidence file and a Unix symlink alias to evidence;\n  - both `prepare` and `prepare_function`, each leaving only `notes.txt` with its current text;\n  - the evidence file staying unmodified.\n- `function_inputs_include_uncited_definitions_and_current_sources` covers the function path: `*` requirements, uncited definitions, current sources and no old rationale.\n- `function_judgments_use_boolean_schema_and_harness_owned_inputs` in `src/authoring/mod.rs` checks that the initial prompt contains the subject and requirement. It also checks that the recorded inputs equal `mandatory_inputs()`.\n\n**Minor gaps**\nNo test captures the full request payload and compares it with the whole mandatory set. The prompt test only checks a few substrings. The code path is a single direct substitution, so this is a minor weakness and not an acknowledged FIXME.",
+  "rationale": "**Verdict: the requirement is met.** The code builds the mandatory set from every contributing requirement, dedupes it, fails before inference on unresolvable inputs, omits generated `evidence/` output, and sends the complete set in the first request. The tests cover each of these points. The gaps below are minor and are not acknowledged by any FIXME.\n\n**Implementation**\n- **Definition and example subjects:** `AssessmentSources::prepare` (`src/authoring/inputs.rs`) combines the contributions of the cited requirements:\n  - the subject's own declaration (`requirements.authoring_input`, `requirements.examples.authoring_inputs`);\n  - declarations the subject references directly, and the enclosing items or declarations that reference the subject (`requirements.references.authoring_inputs`);\n  - the current resolution of each selector in existing evidence (`requirements.ci.authoring_inputs`);\n  - the transitive terminology definitions (`requirements.definitions.authoring_inputs`, via `definition_inputs`).\n- **Rust function subjects:** `prepare_function` contributes the function itself, the `*` requirements selector, and the existing-evidence selectors. It then adds the definition dependencies.\n- **Deduplication:** `insert_selector` skips selectors that are already present, and definition dependencies are only pushed if they are not already in the set.\n- **Generated output:** `generated_evidence_selector` and `generated_evidence_path` drop anything under `evidence/`. The path check also canonicalizes, so symlink aliases are caught.\n- **Unresolvable inputs:** `source_input` resolves every selector and checks file access, returning an `Err`. `configured_record` in `src/authoring/mod.rs` calls `prepare` or `prepare_function` before it connects to the provider, so the error surfaces before any inference.\n- **Initial request:** `initial_prompt` substitutes the full pretty-printed `mandatory_inputs()` into the template. `assess` builds the first `CompletionRequest` from that prompt and starts `pending` from the same set.\n- **Old judgments:** only the `inputs` array of old evidence is read. The old determination and rationale are never supplied.\n\n**Tests citing this requirement** (`src/authoring/inputs.rs` unless noted)\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` checks:\n  - the impl and test items are included, without the enclosing `impl[Thing]`;\n  - the example and the directly referenced `base` requirement are included;\n  - the distant (transitive) requirement is excluded;\n  - exactly two terminology definitions are included;\n  - old selectors are re-read with their current text;\n  - the old rationale never appears;\n  - an example subject works.\n- `unresolved_existing_selector_fails_before_inference` checks that a missing selector file, and a missing subject, make `prepare` return an error.\n- `function_inputs_include_uncited_definitions_and_current_sources` checks that function subjects get the `*` selector, uncited terms and current text, and exclude the old rationale.\n- `existing_generated_evidence_inputs_are_omitted_before_resolution` checks that `evidence/` selectors and a symlink alias are omitted, and that the old evidence file is left unmodified.\n- `mandatory_git_inputs_require_staging_declarations_sources_terms_and_old_selectors` checks that unstaged or untracked mandatory sources produce errors, and that the set is correct once they are staged.\n- `function_judgments_use_boolean_schema_and_harness_owned_inputs` (`src/authoring/mod.rs`) checks that the initial prompt contains the subject and the mandatory inputs, and that the recorded inputs equal `mandatory_inputs()`.\n\n**Minor gaps**\n- No test asserts that every mandatory input appears verbatim in the initial request. This is covered indirectly, because the code serializes the whole set into the prompt and the prompt test checks part of its content.\n- Deduplication is by selector equality, which is what \"identical selections\" means here.",
   "inputs": [
     {
       "requirements": "requirements.authoring.mandatory_inputs",
@@ -190,6 +190,21 @@
       ]
     },
     {
+      "rust_file": "src/authoring/access.rs",
+      "rust_item": "impl[SourceAccess]/fn[file]",
+      "text": [
+        "    // {impl}`requirements.authoring.source_tools`",
+        "    // {impl}`requirements.authoring.mandatory_inputs`",
+        "    pub(crate) fn file(&self, root: &Path, relative: &Path) -> Result<PathBuf, String> {",
+        "        let target = self.path(root, relative)?;",
+        "        if !target.is_file() {",
+        "            return Err(format!(\"{} is not a source file\", relative.display()));",
+        "        }",
+        "        Ok(target)",
+        "    }"
+      ]
+    },
+    {
       "rust_file": "src/authoring/inputs.rs",
       "rust_item": "impl[AssessmentSources]/fn[prepare]",
       "text": [
@@ -202,6 +217,7 @@
         "    // {impl}`requirements.ci.authoring_inputs`",
         "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {",
         "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let access = SourceAccess::load(&root)?;",
         "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;",
         "        let subject = definitions",
         "            .get(subject_name)",
@@ -277,10 +293,16 @@
         "        let mut mandatory = Vec::new();",
         "        for selector in selectors {",
         "            if !generated_evidence_selector(&root, &selector) {",
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
         "            }",
         "        }",
-        "        let dependencies = definition_inputs(&root, &definitions, &mandatory, Some(&subject.text))?;",
+        "        let dependencies = definition_inputs(",
+        "            &root,",
+        "            &access,",
+        "            &definitions,",
+        "            &mandatory,",
+        "            Some(&subject.text),",
+        "        )?;",
         "        for input in dependencies {",
         "            if !mandatory.contains(&input) {",
         "                mandatory.push(input);",
@@ -288,6 +310,7 @@
         "        }",
         "        Ok(Self {",
         "            root,",
+        "            access,",
         "            subject_name: subject_name.to_owned(),",
         "            subject_kind: AssessmentKind::Definition(subject.kind),",
         "            subject_text: subject.text.clone(),",
@@ -312,10 +335,9 @@
         "        rust_item: &str,",
         "    ) -> Result<Self, String> {",
         "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let access = SourceAccess::load(&root)?;",
         "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;",
-        "        if generated_evidence_path(&root, Path::new(rust_file)) {",
-        "            return Err(\"generated evidence is output, not assessment source\".to_owned());",
-        "        }",
+        "        access.file(&root, Path::new(rust_file))?;",
         "        let (_, source) = read_project_file(&root, rust_file)?;",
         "        let (_, citations) = crate::rust_items::function_citations(&source, &definitions)",
         "            .map_err(|error| format!(\"{rust_file}: cannot parse Rust source: {error}\"))?",
@@ -363,16 +385,17 @@
         "        let mut mandatory = Vec::new();",
         "        for selector in selectors {",
         "            if !generated_evidence_selector(&root, &selector) {",
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
         "            }",
         "        }",
-        "        for input in definition_inputs(&root, &definitions, &mandatory, None)? {",
+        "        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {",
         "            if !mandatory.contains(&input) {",
         "                mandatory.push(input);",
         "            }",
         "        }",
         "        Ok(Self {",
         "            root,",
+        "            access,",
         "            subject_name: format!(\"{rust_file}:{rust_item}\"),",
         "            subject_kind: AssessmentKind::RustFunction {",
         "                rust_item: rust_item.to_owned(),",
@@ -444,19 +467,20 @@
         "// {impl}`requirements.ci.authoring_inputs`",
         "fn source_input(",
         "    root: &Path,",
+        "    access: &SourceAccess,",
         "    definitions: &BTreeMap<String, Declaration>,",
         "    selector: &InputSelector,",
         ") -> Result<Value, String> {",
-        "    if generated_evidence_selector(root, selector) {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "    if let InputSelector::FileRange { file, .. }",
+        "    | InputSelector::RustItem {",
+        "        rust_file: file, ..",
+        "    } = selector",
+        "    {",
+        "        access.file(root, Path::new(file))?;",
         "    }",
         "    let resolved = selector.resolve(root, definitions)?;",
-        "    if resolved",
-        "        .ranges",
-        "        .iter()",
-        "        .any(|range| generated_evidence_path(root, Path::new(&range.file)))",
-        "    {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "    for range in &resolved.ranges {",
+        "        access.file(root, Path::new(&range.file))?;",
         "    }",
         "    Ok(selector.to_input(&resolved))",
         "}"
@@ -482,6 +506,7 @@
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "fn definition_inputs(",
         "    root: &Path,",
+        "    access: &SourceAccess,",
         "    definitions: &BTreeMap<String, Declaration>,",
         "    inputs: &[Value],",
         "    subject: Option<&str>,",
@@ -491,7 +516,7 @@
         "        .into_iter()",
         "        .map(|definition| {",
         "            let selector = InputSelector::Definition { definition };",
-        "            source_input(root, definitions, &selector)",
+        "            source_input(root, access, definitions, &selector)",
         "        })",
         "        .collect()",
         "}"
@@ -808,6 +833,107 @@
       ]
     },
     {
+      "rust_file": "src/authoring/inputs.rs",
+      "rust_item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_terms_and_old_selectors]",
+      "text": [
+        "    // {test}`requirements.authoring.source_tools`",
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    // {test}`requirements.definitions.authoring_inputs`",
+        "    // {test}`requirements.ci.authoring_inputs`",
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    // {test}`requirements.authoring_input`",
+        "    // {test}`requirements.references.authoring_inputs`",
+        "    #[test]",
+        "    fn mandatory_git_inputs_require_staging_declarations_sources_terms_and_old_selectors() {",
+        "        let root = project();",
+        "        git(root.path(), &[\"init\", \"--quiet\"]);",
+        "        git(root.path(), &[\"add\", \"Cargo.toml\", \"book.toml\"]);",
+        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
+        "            .err()",
+        "            .unwrap();",
+        "        assert!(",
+        "            error.contains(\"md/requirements.md\") && error.contains(\"git add\"),",
+        "            \"{error}\"",
+        "        );",
+        "        git(root.path(), &[\"add\", \"md\"]);",
+        "        fs::write(",
+        "            root.path().join(\"src/lib.rs\"),",
+        "            format!(",
+        "                \"// {}\\nfn ready() {{}}\\n\",",
+        "                role(\"impl\", \"requirements.ready\")",
+        "            ),",
+        "        )",
+        "        .unwrap();",
+        "        for result in [",
+        "            AssessmentSources::prepare(root.path(), \"requirements.ready\"),",
+        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[ready]\"),",
+        "        ] {",
+        "            let error = result.err().unwrap();",
+        "            assert!(",
+        "                error.contains(\"src/lib.rs\") && error.contains(\"git add\"),",
+        "                \"{error}\"",
+        "            );",
+        "        }",
+        "        git(root.path(), &[\"add\", \"src\"]);",
+        "        fs::write(",
+        "            root.path().join(\"md/terms.md\"),",
+        "            \":::{definition} ready\\n:phrase: ready\\nReady to proceed.\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"src/lib.rs\"),",
+        "            format!(",
+        "                \"// {} {}\\nfn ready() {{}}\\n\",",
+        "                role(\"impl\", \"requirements.ready\"),",
+        "                role(\"term\", \"terms.ready\")",
+        "            ),",
+        "        )",
+        "        .unwrap();",
+        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
+        "            .err()",
+        "            .unwrap();",
+        "        assert!(",
+        "            error.contains(\"md/terms.md\") && error.contains(\"git add\"),",
+        "            \"{error}\"",
+        "        );",
+        "        git(root.path(), &[\"add\", \"md/terms.md\"]);",
+        "        fs::write(root.path().join(\"notes.txt\"), \"current notes\\n\").unwrap();",
+        "        fs::create_dir_all(root.path().join(\"evidence/rust/src\")).unwrap();",
+        "        let inputs =",
+        "            json!([{\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old notes\"]}]);",
+        "        fs::write(",
+        "            root.path().join(\"evidence/requirements.ready.json\"),",
+        "            json!({\"inputs\":inputs}).to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(root.path().join(\"evidence/rust/src/lib.rs.json\"), json!({\"rust_file\":\"src/lib.rs\", \"functions\":[{\"rust_item\":\"fn[ready]\", \"inputs\":inputs}]}).to_string()).unwrap();",
+        "        for result in [",
+        "            AssessmentSources::prepare(root.path(), \"requirements.ready\"),",
+        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[ready]\"),",
+        "        ] {",
+        "            let error = result.err().unwrap();",
+        "            assert!(",
+        "                error.contains(\"notes.txt\") && error.contains(\"git add\"),",
+        "                \"{error}\"",
+        "            );",
+        "        }",
+        "        git(root.path(), &[\"add\", \"notes.txt\"]);",
+        "        for sources in [",
+        "            AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap(),",
+        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[ready]\").unwrap(),",
+        "        ] {",
+        "            assert!(",
+        "                sources",
+        "                    .mandatory_inputs()",
+        "                    .iter()",
+        "                    .any(|input| input[\"file\"] == \"notes.txt\"",
+        "                        && input[\"text\"] == json!([\"current notes\"]))",
+        "            );",
+        "        }",
+        "    }"
+      ]
+    },
+    {
       "rust_file": "src/authoring/mod.rs",
       "rust_item": "fn[configured_record]",
       "text": [
@@ -1070,16 +1196,16 @@
       "line_start": 483,
       "line_end": 492,
       "text": [
-        "default = \"cloud\"",
+        "This complete file combines Bedrock, local Ollama, and remote Ollama. Replace",
+        "`MODEL_ID` with an available Bedrock model or inference-profile identifier,",
+        "`research` with your AWS profile name, `us-east-1` with your region, `MODEL_TAG`",
+        "with an Ollama model identifier, `workstation` in the URL with your server, and",
+        "`/absolute/path/to/project` with the canonical path to your checkout.",
         "",
-        "[authoring.configs.cloud]",
-        "backend = \"bedrock\"",
-        "model = \"MODEL_ID\"",
-        "aws_profile = \"research\"",
-        "region = \"us-east-1\"",
+        "```toml",
+        "version = 1",
         "",
-        "[authoring.configs.local]",
-        "backend = \"ollama\""
+        "[authoring]"
       ]
     },
     {
@@ -1161,11 +1287,11 @@
       "line_start": 39,
       "line_end": 43,
       "text": [
+        "    recorded: Vec<Value>,",
+        "}",
         "",
         "impl AssessmentSources {",
-        "    // {impl}`requirements.authoring.invocation`",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.authoring_input`"
+        "    // {impl}`requirements.authoring.invocation`"
       ]
     },
     {
@@ -1173,11 +1299,11 @@
       "line_start": 141,
       "line_end": 145,
       "text": [
-        "        })",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.function_attestations`",
-        "    // {impl}`requirements.authoring.mandatory_inputs`"
+        "            }",
+        "        }",
+        "        Ok(Self {",
+        "            root,",
+        "            access,"
       ]
     },
     {
@@ -1185,12 +1311,12 @@
       "line_start": 220,
       "line_end": 225,
       "text": [
-        "                    .into_iter()",
-        "                    .map(|(role, name)| json!({\"role\": role, \"name\": name}))",
-        "                    .collect(),",
-        "            },",
-        "            subject_text: String::new(),",
-        "            mandatory,"
+        "                mandatory.push(input);",
+        "            }",
+        "        }",
+        "        Ok(Self {",
+        "            root,",
+        "            access,"
       ]
     },
     {
@@ -1198,11 +1324,11 @@
       "line_start": 258,
       "line_end": 262,
       "text": [
+        "",
+        "    // {impl}`requirements.authoring.source_tools`",
         "    // {impl}`requirements.authoring.text_search`",
-        "    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {",
-        "        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;",
-        "        Ok(definition_inputs(&self.root, &definitions, inputs, None)?",
-        "            .into_iter()"
+        "    pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {",
+        "        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;"
       ]
     },
     {
@@ -1210,16 +1336,16 @@
       "line_start": 356,
       "line_end": 365,
       "text": [
-        "                rust_file: file,",
-        "                rust_item: item.selector.clone(),",
-        "            });",
-        "        }",
-        "    }",
-        "    if reference",
-        "        .file",
-        "        .extension()",
-        "        .is_some_and(|extension| extension == \"md\")",
-        "        && let Some((name, declaration)) = definitions"
+        "        let items = crate::rust_items::parse_items(&source)",
+        "            .map_err(|error| format!(\"{file}: cannot parse referenced Rust source: {error}\"))?;",
+        "        if let Some(item) = items",
+        "            .iter()",
+        "            .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)",
+        "            .min_by_key(|item| {",
+        "                (",
+        "                    item.line_end - item.line_start,",
+        "                    item.byte_end - item.byte_start,",
+        "                )"
       ]
     },
     {
@@ -1227,11 +1353,11 @@
       "line_start": 381,
       "line_end": 385,
       "text": [
-        "            }",
-        "        });",
-        "    }",
-        "    let (_, source) = read_project_file(root, &file)?;",
-        "    Ok(InputSelector::FileRange {"
+        "                declaration.file == file",
+        "                    && declaration.line_start <= reference.line",
+        "                    && reference.line <= declaration.line_end",
+        "            })",
+        "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)"
       ]
     },
     {
@@ -1239,11 +1365,11 @@
       "line_start": 417,
       "line_end": 421,
       "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    pub(crate) fn project() -> tempfile::TempDir {",
-        "        let root = tempfile::tempdir().unwrap();"
+        "        .map(|definition| {",
+        "            let selector = InputSelector::Definition { definition };",
+        "            source_input(root, access, definitions, &selector)",
+        "        })",
+        "        .collect()"
       ]
     },
     {
@@ -1251,16 +1377,16 @@
       "line_start": 470,
       "line_end": 479,
       "text": [
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let inputs = sources.mandatory_inputs();",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        assert!(",
-        "            inputs",
-        "                .iter()"
+        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {}\\n:::\\n\",",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"term\", \"terms.unit\"),",
+        "            role(\"cite\", \"requirements.distant\"),",
+        "            role(\"cite\", \"requirements.ready\")",
+        "        );",
+        "        fs::write(root.path().join(\"md/requirements.md\"), declarations).unwrap();",
+        "        fs::write(root.path().join(\"src/lib.rs\"), format!(\"struct Thing;\\nimpl Thing {{\\n    // {}\\n    fn run(&self) {{}}\\n    fn unrelated(&self) {{}}\\n}}\\n// {}\\nfn test_ready() {{}}\\n\", role(\"impl\", \"requirements.ready\"), role(\"test\", \"requirements.ready\"))).unwrap();",
+        "        fs::write(root.path().join(\"notes.txt\"), \"new source text\\n\").unwrap();",
+        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();"
       ]
     },
     {
@@ -1269,7 +1395,7 @@
       "line_end": 503,
       "text": [
         "                .iter()",
-        "                .any(|input| input[\"requirements\"] == \"requirements.base\")",
+        "                .any(|input| input[\"rust_item\"] == \"fn[test_ready]\")",
         "        );",
         "        assert!(",
         "            !inputs"
@@ -1280,11 +1406,11 @@
       "line_start": 541,
       "line_end": 545,
       "text": [
-        "            json!({",
-        "                \"inputs\": [{\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1}]",
-        "            })",
-        "            .to_string(),",
-        "        )"
+        "        ));",
+        "        assert_eq!(",
+        "            example.mandatory_inputs()[0][\"requirements\"],",
+        "            \"requirements.case\"",
+        "        );"
       ]
     },
     {
@@ -1292,11 +1418,11 @@
       "line_start": 300,
       "line_end": 304,
       "text": [
+        "    let mut sources = match subject {",
         "        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),",
         "        AuthoringSubject::RustFunction {",
         "            rust_file,",
-        "            rust_item,",
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),"
+        "            rust_item,"
       ]
     },
     {
@@ -1304,12 +1430,12 @@
       "line_start": 343,
       "line_end": 348,
       "text": [
+        "        .expect(\"prompt closing fence\");",
         "    let citations = match &sources.subject_kind {",
         "        AssessmentKind::Definition(_) => String::new(),",
         "        AssessmentKind::RustFunction { citations, .. } => serde_json::to_string_pretty(citations)?,",
         "    };",
-        "    Ok(template",
-        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())"
+        "    Ok(template"
       ]
     },
     {
@@ -1317,11 +1443,11 @@
       "line_start": 410,
       "line_end": 414,
       "text": [
+        "// {impl}`requirements.authoring.usage_requests`",
         "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
-        "async fn assess(",
-        "    provider: &impl CompletionProvider,"
+        "async fn assess("
       ]
     },
     {
@@ -1329,11 +1455,11 @@
       "line_start": 570,
       "line_end": 574,
       "text": [
+        "        .unwrap();",
         "        let state = tempfile::tempdir().unwrap();",
         "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
         "            let mut sources =",
-        "                AssessmentSources::prepare_function(project.path(), \"src/lib.rs\", \"fn[ready]\")",
-        "                    .unwrap();"
+        "                AssessmentSources::prepare_function(project.path(), \"src/lib.rs\", \"fn[ready]\")"
       ]
     },
     {
@@ -1341,11 +1467,11 @@
       "line_start": 583,
       "line_end": 587,
       "text": [
+        "            usage.prepared(\"mandatory\", sources.mandatory_inputs());",
         "            let result = assess(&JudgmentProvider(value.clone()), &mut sources, &mut usage).await;",
         "            assert!(!project.path().join(\"evidence\").exists());",
         "            assert!(!usage.record.evidence_written);",
-        "            if value.is_boolean() {",
-        "                let (judgment, record) = result.unwrap();"
+        "            if value.is_boolean() {"
       ]
     },
     {
@@ -1365,6 +1491,7 @@
       "line_start": 270,
       "line_end": 440,
       "text": [
+        "        subject: subject.into(),",
         "        backend: usage.record.backend.clone().expect(\"configured backend\"),",
         "        model: config.model_ref().model,",
         "        evidence_path,",
@@ -1534,8 +1661,7 @@
         "            Some(&response.stop()),",
         "            response.finish_reason().as_ref(),",
         "        ) {",
-        "            return Err(io::Error::other(error));",
-        "        }"
+        "            return Err(io::Error::other(error));"
       ]
     },
     {
@@ -1549,6 +1675,7 @@
         "",
         "use serde_json::{Value, json};",
         "",
+        "use super::access::SourceAccess;",
         "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
         "use crate::inputs::{InputSelector, read_project_file};",
         "use crate::{DefinitionKind, ReferenceKind};",
@@ -1575,12 +1702,11 @@
         "",
         "pub(crate) struct AssessmentSources {",
         "    pub(crate) root: PathBuf,",
+        "    pub(crate) access: SourceAccess,",
         "    pub(crate) subject_name: String,",
         "    pub(crate) subject_kind: AssessmentKind,",
         "    pub(crate) subject_text: String,",
-        "    mandatory: Vec<Value>,",
-        "    recorded: Vec<Value>,",
-        "}"
+        "    mandatory: Vec<Value>,"
       ]
     },
     {
@@ -1588,22 +1714,32 @@
       "line_start": 200,
       "line_end": 356,
       "text": [
+        "                            format!(",
+        "                                \"{}: inputs[{index}] has no resolvable selector\",",
+        "                                path.display()",
+        "                            )",
+        "                        })?;",
+        "                        insert_selector(&mut selectors, selector);",
+        "                    }",
+        "                }",
+        "            }",
         "            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}",
         "            Err(error) => return Err(format!(\"{}: {error}\", path.display())),",
         "        }",
         "        let mut mandatory = Vec::new();",
         "        for selector in selectors {",
         "            if !generated_evidence_selector(&root, &selector) {",
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
         "            }",
         "        }",
-        "        for input in definition_inputs(&root, &definitions, &mandatory, None)? {",
+        "        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {",
         "            if !mandatory.contains(&input) {",
         "                mandatory.push(input);",
         "            }",
         "        }",
         "        Ok(Self {",
         "            root,",
+        "            access,",
         "            subject_name: format!(\"{rust_file}:{rust_item}\"),",
         "            subject_kind: AssessmentKind::RustFunction {",
         "                rust_item: rust_item.to_owned(),",
@@ -1641,7 +1777,7 @@
         "    // {impl}`requirements.authoring.text_search`",
         "    pub(crate) fn read_selector(&self, selector: &InputSelector) -> Result<Value, String> {",
         "        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;",
-        "        source_input(&self.root, &definitions, selector)",
+        "        source_input(&self.root, &self.access, &definitions, selector)",
         "    }",
         "",
         "    // {impl}`requirements.definitions.authoring_inputs`",
@@ -1649,10 +1785,12 @@
         "    // {impl}`requirements.authoring.text_search`",
         "    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {",
         "        let definitions = load_definitions(&self.root).map_err(|error| error.to_string())?;",
-        "        Ok(definition_inputs(&self.root, &definitions, inputs, None)?",
-        "            .into_iter()",
-        "            .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))",
-        "            .collect())",
+        "        Ok(",
+        "            definition_inputs(&self.root, &self.access, &definitions, inputs, None)?",
+        "                .into_iter()",
+        "                .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))",
+        "                .collect(),",
+        "        )",
         "    }",
         "}",
         "",
@@ -1688,19 +1826,20 @@
         "// {impl}`requirements.ci.authoring_inputs`",
         "fn source_input(",
         "    root: &Path,",
+        "    access: &SourceAccess,",
         "    definitions: &BTreeMap<String, Declaration>,",
         "    selector: &InputSelector,",
         ") -> Result<Value, String> {",
-        "    if generated_evidence_selector(root, selector) {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "    if let InputSelector::FileRange { file, .. }",
+        "    | InputSelector::RustItem {",
+        "        rust_file: file, ..",
+        "    } = selector",
+        "    {",
+        "        access.file(root, Path::new(file))?;",
         "    }",
         "    let resolved = selector.resolve(root, definitions)?;",
-        "    if resolved",
-        "        .ranges",
-        "        .iter()",
-        "        .any(|range| generated_evidence_path(root, Path::new(&range.file)))",
-        "    {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "    for range in &resolved.ranges {",
+        "        access.file(root, Path::new(&range.file))?;",
         "    }",
         "    Ok(selector.to_input(&resolved))",
         "}",
@@ -1731,20 +1870,7 @@
         "        .is_some_and(|extension| extension == \"rs\")",
         "    {",
         "        let (_, source) = read_project_file(root, &file)?;",
-        "        let items = crate::rust_items::parse_items(&source)",
-        "            .map_err(|error| format!(\"{file}: cannot parse referenced Rust source: {error}\"))?;",
-        "        if let Some(item) = items",
-        "            .iter()",
-        "            .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)",
-        "            .min_by_key(|item| {",
-        "                (",
-        "                    item.line_end - item.line_start,",
-        "                    item.byte_end - item.byte_start,",
-        "                )",
-        "            })",
-        "        {",
-        "            return Ok(InputSelector::RustItem {",
-        "                rust_file: file,"
+        "        let items = crate::rust_items::parse_items(&source)"
       ]
     },
     {
@@ -1752,6 +1878,7 @@
       "line_start": 314,
       "line_end": 326,
       "text": [
+        "            io::Error::other(format!(",
         "                \"{}: authoring.configs.{}: {error}\",",
         "                config.config_path.display(),",
         "                config.name",
@@ -1763,8 +1890,7 @@
         "// {impl}`requirements.authoring.initial_prompt`",
         "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.ci.review_criteria`",
-        "// {impl}`requirements.ci.outcomes`",
-        "// {impl}`requirements.examples.evidence`"
+        "// {impl}`requirements.ci.outcomes`"
       ]
     },
     {
@@ -1772,6 +1898,7 @@
       "line_start": 403,
       "line_end": 415,
       "text": [
+        "}",
         "",
         "// {impl}`requirements.authoring.submission`",
         "// {impl}`requirements.authoring.initial_prompt`",
@@ -1783,8 +1910,7 @@
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "async fn assess(",
-        "    provider: &impl CompletionProvider,",
-        "    sources: &mut AssessmentSources,"
+        "    provider: &impl CompletionProvider,"
       ]
     },
     {
@@ -1792,6 +1918,7 @@
       "line_start": 559,
       "line_end": 571,
       "text": [
+        "    // {test}`requirements.authoring.mandatory_inputs`",
         "    #[tokio::test]",
         "    async fn function_judgments_use_boolean_schema_and_harness_owned_inputs() {",
         "        let project = inputs::tests::project();",
@@ -1803,8 +1930,7 @@
         "            ),",
         "        )",
         "        .unwrap();",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {"
+        "        let state = tempfile::tempdir().unwrap();"
       ]
     },
     {
@@ -1812,7 +1938,9 @@
       "line_start": 32,
       "line_end": 44,
       "text": [
+        "pub(crate) struct AssessmentSources {",
         "    pub(crate) root: PathBuf,",
+        "    pub(crate) access: SourceAccess,",
         "    pub(crate) subject_name: String,",
         "    pub(crate) subject_kind: AssessmentKind,",
         "    pub(crate) subject_text: String,",
@@ -1822,9 +1950,7 @@
         "",
         "impl AssessmentSources {",
         "    // {impl}`requirements.authoring.invocation`",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.authoring_input`",
-        "    // {impl}`requirements.examples.authoring_inputs`"
+        "    // {impl}`requirements.authoring.mandatory_inputs`"
       ]
     },
     {
@@ -1832,6 +1958,9 @@
       "line_start": 118,
       "line_end": 133,
       "text": [
+        "                    insert_selector(&mut selectors, selector);",
+        "                }",
+        "            }",
         "            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}",
         "            Err(error) => return Err(format!(\"{}: {error}\", evidence_path.display())),",
         "        }",
@@ -1839,15 +1968,12 @@
         "        let mut mandatory = Vec::new();",
         "        for selector in selectors {",
         "            if !generated_evidence_selector(&root, &selector) {",
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
+        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
         "            }",
         "        }",
-        "        let dependencies = definition_inputs(&root, &definitions, &mandatory, Some(&subject.text))?;",
-        "        for input in dependencies {",
-        "            if !mandatory.contains(&input) {",
-        "                mandatory.push(input);",
-        "            }",
-        "        }"
+        "        let dependencies = definition_inputs(",
+        "            &root,",
+        "            &access,"
       ]
     },
     {
@@ -1855,19 +1981,19 @@
       "line_start": 135,
       "line_end": 147,
       "text": [
+        "            &mandatory,",
+        "            Some(&subject.text),",
+        "        )?;",
+        "        for input in dependencies {",
+        "            if !mandatory.contains(&input) {",
+        "                mandatory.push(input);",
+        "            }",
+        "        }",
+        "        Ok(Self {",
         "            root,",
+        "            access,",
         "            subject_name: subject_name.to_owned(),",
-        "            subject_kind: AssessmentKind::Definition(subject.kind),",
-        "            subject_text: subject.text.clone(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),",
-        "        })",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.function_attestations`",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.ci.authoring_inputs`",
-        "    // {impl}`requirements.references.rust_function_attestations`"
+        "            subject_kind: AssessmentKind::Definition(subject.kind),"
       ]
     },
     {
@@ -1875,21 +2001,21 @@
       "line_start": 199,
       "line_end": 213,
       "text": [
+        "                        let selector = InputSelector::from_input(input).ok_or_else(|| {",
+        "                            format!(",
+        "                                \"{}: inputs[{index}] has no resolvable selector\",",
+        "                                path.display()",
+        "                            )",
+        "                        })?;",
+        "                        insert_selector(&mut selectors, selector);",
+        "                    }",
+        "                }",
         "            }",
         "            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}",
         "            Err(error) => return Err(format!(\"{}: {error}\", path.display())),",
         "        }",
         "        let mut mandatory = Vec::new();",
-        "        for selector in selectors {",
-        "            if !generated_evidence_selector(&root, &selector) {",
-        "                mandatory.push(source_input(&root, &definitions, &selector)?);",
-        "            }",
-        "        }",
-        "        for input in definition_inputs(&root, &definitions, &mandatory, None)? {",
-        "            if !mandatory.contains(&input) {",
-        "                mandatory.push(input);",
-        "            }",
-        "        }"
+        "        for selector in selectors {"
       ]
     },
     {
@@ -1897,20 +2023,20 @@
       "line_start": 221,
       "line_end": 234,
       "text": [
+        "            }",
+        "        }",
+        "        Ok(Self {",
+        "            root,",
+        "            access,",
+        "            subject_name: format!(\"{rust_file}:{rust_item}\"),",
+        "            subject_kind: AssessmentKind::RustFunction {",
+        "                rust_item: rust_item.to_owned(),",
+        "                citations: citations",
+        "                    .into_iter()",
         "                    .map(|(role, name)| json!({\"role\": role, \"name\": name}))",
         "                    .collect(),",
         "            },",
-        "            subject_text: String::new(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),",
-        "        })",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    pub(crate) fn mandatory_inputs(&self) -> &[Value] {",
-        "        &self.mandatory",
-        "    }",
-        ""
+        "            subject_text: String::new(),"
       ]
     },
     {
@@ -1918,8 +2044,22 @@
       "line_start": 263,
       "line_end": 269,
       "text": [
-        "            .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))",
-        "            .collect())",
+        "        source_input(&self.root, &self.access, &definitions, selector)",
+        "    }",
+        "",
+        "    // {impl}`requirements.definitions.authoring_inputs`",
+        "    // {impl}`requirements.authoring.source_tools`",
+        "    // {impl}`requirements.authoring.text_search`",
+        "    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> Result<Vec<Value>, String> {"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 275,
+      "line_end": 281,
+      "text": [
+        "                .collect(),",
+        "        )",
         "    }",
         "}",
         "",
@@ -1929,30 +2069,16 @@
     },
     {
       "file": "src/authoring/inputs.rs",
-      "line_start": 275,
-      "line_end": 281,
+      "line_start": 288,
+      "line_end": 294,
       "text": [
-        "    let evidence = root.join(\"evidence\");",
         "    path.starts_with(&evidence)",
         "        || fs::canonicalize(&path)",
         "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
         "}",
         "",
-        "// {impl}`requirements.authoring.mandatory_inputs`"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 288,
-      "line_end": 294,
-      "text": [
-        "            rust_file: file, ..",
-        "        } => generated_evidence_path(root, Path::new(file)),",
-        "        InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.source_tools`"
       ]
     },
     {
@@ -1960,13 +2086,13 @@
       "line_start": 310,
       "line_end": 316,
       "text": [
-        "        .any(|range| generated_evidence_path(root, Path::new(&range.file)))",
-        "    {",
-        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
-        "    }",
-        "    Ok(selector.to_input(&resolved))",
-        "}",
-        ""
+        "fn source_input(",
+        "    root: &Path,",
+        "    access: &SourceAccess,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    selector: &InputSelector,",
+        ") -> Result<Value, String> {",
+        "    if let InputSelector::FileRange { file, .. }"
       ]
     },
     {
@@ -1974,13 +2100,13 @@
       "line_start": 386,
       "line_end": 392,
       "text": [
-        "        file,",
-        "        line_start: 1,",
-        "        line_end: source.lines().count(),",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.definitions.authoring_inputs`"
+        "    {",
+        "        return Ok(if declaration.kind == DefinitionKind::Term {",
+        "            InputSelector::Definition {",
+        "                definition: name.clone(),",
+        "            }",
+        "        } else {",
+        "            InputSelector::Requirements {"
       ]
     },
     {
@@ -1988,18 +2114,18 @@
       "line_start": 407,
       "line_end": 418,
       "text": [
-        "        .collect()",
-        "}",
-        "",
-        "#[cfg(test)]",
-        "pub(super) mod tests {",
-        "    use super::*;",
-        "",
-        "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    pub(crate) fn role(kind: &str, name: &str) -> String {",
-        "        format!(\"{{{kind}}}`{name}`\")",
-        "    }",
-        ""
+        "fn definition_inputs(",
+        "    root: &Path,",
+        "    access: &SourceAccess,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    inputs: &[Value],",
+        "    subject: Option<&str>,",
+        ") -> Result<Vec<Value>, String> {",
+        "    let record = json!({ \"inputs\": inputs });",
+        "    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)?",
+        "        .into_iter()",
+        "        .map(|definition| {",
+        "            let selector = InputSelector::Definition { definition };"
       ]
     },
     {
@@ -2007,13 +2133,13 @@
       "line_start": 432,
       "line_end": 438,
       "text": [
-        "            \":::{req} ready\\nThe project MUST be ready.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        root",
         "    }",
         "",
-        "    // {test}`requirements.authoring.complete_initial_bundle`"
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    pub(crate) fn project() -> tempfile::TempDir {",
+        "        let root = tempfile::tempdir().unwrap();",
+        "        fs::create_dir_all(root.path().join(\"md\")).unwrap();",
+        "        fs::create_dir_all(root.path().join(\"src\")).unwrap();"
       ]
     },
     {
@@ -2021,13 +2147,13 @@
       "line_start": 468,
       "line_end": 474,
       "text": [
-        "                \"determination\": false, \"rationale\": \"old secret judgment\",",
-        "                \"inputs\": [{\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old text\"]}]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();"
+        "        fs::write(root.path().join(\"md/terms.md\"), terms).unwrap();",
+        "        let declarations = format!(",
+        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {}\\n:::\\n\",",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"term\", \"terms.unit\"),",
+        "            role(\"cite\", \"requirements.distant\"),",
+        "            role(\"cite\", \"requirements.ready\")"
       ]
     },
     {
@@ -2036,17 +2162,17 @@
       "line_end": 532,
       "text": [
         "        );",
-        "        let example = AssessmentSources::prepare(root.path(), \"requirements.case\").unwrap();",
-        "        assert!(matches!(",
-        "            example.subject_kind,",
-        "            AssessmentKind::Definition(DefinitionKind::Example)",
-        "        ));",
         "        assert_eq!(",
-        "            example.mandatory_inputs()[0][\"requirements\"],",
-        "            \"requirements.case\"",
+        "            inputs",
+        "                .iter()",
+        "                .filter(|input| input.get(\"definition\").is_some())",
+        "                .count(),",
+        "            2",
         "        );",
-        "    }",
-        ""
+        "        assert!(inputs.iter().any(",
+        "            |input| input[\"file\"] == \"notes.txt\" && input[\"text\"] == json!([\"new source text\"])",
+        "        ));",
+        "        assert!("
       ]
     },
     {
@@ -2054,13 +2180,13 @@
       "line_start": 550,
       "line_end": 556,
       "text": [
-        "                .unwrap()",
-        "                .contains(\"missing.txt\")",
-        "        );",
-        "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.function_attestations`"
+        "    #[test]",
+        "    fn unresolved_existing_selector_fails_before_inference() {",
+        "        let root = project();",
+        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"evidence/requirements.ready.json\"),",
+        "            json!({"
       ]
     },
     {
@@ -2068,13 +2194,13 @@
       "line_start": 592,
       "line_end": 598,
       "text": [
-        "                    {\"file\": \"notes.txt\", \"line_start\": 1, \"line_end\": 1, \"text\": [\"old notes\"]}",
-        "                ]",
-        "            }]})",
-        "            .to_string(),",
+        "            root.path().join(\"src/lib.rs\"),",
+        "            format!(",
+        "                \"// {}\\npub fn ready() {{}}\\n\",",
+        "                role(\"impl\", \"requirements.ready\")",
+        "            ),",
         "        )",
-        "        .unwrap();",
-        "        let sources ="
+        "        .unwrap();"
       ]
     },
     {
@@ -2082,13 +2208,13 @@
       "line_start": 631,
       "line_end": 637,
       "text": [
-        "                .unwrap()",
-        "                .contains(\"OLD_PRIVATE_RATIONALE\")",
         "        );",
+        "        assert!(inputs.iter().any(|input| input[\"requirements\"] == \"*\"",
+        "            && input[\"matches\"] == json!([\"requirements.ready\", \"requirements.uncited\"])));",
         "        assert!(",
-        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[missing]\").is_err()",
-        "        );",
-        "    }"
+        "            inputs",
+        "                .iter()",
+        "                .any(|input| input[\"definition\"] == \"terms.unit\")"
       ]
     },
     {
@@ -2096,13 +2222,13 @@
       "line_start": 672,
       "line_end": 678,
       "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        for sources in [",
-        "            AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap(),",
-        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[ready]\").unwrap(),",
-        "        ] {"
+        "            json!({\"file\":\"evidence/removed.json\", \"line_start\":1, \"line_end\":2, \"text\":[\"removed evidence\"]}),",
+        "            json!({\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old source\"]}),",
+        "        ];",
+        "        if cfg!(unix) {",
+        "            old_inputs.push(json!({\"file\":\"previous-evidence.json\", \"line_start\":1, \"line_end\":999999, \"text\":[\"aliased judgment\"]}));",
+        "        }",
+        "        let path = root.path().join(\"evidence/requirements.ready.json\");"
       ]
     },
     {
@@ -2110,13 +2236,13 @@
       "line_start": 299,
       "line_end": 305,
       "text": [
+        "    usage.record.model = Some(model.model.clone());",
         "    let mut sources = match subject {",
         "        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),",
         "        AuthoringSubject::RustFunction {",
         "            rust_file,",
         "            rust_item,",
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),",
-        "    }"
+        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),"
       ]
     },
     {
@@ -2124,14 +2250,14 @@
       "line_start": 342,
       "line_end": 349,
       "text": [
+        "        .next()",
         "        .expect(\"prompt closing fence\");",
         "    let citations = match &sources.subject_kind {",
         "        AssessmentKind::Definition(_) => String::new(),",
         "        AssessmentKind::RustFunction { citations, .. } => serde_json::to_string_pretty(citations)?,",
         "    };",
         "    Ok(template",
-        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())",
-        "        .replace(\"{{subject_name}}\", &sources.subject_name)"
+        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())"
       ]
     },
     {
@@ -2139,13 +2265,13 @@
       "line_start": 409,
       "line_end": 415,
       "text": [
+        "// {impl}`requirements.authoring.usage_inputs`",
         "// {impl}`requirements.authoring.usage_requests`",
         "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "async fn assess(",
-        "    provider: &impl CompletionProvider,",
-        "    sources: &mut AssessmentSources,"
+        "    provider: &impl CompletionProvider,"
       ]
     },
     {
@@ -2153,13 +2279,13 @@
       "line_start": 569,
       "line_end": 575,
       "text": [
+        "        )",
         "        .unwrap();",
         "        let state = tempfile::tempdir().unwrap();",
         "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {",
         "            let mut sources =",
         "                AssessmentSources::prepare_function(project.path(), \"src/lib.rs\", \"fn[ready]\")",
-        "                    .unwrap();",
-        "            let prompt = initial_prompt(&sources).unwrap();"
+        "                    .unwrap();"
       ]
     },
     {
@@ -2167,13 +2293,13 @@
       "line_start": 582,
       "line_end": 588,
       "text": [
+        "                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();",
         "            usage.prepared(\"mandatory\", sources.mandatory_inputs());",
         "            let result = assess(&JudgmentProvider(value.clone()), &mut sources, &mut usage).await;",
         "            assert!(!project.path().join(\"evidence\").exists());",
         "            assert!(!usage.record.evidence_written);",
         "            if value.is_boolean() {",
-        "                let (judgment, record) = result.unwrap();",
-        "                assert_eq!(judgment.to_value(), value);"
+        "                let (judgment, record) = result.unwrap();"
       ]
     },
     {
@@ -2223,7 +2349,7 @@
       "line_start": 42,
       "line_end": 42,
       "text": [
-        "    // {impl}`requirements.authoring.mandatory_inputs`"
+        "impl AssessmentSources {"
       ]
     },
     {
@@ -2231,7 +2357,7 @@
       "line_start": 145,
       "line_end": 145,
       "text": [
-        "    // {impl}`requirements.authoring.mandatory_inputs`"
+        "            access,"
       ]
     },
     {
@@ -2239,8 +2365,8 @@
       "line_start": 230,
       "line_end": 231,
       "text": [
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    pub(crate) fn mandatory_inputs(&self) -> &[Value] {"
+        "                    .into_iter()",
+        "                    .map(|(role, name)| json!({\"role\": role, \"name\": name}))"
       ]
     },
     {
@@ -2248,7 +2374,7 @@
       "line_start": 268,
       "line_end": 268,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "    // {impl}`requirements.authoring.text_search`"
       ]
     },
     {
@@ -2256,7 +2382,7 @@
       "line_start": 281,
       "line_end": 281,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "// {impl}`requirements.authoring.source_tools`"
       ]
     },
     {
@@ -2264,7 +2390,7 @@
       "line_start": 294,
       "line_end": 294,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "// {impl}`requirements.authoring.source_tools`"
       ]
     },
     {
@@ -2272,7 +2398,7 @@
       "line_start": 317,
       "line_end": 317,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "    | InputSelector::RustItem {"
       ]
     },
     {
@@ -2280,7 +2406,7 @@
       "line_start": 393,
       "line_end": 393,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "                requirements: name.clone(),"
       ]
     },
     {
@@ -2288,7 +2414,7 @@
       "line_start": 414,
       "line_end": 414,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "    let record = json!({ \"inputs\": inputs });"
       ]
     },
     {
@@ -2296,7 +2422,7 @@
       "line_start": 419,
       "line_end": 419,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "            source_input(root, access, definitions, &selector)"
       ]
     },
     {
@@ -2304,7 +2430,7 @@
       "line_start": 439,
       "line_end": 439,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "        fs::write("
       ]
     },
     {
@@ -2312,7 +2438,7 @@
       "line_start": 475,
       "line_end": 475,
       "text": [
-        "        let inputs = sources.mandatory_inputs();"
+        "        );"
       ]
     },
     {
@@ -2320,7 +2446,7 @@
       "line_start": 528,
       "line_end": 528,
       "text": [
-        "            example.mandatory_inputs()[0][\"requirements\"],"
+        "        );"
       ]
     },
     {
@@ -2328,7 +2454,7 @@
       "line_start": 533,
       "line_end": 533,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "            !serde_json::to_string(inputs)"
       ]
     },
     {
@@ -2336,7 +2462,7 @@
       "line_start": 557,
       "line_end": 557,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "                \"inputs\": [{\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1}]"
       ]
     },
     {
@@ -2344,7 +2470,7 @@
       "line_start": 600,
       "line_end": 600,
       "text": [
-        "        let inputs = sources.mandatory_inputs();"
+        "        fs::create_dir_all(root.path().join(\"evidence/rust/src\")).unwrap();"
       ]
     },
     {
@@ -2352,7 +2478,7 @@
       "line_start": 639,
       "line_end": 639,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "        assert!("
       ]
     },
     {
@@ -2360,7 +2486,7 @@
       "line_start": 680,
       "line_end": 680,
       "text": [
-        "                .mandatory_inputs()"
+        "        #[cfg(unix)]"
       ]
     },
     {
@@ -2368,7 +2494,7 @@
       "line_start": 283,
       "line_end": 283,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "// {impl}`requirements.authoring.usage_storage`"
       ]
     },
     {
@@ -2376,7 +2502,7 @@
       "line_start": 308,
       "line_end": 308,
       "text": [
-        "    usage.prepared(\"mandatory\", sources.mandatory_inputs());"
+        "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());"
       ]
     },
     {
@@ -2384,8 +2510,8 @@
       "line_start": 352,
       "line_end": 353,
       "text": [
-        "            \"{{mandatory_inputs}}\",",
-        "            &serde_json::to_string_pretty(sources.mandatory_inputs())?,"
+        "        .replace(",
+        "            \"{{mandatory_inputs}}\","
       ]
     },
     {
@@ -2393,7 +2519,7 @@
       "line_start": 412,
       "line_end": 412,
       "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`"
+        "// {impl}`requirements.authoring.usage_storage`"
       ]
     },
     {
@@ -2401,7 +2527,7 @@
       "line_start": 421,
       "line_end": 421,
       "text": [
-        "    let mut pending = sources.mandatory_inputs().to_vec();"
+        "    request.tools = tool_definitions(function)?;"
       ]
     },
     {
@@ -2409,7 +2535,7 @@
       "line_start": 558,
       "line_end": 558,
       "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`"
+        "    // {test}`requirements.authoring.usage_storage`"
       ]
     },
     {
@@ -2417,7 +2543,7 @@
       "line_start": 582,
       "line_end": 582,
       "text": [
-        "            usage.prepared(\"mandatory\", sources.mandatory_inputs());"
+        "                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();"
       ]
     },
     {
@@ -2425,7 +2551,7 @@
       "line_start": 595,
       "line_end": 595,
       "text": [
-        "                assert_eq!(record[\"inputs\"], json!(sources.mandatory_inputs()));"
+        "                );"
       ]
     },
     {
@@ -2434,6 +2560,62 @@
       "line_end": 47,
       "text": [
         "// {impl}`requirements.authoring.mandatory_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 325,
+      "line_end": 331,
+      "text": [
+        "// {impl}`requirements.ci.review_criteria`",
+        "// {impl}`requirements.ci.outcomes`",
+        "// {impl}`requirements.examples.evidence`",
+        "fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {",
+        "    // Keep the approved template as the sole source of these instructions.",
+        "    let chapter = include_str!(\"../../md/requirements/authoring.md\");",
+        "    let opening = match &sources.subject_kind {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 350,
+      "line_end": 356,
+      "text": [
+        "        .replace(\"{{subject_name}}\", &sources.subject_name)",
+        "        .replace(\"{{citations}}\", &citations)",
+        "        .replace(",
+        "            \"{{mandatory_inputs}}\",",
+        "            &serde_json::to_string_pretty(sources.mandatory_inputs())?,",
+        "        ))",
+        "}"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 416,
+      "line_end": 422,
+      "text": [
+        "    sources: &mut AssessmentSources,",
+        "    usage: &mut UsageLog,",
+        ") -> io::Result<(Judgment, Value)> {",
+        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
+        "    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });",
+        "    request.tools = tool_definitions(function)?;",
+        "    let mut pending = sources.mandatory_inputs().to_vec();"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 573,
+      "line_end": 579,
+      "text": [
+        "            let mut sources =",
+        "                AssessmentSources::prepare_function(project.path(), \"src/lib.rs\", \"fn[ready]\")",
+        "                    .unwrap();",
+        "            let prompt = initial_prompt(&sources).unwrap();",
+        "            assert!(prompt.starts_with(\"Bring your expert judgment to the task of assessing a Rust function's citation completeness.\"));",
+        "            assert!(prompt.contains(\"src/lib.rs:fn[ready]\"));",
+        "            assert!(prompt.contains(\"requirements.ready\"));"
       ]
     }
   ]
