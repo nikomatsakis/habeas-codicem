@@ -32,6 +32,7 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
     let mut output = String::from("# Definitions status\n\n");
     let mut rows = Vec::new();
     let mut findings = String::new();
+    let mut fixmes = String::new();
     let mut associated_errors = BTreeSet::new();
 
     for (name, definition) in &inspection.definitions {
@@ -53,6 +54,11 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
             format!("`{name}` ({})", definition.kind.noun()),
             evidence.state().label(),
         ));
+        if !evidence.fixme_entries().is_empty() {
+            fixmes.push_str(&format!("\n### `{name}`\n\n<pre><code>"));
+            fixmes.push_str(&escape_html(&evidence.fixme_entries().join("\n")));
+            fixmes.push_str("</code></pre>\n");
+        }
         if !evidence.errors().is_empty() {
             findings.push_str(&format!("\n### `{name}`\n\n<pre><code>"));
             findings.push_str(&escape_html(&evidence.errors().join("\n\n")));
@@ -77,6 +83,10 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
         .iter()
         .filter(|error| !associated_errors.contains(error.as_str()))
         .collect::<Vec<_>>();
+    if !fixmes.is_empty() {
+        output.push_str("\n## FIXME references\n");
+        output.push_str(&fixmes);
+    }
     if !findings.is_empty() {
         output.push_str("\n## Validation findings\n");
         output.push_str(&findings);

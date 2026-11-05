@@ -119,6 +119,7 @@ pub(crate) enum EvidenceState {
     Valid,
     Missing,
     DeterminationFalse,
+    Fixme,
     Invalid,
 }
 
@@ -126,15 +127,19 @@ pub(crate) struct LoadedDetailEvidence {
     state: EvidenceState,
     record: Option<String>,
     errors: Vec<String>,
+    fixme_entries: Vec<String>,
 }
 
 struct DetailEvidence<'a> {
     state: EvidenceState,
     record: Option<&'a str>,
     errors: &'a [String],
+    fixme_entries: &'a [String],
 }
 
 impl LoadedDetailEvidence {
+    // {impl}`requirements.index.state`
+    // {impl}`requirements.ci.outcomes`
     pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
         let evidence_path = root.join("evidence").join(format!("{name}.json"));
         let prefix = format!("evidence/{name}.json:");
@@ -153,10 +158,27 @@ impl LoadedDetailEvidence {
                 None
             }
         };
+        let judgment = record
+            .as_deref()
+            .and_then(|record| serde_json::from_str::<Value>(record).ok())
+            .and_then(|record| {
+                record
+                    .get("determination")
+                    .and_then(|value| crate::judgment::Judgment::from_value(value).ok())
+            });
+        let fixme_entries = judgment
+            .as_ref()
+            .map(|judgment| judgment.fixme_entries().to_vec())
+            .unwrap_or_default();
         let state = if record.is_none() && !evidence_path.exists() {
             EvidenceState::Missing
         } else if errors.is_empty() {
-            EvidenceState::Valid
+            match judgment {
+                Some(crate::judgment::Judgment::True) => EvidenceState::Valid,
+                Some(crate::judgment::Judgment::False) => EvidenceState::DeterminationFalse,
+                Some(crate::judgment::Judgment::Fixme(_)) => EvidenceState::Fixme,
+                None => EvidenceState::Invalid,
+            }
         } else if errors
             .iter()
             .all(|error| error.starts_with(&format!("{prefix} determination is false")))
@@ -169,6 +191,7 @@ impl LoadedDetailEvidence {
             state,
             record,
             errors,
+            fixme_entries,
         }
     }
 
@@ -182,6 +205,12 @@ impl LoadedDetailEvidence {
         &self.errors
     }
 
+    // {impl}`requirements.cli.status`
+    // {impl}`requirements.index.detail_format`
+    pub(crate) fn fixme_entries(&self) -> &[String] {
+        &self.fixme_entries
+    }
+
     // {impl}`requirements.index.detail_format`
     // {impl}`requirements.cli.info`
     fn borrowed(&self) -> DetailEvidence<'_> {
@@ -189,6 +218,7 @@ impl LoadedDetailEvidence {
             state: self.state,
             record: self.record.as_deref(),
             errors: &self.errors,
+            fixme_entries: &self.fixme_entries,
         }
     }
 }
@@ -200,6 +230,7 @@ impl EvidenceState {
             Self::Valid => "Valid",
             Self::Missing => "Missing",
             Self::DeterminationFalse => "Determination false",
+            Self::Fixme => "FIXME",
             Self::Invalid => "Invalid",
         }
     }
@@ -210,6 +241,7 @@ impl EvidenceState {
             Self::Valid => "237346",
             Self::Missing => "5f6670",
             Self::DeterminationFalse => "ae5d14",
+            Self::Fixme => "ae5d14",
             Self::Invalid => "ad3028",
         }
     }
@@ -468,6 +500,11 @@ fn render_detail_sections(
     {
         Some(rationale) if !rationale.trim().is_empty() => content.push_str(rationale.trim()),
         _ => content.push_str("No rationale recorded."),
+    }
+    if !detail_evidence.fixme_entries.is_empty() {
+        content.push_str("\n\n## FIXME references\n\n<pre><code>");
+        content.push_str(&escape_html(&detail_evidence.fixme_entries.join("\n")));
+        content.push_str("</code></pre>\n");
     }
     content.push_str("\n\n## Inputs\n\n");
     match evidence
@@ -948,6 +985,7 @@ mod tests {
                 state: EvidenceState::Valid,
                 record: Some(&record),
                 errors: &[],
+                fixme_entries: &[],
             },
             &RenderSources {
                 root: Path::new("."),
@@ -1013,6 +1051,7 @@ mod tests {
                 state: EvidenceState::Valid,
                 record: Some(&record),
                 errors: &[],
+                fixme_entries: &[],
             },
             &RenderSources {
                 root: Path::new("."),
@@ -1118,6 +1157,7 @@ mod tests {
                 state: EvidenceState::Invalid,
                 record: Some("{broken"),
                 errors: &findings.map(str::to_owned),
+                fixme_entries: &[],
             },
             &RenderSources {
                 root: Path::new("."),
@@ -1142,6 +1182,7 @@ mod tests {
                 state: EvidenceState::Missing,
                 record: None,
                 errors: &[],
+                fixme_entries: &[],
             },
             &RenderSources {
                 root: Path::new("."),

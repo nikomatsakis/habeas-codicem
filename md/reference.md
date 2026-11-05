@@ -72,6 +72,102 @@ The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on
 
 Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference.
 
+## Authoring evidence with a model
+
+`habeas author-evidence <full-name>` assesses one requirement or example, records
+the source inputs delivered to the model, and writes its judgment to the usual
+evidence file. Install `rg` (ripgrep) on your PATH for the model's search tool.
+Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
+Ollama server. The server can run on another machine; Habeas does not need a GPU.
+{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
+{cite}`requirements.authoring.text_search`
+
+Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
+`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or
+relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local
+and is not part of the project. Here is a complete configuration with two choices:
+{cite}`requirements.configuration.user_location`
+{cite}`requirements.authoring.configuration_documentation`
+
+```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+aws_profile = "research"
+region = "us-east-1"
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+```
+
+Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,
+`research` with your configured AWS profile, `us-east-1` with your region, and
+`MODEL_TAG` with a model installed on your Ollama server. Omit `aws_profile` and
+`region` to use standard AWS SDK resolution. Ollama defaults to
+`http://localhost:11434`; add `endpoint = "http://workstation:11434"` to its table
+for a remote server, replacing `workstation` with that server's host name. For
+authentication, add `api_key_env = "OLLAMA_API_KEY"` and set that variable outside
+the file. Credentials belong to AWS's credential sources or the named environment
+variable. {cite}`requirements.authoring.configuration_precedence`
+
+Run from the project, replacing `requirements.check` with the subject's full name:
+
+```sh
+habeas author-evidence requirements.check
+habeas author-evidence requirements.check --config local
+habeas info requirements.check
+```
+
+Change `authoring.default` to switch the default, or add a per-project selection
+using its canonical absolute path (replace `/absolute/path/to/project`):
+
+```toml
+[authoring.projects."/absolute/path/to/project"]
+config = "local"
+```
+
+The invocation's `--config` wins over that project selection, which wins over the
+default. Remove the project table or default field to remove a selection. Delete
+a configuration's table to remove it, updating selections that named it. Provider
+inference options go under `[authoring.configs.<name>.options]`; supported keys
+depend on the provider, and cannot replace the model, prompt, or tools. See the
+[configuration reference](requirements/authoring.md#configuration) for the full
+format. {cite}`requirements.authoring.configuration_storage`
+{cite}`requirements.authoring.configuration_documentation`
+
+For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and
+`stopSequences` directly in that options table. Habeas maps them to Converse's
+`inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.
+Use these flat keys without an `inferenceConfig` wrapper. For example:
+
+```toml
+[authoring.configs.cloud.options]
+temperature = 0.25
+maxTokens = 321
+topP = 0.75
+stopSequences = ["END"]
+```
+
+These values are illustrative choices, not Habeas defaults. Omit any setting to
+leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`
+go in the same options table; Rig places them in Ollama's native request.
+{cite}`requirements.authoring.configuration_storage`
+{cite}`requirements.authoring.rig_configuration_mapping`
+
+The command reports the evidence and usage-record paths. Usage metadata is kept
+under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to
+`$HOME/.local/state/habeas/authoring/usage`; Windows uses
+`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and
+book rendering remain deterministic and do not require model configuration or
+credentials. {cite}`requirements.authoring.usage_storage`
+{cite}`requirements.authoring.deterministic_validation`
+
 ## References
 
 Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:

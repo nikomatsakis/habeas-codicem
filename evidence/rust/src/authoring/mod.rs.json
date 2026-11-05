@@ -1,0 +1,896 @@
+{
+  "rust_file": "src/authoring/mod.rs",
+  "functions": [
+    {
+      "rust_item": "fn[author_evidence]",
+      "citations": [
+        {
+          "name": "requirements.authoring.invocation",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.usage_storage",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.configuration.state_location",
+          "role": "impl"
+        }
+      ],
+      "determination": true,
+      "rationale": "Starts persistent usage history for an explicit assessment, handles cancellation/failure/completion, and reports history-write failures without claiming success. Reviewed its success/error branches and delegated operations against the chapter requirements for explicit authoring invocation, model conversation, submission handling, or persistence, beyond the references already present. The owned citations `requirements.authoring.invocation`, `requirements.authoring.usage_storage`, `requirements.configuration.state_location` jointly account for these responsibilities, and the selected inputs cover every cited name. This attestation concerns citation completeness; requirement records assess implementation and tests.",
+      "inputs": [
+        {
+          "rust_file": "src/authoring/mod.rs",
+          "rust_item": "fn[author_evidence]",
+          "text": [
+            "// {impl}`requirements.authoring.invocation`",
+            "// {impl}`requirements.authoring.usage_storage`",
+            "// {impl}`requirements.configuration.state_location`",
+            "pub async fn author_evidence(",
+            "    root: &Path,",
+            "    subject: &str,",
+            "    selection: Option<&str>,",
+            ") -> io::Result<AuthoringOutcome> {",
+            "    let root = fs::canonicalize(root)?;",
+            "    let state = config::state_root()?;",
+            "    fs::create_dir_all(&state)?;",
+            "    if fs::canonicalize(&state)?.starts_with(&root) {",
+            "        return Err(io::Error::other(",
+            "            \"authoring usage state must be outside the project repository\",",
+            "        ));",
+            "    }",
+            "    let mut usage = UsageLog::start(&state, &root, subject)?;",
+            "    let result = tokio::select! {",
+            "        result = configured_assessment(&root, subject, selection, &mut usage) => result,",
+            "        signal = tokio::signal::ctrl_c() => {",
+            "            match signal {",
+            "                Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, \"evidence authoring cancelled\")),",
+            "                Err(error) => Err(error),",
+            "            }",
+            "        }",
+            "    };",
+            "    let outcome = match &result {",
+            "        Ok(_) => \"completed\",",
+            "        Err(error) if error.kind() == io::ErrorKind::Interrupted => \"cancelled\",",
+            "        Err(_) => \"failed\",",
+            "    };",
+            "    usage.finish(outcome).map_err(|error| {",
+            "        io::Error::other(format!(",
+            "            \"cannot record usage at {} (evidence written: {}): {error}\",",
+            "            usage.path.display(),",
+            "            usage.record.evidence_written",
+            "        ))",
+            "    })?;",
+            "    result.map_err(|error| {",
+            "        io::Error::new(",
+            "            error.kind(),",
+            "            format!(\"{error}; usage: {}\", usage.path.display()),",
+            "        )",
+            "    })",
+            "}"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.invocation",
+          "matches": [
+            "requirements.authoring.invocation"
+          ],
+          "text": [
+            ":::{req} invocation",
+            "`habeas author-evidence <full-name> [--config <name>]` MUST assess one existing",
+            "requirement or named example in the current project. It MUST report the selected",
+            "subject, backend, and model, and the evidence and usage-record paths on completion.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.usage_storage",
+          "matches": [
+            "requirements.authoring.usage_storage"
+          ],
+          "text": [
+            ":::{req} usage_storage",
+            "Each assessment MUST have a separate JSON usage record under",
+            "`<state-root>/authoring/usage/<run-id>.json` using",
+            "{cite}`requirements.configuration.state_location`.",
+            "It MUST identify its format version, run, project root, subject kind and full",
+            "name, start time, backend and model when known, end time when finished, outcome,",
+            "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
+            "whether evidence was written. FIXME entry text MUST NOT be stored in usage",
+            "records. Failed, cancelled, or unfinished",
+            "runs MUST remain distinguishable from completed judgments. Records MUST persist",
+            "for later review without storing source text, prompts, responses, or rationale.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.configuration.state_location",
+          "matches": [
+            "requirements.configuration.state_location"
+          ],
+          "text": [
+            ":::{req} state_location",
+            "Habeas MUST store persistent per-user activity state under",
+            "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
+            "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
+            "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
+            "state root and document their record formats and locations.",
+            "",
+            "State MUST persist across invocations and MUST NOT be stored in the project",
+            "repository, the configuration file, or a disposable cache directory. Habeas MUST",
+            "create the required directories when recording state. If it cannot determine or",
+            "write the state location, the operation requiring that state MUST report the",
+            "failure and MUST NOT claim that its history was recorded.",
+            ":::"
+          ]
+        }
+      ]
+    },
+    {
+      "rust_item": "fn[configured_assessment]",
+      "citations": [
+        {
+          "name": "requirements.authoring.configuration_precedence",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.invocation",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.rig_configuration_mapping",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.usage_storage",
+          "role": "impl"
+        }
+      ],
+      "determination": true,
+      "rationale": "Resolves one backend configuration, prepares sources before model invocation, and connects the selected provider while retaining run metadata. Reviewed its success/error branches and delegated operations against the chapter requirements for explicit authoring invocation, model conversation, submission handling, or persistence, beyond the references already present. The owned citations `requirements.authoring.configuration_precedence`, `requirements.authoring.invocation`, `requirements.authoring.rig_configuration_mapping`, `requirements.authoring.usage_storage` jointly account for these responsibilities, and the selected inputs cover every cited name. This attestation concerns citation completeness; requirement records assess implementation and tests.",
+      "inputs": [
+        {
+          "rust_file": "src/authoring/mod.rs",
+          "rust_item": "fn[configured_assessment]",
+          "text": [
+            "// {impl}`requirements.authoring.invocation`",
+            "// {impl}`requirements.authoring.configuration_precedence`",
+            "// {impl}`requirements.authoring.rig_configuration_mapping`",
+            "// {impl}`requirements.authoring.usage_storage`",
+            "async fn configured_assessment(",
+            "    root: &Path,",
+            "    subject: &str,",
+            "    selection: Option<&str>,",
+            "    usage: &mut UsageLog,",
+            ") -> io::Result<AuthoringOutcome> {",
+            "    let config = config::resolve_authoring(root, selection)?;",
+            "    let model = config.model_ref();",
+            "    let backend = match model.backend {",
+            "        BackendKind::Bedrock => \"bedrock\",",
+            "        BackendKind::Ollama => \"ollama\",",
+            "    };",
+            "    usage.record.backend = Some(backend.into());",
+            "    usage.record.model = Some(model.model.clone());",
+            "    let mut sources = AssessmentSources::prepare(root, subject).map_err(io::Error::other)?;",
+            "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
+            "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
+            "    usage.save()?;",
+            "    let provider = RigProvider::connect(&config.backend)",
+            "        .await",
+            "        .map_err(|error| {",
+            "            io::Error::other(format!(",
+            "                \"{}: authoring.configs.{}: {error}\",",
+            "                config.config_path.display(),",
+            "                config.name",
+            "            ))",
+            "        })?;",
+            "    let (determination, evidence_path) = assess(&provider, root, &mut sources, usage).await?;",
+            "    Ok(AuthoringOutcome {",
+            "        subject: subject.into(),",
+            "        backend: backend.into(),",
+            "        model: model.model,",
+            "        evidence_path,",
+            "        usage_path: usage.path.clone(),",
+            "        determination,",
+            "    })",
+            "}"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.configuration_precedence",
+          "matches": [
+            "requirements.authoring.configuration_precedence"
+          ],
+          "text": [
+            ":::{req} configuration_precedence",
+            "`--config <name>` MUST select a configuration for that invocation. Otherwise,",
+            "authoring MUST use the user's selection for the canonical project root, then the",
+            "user's default. Backend, model, connection settings, and options MUST come from",
+            "that configuration as a unit. Missing configuration or an unknown selection MUST",
+            "produce an error identifying the user-file path and pointing to the documented",
+            "examples.",
+            "",
+            "An explicit Bedrock AWS profile or region MUST override the corresponding SDK",
+            "default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use",
+            "its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its",
+            "named variable MUST supply the credential; a missing or empty value MUST produce",
+            "an error before a model request.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.invocation",
+          "matches": [
+            "requirements.authoring.invocation"
+          ],
+          "text": [
+            ":::{req} invocation",
+            "`habeas author-evidence <full-name> [--config <name>]` MUST assess one existing",
+            "requirement or named example in the current project. It MUST report the selected",
+            "subject, backend, and model, and the evidence and usage-record paths on completion.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.rig_configuration_mapping",
+          "matches": [
+            "requirements.authoring.rig_configuration_mapping"
+          ],
+          "text": [
+            ":::{req} rig_configuration_mapping",
+            "Habeas MUST resolve its saved configuration before constructing Rig provider",
+            "clients and completion models. The Habeas data structures MUST remain the saved",
+            "format. Rig model references MAY be reused internally without discarding the",
+            "connection settings they do not represent.",
+            "",
+            "The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK",
+            "configuration. The Ollama adapter MUST use the chosen server, exact model ID,",
+            "and optional authentication; the server MAY be local or remote. Both adapters",
+            "MUST supply the same tools and initial prompt.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.usage_storage",
+          "matches": [
+            "requirements.authoring.usage_storage"
+          ],
+          "text": [
+            ":::{req} usage_storage",
+            "Each assessment MUST have a separate JSON usage record under",
+            "`<state-root>/authoring/usage/<run-id>.json` using",
+            "{cite}`requirements.configuration.state_location`.",
+            "It MUST identify its format version, run, project root, subject kind and full",
+            "name, start time, backend and model when known, end time when finished, outcome,",
+            "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
+            "whether evidence was written. FIXME entry text MUST NOT be stored in usage",
+            "records. Failed, cancelled, or unfinished",
+            "runs MUST remain distinguishable from completed judgments. Records MUST persist",
+            "for later review without storing source text, prompts, responses, or rationale.",
+            ":::"
+          ]
+        }
+      ]
+    },
+    {
+      "rust_item": "fn[initial_prompt]",
+      "citations": [
+        {
+          "name": "requirements.authoring.initial_prompt",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.ci.outcomes",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.ci.review_criteria",
+          "role": "impl"
+        }
+      ],
+      "determination": true,
+      "rationale": "Uses the approved embedded template and substitutes only subject identity and mandatory inputs, preserving the review criteria. Reviewed its success/error branches and delegated operations against the chapter requirements for explicit authoring invocation, model conversation, submission handling, or persistence, beyond the references already present. The owned citations `requirements.authoring.initial_prompt`, `requirements.ci.outcomes`, `requirements.ci.review_criteria` jointly account for these responsibilities, and the selected inputs cover every cited name. This attestation concerns citation completeness; requirement records assess implementation and tests.",
+      "inputs": [
+        {
+          "rust_file": "src/authoring/mod.rs",
+          "rust_item": "fn[initial_prompt]",
+          "text": [
+            "// {impl}`requirements.authoring.initial_prompt`",
+            "// {impl}`requirements.ci.review_criteria`",
+            "// {impl}`requirements.ci.outcomes`",
+            "fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {",
+            "    // Keep the approved template as the sole source of these instructions.",
+            "    let chapter = include_str!(\"../../md/requirements/authoring.md\");",
+            "    let start = chapter",
+            "        .find(\"Bring your expert judgment\")",
+            "        .expect(\"approved prompt template\");",
+            "    let template = chapter[start..]",
+            "        .split(\"\\n```\")",
+            "        .next()",
+            "        .expect(\"prompt closing fence\");",
+            "    Ok(template",
+            "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())",
+            "        .replace(\"{{subject_name}}\", &sources.subject_name)",
+            "        .replace(",
+            "            \"{{mandatory_inputs}}\",",
+            "            &serde_json::to_string_pretty(sources.mandatory_inputs())?,",
+            "        ))",
+            "}"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.initial_prompt",
+          "matches": [
+            "requirements.authoring.initial_prompt"
+          ],
+          "text": [
+            ":::{req} initial_prompt",
+            "The initial request MUST provide the four tool definitions above and the",
+            "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+            "or `example`, `{{subject_name}}` with the full subject name, and",
+            "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
+            "the existing evidence-input formats. The template MUST otherwise be used as",
+            "written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,",
+            "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.",
+            "",
+            "```text",
+            "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
+            "",
+            "Subject: {{subject_kind}} {{subject_name}}",
+            "",
+            "Read the subject and mandatory inputs below. Use habeas to request any additional",
+            "source information you need. Use list_files to discover files and directories,",
+            "and ripgrep to search file contents.",
+            "The harness records source inputs for you; directory listings are not evidence.",
+            "",
+            "Assess only the named subject, using cited requirements and definitions as context.",
+            "For a requirement, check that the cited code implements it as stated and that",
+            "tests cover the interesting points in the design space. If there are no tests,",
+            "assess whether simplicity or impracticality justifies their absence, and explain.",
+            "For an example, assess whether test setup and assertions cover its scenario and",
+            "expected outcomes. A true judgment needs at least one {test} reference to the",
+            "example in the supplied inputs. Explain the coverage.",
+            "",
+            "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+            "the remaining gaps are explicitly acknowledged in source comments or tests;",
+            "list their issue references or other identifying content. The usual convention",
+            "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+            "Choose false for other gaps or insufficient evidence. Explain your judgment in",
+            "a Markdown rationale with source locations, including any acknowledged gaps.",
+            "",
+            "When you are ready, call submit_judgment exactly once with determination and",
+            "rationale. That tool call is your final answer.",
+            "",
+            "Mandatory inputs:",
+            "{{mandatory_inputs}}",
+            "```",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.ci.outcomes",
+          "matches": [
+            "requirements.ci.outcomes"
+          ],
+          "text": [
+            ":::{req} outcomes",
+            "A requirement or example judgment MUST use one of these outcomes, applying",
+            "{cite}`requirements.ci.review_criteria`:",
+            "",
+            "- `true`: the sources support the subject and its testing obligations.",
+            "- `false`: the sources do not support the subject, or information is missing,",
+            "  and the gaps are not all explicitly acknowledged in source comments or tests.",
+            "- `FIXME`: some aspects remain unmet or untested, and source comments or tests",
+            "  explicitly acknowledge those gaps. The reviewer MUST explain the gaps and",
+            "  their source locations in the rationale and record their issue references or",
+            "  other identifying content from the inputs.",
+            "",
+            "The JSON `determination` MUST be `true`, `false`, or an object containing exactly",
+            "`\"FIXME\"` with a nonempty array of nonempty strings, such as",
+            "`{\"FIXME\": [\"#125\", \"rust-lang/rust#123\"]}`. The expected source convention is",
+            "`FIXME(issue-number)`, for example `FIXME(#125)` or",
+            "`FIXME(rust-lang/rust#123)`. References MAY appear elsewhere in the comment or",
+            "test; the reviewer MUST recognize explicit acknowledgments without requiring",
+            "that spelling. When no issue reference is present, the strings MUST identify the",
+            "documented gap using its source content. A FIXME judgment MUST be grounded in",
+            "recorded evidence inputs; a bare issue reference without an acknowledged gap",
+            "MUST NOT suffice.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.ci.review_criteria",
+          "matches": [
+            "requirements.ci.review_criteria"
+          ],
+          "text": [
+            ":::{req} review_criteria",
+            "The reviewer MUST assess the named subject using its text, referenced requirements,",
+            "and terminology definitions. For a requirement, the reviewer MUST assess whether",
+            "the cited code implements every stated obligation and whether its tests cover the",
+            "interesting cases in the design space, including relevant boundaries and failure",
+            "cases. When there are no tests, the reviewer MUST assess whether the logic is",
+            "simple enough to need no test or a test is impractical to author, and explain that",
+            "judgment in the rationale.",
+            "",
+            "For an example, the reviewer MUST assess whether tests exist whose setup and",
+            "assertions cover its scenario and expected outcomes. The rationale MUST identify",
+            "the relevant sources and explain the implementation and testing judgments for a",
+            "requirement, or the test coverage for an example. Referenced requirements provide",
+            "context; they MUST NOT become additional subjects to assess in full.",
+            ":::"
+          ]
+        }
+      ]
+    },
+    {
+      "rust_item": "fn[submission]",
+      "citations": [
+        {
+          "name": "requirements.authoring.submission",
+          "role": "impl"
+        }
+      ],
+      "determination": true,
+      "rationale": "Accepts exactly determination plus nonempty rationale and uses shared three-state judgment parsing. Reviewed its success/error branches and delegated operations against the chapter requirements for explicit authoring invocation, model conversation, submission handling, or persistence, beyond the references already present. The owned citations `requirements.authoring.submission` jointly account for these responsibilities, and the selected inputs cover every cited name. This attestation concerns citation completeness; requirement records assess implementation and tests.",
+      "inputs": [
+        {
+          "rust_file": "src/authoring/mod.rs",
+          "rust_item": "fn[submission]",
+          "text": [
+            "// {impl}`requirements.authoring.submission`",
+            "fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {",
+            "    let object = arguments",
+            "        .as_object()",
+            "        .ok_or_else(|| io::Error::other(\"submit_judgment expects an object\"))?;",
+            "    if object.len() != 2",
+            "        || !object.contains_key(\"determination\")",
+            "        || !object.contains_key(\"rationale\")",
+            "    {",
+            "        return Err(io::Error::other(",
+            "            \"submit_judgment requires exactly determination and rationale\",",
+            "        ));",
+            "    }",
+            "    let judgment = Judgment::from_value(&object[\"determination\"]).map_err(io::Error::other)?;",
+            "    let rationale = object[\"rationale\"]",
+            "        .as_str()",
+            "        .filter(|s| !s.trim().is_empty())",
+            "        .ok_or_else(|| io::Error::other(\"submit_judgment rationale must be nonempty Markdown\"))?;",
+            "    Ok((judgment, rationale.to_owned()))",
+            "}"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.submission",
+          "matches": [
+            "requirements.authoring.submission"
+          ],
+          "text": [
+            ":::{req} submission",
+            "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
+            "",
+            "```text",
+            "submit_judgment({ determination: Judgment, rationale: String })",
+            "",
+            "Judgment = Boolean | { FIXME: Array<String> }",
+            "```",
+            "",
+            "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
+            "{cite}`requirements.ci.outcomes`.",
+            "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
+            "assessment result. The model MUST invoke it exactly once over the entire",
+            "assessment. If the model finishes without invoking it, or invokes it more than",
+            "once, the harness MUST report an error and leave existing evidence unchanged.",
+            "The harness MUST check the complete model response for multiple submissions",
+            "before accepting one. Invalid submission arguments MUST also fail the assessment.",
+            "A valid single submission MUST finish the assessment; there is no submission",
+            "repair or resubmission loop.",
+            ":::"
+          ]
+        }
+      ]
+    },
+    {
+      "rust_item": "fn[tool_definitions]",
+      "citations": [
+        {
+          "name": "requirements.authoring.initial_prompt",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.submission",
+          "role": "impl"
+        }
+      ],
+      "determination": true,
+      "rationale": "Combines source tool schemas with the exactly-once final-submission schema. Reviewed its success/error branches and delegated operations against the chapter requirements for explicit authoring invocation, model conversation, submission handling, or persistence, beyond the references already present. The owned citations `requirements.authoring.initial_prompt`, `requirements.authoring.submission` jointly account for these responsibilities, and the selected inputs cover every cited name. This attestation concerns citation completeness; requirement records assess implementation and tests.",
+      "inputs": [
+        {
+          "rust_file": "src/authoring/mod.rs",
+          "rust_item": "fn[tool_definitions]",
+          "text": [
+            "// {impl}`requirements.authoring.submission`",
+            "// {impl}`requirements.authoring.initial_prompt`",
+            "fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {",
+            "    let mut definitions = tools::definitions();",
+            "    definitions.push(json!({\"name\": \"submit_judgment\", \"description\": \"Submit your final judgment exactly once. No other message supplies the result.\",",
+            "        \"parameters\": {\"type\":\"object\", \"additionalProperties\": false, \"required\":[\"determination\",\"rationale\"], \"properties\": {",
+            "            \"determination\": {\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]},",
+            "            \"rationale\":{\"type\":\"string\",\"minLength\":1}}}}));",
+            "    definitions",
+            "        .into_iter()",
+            "        .map(|value| serde_json::from_value(value).map_err(io::Error::other))",
+            "        .collect()",
+            "}"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.initial_prompt",
+          "matches": [
+            "requirements.authoring.initial_prompt"
+          ],
+          "text": [
+            ":::{req} initial_prompt",
+            "The initial request MUST provide the four tool definitions above and the",
+            "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+            "or `example`, `{{subject_name}}` with the full subject name, and",
+            "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
+            "the existing evidence-input formats. The template MUST otherwise be used as",
+            "written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,",
+            "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.",
+            "",
+            "```text",
+            "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
+            "",
+            "Subject: {{subject_kind}} {{subject_name}}",
+            "",
+            "Read the subject and mandatory inputs below. Use habeas to request any additional",
+            "source information you need. Use list_files to discover files and directories,",
+            "and ripgrep to search file contents.",
+            "The harness records source inputs for you; directory listings are not evidence.",
+            "",
+            "Assess only the named subject, using cited requirements and definitions as context.",
+            "For a requirement, check that the cited code implements it as stated and that",
+            "tests cover the interesting points in the design space. If there are no tests,",
+            "assess whether simplicity or impracticality justifies their absence, and explain.",
+            "For an example, assess whether test setup and assertions cover its scenario and",
+            "expected outcomes. A true judgment needs at least one {test} reference to the",
+            "example in the supplied inputs. Explain the coverage.",
+            "",
+            "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+            "the remaining gaps are explicitly acknowledged in source comments or tests;",
+            "list their issue references or other identifying content. The usual convention",
+            "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+            "Choose false for other gaps or insufficient evidence. Explain your judgment in",
+            "a Markdown rationale with source locations, including any acknowledged gaps.",
+            "",
+            "When you are ready, call submit_judgment exactly once with determination and",
+            "rationale. That tool call is your final answer.",
+            "",
+            "Mandatory inputs:",
+            "{{mandatory_inputs}}",
+            "```",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.submission",
+          "matches": [
+            "requirements.authoring.submission"
+          ],
+          "text": [
+            ":::{req} submission",
+            "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
+            "",
+            "```text",
+            "submit_judgment({ determination: Judgment, rationale: String })",
+            "",
+            "Judgment = Boolean | { FIXME: Array<String> }",
+            "```",
+            "",
+            "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
+            "{cite}`requirements.ci.outcomes`.",
+            "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
+            "assessment result. The model MUST invoke it exactly once over the entire",
+            "assessment. If the model finishes without invoking it, or invokes it more than",
+            "once, the harness MUST report an error and leave existing evidence unchanged.",
+            "The harness MUST check the complete model response for multiple submissions",
+            "before accepting one. Invalid submission arguments MUST also fail the assessment.",
+            "A valid single submission MUST finish the assessment; there is no submission",
+            "repair or resubmission loop.",
+            ":::"
+          ]
+        }
+      ]
+    },
+    {
+      "rust_item": "fn[assess]",
+      "citations": [
+        {
+          "name": "requirements.authoring.delivered_inputs",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.initial_prompt",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.persistence",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.submission",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.usage_inputs",
+          "role": "impl"
+        },
+        {
+          "name": "requirements.authoring.usage_requests",
+          "role": "impl"
+        }
+      ],
+      "determination": true,
+      "rationale": "Tracks each provider request and delivered inputs, dispatches reads, rejects missing/duplicate/invalid submissions, and persists exactly one accepted judgment with its actual source inputs. Reviewed its success/error branches and delegated operations against the chapter requirements for explicit authoring invocation, model conversation, submission handling, or persistence, beyond the references already present. The owned citations `requirements.authoring.delivered_inputs`, `requirements.authoring.initial_prompt`, `requirements.authoring.persistence`, `requirements.authoring.submission`, `requirements.authoring.usage_inputs`, `requirements.authoring.usage_requests` jointly account for these responsibilities, and the selected inputs cover every cited name. This attestation concerns citation completeness; requirement records assess implementation and tests.",
+      "inputs": [
+        {
+          "rust_file": "src/authoring/mod.rs",
+          "rust_item": "fn[assess]",
+          "text": [
+            "// {impl}`requirements.authoring.submission`",
+            "// {impl}`requirements.authoring.initial_prompt`",
+            "// {impl}`requirements.authoring.delivered_inputs`",
+            "// {impl}`requirements.authoring.persistence`",
+            "// {impl}`requirements.authoring.usage_inputs`",
+            "// {impl}`requirements.authoring.usage_requests`",
+            "async fn assess(",
+            "    provider: &impl CompletionProvider,",
+            "    root: &Path,",
+            "    sources: &mut AssessmentSources,",
+            "    usage: &mut UsageLog,",
+            ") -> io::Result<(Judgment, PathBuf)> {",
+            "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
+            "    request.tools = tool_definitions()?;",
+            "    let mut pending = sources.mandatory_inputs().to_vec();",
+            "    loop {",
+            "        let index = usage.begin_request()?;",
+            "        let started = Instant::now();",
+            "        let response = provider.complete(request.clone()).await;",
+            "        usage.end_request(",
+            "            index,",
+            "            started.elapsed().as_millis(),",
+            "            response.as_ref().ok().map(|r| &r.usage),",
+            "        )?;",
+            "        let response = response?;",
+            "        sources.record_inputs(&pending);",
+            "        pending.clear();",
+            "        if let Some(error) = turn_failure(",
+            "            &response.choice,",
+            "            Some(&response.stop()),",
+            "            response.finish_reason().as_ref(),",
+            "        ) {",
+            "            return Err(io::Error::other(error));",
+            "        }",
+            "        let calls: Vec<_> = response.tool_calls().cloned().collect();",
+            "        let submissions: Vec<_> = calls",
+            "            .iter()",
+            "            .filter(|call| call.function.name.as_str() == \"submit_judgment\")",
+            "            .collect();",
+            "        if !submissions.is_empty() {",
+            "            for call in &calls {",
+            "                if call.function.name.as_str() != \"submit_judgment\" {",
+            "                    usage.skipped_tool(call.function.name.as_str());",
+            "                }",
+            "            }",
+            "            if submissions.len() != 1 {",
+            "                for _ in &submissions {",
+            "                    usage.tool(\"submit_judgment\", true);",
+            "                }",
+            "                return Err(io::Error::other(",
+            "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
+            "                ));",
+            "            }",
+            "            let result = submission(&Value::Object(submissions[0].function.arguments.clone()));",
+            "            usage.tool(\"submit_judgment\", result.is_err());",
+            "            let (judgment, rationale) = result?;",
+            "            usage.record.determination = Some(judgment.kind().into());",
+            "            usage.save()?;",
+            "            let evidence_path = root",
+            "                .join(\"evidence\")",
+            "                .join(format!(\"{}.json\", sources.subject_name));",
+            "            let evidence = json!({sources.subject_kind.noun(): sources.subject_text,",
+            "                \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()});",
+            "            fs::create_dir_all(evidence_path.parent().expect(\"evidence parent\"))?;",
+            "            fs::write(",
+            "                &evidence_path,",
+            "                format!(\"{}\\n\", serde_json::to_string_pretty(&evidence)?),",
+            "            )?;",
+            "            usage.record.evidence_written = true;",
+            "            usage.save()?;",
+            "            return Ok((judgment, evidence_path));",
+            "        }",
+            "        if calls.is_empty() {",
+            "            return Err(io::Error::other(",
+            "                \"model finished without invoking submit_judgment\",",
+            "            ));",
+            "        }",
+            "        request.chat_history.push(",
+            "            response",
+            "                .message()",
+            "                .ok_or_else(|| io::Error::other(\"model returned an empty response\"))?,",
+            "        );",
+            "        let mut results = Vec::new();",
+            "        for call in calls {",
+            "            match tools::dispatch(",
+            "                sources,",
+            "                call.function.name.as_str(),",
+            "                &Value::Object(call.function.arguments.clone()),",
+            "            ) {",
+            "                Ok(delivery) => {",
+            "                    usage.tool(call.function.name.as_str(), false);",
+            "                    usage.prepared(call.function.name.as_str(), &delivery.inputs);",
+            "                    pending.extend(delivery.inputs);",
+            "                    results.push(",
+            "                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),",
+            "                    );",
+            "                }",
+            "                Err(error) => {",
+            "                    usage.tool(call.function.name.as_str(), true);",
+            "                    results.push(call.error_result(vec![ToolResultContent::text(error)]));",
+            "                }",
+            "            }",
+            "        }",
+            "        usage.save()?;",
+            "        request.chat_history.push(Message::tool_results(results));",
+            "    }",
+            "}"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.delivered_inputs",
+          "matches": [
+            "requirements.authoring.delivered_inputs"
+          ],
+          "text": [
+            ":::{req} delivered_inputs",
+            "The harness MUST record the source text it supplies to the model, including",
+            "mandatory inputs and additional reads, using the existing evidence input formats",
+            "defined by {cite}`requirements.ci.inputs`,",
+            "{cite}`requirements.ci.rust_item_inputs`,",
+            "{cite}`requirements.ci.requirements_inputs`, and",
+            "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
+            "itself so ordinary evidence validation can check them later.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.initial_prompt",
+          "matches": [
+            "requirements.authoring.initial_prompt"
+          ],
+          "text": [
+            ":::{req} initial_prompt",
+            "The initial request MUST provide the four tool definitions above and the",
+            "following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`",
+            "or `example`, `{{subject_name}}` with the full subject name, and",
+            "`{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using",
+            "the existing evidence-input formats. The template MUST otherwise be used as",
+            "written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,",
+            "{cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.",
+            "",
+            "```text",
+            "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.",
+            "",
+            "Subject: {{subject_kind}} {{subject_name}}",
+            "",
+            "Read the subject and mandatory inputs below. Use habeas to request any additional",
+            "source information you need. Use list_files to discover files and directories,",
+            "and ripgrep to search file contents.",
+            "The harness records source inputs for you; directory listings are not evidence.",
+            "",
+            "Assess only the named subject, using cited requirements and definitions as context.",
+            "For a requirement, check that the cited code implements it as stated and that",
+            "tests cover the interesting points in the design space. If there are no tests,",
+            "assess whether simplicity or impracticality justifies their absence, and explain.",
+            "For an example, assess whether test setup and assertions cover its scenario and",
+            "expected outcomes. A true judgment needs at least one {test} reference to the",
+            "example in the supplied inputs. Explain the coverage.",
+            "",
+            "Choose true when the subject meets these criteria. Choose {\"FIXME\": [\"...\"]} when",
+            "the remaining gaps are explicitly acknowledged in source comments or tests;",
+            "list their issue references or other identifying content. The usual convention",
+            "is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+            "Choose false for other gaps or insufficient evidence. Explain your judgment in",
+            "a Markdown rationale with source locations, including any acknowledged gaps.",
+            "",
+            "When you are ready, call submit_judgment exactly once with determination and",
+            "rationale. That tool call is your final answer.",
+            "",
+            "Mandatory inputs:",
+            "{{mandatory_inputs}}",
+            "```",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.persistence",
+          "matches": [
+            "requirements.authoring.persistence"
+          ],
+          "text": [
+            ":::{req} persistence",
+            "After one valid judgment, the harness MUST write the subject text, submitted",
+            "determination and rationale, and recorded inputs using the existing evidence",
+            "schema. {cite}`requirements.ci.schema`",
+            "All three outcomes MUST be saved as completed assessments; their validation",
+            "status MUST follow {cite}`requirements.ci.determination`.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.submission",
+          "matches": [
+            "requirements.authoring.submission"
+          ],
+          "text": [
+            ":::{req} submission",
+            "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
+            "",
+            "```text",
+            "submit_judgment({ determination: Judgment, rationale: String })",
+            "",
+            "Judgment = Boolean | { FIXME: Array<String> }",
+            "```",
+            "",
+            "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
+            "{cite}`requirements.ci.outcomes`.",
+            "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
+            "assessment result. The model MUST invoke it exactly once over the entire",
+            "assessment. If the model finishes without invoking it, or invokes it more than",
+            "once, the harness MUST report an error and leave existing evidence unchanged.",
+            "The harness MUST check the complete model response for multiple submissions",
+            "before accepting one. Invalid submission arguments MUST also fail the assessment.",
+            "A valid single submission MUST finish the assessment; there is no submission",
+            "repair or resubmission loop.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.usage_inputs",
+          "matches": [
+            "requirements.authoring.usage_inputs"
+          ],
+          "text": [
+            ":::{req} usage_inputs",
+            "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8",
+            "bytes and lines, and the same information for additional inputs requested through",
+            "`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.",
+            "Usage MUST distinguish unique inputs from repeated reads, successful from",
+            "failed reads, and prepared inputs from those actually sent to the model.",
+            "File-discovery calls MUST count as tool calls without recording directory",
+            "listings as evidence or source inputs.",
+            ":::"
+          ]
+        },
+        {
+          "requirements": "requirements.authoring.usage_requests",
+          "matches": [
+            "requirements.authoring.usage_requests"
+          ],
+          "text": [
+            ":::{req} usage_requests",
+            "Usage MUST record each provider request's outcome and available input/output",
+            "token counts, including retries, with cached or reasoning-token counts when",
+            "provided. Missing measurements MUST be recorded as unavailable, not zero.",
+            "Run totals MUST include request and tool-call counts by tool, elapsed time, and",
+            "available token usage, identifying incomplete totals without double counting",
+            "provider counters that overlap.",
+            ":::"
+          ]
+        }
+      ]
+    }
+  ]
+}

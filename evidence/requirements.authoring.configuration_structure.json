@@ -1,6 +1,107 @@
 {
   "requirement": "Habeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n}\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    options: Map<String, OptionValue>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nModelRef {\n    backend: BackendKind,                     // Bedrock or Ollama\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
-  "determination": false,
-  "rationale": "Pending implementation and verification of this evidence-authoring requirement. Any captured documentation inputs cover its example citations; they do not demonstrate implementation.",
-  "inputs": []
+  "determination": true,
+  "rationale": "Public saved types implement UserAuthoringConfig, project selections, flattened backend variants, backend-specific connection fields, recursive finite provider options, and exact ModelRef identifiers. Round-trip tests exercise both backend variants, nested options, tagged model names, and an ARN while preserving omitted fields.",
+  "inputs": [
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[BackendConfig]/fn[model_ref]",
+      "text": [
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    pub fn model_ref(&self) -> ModelRef {",
+        "        match self {",
+        "            Self::Bedrock(config) => ModelRef {",
+        "                backend: BackendKind::Bedrock,",
+        "                model: config.model.clone(),",
+        "            },",
+        "            Self::Ollama(config) => ModelRef {",
+        "                backend: BackendKind::Ollama,",
+        "                model: config.model.clone(),",
+        "            },",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[OptionValue]/fn[validate]",
+      "text": [
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    fn validate(&self) -> io::Result<()> {",
+        "        match self {",
+        "            Self::Float(value) if !value.is_finite() => Err(io::Error::new(",
+        "                io::ErrorKind::InvalidInput,",
+        "                \"inference option floats must be finite\",",
+        "            )),",
+        "            Self::Array(values) => values.iter().try_for_each(Self::validate),",
+        "            Self::Map(values) => values.values().try_for_each(Self::validate),",
+        "            _ => Ok(()),",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[ResolvedAuthoringConfig]/fn[model_ref]",
+      "text": [
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    pub fn model_ref(&self) -> ModelRef {",
+        "        self.backend.model_ref()",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "tests/configuration.rs",
+      "rust_item": "fn[backend_configuration_round_trips_without_materializing_defaults]",
+      "text": [
+        "// {test}`requirements.authoring.configuration_structure`",
+        "// {test}`requirements.authoring.configuration_serialization`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn backend_configuration_round_trips_without_materializing_defaults() {",
+        "    let source = r#\"",
+        "version = 1",
+        "[authoring]",
+        "default = \"Cloud\"",
+        "[authoring.configs.Cloud]",
+        "backend = \"bedrock\"",
+        "model = \"arn:aws:bedrock:us-west-2:123:inference-profile/exact-id\"",
+        "aws_profile = \"research\"",
+        "region = \"us-west-2\"",
+        "[authoring.configs.Cloud.options]",
+        "temperature = 0.2",
+        "max_tokens = 777",
+        "enabled = true",
+        "labels = [\"a\", \"b\"]",
+        "[authoring.configs.Cloud.options.custom]",
+        "arbitrary = \"provider-defined\"",
+        "[authoring.configs.local]",
+        "backend = \"ollama\"",
+        "model = \"tiny:latest\"",
+        "\"#;",
+        "    let path = Path::new(\"settings.toml\");",
+        "    let config = UserConfig::parse(source, path).unwrap();",
+        "    let authoring = config.authoring.as_ref().unwrap();",
+        "    assert!(authoring.projects.is_empty());",
+        "    let local = &authoring.configs[\"local\"].backend;",
+        "    let BackendConfig::Ollama(ollama) = local else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert_eq!(ollama.endpoint(), \"http://localhost:11434\");",
+        "    assert_eq!(ollama.endpoint, None);",
+        "    assert!(ollama.options.is_empty());",
+        "    assert_eq!(local.model_ref().model, \"tiny:latest\");",
+        "    assert_eq!(local.model_ref().backend, BackendKind::Ollama);",
+        "    let json = authoring.configs[\"Cloud\"].backend.options_json().unwrap();",
+        "    assert_eq!(json[\"custom\"][\"arbitrary\"], \"provider-defined\");",
+        "    assert_eq!(json[\"max_tokens\"], 777);",
+        "    let serialized = config.to_toml().unwrap();",
+        "    assert!(!serialized.contains(\"endpoint\"));",
+        "    assert!(!serialized.contains(\"http://localhost\"));",
+        "    assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);",
+        "}"
+      ]
+    }
+  ]
 }

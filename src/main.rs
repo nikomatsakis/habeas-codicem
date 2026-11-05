@@ -33,6 +33,11 @@ enum Command {
     Info {
         selector: String,
     },
+    AuthorEvidence {
+        subject: String,
+        #[arg(long)]
+        config: Option<String>,
+    },
     #[command(hide = true)]
     Hook {
         #[command(subcommand)]
@@ -104,6 +109,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             io::stdout()
                 .lock()
                 .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;
+            Ok(())
+        }
+        // {impl}`requirements.authoring.invocation`
+        Command::AuthorEvidence { subject, config } => {
+            let root = setup::project_root()?;
+            let outcome = tokio::runtime::Runtime::new()?.block_on(
+                habeas::authoring::author_evidence(&root, &subject, config.as_deref()),
+            )?;
+            println!(
+                "{}: {} / {} — {}\nEvidence: {}\nUsage: {}",
+                outcome.subject,
+                outcome.backend,
+                outcome.model,
+                outcome.determination.kind(),
+                outcome.evidence_path.display(),
+                outcome.usage_path.display()
+            );
             Ok(())
         }
         // {impl}`requirements.integration.symposium_setup_hook`

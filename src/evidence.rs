@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
 use crate::inputs::{InputSelector, ResolvedInput};
+use crate::judgment::Judgment;
 use crate::{
     DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,
     reference_roles, valid_name,
@@ -39,6 +40,24 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 pub(crate) struct RepositoryInspection {
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) report: EvidenceReport,
+}
+
+// {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.ci.book_source`
+// {impl}`requirements.ci.definition_errors`
+pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {
+    let root = fs::canonicalize(root)?;
+    let mut errors = Vec::new();
+    let md_root = book_source_dir(&root, &mut errors);
+    let definitions = collect_definitions(&root, &md_root, &mut errors);
+    if errors.is_empty() {
+        Ok(definitions)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            errors.join("\n"),
+        ))
+    }
 }
 
 // {impl}`requirements.integration.report_api`
@@ -380,7 +399,19 @@ fn validate_evidence_file(
         }
     }
 
-    let determination = boolean_field(object, "determination", &label, errors);
+    let determination = match object.get("determination") {
+        Some(value) => match Judgment::from_value(value) {
+            Ok(judgment) => Some(judgment),
+            Err(error) => {
+                errors.push(format!("{label}: determination: {error}"));
+                None
+            }
+        },
+        None => {
+            errors.push(format!("{label}: missing field \"determination\""));
+            None
+        }
+    };
     let rationale = string_field(object, "rationale", &label, errors);
     if let Some(rationale) = rationale
         && rationale.trim().is_empty()
@@ -388,7 +419,7 @@ fn validate_evidence_file(
         errors.push(format!("{label}: rationale must not be empty"));
     }
     // {impl}`requirements.ci.determination`
-    if determination == Some(false) {
+    if determination == Some(Judgment::False) {
         errors.push(format!(
             "{label}: determination is false{}",
             rationale
@@ -825,11 +856,11 @@ fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-struct SourceReference {
-    name: String,
-    kind: ReferenceKind,
-    file: PathBuf,
-    line: usize,
+pub(crate) struct SourceReference {
+    pub(crate) name: String,
+    pub(crate) kind: ReferenceKind,
+    pub(crate) file: PathBuf,
+    pub(crate) line: usize,
 }
 
 struct InputRange {
@@ -920,7 +951,7 @@ fn validate_references(
 }
 
 // {impl}`requirements.references.targets`
-fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
+pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
     let mut stack = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(directory) = stack.pop() {

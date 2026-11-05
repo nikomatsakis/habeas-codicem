@@ -7,10 +7,13 @@ use mdbook_preprocessor::book::Book;
 use pulldown_cmark::{Event, Parser, Tag};
 
 mod add_input;
+pub mod authoring;
+pub mod config;
 mod definition_glob;
 mod evidence;
 mod index;
 mod inputs;
+pub mod judgment;
 mod rust_coverage;
 mod rust_items;
 mod terms;
