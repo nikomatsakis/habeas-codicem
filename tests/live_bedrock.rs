@@ -108,11 +108,9 @@ fn live_bedrock_authoring() {
         report("warning: skipping live Bedrock test: CI is set");
         return;
     }
-    let Some(selected) = selected_config().expect("cannot select live Bedrock configuration")
-    else {
-        report("warning: skipping live Bedrock test: no Bedrock authoring configuration");
-        return;
-    };
+    let selected = selected_config()
+        .expect("cannot select live Bedrock configuration")
+        .expect("no Bedrock authoring configuration; add one to your Habeas user config (see md/reference.md), or set CI=1 to disable live testing");
     let BackendConfig::Bedrock(backend) = &selected.backend else {
         unreachable!("selection only returns Bedrock configurations");
     };
@@ -221,7 +219,7 @@ fn skip_probe(root: &Path) -> Command {
 
 // {test}`requirements.integration.live_bedrock_test`
 #[test]
-fn unavailable_prerequisites_skip_visibly_without_inference() {
+fn live_test_prerequisites_are_checked_without_inference() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join("config/habeas")).unwrap();
@@ -242,12 +240,27 @@ fn unavailable_prerequisites_skip_visibly_without_inference() {
     );
 
     fs::remove_file(&config_path).unwrap();
-    let missing_config = skip_probe(root).output().unwrap();
-    assert!(missing_config.status.success());
-    assert!(
-        String::from_utf8_lossy(&missing_config.stderr)
-            .contains("no Bedrock authoring configuration")
-    );
+    for contents in [
+        None,
+        Some("version = 1\n"),
+        Some(
+            "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'fixture-model'\n",
+        ),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(&config_path, contents).unwrap();
+        }
+        let missing_config = skip_probe(root).output().unwrap();
+        assert!(!missing_config.status.success());
+        assert!(
+            String::from_utf8_lossy(&missing_config.stdout)
+                .contains("no Bedrock authoring configuration")
+        );
+        assert!(
+            !String::from_utf8_lossy(&missing_config.stderr).contains("skipping live Bedrock test")
+        );
+    }
+    fs::remove_file(&config_path).unwrap();
     let explicit_missing = skip_probe(root)
         .env("HABEAS_LIVE_CONFIG", "missing")
         .output()

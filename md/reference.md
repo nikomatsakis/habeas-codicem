@@ -189,11 +189,11 @@ credentials. {cite}`requirements.authoring.usage_storage`
 ### Live Bedrock tests
 
 `cargo test` includes a live Bedrock integration test. It skips with a visible
-warning in CI, when no Bedrock authoring configuration exists, or when the AWS
-SDK cannot load credentials. A skip returns successfully, so Cargo displays `ok`
-rather than `ignored`. Once credentials load, provider and authoring errors fail
-the test. Local runs with credentials make billable model requests and retain
-their usage records in the usual user state directory.
+warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing
+Bedrock authoring configuration fails the test. A skip returns successfully, so
+Cargo displays `ok` rather than `ignored`. Once credentials load, provider and
+authoring errors fail the test. Local runs with credentials make billable model
+requests and retain their usage records in the usual user state directory.
 
 Run just these tests with:
 
