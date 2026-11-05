@@ -5,7 +5,7 @@ use std::process::Command;
 
 use serde_json::{Map, Value, json};
 
-use super::inputs::AssessmentSources;
+use super::inputs::{AssessmentSources, generated_evidence_path};
 use crate::inputs::{InputSelector, read_project_file};
 
 pub(crate) struct ToolDelivery {
@@ -22,7 +22,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input.",
+            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. File paths are relative to the project; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Generated evidence under evidence/ is excluded from source reads.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -34,11 +34,11 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs.",
+            "name": "list_files", "description": "List immediate files and directories at a project-relative path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Generated evidence under evidence/ is excluded from discovery.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays.",
+            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Generated evidence under evidence/ is excluded from searches.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
     ]
@@ -64,10 +64,15 @@ pub(crate) fn dispatch(
 }
 
 // {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.definitions.authoring_inputs`
+// {impl}`requirements.authoring.delivered_inputs`
 fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDelivery, String> {
     let selector = if args.contains_key("file") {
         check_keys(args, &["file", "line_start", "line_end"])?;
         let file = string(args, "file")?.to_owned();
+        if generated_evidence_path(&sources.root, Path::new(&file)) {
+            return Err("generated evidence is output, not assessment source".to_owned());
+        }
         let line_start = integer(args, "line_start")?;
         let line_end = if args.contains_key("line_end") {
             integer(args, "line_end")?
@@ -105,6 +110,7 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDe
 }
 
 // {impl}`requirements.authoring.file_discovery`
+// {impl}`requirements.authoring.source_tools`
 fn list_files(
     sources: &AssessmentSources,
     args: &Map<String, Value>,
@@ -115,6 +121,9 @@ fn list_files(
     let mut entries = Vec::new();
     for entry in fs::read_dir(&directory).map_err(|error| format!("cannot list {path}: {error}"))? {
         let entry = entry.map_err(|error| format!("cannot list {path}: {error}"))?;
+        if generated_evidence_path(&sources.root, &entry.path()) {
+            continue;
+        }
         let metadata = fs::metadata(entry.path())
             .map_err(|error| format!("cannot inspect {}: {error}", entry.path().display()))?;
         let kind = if metadata.is_dir() {
@@ -140,6 +149,7 @@ fn list_files(
 }
 
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.source_tools`
 fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<ToolDelivery, String> {
     check_keys(args, &["pattern", "path", "context"])?;
     let pattern = string(args, "pattern")?;
@@ -157,6 +167,8 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<Tool
             "--no-config",
             "--case-sensitive",
             "--color=never",
+            "--glob",
+            "!/evidence/**",
             "--",
             pattern,
             path,
@@ -183,6 +195,9 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> Result<Tool
         let file = event["data"]["path"]["text"]
             .as_str()
             .ok_or_else(|| "ripgrep found a non-UTF-8 path".to_owned())?;
+        if generated_evidence_path(&sources.root, Path::new(file)) {
+            continue;
+        }
         let number = event["data"]["line_number"]
             .as_u64()
             .and_then(|number| usize::try_from(number).ok())
@@ -266,6 +281,7 @@ fn optional_path(args: &Map<String, Value>) -> Result<&str, String> {
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.ci.input_containment`
+// {impl}`requirements.authoring.source_tools`
 fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     if relative.is_empty()
         || !Path::new(relative)
@@ -278,6 +294,9 @@ fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
         .map_err(|error| format!("cannot open {relative}: {error}"))?;
     if !path.starts_with(root) {
         return Err(format!("{relative} resolves outside the project"));
+    }
+    if generated_evidence_path(root, &path) {
+        return Err("generated evidence is output, not assessment source".to_owned());
     }
     Ok(path)
 }
@@ -426,5 +445,122 @@ mod tests {
             .is_err()
         );
         assert!(dispatch(&sources, "list_files", &json!({"path":"../"})).is_err());
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    #[test]
+    fn generated_evidence_is_excluded_from_reads_search_and_discovery() {
+        let root = project();
+        fs::create_dir(root.path().join("evidence")).unwrap();
+        fs::create_dir(root.path().join("src/evidence")).unwrap();
+        fs::write(
+            root.path().join("evidence/old.json"),
+            "needle in a previous judgment\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("evidence/generated.rs"),
+            "fn generated() {}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("source.txt"), "needle in source\n").unwrap();
+        fs::write(
+            root.path().join("src/evidence/source.txt"),
+            "needle in nested source\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                root.path().join("evidence"),
+                root.path().join("old-output"),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(
+                root.path().join("evidence/old.json"),
+                root.path().join("old.json"),
+            )
+            .unwrap();
+        }
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle", "context":0}),
+        )
+        .unwrap();
+        let files = search
+            .inputs
+            .iter()
+            .map(|input| input["file"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(files, vec!["source.txt", "src/evidence/source.txt"]);
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        assert!(listing.result.as_array().unwrap().iter().all(|entry| {
+            !["evidence", "old-output", "old.json"].contains(&entry["path"].as_str().unwrap())
+        }));
+        for path in ["evidence/old.json", "./evidence/old.json"] {
+            assert!(
+                dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
+                    .err()
+                    .unwrap()
+                    .contains("generated evidence")
+            );
+        }
+        assert!(
+            dispatch(
+                &sources,
+                "habeas",
+                &json!({"rust_file":"evidence/generated.rs", "rust_item":"fn[generated]"})
+            )
+            .err()
+            .unwrap()
+            .contains("generated evidence")
+        );
+        assert!(
+            dispatch(&sources, "list_files", &json!({"path":"evidence"}))
+                .err()
+                .unwrap()
+                .contains("generated evidence")
+        );
+        assert!(
+            dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"path":"evidence", "pattern":"needle"})
+            )
+            .err()
+            .unwrap()
+            .contains("generated evidence")
+        );
+        #[cfg(unix)]
+        {
+            for path in ["old.json", "old-output/old.json"] {
+                assert!(
+                    dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
+                        .err()
+                        .unwrap()
+                        .contains("generated evidence")
+                );
+                assert!(
+                    dispatch(
+                        &sources,
+                        "ripgrep",
+                        &json!({"path":path, "pattern":"needle"})
+                    )
+                    .err()
+                    .unwrap()
+                    .contains("generated evidence")
+                );
+            }
+            assert!(
+                dispatch(&sources, "list_files", &json!({"path":"old-output"}))
+                    .err()
+                    .unwrap()
+                    .contains("generated evidence")
+            );
+        }
     }
 }

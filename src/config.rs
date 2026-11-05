@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,8 @@ pub struct ProjectSelection {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuthoringConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<NonZeroUsize>,
     #[serde(flatten)]
     pub backend: BackendConfig,
 }
@@ -105,6 +108,7 @@ pub struct ResolvedAuthoringConfig {
     pub config_path: PathBuf,
     pub project_root: PathBuf,
     pub name: String,
+    pub concurrency: Option<NonZeroUsize>,
     pub backend: BackendConfig,
 }
 
@@ -130,6 +134,8 @@ impl UserConfig {
     // {impl}`requirements.configuration.structure`
     // {impl}`requirements.configuration.loading`
     // {impl}`requirements.authoring.configuration_storage`
+    // {impl}`requirements.authoring.configuration_serialization`
+    // {impl}`requirements.authoring.concurrency`
     pub fn parse(text: &str, path: &Path) -> io::Result<Self> {
         let config: Self = toml::from_str(text).map_err(|error| invalid(path, "", error))?;
         config.validate(path)?;
@@ -336,6 +342,18 @@ impl ResolvedAuthoringConfig {
     pub fn model_ref(&self) -> ModelRef {
         self.backend.model_ref()
     }
+
+    // {impl}`requirements.authoring.concurrency`
+    pub fn effective_concurrency(&self) -> usize {
+        self.concurrency
+            .map(NonZeroUsize::get)
+            .unwrap_or_else(|| match &self.backend {
+                BackendConfig::Bedrock(_) => std::thread::available_parallelism()
+                    .map(NonZeroUsize::get)
+                    .unwrap_or(1),
+                BackendConfig::Ollama(_) => 1,
+            })
+    }
 }
 
 // {impl}`requirements.configuration.user_location`
@@ -436,6 +454,9 @@ pub fn resolve_authoring(
 // {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.configuration_storage`
 // {impl}`requirements.configuration.serialization`
+// {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.authoring.configuration`
+// {impl}`requirements.configuration.loading`
 pub fn resolve_authoring_from(
     path: &Path,
     user: Option<&UserConfig>,
@@ -475,23 +496,19 @@ pub fn resolve_authoring_from(
                 format!("no configuration selected; {CONFIG_EXAMPLES}"),
             )
         })?;
-    let backend = authoring
-        .configs
-        .get(selected)
-        .ok_or_else(|| {
-            invalid(
-                path,
-                "authoring",
-                format!("unknown configuration {selected:?}; {CONFIG_EXAMPLES}"),
-            )
-        })?
-        .backend
-        .clone();
+    let config = authoring.configs.get(selected).ok_or_else(|| {
+        invalid(
+            path,
+            "authoring",
+            format!("unknown configuration {selected:?}; {CONFIG_EXAMPLES}"),
+        )
+    })?;
     Ok(ResolvedAuthoringConfig {
         config_path: path.to_owned(),
         project_root,
         name: selected.to_owned(),
-        backend,
+        concurrency: config.concurrency,
+        backend: config.backend.clone(),
     })
 }
 

@@ -1,17 +1,47 @@
 # Authoring evidence
 
-Habeas gives a model a requirement or example and its mandatory source inputs.
+Habeas gives a model a requirement, example, or Rust function and its mandatory source inputs.
 The model can discover files, request more inputs, and submit one judgment. The
 harness records the inputs and writes the judgment into the existing evidence
 format. Rig provides the connection to the user's configured model.
 
 :::{req} invocation
-`habeas author-evidence <full-name> [--config <name>] [--stdout]` MUST assess one
+`habeas author <full-name> [--config <name>] [--stdout]` MUST assess one
 existing requirement or named example in the current project. It MUST report the
 selected subject, backend, model, evidence destination, and usage-record path on
 completion. The evidence destination MUST identify the evidence-file path by
 default or stdout when `--stdout` is selected. In stdout mode, the completion
-report and diagnostics MUST go to stderr.
+report and diagnostics MUST go to stderr. `author-evidence` MUST remain an alias
+for the single-subject command.
+:::
+
+:::{req} batch
+`habeas author --all [--config <name>]` MUST author every current requirement,
+named example, and first-party Rust function whose evidence or attestation is
+missing, stale, invalid, or false. It MUST preserve accepted, current records,
+including accepted FIXME judgments, without invoking a model for those records.
+`--all` MUST be mutually exclusive with a subject name and `--stdout`.
+Failure to discover declarations or parse project sources MUST report an error,
+not a successful empty batch. A batch with no assessments needed MUST succeed
+without resolving model configuration or credentials.
+
+Each subject MUST receive an independent assessment with its own prompt, inputs,
+judgment, and usage record. The command MUST report each success or error and
+retain successful writes when another assessment fails. It MUST return a nonzero
+exit status if any assessment fails. False judgments MUST still be written as
+completed assessments; they remain failures under ordinary evidence validation.
+Concurrent function assessments in one source file MUST be merged into that
+file's attestation record without losing other function entries. Assessments
+reading that record MUST see a complete version while results are saved.
+
+The bundled Habeas skills MUST direct the supervising agent to run this command
+to create or refresh evidence. They MUST leave judgments, rationales, and input
+snapshots to the authoring harness; the supervising agent addresses findings by
+changing requirements, source citations, implementation, or tests.
+{cite}`requirements.authoring.function_attestations`
+{cite}`requirements.authoring.concurrency`
+{cite}`requirements.authoring.usage_storage`
+{cite}`requirements.authoring.persistence`
 :::
 
 ## Model tools
@@ -36,6 +66,8 @@ forms. Each form MUST correspond to one existing evidence-input kind:
 Rust file and selector arguments MUST use the syntax defined by
 {cite}`requirements.references.rust_item_selectors`. Reads MUST use the current
 project working tree, including uncommitted and untracked sources.
+The project-root `evidence/` directory contains generated output and MUST be
+excluded from source reads, including paths that resolve there through symlinks.
 
 File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read
 through EOF; the returned evidence input MUST contain the actual numeric ending
@@ -80,6 +112,8 @@ The tool MUST list the immediate children of the requested project-relative
 directory, returning project-relative paths. The model can list a returned
 directory in another call to explore further. A failed listing MUST return an
 explanatory tool error. Directory listings MUST NOT become evidence inputs.
+Listings MUST omit generated evidence under {cite}`requirements.authoring.source_tools`;
+requesting that directory or an alias to it MUST return a tool error.
 :::
 
 ### Search file contents: `ripgrep`
@@ -105,6 +139,8 @@ boundaries, and overlapping windows in the same file MUST be merged. Each
 resulting window MUST be returned as a file-range input with its source path,
 inclusive line range, and complete text under {cite}`requirements.ci.inputs`.
 Setting `context` to zero MUST return only matching lines.
+Searches MUST exclude generated evidence under {cite}`requirements.authoring.source_tools`;
+explicitly requesting those output paths MUST return a tool error.
 Required terminology MUST be included under
 {cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied
 to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
@@ -148,6 +184,8 @@ define which sources it contributes and when. The harness MUST include every
 applicable contribution, deduplicate identical selections, and report
 unresolvable mandatory inputs before inference. The complete set MUST be supplied
 in the initial model request.
+Generated output under project-root `evidence/`, including symlink aliases, MUST
+be omitted even when a previous evidence record lists it as an input.
 :::
 
 The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),
@@ -200,6 +238,57 @@ Mandatory inputs:
 ```
 :::
 
+### Rust function attestations
+
+:::{req} function_attestations
+The harness MUST author Rust function attestations using the schema and citation
+completeness criteria in {cite}`requirements.references.rust_function_attestations`.
+It MUST supply the complete function, its current citations, all requirement and
+example declarations selected by `*`, and their required terminology as mandatory
+inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation
+input selectors MUST also contribute their current resolutions, subject to the
+generated-output exclusion above. The harness MUST
+derive the recorded citations from source and record the inputs it supplies;
+the model MUST supply only the boolean determination and rationale. FIXME MUST
+be rejected for a function attestation.
+
+The same four tools and exactly-once submission rule MUST apply. The initial
+prompt MUST use the following template, replacing `{{subject_name}}` with the
+repository-relative Rust file and selector, `{{citations}}` with the current
+citation objects as JSON, and `{{mandatory_inputs}}` with the mandatory input
+array. {cite}`requirements.authoring.submission`
+{cite}`requirements.authoring.delivered_inputs`
+
+```text
+Bring your expert judgment to the task of assessing a Rust function's citation completeness.
+
+Subject: {{subject_name}}
+Current citations: {{citations}}
+
+Read the whole function and the requirement and example declarations below.
+Look beyond the citations already present for every applicable requirement or
+example, including obligations governing observable branches and error cases.
+Assess citation completeness, not whether those requirements are implemented.
+
+Use habeas for additional source inputs, list_files to discover files, and
+ripgrep to search their contents. The harness records source inputs for you;
+directory listings are not evidence.
+
+Choose true only when the function cites every applicable requirement or
+example. Choose false for missing citations or insufficient information.
+Explain how you identified the applicable set and how the cited declarations
+account for the function's behavior, with source locations, and why the reviewed
+requirements inputs cover that set. The determination
+must be boolean; FIXME is not a function-attestation outcome.
+
+Call submit_judgment exactly once with determination and a nonempty Markdown
+rationale. That tool call is your final answer.
+
+Mandatory inputs:
+{{mandatory_inputs}}
+```
+:::
+
 ## Configuration
 
 :::{req} provider
@@ -240,6 +329,7 @@ ProjectSelection {
 
 AuthoringConfig {
     backend: BackendConfig,                   // tagged union, flattened in TOML
+    concurrency: Optional<PositiveInteger>,   // simultaneous assessments
 }
 
 BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)
@@ -281,6 +371,21 @@ Within a present authoring section, `configs` MUST be present but MAY be empty;
 omitted `projects` and `options` tables MUST deserialize as empty maps.
 Serialization MUST follow the common rules in
 {cite}`requirements.configuration.serialization`.
+:::
+
+:::{req} concurrency
+Each named authoring configuration MUST accept an optional positive integer
+`concurrency` in its configuration table. When omitted, the maximum number of
+simultaneous assessments MUST default to the number of available logical CPUs
+for Bedrock, falling back to one when that count is unavailable, and to one for
+Ollama. A configured value MUST override the default for either backend; zero
+MUST be rejected as invalid configuration.
+
+Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker
+thread pool. The number of assessments running at once MUST NOT exceed the
+selected concurrency. Each assessment MUST retain its own model conversation and
+usage record. Provider errors, including throttling, MUST be reported through
+the ordinary assessment-failure path.
 :::
 
 :::{req} configuration_storage
@@ -402,8 +507,25 @@ project table to remove a selection. To remove a named configuration, delete its
 table and update any selections naming it. Preserve other feature sections when
 editing an existing file.
 
-Run `habeas author-evidence <full-name>` in the project, or add `--config local`
-to override the saved selection for one run. Backend options belong under
+Run `habeas author --all` to fill in evidence needing attention, or
+`habeas author <full-name>` to assess one requirement or example. Add `--config local`
+to override the saved selection for one run. Set `concurrency` alongside `backend`
+and `model` to override the provider's default number of simultaneous assessments:
+
+```toml
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+concurrency = 4
+```
+
+Here `MODEL_ID` is your available model identifier and four is an illustrative
+choice, not the default. Bedrock defaults to the available logical CPU count;
+Ollama defaults to one. Lower concurrency if the provider reports throttling;
+rerunning `habeas author --all` preserves current accepted results and retries
+records that still need attention.
+
+Backend options belong under
 `[authoring.configs.<name>.options]`. For an authenticated Ollama server, put
 `api_key_env = "OLLAMA_API_KEY"` in its configuration table and set that variable
 outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an

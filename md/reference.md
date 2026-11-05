@@ -22,11 +22,14 @@ An example is a separate named definition for a concrete case. State the situati
 Running `habeas unknown` fails with a nonzero exit status and prints a usage message. {cite}`requirements.cli.invocation`
 :::
 
-Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The agent records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the citations are current; the rationale explains why the tests are adequate.
+Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The authoring harness records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the citations are current; the rationale explains why the tests are adequate.
 
 ## Evidence
 
-Add `evidence/requirements.check.json` for a requirement or `evidence/reference.cli.unknown_command.json` for the example above. Each evidence file records four fields:
+Run `habeas author --all` to create and refresh evidence for requirements, examples,
+and Rust function attestations. The harness writes `evidence/requirements.check.json`
+for the requirement above and `evidence/reference.cli.unknown_command.json` for the
+example. Each requirement or example evidence file records four fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -35,21 +38,22 @@ Add `evidence/requirements.check.json` for a requirement or `evidence/reference.
 | `rationale` | A Markdown explanation of that judgment. |
 | `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or glob of definitions. |
 
-For a requirement, review whether the cited code implements its stated obligations
+For a requirement, the model reviews whether the cited code implements its stated obligations
 and whether tests cover the interesting design cases. If there are no tests,
-explain why the logic is simple enough to need none or testing is impractical.
-For an example, review whether tests cover its scenario and expected outcomes;
-a true judgment requires a covered `{test}` reference. Assess the named subject,
-using its referenced requirements and definitions as context.
+its rationale explains why the logic is simple enough to need none or testing is impractical.
+For an example, the model reviews whether tests cover its scenario and expected outcomes;
+a true judgment requires a covered `{test}` reference. The assessment concerns
+the named subject, using referenced requirements and definitions as context.
 {cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`
 
-Use `true` when that review supports the subject. Use FIXME when source comments
-or tests explicitly acknowledge the remaining implementation or testing gaps;
-otherwise use `false` for gaps or missing information. Record the acknowledged
-gaps' issue references or other identifying source content in the FIXME array,
-and explain each gap and source location in the rationale. The expected comment
+The model chooses `true` when that review supports the subject and FIXME when
+source comments or tests explicitly acknowledge the remaining implementation or
+testing gaps; otherwise it chooses `false` for gaps or missing information.
+The FIXME array records the acknowledged gaps' issue references or other
+identifying source content, with each gap and source location explained in the
+rationale. The expected comment
 convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may
-appear elsewhere in the comment or test. Capture those sources in the evidence.
+appear elsewhere in the comment or test. The harness captures those source inputs.
 {cite}`requirements.ci.outcomes`
 
 An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:
@@ -60,7 +64,12 @@ An input has exactly one of these forms. `text` always stores complete raw lines
 {"requirements":"requirements.cli.*","matches":["requirements.cli.info"],"text":["..."]}
 ```
 
-Use `habeas add-input` to capture current source text instead of assembling the JSON by hand. A changed input leaves its determination false until an agent reassesses it. {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`
+`habeas author --all` captures source text and delegates judgments to the configured
+model. The supervising agent fixes reported gaps and reruns the command; it does
+not write evidence by hand. The lower-level `habeas add-input` command remains
+available for selecting an additional input. A changed input leaves its
+determination false until the authoring harness reassesses it.
+{cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`
 
 ```sh
 habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20
@@ -74,9 +83,17 @@ Habeas checks that every requirement and example has evidence, that every eviden
 
 ## Authoring evidence with a model
 
-`habeas author-evidence <full-name>` assesses one requirement or example, records
-the source inputs delivered to the model, and writes its judgment to the usual
-evidence file. Install `rg` (ripgrep) on your PATH for the model's search tool.
+`habeas author --all` fills in missing or stale evidence and reassesses invalid or
+false records. It includes requirements, examples, and Rust function attestations,
+preserving current accepted evidence, including FIXME judgments. Each assessment
+gets its own conversation and usage record. Successful results are kept if
+another assessment fails; the command reports failures and exits unsuccessfully.
+A completed false judgment is saved and remains a validation failure.
+{cite}`requirements.authoring.batch` {cite}`requirements.authoring.function_attestations`
+
+`habeas author <full-name>` assesses one requirement or example, records the
+source inputs delivered to the model, and writes its judgment to the usual
+evidence file. `author-evidence` remains an alias. Install `rg` (ripgrep) on your PATH for the model's search tool.
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
@@ -116,11 +133,18 @@ authentication, add `api_key_env = "OLLAMA_API_KEY"` and set that variable outsi
 the file. Credentials belong to AWS's credential sources or the named environment
 variable. {cite}`requirements.authoring.configuration_precedence`
 
-Run from the project, replacing `requirements.check` with the subject's full name:
+Run from the project:
 
 ```sh
-habeas author-evidence requirements.check
-habeas author-evidence requirements.check --config local
+habeas author --all
+habeas author --all --config local
+```
+
+For a single requirement or example, replace `requirements.check` with its full name:
+
+```sh
+habeas author requirements.check
+habeas author requirements.check --config local
 habeas info requirements.check
 ```
 
@@ -129,11 +153,12 @@ or changing evidence files or directories. The completion summary, usage-record
 path, and diagnostics go to stderr, so stdout can be redirected or piped:
 
 ```sh
-habeas author-evidence requirements.check --stdout > /tmp/assessment.json
+habeas author requirements.check --stdout > /tmp/assessment.json
 ```
 
 All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An
 assessment that fails before accepting a valid judgment emits no evidence JSON.
+`--stdout` is available for one named subject; it cannot be combined with `--all`.
 Usage is still recorded outside the project, with `evidence_output` identifying
 the selected `file` or `stdout` destination and `evidence_written` reporting
 whether the write succeeded.
@@ -158,6 +183,22 @@ depend on the provider, and cannot replace the model, prompt, or tools. See the
 [configuration reference](requirements/authoring.md#configuration) for the full
 format. {cite}`requirements.authoring.configuration_storage`
 {cite}`requirements.authoring.configuration_documentation`
+
+Bedrock runs assessments concurrently by default, using the available logical CPU
+count. Ollama runs one at a time. Override either default with a positive
+`concurrency` value alongside `backend` and `model` in its configuration table:
+
+```toml
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+concurrency = 4
+```
+
+Four is an example, not a fixed default. Authoring uses asynchronous tasks on a
+fixed worker thread pool and limits simultaneous assessments to this value.
+Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work
+on records that still need attention. {cite}`requirements.authoring.concurrency`
 
 For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and
 `stopSequences` directly in that options table. Habeas maps them to Converse's

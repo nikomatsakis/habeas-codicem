@@ -238,7 +238,7 @@ fn add_function_inputs(
         )?;
     }
     Ok(format!(
-        "evidence/rust/{rust_file}.json {rust_item}:\n{output}\nThis attestation remains pending until an agent reviews the function and applicable requirement and example texts, confirms every applicable citation is present, and explains how the cited texts account for the function's behavior."
+        "evidence/rust/{rust_file}.json {rust_item}:\n{output}\nThis attestation remains pending. Run `habeas author --all` to have the configured model review this function's citation completeness: it identifies applicable requirements and examples, checks that every applicable citation is present, and explains how the cited texts account for the function's behavior. The supervising agent must not write the attestation by hand."
     ))
 }
 

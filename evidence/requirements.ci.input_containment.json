@@ -1,149 +1,45 @@
 {
   "requirement": "Every project file named directly by an evidence input or resolved from its selector MUST resolve within the project root, including when its path contains symlinks. Validation MUST report a missing or unreadable file and a path that resolves outside the project.",
   "determination": true,
-  "rationale": "Input parsing rejects paths that are not relative. File validation canonicalizes the resolved path, rejects targets outside the root, and reports open or read failures. The error fixture checks a parent path and invalid line input.",
+  "rationale": "**Verdict:** the requirement is met. Containment is implemented at every place where an evidence input names or resolves to a project file, and the tests cover the main cases. A few secondary branches are untested.\n\n**Implementation**\n- `validate_input_lines` (src/evidence.rs ~713–760) handles file-range inputs.\n  - It canonicalizes `root.join(file)`, which follows symlinks. A failure is reported as `cannot open …`, which covers a missing file.\n  - It reports `… resolves outside the repository` if the canonical path does not `starts_with(root)`.\n  - It reports `cannot read …` if `fs::read_to_string` fails, which covers an unreadable file.\n  - `inspect_repository` and `load_definitions` canonicalize the root first (src/evidence.rs:50 and :71), so the `starts_with` comparison is sound.\n- `check_project_file` and `read_project_file` (src/inputs.rs ~231–263) handle selector-resolved files.\n  - They reject absolute paths and `..` components.\n  - They canonicalize both the root and the target and enforce `starts_with(root)`.\n  - They require `is_file()` and report a failed read as `cannot read`.\n  - Rust-item inputs (src/inputs.rs:155), file ranges (:126) and definition and requirements selectors (:181, :204) all go through these helpers. `add_input` and authoring inputs reuse `read_project_file`.\n- `project_path` (src/authoring/tools.rs:284–300) applies the same canonicalize-then-`starts_with` check to the authoring source tools.\n- `validate_input` dispatches every input kind to one of these checks, so no selector form bypasses them.\n\n**Tests**\n- `file_ranges_report_order_eof_length_and_missing_file_errors` (tests/evidence_boundaries.rs) checks that a missing file produces `cannot open missing.txt`.\n- `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` (tests/evidence_boundaries.rs) covers three cases.\n  - An in-project symlink is accepted.\n  - A symlink to a sibling directory with the same name prefix (`project-sibling`) is rejected with `escape.rs resolves outside the repository`. This is the classic string-prefix pitfall.\n  - The rejection applies to both a file-range input and a Rust-item input.\n- The unit test `collects_missing_orphan_format_false_and_changed_line_errors` in src/evidence.rs includes a `../outside` file and checks the `file must be a path relative to the repository` diagnostic.\n\n**Minor gaps, none acknowledged by a FIXME**\n- The `cannot read` branch for an unreadable file is not tested directly. A permissions-based test is fragile, for example when the tests run as root, and the branch is a simple error mapping.\n- The authoring-tools `project_path` has no dedicated escape test.\n- Definition and requirements selectors whose declaration files are symlinked outside the project are not tested, although they use the same tested `check_project_file`.\n\nThese gaps are small relative to the covered behaviour: symlink resolution, escape detection, and missing-file reporting across the main input kinds.",
   "inputs": [
     {
-      "file": "src/evidence.rs",
-      "line_start": 1389,
-      "line_end": 1464,
+      "requirements": "requirements.ci.input_containment",
+      "matches": [
+        "requirements.ci.input_containment"
+      ],
       "text": [
-        "    // {test}`requirements.ci.input_containment`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.one.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Old text.\",",
-        "                \"determination\": false,",
-        "                \"rationale\": \"Work remains.\",",
-        "                \"inputs\": [",
-        "                    {",
-        "                        \"file\": \"src/main.rs\",",
-        "                        \"line_start\": 1,",
-        "                        \"line_end\": 1,",
-        "                        \"text\": [\"changed line\"]",
-        "                    },",
-        "                    {",
-        "                        \"file\": \"../outside\",",
-        "                        \"line_start\": 0,",
-        "                        \"line_end\": 2,",
-        "                        \"text\": [1]",
-        "                    }",
-        "                ]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.three.json\"),",
-        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/ghost.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ghost.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"A valid but orphaned file.\",",
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\",",
-        "            \"requirement must be a string\",",
-        "            \"missing field \\\"determination\\\"\",",
-        "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
-        "            \"line_start must be a positive integer\",",
-        "            \"text[0] must be a string\",",
-        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
-        "            \"requirement requirements.empty has no text\",",
-        "        ] {",
-        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
-        "        }"
+        ":::{req} input_containment",
+        "Every project file named directly by an evidence input or resolved from its selector MUST resolve within the project root, including when its path contains symlinks. Validation MUST report a missing or unreadable file and a path that resolves outside the project.",
+        ":::"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 673,
-      "line_end": 725,
+      "rust_file": "src/authoring/tools.rs",
+      "rust_item": "fn[project_path]",
       "text": [
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
         "// {impl}`requirements.ci.input_containment`",
-        "fn validate_input_lines(",
-        "    root: &Path,",
-        "    file: &str,",
-        "    start: usize,",
-        "    end: usize,",
-        "    text: &[&str],",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let path = match fs::canonicalize(root.join(file)) {",
-        "        Ok(path) => path,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
+        "// {impl}`requirements.authoring.source_tools`",
+        "fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {",
+        "    if relative.is_empty()",
+        "        || !Path::new(relative)",
+        "            .components()",
+        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+        "    {",
+        "        return Err(\"path must be relative to the project\".to_owned());",
+        "    }",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {relative}: {error}\"))?;",
         "    if !path.starts_with(root) {",
-        "        errors.push(format!(\"{label}: {file} resolves outside the repository\"));",
-        "        return;",
+        "        return Err(format!(\"{relative} resolves outside the project\"));",
         "    }",
-        "    let content = match fs::read_to_string(&path) {",
-        "        Ok(content) => content,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot read {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let lines: Vec<_> = content",
-        "        .lines()",
-        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line))",
-        "        .collect();",
-        "    if end > lines.len() {",
-        "        errors.push(format!(",
-        "            \"{label}: {file}:{start}-{end} exceeds the file's {} lines\",",
-        "            lines.len()",
-        "        ));",
-        "        return;",
+        "    if generated_evidence_path(root, &path) {",
+        "        return Err(\"generated evidence is output, not assessment source\".to_owned());",
         "    }",
-        "    let expected_count = end - start + 1;",
-        "    if text.len() != expected_count {",
-        "        errors.push(format!(",
-        "            \"{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}\",",
-        "            text.len()",
-        "        ));",
-        "    }",
-        "    let actual = &lines[start - 1..end];",
-        "    if text != actual {",
-        "        errors.push(format!(",
-        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
-        "            compact_diff(text, actual)",
-        "        ));",
-        "    }"
+        "    Ok(path)",
+        "}"
       ]
     },
     {
@@ -432,13 +328,1381 @@
       ]
     },
     {
-      "rust_file": "src/authoring/tools.rs",
-      "rust_item": "fn[project_path]",
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[fixture]",
       "text": [
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.orphans`",
+        "fn fixture() -> TempDir {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let root = temp.path().join(\"project\");",
+        "    for directory in [\"md\", \"src\", \"evidence\"] {",
+        "        fs::create_dir_all(root.join(directory)).unwrap();",
+        "    }",
+        "    fs::write(root.join(\"Cargo.toml\"), \"[package]\\nname = 'fixture'\\n\").unwrap();",
+        "    fs::write(root.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "    fs::write(",
+        "        root.join(\"md/rules.md\"),",
+        "        \":::{req} ready\\nRead the data.\\n:::\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(root.join(\"data.txt\"), \"first\\nsecond\\n\").unwrap();",
+        "    write_inputs(&root, vec![]);",
+        "    temp",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[file_ranges_report_order_eof_length_and_missing_file_errors]",
+      "text": [
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.input_containment`",
+        "#[test]",
+        "fn file_ranges_report_order_eof_length_and_missing_file_errors() {",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    write_inputs(",
+        "        &root,",
+        "        vec![json!({\"file\":\"data.txt\", \"line_start\":2, \"line_end\":2, \"text\":[\"second\"]})],",
+        "    );",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    for (input, expected) in [",
+        "        (",
+        "            json!({\"file\":\"data.txt\", \"line_start\":2, \"line_end\":1, \"text\":[\"second\"]}),",
+        "            \"line_end must be at least line_start\",",
+        "        ),",
+        "        (",
+        "            json!({\"file\":\"data.txt\", \"line_start\":1, \"line_end\":3, \"text\":[\"first\", \"second\", \"third\"]}),",
+        "            \"exceeds the file's 2 lines\",",
+        "        ),",
+        "        (",
+        "            json!({\"file\":\"data.txt\", \"line_start\":1, \"line_end\":2, \"text\":[\"first\"]}),",
+        "            \"text has 1 lines, but data.txt:1-2 has 2\",",
+        "        ),",
+        "        (",
+        "            json!({\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"first\"]}),",
+        "            \"cannot open missing.txt\",",
+        "        ),",
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(expected), \"missing {expected:?}: {errors}\");",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/evidence_boundaries.rs",
+      "rust_item": "fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]",
+      "text": [
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.ci.inputs`",
+        "// {test}`requirements.ci.rust_item_inputs`",
+        "#[cfg(unix)]",
+        "#[test]",
+        "fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {",
+        "    use std::os::unix::fs::symlink;",
+        "",
+        "    let temp = fixture();",
+        "    let root = temp.path().join(\"project\");",
+        "    symlink(root.join(\"data.txt\"), root.join(\"inside.txt\")).unwrap();",
+        "    write_inputs(",
+        "        &root,",
+        "        vec![",
+        "            json!({\"file\":\"inside.txt\", \"line_start\":1, \"line_end\":2, \"text\":[\"first\", \"second\"]}),",
+        "        ],",
+        "    );",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "",
+        "    let sibling = temp.path().join(\"project-sibling\");",
+        "    fs::create_dir(&sibling).unwrap();",
+        "    fs::write(sibling.join(\"outside.rs\"), \"fn outside() {}\\n\").unwrap();",
+        "    symlink(sibling.join(\"outside.rs\"), root.join(\"escape.rs\")).unwrap();",
+        "    for input in [",
+        "        json!({\"file\":\"escape.rs\", \"line_start\":1, \"line_end\":1, \"text\":[\"fn outside() {}\"]}),",
+        "        json!({\"rust_file\":\"escape.rs\", \"rust_item\":\"fn[outside]\", \"text\":[\"fn outside() {}\"]}),",
+        "    ] {",
+        "        write_inputs(&root, vec![input]);",
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"escape.rs resolves outside the repository\"),",
+        "            \"{errors}\"",
+        "        );",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1389,
+      "line_end": 1464,
+      "text": [
+        "    valid",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    use std::fs;",
+        "",
+        "    use serde_json::json;",
+        "    use tempfile::TempDir;",
+        "",
+        "    use super::validate_repository;",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    fn fixture() -> TempDir {",
+        "        let temp = TempDir::new().unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            \"// first line\\n// second line\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        temp",
+        "    }",
+        "",
+        "    // {test}`requirements.ci.book_source`",
+        "    #[test]",
+        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
+        "        let temp = TempDir::new().unwrap();",
+        "        let root = temp.path();",
+        "        let path = root.join(\"book.toml\");",
+        "        for (configuration, expected) in [",
+        "            (\"\", \"src\"),",
+        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),",
+        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),",
+        "            (\"book = { src = 'docs' }\\n\", \"docs\"),",
+        "        ] {",
+        "            fs::write(&path, configuration).unwrap();",
+        "            let mut errors = Vec::new();",
+        "            assert_eq!(",
+        "                super::book_source_dir(root, &mut errors),",
+        "                root.join(expected)",
+        "            );",
+        "            assert!(errors.is_empty(), \"{errors:?}\");",
+        "        }",
+        "        fs::remove_file(&path).unwrap();",
+        "        let mut errors = Vec::new();",
+        "        super::book_source_dir(root, &mut errors);",
+        "        assert!(",
+        "            errors",
+        "                .iter()",
+        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
+        "        );",
+        "        for (configuration, expected) in [",
+        "            (\"[book\", \"invalid TOML\"),",
+        "            (\"book = 'wrong'\", \"book must be a table\"),",
+        "            (\"[book]\\nsrc = 7\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
+        "            (\"[book.src]\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '../outside'\", \"book.src must be a directory\"),",
+        "            (",
+        "                \"[book]\\nsrc = 'md/../outside'\",",
+        "                \"book.src must be a directory\",",
+        "            ),",
+        "        ] {",
+        "            fs::write(&path, configuration).unwrap();",
+        "            let mut errors = Vec::new();",
+        "            super::book_source_dir(root, &mut errors);",
+        "            assert!(",
+        "                errors.iter().any(|error| error.contains(expected)),",
+        "                \"{configuration:?}: {errors:?}\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 673,
+      "line_end": 725,
+      "text": [
+        "            return None;",
+        "        }",
+        "    };",
+        "    if let Some(matches) = matches",
+        "        && matches != resolved.matches",
+        "    {",
+        "        let missing = resolved",
+        "            .matches",
+        "            .iter()",
+        "            .filter(|name| !matches.contains(name))",
+        "            .cloned()",
+        "            .collect::<Vec<_>>();",
+        "        let removed = matches",
+        "            .iter()",
+        "            .filter(|name| !resolved.matches.contains(name))",
+        "            .cloned()",
+        "            .collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}\"",
+        "        ));",
+        "    }",
+        "    if text != resolved.text {",
+        "        let old = text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: input text changed for {selector:?}{}\",",
+        "            compact_diff(&old, &new)",
+        "        ));",
+        "    }",
+        "    Some(resolved)",
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "// {impl}`requirements.ci.input_containment`",
+        "fn validate_input_lines(",
+        "    root: &Path,",
+        "    file: &str,",
+        "    start: usize,",
+        "    end: usize,",
+        "    text: &[&str],",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") {",
+        "    let path = match fs::canonicalize(root.join(file)) {",
+        "        Ok(path) => path,",
+        "        Err(error) => {",
+        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
+        "            return;",
+        "        }",
+        "    };",
+        "    if !path.starts_with(root) {",
+        "        errors.push(format!(\"{label}: {file} resolves outside the repository\"));",
+        "        return;"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 8,
+      "line_end": 12,
+      "text": [
+        "use crate::DefinitionKind;",
+        "use crate::evidence::{Declaration, inspect_repository};",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "use crate::rust_items::{function_citations, parse_items};",
+        ""
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 33,
+      "line_end": 37,
+      "text": [
+        "// {impl}`requirements.cli.add_input_requirements`",
+        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;",
+        "    let definitions = &inspection.definitions;"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 102,
+      "line_end": 106,
+      "text": [
+        "                return Err(invalid_input(\"Rust item location requires a .rs file\"));",
+        "            }",
+        "            let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;",
+        "            let rust_file = path",
+        "                .strip_prefix(root)"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 189,
+      "line_end": 193,
+      "text": [
+        "    inputs: Vec<(InputSelector, Value, Vec<String>)>,",
+        ") -> io::Result<String> {",
+        "    let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;",
+        "    let rust_file = path",
+        "        .strip_prefix(root)"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 22,
+      "line_end": 26,
+      "text": [
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;",
+        "    if !inspection.discovery_errors.is_empty() {"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 6,
+      "line_end": 10,
+      "text": [
+        "",
+        "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "use crate::{DefinitionKind, ReferenceKind};",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 46,
+      "line_end": 50,
+      "text": [
+        "    // {impl}`requirements.definitions.authoring_inputs`",
+        "    // {impl}`requirements.ci.authoring_inputs`",
+        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {",
+        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 149,
+      "line_end": 155,
+      "text": [
+        "    pub(crate) fn prepare_function(",
+        "        root: &Path,",
+        "        rust_file: &str,",
+        "        rust_item: &str,",
+        "    ) -> Result<Self, String> {",
+        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 283,
+      "line_end": 287,
+      "text": [
+        "// {impl}`requirements.ci.authoring_inputs`",
+        "fn generated_evidence_selector(root: &Path, selector: &InputSelector) -> bool {",
+        "    match selector {",
+        "        InputSelector::FileRange { file, .. }",
+        "        | InputSelector::RustItem {"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 325,
+      "line_end": 329,
+      "text": [
+        "fn reference_selector(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    reference: &SourceReference,",
+        ") -> Result<InputSelector, String> {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 119,
+      "line_end": 126,
+      "text": [
+        "    root: &Path,",
+        "    subject: &str,",
+        "    selection: Option<&str>,",
+        "    output: EvidenceOutput,",
+        ") -> io::Result<AuthoringOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 171,
+      "line_end": 178,
+      "text": [
+        "pub(crate) async fn prepare_assessment(",
+        "    root: &Path,",
+        "    subject: &AuthoringSubject,",
+        "    config: &ResolvedAuthoringConfig,",
+        ") -> io::Result<PendingAssessment> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 7,
+      "line_end": 11,
+      "text": [
+        "",
+        "use super::inputs::{AssessmentSources, generated_evidence_path};",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "",
+        "pub(crate) struct ToolDelivery {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 73,
+      "line_end": 77,
+      "text": [
+        "        if generated_evidence_path(&sources.root, Path::new(&file)) {",
+        "            return Err(\"generated evidence is output, not assessment source\".to_owned());",
+        "        }",
+        "        let line_start = integer(args, \"line_start\")?;",
+        "        let line_end = if args.contains_key(\"line_end\") {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 193,
+      "line_end": 197,
+      "text": [
+        "            continue;",
+        "        }",
+        "        let file = event[\"data\"][\"path\"][\"text\"]",
+        "            .as_str()",
+        "            .ok_or_else(|| \"ripgrep found a non-UTF-8 path\".to_owned())?;"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 275,
+      "line_end": 282,
+      "text": [
+        "        string(args, \"path\")",
+        "    } else {",
+        "        Ok(\".\")",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 198,
+      "line_end": 202,
+      "text": [
+        "                || root",
+        "                    .components()",
+        "                    .any(|part| matches!(part, Component::CurDir | Component::ParentDir))",
+        "                || fs::canonicalize(root).is_ok_and(|canonical| canonical != *root)",
+        "            {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 461,
+      "line_end": 465,
+      "text": [
+        "    path: &Path,",
+        "    user: Option<&UserConfig>,",
+        "    root: &Path,",
+        "    explicit: Option<&str>,",
+        ") -> io::Result<ResolvedAuthoringConfig> {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 49,
+      "line_end": 53,
+      "text": [
+        "// {impl}`requirements.ci.definition_errors`",
+        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();",
+        "    let md_root = book_source_dir(&root, &mut errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 66,
+      "line_end": 70,
+      "text": [
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "// {impl}`requirements.examples.evidence`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 687,
+      "line_end": 691,
+      "text": [
+        "            .filter(|name| !resolved.matches.contains(name))",
+        "            .cloned()",
+        "            .collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 695,
+      "line_end": 699,
+      "text": [
+        "        let old = text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: input text changed for {selector:?}{}\",",
+        "            compact_diff(&old, &new)"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1067,
+      "line_end": 1071,
+      "text": [
+        "            });",
+        "        }",
+        "    }",
+        "    references",
+        "}"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 124,
+      "line_end": 128,
+      "text": [
+        "                line_end,",
+        "            } => {",
+        "                let (_, content) = read_project_file(root, file)?;",
+        "                let lines = raw_lines(&content);",
+        "                if *line_start == 0 || *line_end < *line_start || *line_end > lines.len() {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 153,
+      "line_end": 157,
+      "text": [
+        "                    return Err(format!(\"{rust_file}: Rust-item input requires a .rs file\"));",
+        "                }",
+        "                let (_, content) = read_project_file(root, rust_file)?;",
+        "                let items = parse_items(&content)",
+        "                    .map_err(|error| format!(\"{rust_file}: cannot parse Rust source: {error}\"))?;"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 179,
+      "line_end": 183,
+      "text": [
+        "                    .filter(|d| d.kind == crate::DefinitionKind::Term)",
+        "                    .ok_or_else(|| format!(\"{definition}: no matching named definition\"))?;",
+        "                check_project_file(root, &target.file)?;",
+        "                Ok(ResolvedInput {",
+        "                    ranges: vec![SourceRange {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 202,
+      "line_end": 206,
+      "text": [
+        "                        continue;",
+        "                    }",
+        "                    check_project_file(root, &definition.file)?;",
+        "                    if !text.is_empty() {",
+        "                        text.push(String::new());"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 231,
+      "line_end": 235,
+      "text": [
+        "",
+        "// {impl}`requirements.ci.input_containment`",
+        "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
+        "    let relative = Path::new(file);",
+        "    if file.is_empty()"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 243,
+      "line_end": 251,
+      "text": [
+        "    }",
+        "    let root =",
+        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
+        "    if !path.starts_with(root) {",
+        "        return Err(format!(\"{file} resolves outside the repository\"));",
+        "    }",
+        "    if !path.is_file() {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 256,
+      "line_end": 261,
+      "text": [
+        "",
+        "// {impl}`requirements.ci.input_containment`",
+        "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
+        "    let path = check_project_file(root, file)?;",
+        "    let content =",
+        "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 141,
+      "line_end": 145,
+      "text": [
+        "    }",
+        "",
+        "    let manifest_path = root.join(\"Cargo.toml\");",
+        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
+        "    // {impl}`requirements.cli.setup_local_path`"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 20,
+      "line_end": 26,
+      "text": [
+        "an ad hoc evidence-writing agent.",
+        "",
+        "Use `--config <name>` to select a saved authoring configuration. Configuration and",
+        "credentials stay outside the project. Bedrock defaults to concurrent assessments;",
+        "Ollama defaults to one at a time. Each named configuration's positive `concurrency`",
+        "setting overrides its default. If the provider reports throttling, lower that",
+        "setting and rerun the command. Do not substitute manual evidence creation when"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 159,
+      "line_end": 165,
+      "text": [
+        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
+        "assessment that fails before accepting a valid judgment emits no evidence JSON.",
+        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
+        "Usage is still recorded outside the project, with `evidence_output` identifying",
+        "the selected `file` or `stdout` destination and `evidence_written` reporting",
+        "whether the write succeeded.",
+        "{cite}`requirements.authoring.invocation`"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 519,
+      "line_end": 525,
+      "text": [
+        "concurrency = 4",
+        "```",
+        "",
+        "Here `MODEL_ID` is your available model identifier and four is an illustrative",
+        "choice, not the default. Bedrock defaults to the available logical CPU count;",
+        "Ollama defaults to one. Lower concurrency if the provider reports throttling;",
+        "rerunning `habeas author --all` preserves current accepted results and retries"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 556,
+      "line_end": 562,
+      "text": [
+        "",
+        "### Usage history",
+        "",
+        ":::{req} usage_storage",
+        "Each assessment MUST have a separate JSON usage record under",
+        "`<state-root>/authoring/usage/<run-id>.json` using",
+        "{cite}`requirements.configuration.state_location`."
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 109,
+      "line_end": 115,
+      "text": [
+        ":::",
+        "",
+        ":::{req} input_containment",
+        "Every project file named directly by an evidence input or resolved from its selector MUST resolve within the project root, including when its path contains symlinks. Validation MUST report a missing or unreadable file and a path that resolves outside the project.",
+        ":::",
+        "",
+        "## Existing evidence inputs used by authoring"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 145,
+      "line_end": 151,
+      "text": [
+        "sources. CI accepts the evidence when all other checks pass.",
+        "{cite}`requirements.ci.outcomes`",
+        "{cite}`requirements.ci.determination`",
+        ":::",
+        "",
+        "### Missing tests and references outside the marker",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 123,
+      "line_end": 129,
+      "text": [
+        ") -> io::Result<AuthoringOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;",
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other(",
+        "            \"authoring usage state must be outside the project repository\","
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 175,
+      "line_end": 181,
+      "text": [
+        ") -> io::Result<PendingAssessment> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;",
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other(",
+        "            \"authoring usage state must be outside the project repository\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 277,
+      "line_end": 283,
+      "text": [
+        "        Ok(\".\")",
+        "    }",
+        "}",
+        "",
         "// {impl}`requirements.authoring.file_discovery`",
         "// {impl}`requirements.authoring.text_search`",
+        "// {impl}`requirements.ci.input_containment`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 286,
+      "line_end": 292,
+      "text": [
+        "    if relative.is_empty()",
+        "        || !Path::new(relative)",
+        "            .components()",
+        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+        "    {",
+        "        return Err(\"path must be relative to the project\".to_owned());",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 694,
+      "line_end": 700,
+      "text": [
+        "    if text != resolved.text {",
+        "        let old = text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: input text changed for {selector:?}{}\",",
+        "            compact_diff(&old, &new)",
+        "        ));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1446,
+      "line_end": 1452,
+      "text": [
+        "            (\"book = 'wrong'\", \"book must be a table\"),",
+        "            (\"[book]\\nsrc = 7\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
+        "            (\"[book.src]\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1020,
+      "line_end": 1026,
+      "text": [
+        "            links.input_url(\"src/a b#c.rs\", 1, 1).as_deref(),",
+        "            Some(\"https://github.com/example/project/blob/release/src/a%20b%23c.rs#L1-L1\")",
+        "        );",
+        "        assert!(links.input_url(\"../outside.rs\", 1, 2).is_none());",
+        "        assert!(links.input_url(\"src/main.rs\", 0, 2).is_none());",
+        "        assert_eq!(",
+        "            evidence_edit_path(Path::new(\"docs/md\"), \"requirements.core.ready\"),"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 246,
+      "line_end": 252,
+      "text": [
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
+        "    if !path.starts_with(root) {",
+        "        return Err(format!(\"{file} resolves outside the repository\"));",
+        "    }",
+        "    if !path.is_file() {",
+        "        return Err(format!(\"{file} is not a project file\"));"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 127,
+      "line_end": 133,
+      "text": [
+        "        let project = temp.path();",
+        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
+        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        assert!(project.join(\"src/habeas.css\").is_file());",
+        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
+        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 40,
+      "line_end": 41,
+      "text": [
+        "| `src/evidence.rs:311` `validate_input` | `requirements.ci.schema`, `requirements.ci.input_containment` |",
+        "| `src/evidence.rs:367` `validate_input_lines` | `requirements.ci.inputs`, `requirements.ci.input_containment` |"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 82,
+      "line_end": 82,
+      "text": [
+        "| `src/evidence.rs:791` `collects_missing_orphan_format_false_and_changed_line_errors` | `requirements.integration.report_api`, `requirements.ci.errors`, `requirements.ci.diagnostics`, `requirements.ci.input_containment`, `requirements.ci.definition_errors` |"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 125,
+      "line_end": 126,
+      "text": [
+        "| `src/evidence.rs:310` | malformed input fields | `requirements.ci.schema`, `requirements.ci.input_containment` |",
+        "| `src/evidence.rs:366` | missing, escaping, or changed input file | `requirements.ci.inputs`, `requirements.ci.input_containment` |"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 268,
+      "line_end": 268,
+      "text": [
+        "        .ok_or_else(|| format!(\"{key} must be a nonnegative integer\"))"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 458,
+      "line_end": 458,
+      "text": [
+        "            rationale"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 679,
+      "line_end": 679,
+      "text": [
+        "        let missing = resolved"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1425,
+      "line_end": 1425,
+      "text": [
+        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 232,
+      "line_end": 232,
+      "text": [
+        "// {impl}`requirements.ci.input_containment`"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 257,
+      "line_end": 257,
+      "text": [
+        "// {impl}`requirements.ci.input_containment`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 278,
+      "line_end": 278,
+      "text": [
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 692,
+      "line_end": 692,
+      "text": [
+        "        ));"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 245,
+      "line_end": 245,
+      "text": [
+        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 247,
+      "line_end": 247,
+      "text": [
+        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 252,
+      "line_end": 252,
+      "text": [
+        "        return Err(format!(\"{file} is not a project file\"));"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 14,
+      "line_end": 14,
+      "text": [
+        "fn locations_use_absolute_xdg_values_and_platform_fallbacks() {"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 130,
+      "line_end": 130,
+      "text": [
+        "fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 130,
+      "line_end": 130,
+      "text": [
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 249,
+      "line_end": 249,
+      "text": [
+        "        return Err(format!(\"{file} resolves outside the repository\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 24,
+      "line_end": 48,
+      "text": [
+        "",
+        "pub(crate) struct Declaration {",
+        "    pub(crate) kind: DefinitionKind,",
+        "    pub(crate) text: String,",
+        "    pub(crate) source: String,",
+        "    pub(crate) file: String,",
+        "    pub(crate) line_start: usize,",
+        "    pub(crate) line_end: usize,",
+        "    pub(crate) raw_lines: Vec<String>,",
+        "}",
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
+        "}",
+        "",
+        "pub(crate) struct RepositoryInspection {",
+        "    pub(crate) definitions: BTreeMap<String, Declaration>,",
+        "    pub(crate) report: EvidenceReport,",
+        "    pub(crate) rust_functions: Vec<(String, String, bool)>,",
+        "    pub(crate) discovery_errors: Vec<String>,",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.ci.book_source`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 558,
+      "line_end": 582,
+      "text": [
+        "        let selector = InputSelector::Requirements {",
+        "            requirements: requirements.to_owned(),",
+        "        };",
+        "        return validate_resolved_input(",
+        "            root,",
+        "            definitions,",
+        "            &selector,",
+        "            &text,",
+        "            Some(&matches),",
+        "            label,",
+        "            errors,",
+        "        );",
+        "    }",
+        "    validate_file_range_input(root, definitions, object, label, errors)",
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "// {impl}`requirements.ci.inputs`",
+        "fn validate_file_range_input(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    object: &Map<String, Value>,",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Option<ResolvedInput> {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 600,
+      "line_end": 624,
+      "text": [
+        "            None",
+        "        } else {",
+        "            Some(file)",
+        "        }",
+        "    });",
+        "    let start = positive_integer_field(object, \"line_start\", label, errors);",
+        "    let end = positive_integer_field(object, \"line_end\", label, errors);",
+        "    let text = text_field(object, label, errors);",
+        "",
+        "    if let (Some(start), Some(end)) = (start, end)",
+        "        && end < start",
+        "    {",
+        "        errors.push(format!(\"{label}: line_end must be at least line_start\"));",
+        "        return None;",
+        "    }",
+        "    let (Some(file), Some(start), Some(end), Some(text)) = (file, start, end, text) else {",
+        "        return None;",
+        "    };",
+        "    validate_input_lines(",
+        "        root,",
+        "        file,",
+        "        start,",
+        "        end,",
+        "        &text.iter().map(String::as_str).collect::<Vec<_>>(),",
+        "        label,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 642,
+      "line_end": 666,
+      "text": [
+        "    let values = array_field(object, \"text\", label, errors)?;",
+        "    if values.is_empty() {",
+        "        errors.push(format!(\"{label}: text must be a nonempty array\"));",
+        "    }",
+        "    values",
+        "        .iter()",
+        "        .enumerate()",
+        "        .map(|(index, value)| {",
+        "            value.as_str().map(str::to_owned).or_else(|| {",
+        "                errors.push(format!(\"{label}: text[{index}] must be a string\"));",
+        "                None",
+        "            })",
+        "        })",
+        "        .collect()",
+        "}",
+        "",
+        "// {impl}`requirements.ci.rust_item_inputs`",
+        "// {impl}`requirements.ci.requirements_inputs`",
+        "fn validate_resolved_input(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    selector: &InputSelector,",
+        "    text: &[String],",
+        "    matches: Option<&[String]>,",
+        "    label: &str,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 689,
+      "line_end": 713,
+      "text": [
+        "            .collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}\"",
+        "        ));",
+        "    }",
+        "    if text != resolved.text {",
+        "        let old = text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();",
+        "        errors.push(format!(",
+        "            \"{label}: input text changed for {selector:?}{}\",",
+        "            compact_diff(&old, &new)",
+        "        ));",
+        "    }",
+        "    Some(resolved)",
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
         "// {impl}`requirements.ci.input_containment`",
-        "fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {",
+        "fn validate_input_lines(",
+        "    root: &Path,",
+        "    file: &str,",
+        "    start: usize,",
+        "    end: usize,",
+        "    text: &[&str],",
+        "    label: &str,"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 110,
+      "line_end": 114,
+      "text": [
+        "",
+        ":::{req} input_containment",
+        "Every project file named directly by an evidence input or resolved from its selector MUST resolve within the project root, including when its path contains symlinks. Validation MUST report a missing or unreadable file and a path that resolves outside the project.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 292,
+      "line_end": 296,
+      "text": [
+        "    }",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {relative}: {error}\"))?;",
+        "    if !path.starts_with(root) {",
+        "        return Err(format!(\"{relative} resolves outside the project\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 181,
+      "line_end": 185,
+      "text": [
+        "            }",
+        "            Err(error) => {",
+        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
+        "                return root.join(\"md\");",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 221,
+      "line_end": 225,
+      "text": [
+        "        if relative == Path::new(\"SUMMARY.md\") {",
+        "            continue;",
+        "        }",
+        "",
+        "        let label = display_path(root, &file);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 334,
+      "line_end": 338,
+      "text": [
+        "                continue;",
+        "            }",
+        "        };",
+        "        for entry in entries {",
+        "            let entry = match entry {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 376,
+      "line_end": 380,
+      "text": [
+        "    expected: Option<&Declaration>,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    errors: &mut Vec<String>,",
+        ") {",
+        "    let label = display_path(root, path);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 716,
+      "line_end": 720,
+      "text": [
+        "    let path = match fs::canonicalize(root.join(file)) {",
+        "        Ok(path) => path,",
+        "        Err(error) => {",
+        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
+        "            return;"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 722,
+      "line_end": 726,
+      "text": [
+        "    };",
+        "    if !path.starts_with(root) {",
+        "        errors.push(format!(\"{label}: {file} resolves outside the repository\"));",
+        "        return;",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1038,
+      "line_end": 1042,
+      "text": [
+        "",
+        "    let mut references = Vec::new();",
+        "    for file in files {",
+        "        let content = match fs::read_to_string(&file) {",
+        "            Ok(content) => content,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1117,
+      "line_end": 1121,
+      "text": [
+        "    let initial_errors = errors.len();",
+        "    let files = crate::rust_coverage::rust_files(root, errors);",
+        "    discovery_errors.extend(errors[initial_errors..].iter().cloned());",
+        "    for file in files {",
+        "        let rust_file = display_path(root, &file);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1197,
+      "line_end": 1201,
+      "text": [
+        "        Err(error) if error.kind() == io::ErrorKind::NotFound => {",
+        "            for (function, _) in functions {",
+        "                errors.push(format!(",
+        "                    \"{label}: {rust_file}:{} {}: missing Rust function attestation file; {purpose}\",",
+        "                    function.declaration_line, function.selector"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1431,
+      "line_end": 1435,
+      "text": [
+        "                super::book_source_dir(root, &mut errors),",
+        "                root.join(expected)",
+        "            );",
+        "            assert!(errors.is_empty(), \"{errors:?}\");",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 155,
+      "line_end": 159,
+      "text": [
+        "            Err(error) if error.kind() == io::ErrorKind::NotFound => None,",
+        "            Err(error) => {",
+        "                errors.push(format!(\"{prefix} cannot read evidence: {error}\"));",
+        "                None",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 247,
+      "line_end": 251,
+      "text": [
+        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
+        "    if !path.starts_with(root) {",
+        "        return Err(format!(\"{file} resolves outside the repository\"));",
+        "    }",
+        "    if !path.is_file() {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 259,
+      "line_end": 263,
+      "text": [
+        "    let path = check_project_file(root, file)?;",
+        "    let content =",
+        "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;",
+        "    Ok((path, content))",
+        "}"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 293,
+      "line_end": 297,
+      "text": [
+        "                Err(error) => {",
+        "                    errors.push(format!(",
+        "                        \"{}: cannot read Rust source directory entry: {error}\",",
+        "                        display_path(root, &directory)",
+        "                    ));"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 338,
+      "line_end": 342,
+      "text": [
+        "            Ok(source) => source,",
+        "            Err(error) => {",
+        "                errors.push(format!(\"{label}: cannot read Rust source: {error}\"));",
+        "                continue;",
+        "            }"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 108,
+      "line_end": 112,
+      "text": [
+        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"escape.rs resolves outside the repository\"),",
+        "            \"{errors}\"",
+        "        );"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 286,
+      "line_end": 297,
+      "text": [
         "    if relative.is_empty()",
         "        || !Path::new(relative)",
         "            .components()",
@@ -450,9 +1714,375 @@
         "        .map_err(|error| format!(\"cannot open {relative}: {error}\"))?;",
         "    if !path.starts_with(root) {",
         "        return Err(format!(\"{relative} resolves outside the project\"));",
-        "    }",
-        "    Ok(path)",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 303,
+      "line_end": 309,
+      "text": [
+        "",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
+        "fn relative_path(root: &Path, path: &Path) -> Result<String, String> {",
+        "    path.strip_prefix(root)",
+        "        .map_err(|_| \"path is outside the project\".to_owned())?",
+        "        .components()"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 34,
+      "line_end": 36,
+      "text": [
+        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 23,
+      "line_end": 25,
+      "text": [
+        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 48,
+      "line_end": 50,
+      "text": [
+        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> Result<Self, String> {",
+        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 153,
+      "line_end": 155,
+      "text": [
+        "    ) -> Result<Self, String> {",
+        "        let root = fs::canonicalize(root).map_err(|error| format!(\"project root: {error}\"))?;",
+        "        let definitions = load_definitions(&root).map_err(|error| error.to_string())?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 276,
+      "line_end": 279,
+      "text": [
+        "    path.starts_with(&evidence)",
+        "        || fs::canonicalize(&path)",
+        "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
         "}"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 123,
+      "line_end": 128,
+      "text": [
+        ") -> io::Result<AuthoringOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;",
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 175,
+      "line_end": 180,
+      "text": [
+        ") -> io::Result<PendingAssessment> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;",
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 119,
+      "line_end": 121,
+      "text": [
+        "    let path = optional_path(args)?;",
+        "    let directory = project_path(&sources.root, path)?;",
+        "    let mut entries = Vec::new();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 156,
+      "line_end": 158,
+      "text": [
+        "    let path = optional_path(args)?;",
+        "    project_path(&sources.root, path)?;",
+        "    let context = if args.contains_key(\"context\") {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 284,
+      "line_end": 286,
+      "text": [
+        "// {impl}`requirements.authoring.source_tools`",
+        "fn project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {",
+        "    if relative.is_empty()"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 292,
+      "line_end": 294,
+      "text": [
+        "    }",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {relative}: {error}\"))?;"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 200,
+      "line_end": 202,
+      "text": [
+        "                    .any(|part| matches!(part, Component::CurDir | Component::ParentDir))",
+        "                || fs::canonicalize(root).is_ok_and(|canonical| canonical != *root)",
+        "            {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 465,
+      "line_end": 467,
+      "text": [
+        ") -> io::Result<ResolvedAuthoringConfig> {",
+        "    let project_root = fs::canonicalize(root).map_err(|error| {",
+        "        io::Error::new("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 50,
+      "line_end": 52,
+      "text": [
+        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 71,
+      "line_end": 73,
+      "text": [
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 715,
+      "line_end": 717,
+      "text": [
+        ") {",
+        "    let path = match fs::canonicalize(root.join(file)) {",
+        "        Ok(path) => path,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1095,
+      "line_end": 1097,
+      "text": [
+        "                    Some(InputRange {",
+        "                        file: fs::canonicalize(root.join(range.file)).ok()?,",
+        "                        line_start: range.line_start,"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 244,
+      "line_end": 247,
+      "text": [
+        "    let root =",
+        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 155,
+      "line_end": 157,
+      "text": [
+        "        if let Some(local_crate) = local_crate {",
+        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
+        "        }"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 84,
+      "line_end": 87,
+      "text": [
+        "#[test]",
+        "fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {",
+        "    use std::os::unix::fs::symlink;",
+        ""
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 89,
+      "line_end": 91,
+      "text": [
+        "    let root = temp.path().join(\"project\");",
+        "    symlink(root.join(\"data.txt\"), root.join(\"inside.txt\")).unwrap();",
+        "    write_inputs("
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 101,
+      "line_end": 103,
+      "text": [
+        "    fs::write(sibling.join(\"outside.rs\"), \"fn outside() {}\\n\").unwrap();",
+        "    symlink(sibling.join(\"outside.rs\"), root.join(\"escape.rs\")).unwrap();",
+        "    for input in ["
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 109,
+      "line_end": 111,
+      "text": [
+        "        assert!(",
+        "            errors.contains(\"escape.rs resolves outside the repository\"),",
+        "            \"{errors}\""
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 21,
+      "line_end": 25,
+      "text": [
+        "",
+        "Use `--config <name>` to select a saved authoring configuration. Configuration and",
+        "credentials stay outside the project. Bedrock defaults to concurrent assessments;",
+        "Ollama defaults to one at a time. Each named configuration's positive `concurrency`",
+        "setting overrides its default. If the provider reports throttling, lower that"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 160,
+      "line_end": 164,
+      "text": [
+        "assessment that fails before accepting a valid judgment emits no evidence JSON.",
+        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
+        "Usage is still recorded outside the project, with `evidence_output` identifying",
+        "the selected `file` or `stdout` destination and `evidence_written` reporting",
+        "whether the write succeeded."
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 127,
+      "line_end": 131,
+      "text": [
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other(",
+        "            \"authoring usage state must be outside the project repository\",",
+        "        ));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 179,
+      "line_end": 183,
+      "text": [
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other(",
+        "            \"authoring usage state must be outside the project repository\",",
+        "        ));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 289,
+      "line_end": 298,
+      "text": [
+        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+        "    {",
+        "        return Err(\"path must be relative to the project\".to_owned());",
+        "    }",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {relative}: {error}\"))?;",
+        "    if !path.starts_with(root) {",
+        "        return Err(format!(\"{relative} resolves outside the project\"));",
+        "    }",
+        "    if generated_evidence_path(root, &path) {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 306,
+      "line_end": 310,
+      "text": [
+        "fn relative_path(root: &Path, path: &Path) -> Result<String, String> {",
+        "    path.strip_prefix(root)",
+        "        .map_err(|_| \"path is outside the project\".to_owned())?",
+        "        .components()",
+        "        .filter(|part| *part != Component::CurDir)"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 717,
+      "line_end": 721,
+      "text": [
+        "        Ok(path) => path,",
+        "        Err(error) => {",
+        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
+        "            return;",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 243,
+      "line_end": 249,
+      "text": [
+        "    }",
+        "    let root =",
+        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
+        "    let path = fs::canonicalize(root.join(relative))",
+        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
+        "    if !path.starts_with(root) {",
+        "        return Err(format!(\"{file} resolves outside the repository\"));"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 69,
+      "line_end": 73,
+      "text": [
+        "        (",
+        "            json!({\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"first\"]}),",
+        "            \"cannot open missing.txt\",",
+        "        ),",
+        "    ] {"
       ]
     }
   ]

@@ -1,11 +1,32 @@
 {
+  "requirement": "Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs. Rust function attestations MUST include definition inputs for every term referenced by their reviewed inputs, including selected requirements and examples.\n\nHabeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.\n\nValidation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
+  "determination": true,
+  "rationale": "The cited code implements the requirement and the tests cover its main cases. I did not read any source beyond the supplied inputs.\n\n**Implementation**\n- `src/terms.rs` `dependencies` seeds a pending set from three places:\n  - term references in the subject text (for requirements and examples);\n  - explicit `definition` inputs;\n  - term references in the text of each reviewed input.\n  \n  For Rust items and `.rs` file ranges it scans only comments. For Markdown it scans the text. For `requirements` inputs it scans the declaration bodies.\n- It then runs a worklist loop that adds each definition's own body references. Names go into a `required` set, and a name already in the set is skipped. This reaches a fixed point, handles cycles without repeated expansion, and always terminates. A term with no matching definition produces an error.\n- `validate_dependencies` requires exactly one `definition` input for each required name. It reports \"expected exactly one definition input for X, found N\", which covers both missing and duplicate inputs.\n- `validate_evidence_file` calls `validate_dependencies` with the subject text. `validate_rust_attestation_file` calls it with `None` as the subject, so Rust attestations get dependencies from their reviewed inputs, including the selected requirements. This matches the Rust-attestation clause.\n- `referenced_terms` extracts only term-role references. The tests show that literal, code-fenced and escaped references are ignored.\n- Validation only reads and reports. It never rewrites snapshots.\n\n**Tests (`tests/definitions.rs`)**\n- `cyclic_dependencies_are_captured_once_and_changes_require_review` uses a cycle where a references b and b references a. It covers the following points:\n  - The record has 3 inputs: the requirement plus one for a and one for b.\n  - Recapturing leaves the file byte-identical.\n  - Changing b's phrase or body gives \"input text changed\" errors on the glossary definitions.\n  - The file bytes are unchanged after validation, so snapshots are not silently refreshed.\n  - Removing the `glossary.b` input gives \"glossary.b, found 0\".\n  - A duplicated input gives \"found 2\".\n  - Recapturing repairs the record.\n- `function_attestations_capture_terms_without_counting_them_as_citations` covers the Rust attestation path. The sidecar entry has 4 inputs. Changing b invalidates both the requirement evidence and the Rust sidecar.\n- `definition_schema_deletion_and_literal_references_are_checked` covers a deleted definition (\"no matching named definition\") and literal, fenced and escaped references that must not create dependencies.\n- `example_subject_and_definition_display_use_the_same_dependencies` covers example subjects, with 3 inputs captured.\n- The `fixture` helper builds the cyclic glossary. The `transitive_cycle` example is cited by tests, and its scenario (R→A↔B, both records, termination, invalidation of both) is exercised.\n\nI found no acknowledged gaps (no FIXME markers) in the inputs.",
   "inputs": [
     {
-      "file": "md/requirements/definitions.md",
-      "line_start": 44,
-      "line_end": 44,
+      "requirements": "requirements.definitions.dependencies",
+      "matches": [
+        "requirements.definitions.dependencies"
+      ],
       "text": [
-        "Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. A function attestation whose requirements input selects R also requires both inputs. Dependency collection terminates. Changing B's phrase or body invalidates both records' snapshots of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`"
+        ":::{req} dependencies",
+        "Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs. Rust function attestations MUST include definition inputs for every term referenced by their reviewed inputs, including selected requirements and examples.",
+        "",
+        "Habeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.",
+        "",
+        "Validation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.definitions.transitive_cycle",
+      "matches": [
+        "requirements.definitions.transitive_cycle"
+      ],
+      "text": [
+        ":::{example} transitive_cycle",
+        "Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. A function attestation whose requirements input selects R also requires both inputs. Dependency collection terminates. Changing B's phrase or body invalidates both records' snapshots of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`",
+        ":::"
       ]
     },
     {
@@ -135,6 +156,10 @@
         "// {impl}`requirements.ci.schema`",
         "// {impl}`requirements.ci.determination`",
         "// {impl}`requirements.definitions.dependencies`",
+        "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.ci.orphans`",
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
         "fn validate_rust_attestation_file(",
         "    root: &Path,",
         "    path: &Path,",
@@ -142,7 +167,9 @@
         "    functions: &[(crate::rust_items::RustItem, BTreeSet<(String, String)>)],",
         "    definitions: &BTreeMap<String, Declaration>,",
         "    errors: &mut Vec<String>,",
-        ") {",
+        ") -> BTreeSet<String> {",
+        "    let mut valid = BTreeSet::new();",
+        "    let initial_errors = errors.len();",
         "    let label = display_path(root, path);",
         "    let purpose =",
         "        \"review each function and confirm it cites every applicable requirement or named example\";",
@@ -155,25 +182,25 @@
         "                    function.declaration_line, function.selector",
         "                ));",
         "            }",
-        "            return;",
+        "            return valid;",
         "        }",
         "        Err(error) => {",
         "            errors.push(format!(",
         "                \"{label}: cannot read Rust attestation: {error}; {purpose}\"",
         "            ));",
-        "            return;",
+        "            return valid;",
         "        }",
         "    };",
         "    let value: Value = match serde_json::from_str(&source) {",
         "        Ok(value) => value,",
         "        Err(error) => {",
         "            errors.push(format!(\"{label}: invalid JSON: {error}; {purpose}\"));",
-        "            return;",
+        "            return valid;",
         "        }",
         "    };",
         "    let Some(object) = value.as_object() else {",
         "        errors.push(format!(\"{label}: expected a JSON object; {purpose}\"));",
-        "        return;",
+        "        return valid;",
         "    };",
         "    check_keys(object, &[\"rust_file\", \"functions\"], &label, errors);",
         "    if let Some(recorded_file) = string_field(object, \"rust_file\", &label, errors)",
@@ -184,14 +211,16 @@
         "        ));",
         "    }",
         "    let Some(entries) = array_field(object, \"functions\", &label, errors) else {",
-        "        return;",
+        "        return valid;",
         "    };",
+        "    let valid_header = errors.len() == initial_errors;",
         "    let expected = functions",
         "        .iter()",
         "        .map(|(function, citations)| (function.selector.as_str(), (function, citations)))",
         "        .collect::<BTreeMap<_, _>>();",
         "    let mut present = BTreeSet::new();",
         "    for (index, entry) in entries.iter().enumerate() {",
+        "        let initial_errors = errors.len();",
         "        let entry_label = format!(\"{label}: functions[{index}]\");",
         "        let Some(entry) = entry.as_object() else {",
         "            errors.push(format!(\"{entry_label}: expected a JSON object\"));",
@@ -224,6 +253,7 @@
         "        );",
         "        let entry_label = format!(\"{entry_label} ({location}; {purpose})\");",
         "        if !present.insert(selector.to_owned()) {",
+        "            valid.remove(selector);",
         "            errors.push(format!(",
         "                \"{entry_label}: duplicate Rust function attestation\"",
         "            ));",
@@ -325,6 +355,9 @@
         "                }",
         "            }",
         "        }",
+        "        if valid_header && errors.len() == initial_errors {",
+        "            valid.insert(selector.to_owned());",
+        "        }",
         "    }",
         "    for (selector, (function, _)) in expected {",
         "        if !present.contains(selector) {",
@@ -334,6 +367,7 @@
         "            ));",
         "        }",
         "    }",
+        "    valid",
         "}"
       ]
     },
@@ -751,18 +785,12 @@
       ]
     },
     {
-      "requirements": "requirements.definitions.transitive_cycle",
-      "matches": [
-        "requirements.definitions.transitive_cycle"
-      ],
+      "file": "md/requirements/definitions.md",
+      "line_start": 44,
+      "line_end": 44,
       "text": [
-        ":::{example} transitive_cycle",
-        "Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. A function attestation whose requirements input selects R also requires both inputs. Dependency collection terminates. Changing B's phrase or body invalidates both records' snapshots of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`",
-        ":::"
+        "Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. A function attestation whose requirements input selects R also requires both inputs. Dependency collection terminates. Changing B's phrase or body invalidates both records' snapshots of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`"
       ]
     }
-  ],
-  "requirement": "Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs. Rust function attestations MUST include definition inputs for every term referenced by their reviewed inputs, including selected requirements and examples.\n\nHabeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.\n\nValidation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
-  "determination": true,
-  "rationale": "terms::dependencies scans reviewed input snapshots and subject references, then traverses definition dependencies using a set until a fixed point. Validation enforces exactly one input per required definition. Cyclic, missing, duplicate, and function/example cases are covered by tests/definitions.rs."
+  ]
 }

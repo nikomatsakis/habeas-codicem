@@ -1,71 +1,17 @@
 {
   "requirement": "When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.",
   "determination": true,
-  "rationale": "Setup invokes cargo add with --path when the dev dependency is absent, and skips the add when it is already present. The integration test runs path setup repeatedly and checks the resulting manifest.",
+  "rationale": "**Implementation (`src/setup.rs`)**\n- `run` parses the project's `Cargo.toml` and calls `has_habeas_dev_dependency`. That helper checks whether `[dev-dependencies]` has a `habeas` entry.\n- Only if there is no such entry does `run` execute `cargo add --dev habeas --manifest-path <Cargo.toml>`.\n- When `--path` is supplied, `run` appends `--path <canonicalized local crate>`. So the local crate becomes the dev dependency, and the check prevents a second addition. This matches both halves of the requirement.\n- Both the helper and the call site carry `{impl}` annotations for `requirements.cli.setup_local_path`.\n- Failure of `cargo add` is reported as an error.\n\n**Tests (`tests/setup.rs`, `setup_is_repeatable`)**\n- The test is annotated with `{test}` for `requirements.cli.setup_local_path`.\n- It creates a fixture project with no Habeas dependency.\n- It runs `habeas setup --path $CARGO_MANIFEST_DIR` twice, with `CARGO_NET_OFFLINE` set, so the local path must be what gets used.\n- It then asserts that `Cargo.toml` contains `[dev-dependencies]`, `habeas` and `path = `.\n- The second run exercises the \"existing dependency\" branch. A duplicate entry would produce a duplicate TOML key. That would make the second `cargo add` or the manifest parse fail, and the helper `run` asserts success.\n- Many other tests (`tests/setup.rs` lines 114–204, `tests/symposium_hook_smoke.py`) also invoke `setup --path` and require success.\n- `tests/cli.rs` covers argument validation.\n\n**Minor weaknesses, none acknowledged as FIXMEs**\n- The test does not assert that the `path` value equals the local crate directory.\n- It does not assert that `habeas` appears exactly once.\n- It does not test a pre-existing registry dependency combined with `--path`.\n\nThese gaps are covered indirectly by the points above, and the behavior is simple. The requirement is adequately implemented and tested.",
   "inputs": [
     {
-      "file": "src/setup.rs",
-      "line_start": 132,
-      "line_end": 153,
+      "requirements": "requirements.cli.setup_local_path",
+      "matches": [
+        "requirements.cli.setup_local_path"
+      ],
       "text": [
-        "    // {impl}`requirements.cli.setup_local_path`",
-        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
-        "    if !has_dev_dependency {",
-        "        let mut command = Command::new(\"cargo\");",
-        "        command",
-        "            .arg(\"add\")",
-        "            .arg(\"--dev\")",
-        "            .arg(\"habeas\")",
-        "            .arg(\"--manifest-path\")",
-        "            .arg(&manifest_path);",
-        "        if let Some(local_crate) = local_crate {",
-        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
-        "        }",
-        "        let output = command.current_dir(&root).output()?;",
-        "        if !output.status.success() {",
-        "            return Err(format!(",
-        "                \"cargo add habeas --dev failed:\\n{}\",",
-        "                String::from_utf8_lossy(&output.stderr)",
-        "            )",
-        "            .into());",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 76,
-      "line_end": 104,
-      "text": [
-        "// {test}`requirements.cli.setup`",
-        "// {test}`requirements.cli.setup_css`",
-        "// {test}`requirements.cli.setup_local_path`",
-        "#[test]",
-        "fn setup_is_repeatable() {",
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    let local_crate = env!(\"CARGO_MANIFEST_DIR\");",
-        "",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));",
-        "    assert!(book.contains(\"md/custom.css\"));",
-        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
-        "    assert_eq!(",
-        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
-        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
-        "    );",
-        "    assert!(project.join(\"md/habeas.css\").is_file());",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "}"
+        ":::{req} setup_local_path",
+        "When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.",
+        ":::"
       ]
     },
     {
@@ -93,7 +39,7 @@
         "    let book_path = root.join(\"book.toml\");",
         "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
         "    // {impl}`requirements.cli.setup_project`",
-        "    let source = book[\"book\"][\"src\"].as_str().unwrap_or(\"src\").to_owned();",
+        "    let source = book_source(&book)?.to_owned();",
         "    let source_path = Path::new(&source);",
         "    if source.is_empty()",
         "        || !source_path",
@@ -204,6 +150,385 @@
         "    assert!(project.join(\"md/habeas.css\").is_file());",
         "    assert!(!project.join(\".agents/skills\").exists());",
         "}"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 132,
+      "line_end": 153,
+      "text": [
+        "    } else if let Some(css) = additional_css.as_array_mut() {",
+        "        if !css",
+        "            .iter()",
+        "            .any(|existing| existing.as_str() == Some(css_relative.as_str()))",
+        "        {",
+        "            css.push(css_relative.as_str());",
+        "        }",
+        "    } else {",
+        "        return Err(\"output.html.additional-css must be an array\".into());",
+        "    }",
+        "",
+        "    let manifest_path = root.join(\"Cargo.toml\");",
+        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
+        "    // {impl}`requirements.cli.setup_local_path`",
+        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
+        "    if !has_dev_dependency {",
+        "        let mut command = Command::new(\"cargo\");",
+        "        command",
+        "            .arg(\"add\")",
+        "            .arg(\"--dev\")",
+        "            .arg(\"habeas\")",
+        "            .arg(\"--manifest-path\")"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 76,
+      "line_end": 104,
+      "text": [
+        "// {test}`requirements.cli.setup`",
+        "// {test}`requirements.cli.setup_css`",
+        "// {test}`requirements.cli.setup_local_path`",
+        "#[test]",
+        "fn setup_is_repeatable() {",
+        "    let temp = fixture();",
+        "    let project = temp.path();",
+        "    let local_crate = env!(\"CARGO_MANIFEST_DIR\");",
+        "",
+        "    run(project, &[\"setup\", \"--path\", local_crate]);",
+        "    assert!(!project.join(\".agents/skills\").exists());",
+        "    run(project, &[\"setup\", \"--path\", local_crate]);",
+        "",
+        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
+        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
+        "    assert!(cargo.contains(\"habeas\"));",
+        "    assert!(cargo.contains(\"path = \"));",
+        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
+        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
+        "    assert!(book.contains(\"md/habeas.css\"));",
+        "    assert!(book.contains(\"md/custom.css\"));",
+        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
+        "    assert_eq!(",
+        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
+        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
+        "    );",
+        "    assert!(project.join(\"md/habeas.css\").is_file());",
+        "    assert!(!project.join(\".agents/skills\").exists());",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 1,
+      "line_end": 75,
+      "text": [
+        "use std::fs;",
+        "use std::io::Write;",
+        "use std::path::Path;",
+        "use std::process::{Command, Stdio};",
+        "",
+        "use serde_json::{Value, json};",
+        "use tempfile::TempDir;",
+        "",
+        "// {test}`requirements.cli.setup`",
+        "// {test}`requirements.integration.symposium_setup_hook`",
+        "fn fixture() -> TempDir {",
+        "    let temp = TempDir::new().unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"Cargo.toml\"),",
+        "        \"[package]\\nname = \\\"sample-project\\\"\\nversion = \\\"0.1.0\\\"\\nedition = \\\"2024\\\"\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"book.toml\"),",
+        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "    temp",
+        "}",
+        "",
+        "// {test}`requirements.cli.setup`",
+        "fn run(project: &Path, args: &[&str]) {",
+        "    let output = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
+        "        .args(args)",
+        "        .current_dir(project)",
+        "        .env(\"CARGO_NET_OFFLINE\", \"true\")",
+        "        .output()",
+        "        .unwrap();",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"habeas {:?} failed:\\n{}\",",
+        "        args,",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "}",
+        "",
+        "// {test}`requirements.integration.symposium_setup_hook`",
+        "fn session_start(project: &Path, cwd: &Path) -> Value {",
+        "    let mut child = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
+        "        .args([\"hook\", \"session-start\"])",
+        "        .current_dir(project)",
+        "        .stdin(Stdio::piped())",
+        "        .stdout(Stdio::piped())",
+        "        .spawn()",
+        "        .unwrap();",
+        "    let input = json!({",
+        "        \"SessionStart\": {",
+        "            \"session_id\": \"test-session\",",
+        "            \"cwd\": cwd,",
+        "        }",
+        "    });",
+        "    child",
+        "        .stdin",
+        "        .take()",
+        "        .unwrap()",
+        "        .write_all(&serde_json::to_vec(&input).unwrap())",
+        "        .unwrap();",
+        "    let output = child.wait_with_output().unwrap();",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"hook failed: {}\",",
+        "        String::from_utf8_lossy(&output.stderr)",
+        "    );",
+        "    serde_json::from_slice(&output.stdout).unwrap()",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "README.md",
+      "line_start": 23,
+      "line_end": 27,
+      "text": [
+        "Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.",
+        "",
+        "To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.",
+        "",
+        "`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files."
+      ]
+    },
+    {
+      "file": "README.md",
+      "line_start": 39,
+      "line_end": 43,
+      "text": [
+        "If Habeas previously copied skills into `.agents/skills/habeas-*`, review them for local edits before the first Symposium sync. Save any edits under different names or elsewhere, remove those old copies, and then sync so Symposium can manage them.",
+        "",
+        "During local development, `habeas setup --path /path/to/habeas-codicem` uses a local crate in place of the registry dependency.",
+        "",
+        "Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command."
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 69,
+      "line_end": 73,
+      "text": [
+        "| `src/setup.rs:12` `project_root` | `requirements.cli.setup_project`, `requirements.cli.agents` |",
+        "| `src/setup.rs:30` `write_new_or_same` | `requirements.cli.setup`, `requirements.cli.agents` |",
+        "| `src/setup.rs:49` `run` | `requirements.cli.setup`, `requirements.cli.setup_project`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
+        "| `src/agents.rs:22` `run` | `requirements.cli.agents` |",
+        "| `src/agents.rs:28` `install` | `requirements.cli.agents` |"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 106,
+      "line_end": 110,
+      "text": [
+        "| `tests/cli.rs:5` `renderer_support_and_invalid_commands` | `requirements.cli.invocation` |",
+        "| `tests/habeas.rs:3` `habeas` | `requirements.integration.self_test` |",
+        "| `tests/setup.rs:46` `setup_and_agents_are_repeatable` | `requirements.cli.setup`, `requirements.cli.agents`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
+        "| `tests/setup.rs:98` `setup_install_skills_preserves_differing_skill` | `requirements.cli.setup`, `requirements.cli.agents` |",
+        "| `tests/setup.rs:123` `setup_rejects_invalid_book_configuration` | `requirements.cli.setup_project`, `requirements.cli.setup_css` |"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 138,
+      "line_end": 142,
+      "text": [
+        "| `src/setup.rs:53` | invalid project source or missing summary | `requirements.cli.setup_project` |",
+        "| `src/setup.rs:90` | existing, missing, or invalid CSS configuration | `requirements.cli.setup_css` |",
+        "| `src/setup.rs:109` | existing dependency or local path addition | `requirements.cli.setup_local_path` |",
+        "| `src/agents.rs:28` | existing identical or differing installed skill | `requirements.cli.agents` |",
+        ""
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 304,
+      "line_end": 309,
+      "text": [
+        "",
+        "```sh",
+        "cargo install --path /path/to/habeas-codicem",
+        "habeas setup --path /path/to/habeas-codicem",
+        "```",
+        ""
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 77,
+      "line_end": 82,
+      "text": [
+        ":::",
+        "",
+        ":::{req} setup_local_path",
+        "When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 23,
+      "line_end": 27,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.cli.setup_local_path`",
+        "// {impl}`requirements.integration.symposium_setup_hook`",
+        "fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 143,
+      "line_end": 147,
+      "text": [
+        "    let manifest_path = root.join(\"Cargo.toml\");",
+        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
+        "    // {impl}`requirements.cli.setup_local_path`",
+        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
+        "    if !has_dev_dependency {"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 154,
+      "line_end": 158,
+      "text": [
+        "            .arg(&manifest_path);",
+        "        if let Some(local_crate) = local_crate {",
+        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
+        "        }",
+        "        let output = command.current_dir(&root).output()?;"
+      ]
+    },
+    {
+      "file": "tests/cli.rs",
+      "line_start": 21,
+      "line_end": 25,
+      "text": [
+        "        [\"setup\", \"--wrong\"].as_slice(),",
+        "        [\"setup\", \"--install-skills\"].as_slice(),",
+        "        [\"setup\", \"--path\", \".\", \"--install-skills\"].as_slice(),",
+        "    ] {",
+        "        let output = Command::new(binary).args(args).output().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 76,
+      "line_end": 80,
+      "text": [
+        "// {test}`requirements.cli.setup`",
+        "// {test}`requirements.cli.setup_css`",
+        "// {test}`requirements.cli.setup_local_path`",
+        "#[test]",
+        "fn setup_is_repeatable() {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 83,
+      "line_end": 89,
+      "text": [
+        "    let local_crate = env!(\"CARGO_MANIFEST_DIR\");",
+        "",
+        "    run(project, &[\"setup\", \"--path\", local_crate]);",
+        "    assert!(!project.join(\".agents/skills\").exists());",
+        "    run(project, &[\"setup\", \"--path\", local_crate]);",
+        "",
+        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 114,
+      "line_end": 118,
+      "text": [
+        "    fs::write(&skill, \"custom skill\\n\").unwrap();",
+        "",
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "    assert_eq!(fs::read_to_string(skill).unwrap(), \"custom skill\\n\");",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 127,
+      "line_end": 131,
+      "text": [
+        "        let project = temp.path();",
+        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
+        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        assert!(project.join(\"src/habeas.css\").is_file());"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 164,
+      "line_end": 168,
+      "text": [
+        "    ] {",
+        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
+        "        let output = Command::new(binary)",
+        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
+        "            .current_dir(project)"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 181,
+      "line_end": 185,
+      "text": [
+        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "    fs::remove_file(project.join(\"md/SUMMARY.md\")).unwrap();",
+        "    let output = Command::new(binary)",
+        "        .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
+        "        .current_dir(project)"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 200,
+      "line_end": 204,
+      "text": [
+        "        json!({\"SessionStart\": {}}),",
+        "        \"a project without Habeas must not receive an advisory\"",
+        "    );",
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        ""
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 195,
+      "line_end": 199,
+      "text": [
+        "            )",
+        "        subprocess.run(",
+        "            [runner, \"setup\", \"--path\", str(repo)], cwd=project, check=True",
+        "        )",
+        "        configured_context = session_start()"
       ]
     }
   ]

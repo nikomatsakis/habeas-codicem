@@ -21,10 +21,14 @@ with **📝 Adjust requirements** or **🛠 Author code**, matching the active m
 Explain each transition and what happens next. The publisher also adds a badge
 to every published summary.
 
-In `requirements` mode, only change requirements/examples under `md/` and
-matching evidence JSON records. Wait for owner approval of the current head
-before coding. In `implementation` mode, author code, tests, and implementation
-evidence for the approved requirements; leave `md/` unchanged. Code commits do
+In `requirements` mode, change requirements/examples under `md/` and leave their
+evidence pending for the authoring harness. Wait for owner approval of the current
+head before coding. In `implementation` mode, author code and tests, then run
+`cargo habeas author --all` (or installed `habeas author --all`) for the approved
+requirements; leave `md/` unchanged. The supervising agent must not write evidence
+JSON, judgments, rationales, or input snapshots itself or delegate manual evidence
+writing to another agent. If the harness lacks configuration or provider access,
+report the blocker rather than inventing evidence. Code commits do
 not invalidate requirements approval. Every new requirements commit does.
 
 If coding reveals that requirements need to change, switch to **📝 Adjust
@@ -33,7 +37,7 @@ examples on this PR. Restore any uncommitted code/test changes from this run to
 `context_json.baseSha` before preparing that proposal. Preserve all earlier
 committed code. Do not publish a mixture or merely ask for a manual restart.
 Check the proposal with `git diff --check`, `mdbook build`, and Habeas status;
-keep changed obligations' evidence truthful and pending when unverified.
+expect changed obligations' evidence to be missing or stale until assessed.
 Stop after the proposal: another owner **Approve** review resumes coding.
 
 ## Commit intent and source attribution

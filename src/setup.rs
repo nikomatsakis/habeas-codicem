@@ -32,6 +32,19 @@ fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
         .is_some()
 }
 
+// {impl}`requirements.cli.setup_project`
+// {impl}`requirements.integration.symposium_setup_hook`
+fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {
+    let table = book
+        .get("book")
+        .map(|item| item.as_table_like().ok_or("book must be a table"))
+        .transpose()?;
+    match table.and_then(|table| table.get("src")) {
+        Some(item) => item.as_str().ok_or("book.src must be a string"),
+        None => Ok("src"),
+    }
+}
+
 // {impl}`requirements.integration.symposium_setup_hook`
 pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {
     fs::read_to_string(root.join("Cargo.toml"))
@@ -82,7 +95,7 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let book_path = root.join("book.toml");
     let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;
     // {impl}`requirements.cli.setup_project`
-    let source = book["book"]["src"].as_str().unwrap_or("src").to_owned();
+    let source = book_source(&book)?.to_owned();
     let source_path = Path::new(&source);
     if source.is_empty()
         || !source_path
@@ -160,6 +173,9 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
 }
 
 // {impl}`requirements.integration.symposium_setup_hook`
+// {cite}`requirements.cli.setup`
+// {cite}`requirements.cli.setup_project`
+// {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
     let manifest = match fs::read_to_string(root.join("Cargo.toml"))
         .ok()
@@ -179,12 +195,9 @@ pub(crate) fn is_configured(root: &Path) -> bool {
         Some(book) => book,
         None => return false,
     };
-    let source = book
-        .get("book")
-        .and_then(Item::as_table_like)
-        .and_then(|table| table.get("src"))
-        .and_then(Item::as_str)
-        .unwrap_or("src");
+    let Ok(source) = book_source(&book) else {
+        return false;
+    };
     let source_path = Path::new(source);
     if source.is_empty()
         || !source_path

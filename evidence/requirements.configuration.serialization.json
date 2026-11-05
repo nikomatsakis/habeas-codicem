@@ -1,22 +1,25 @@
 {
   "requirement": "Saved configuration MUST remain distinct from resolved runtime configuration.\nSerializing and deserializing a valid configuration MUST preserve its semantic\nvalues, including explicit versus omitted settings. Optional fields MAY be\nomitted on serialization; defaults and environment-derived values MUST NOT be\nmaterialized into omitted fields. TOML comments and formatting need not\nround-trip.\n\nLoading configuration or running a configured feature MUST NOT rewrite the user\nor project configuration as a side effect. Resolved credentials and live runtime\nobjects MUST NOT enter the serialized data structures.",
   "determination": true,
-  "rationale": "Serde-backed saved structures retain omitted options as None or empty maps and resolve endpoint defaults, paths, and credentials separately. Round-trip and read-only loading tests verify that explicit values survive, defaults are not materialized, comments are not rewritten, and resolved secret values do not appear in serialized TOML.",
+  "rationale": "**Verdict:** the sources satisfy `requirements.configuration.serialization`. I found no acknowledged FIXMEs. I did not run the tests; this rests on reading the code and test source.\n\n**Saved data is separate from resolved runtime data** (`src/config.rs`)\n- `UserConfig`, `UserAuthoringConfig`, `AuthoringConfig`, `BedrockConfig`, `OllamaConfig` and `OptionValue` derive `Serialize` and `Deserialize`. They hold only declarative fields.\n- Optional fields use `#[serde(default, skip_serializing_if = ...)]`. These are `authoring`, `default`, `concurrency`, `aws_profile`, `region`, `endpoint`, `api_key_env`, and the empty `projects` and `options` maps.\n- The round-trip uses `Option`, so an explicit value and an omitted one stay distinct. The built-in default endpoint lives in `OllamaConfig::endpoint()`, a getter that does not touch the stored `Option`. Defaults are therefore never written into omitted fields.\n- `ResolvedAuthoringConfig` does not derive `Serialize`. Its doc comment says it is \"without resolved secrets\". It holds only saved values and the config path.\n- `api_key_env` stores only the environment variable name. `OllamaConfig::api_key` and `api_key_from` read the secret at call time and return it. It is never stored in a serializable structure.\n- `UserConfig::to_toml` validates and then calls `toml::to_string_pretty`.\n- `UserConfig::parse` and `load_user_config` only read files.\n- A grep of `src/` for `fs::write`, `File::create` and `persist` found no write to the user or project configuration. `fs::write` appears in `src/setup.rs` and the other modules for other files. In `src/config.rs`, the loading and resolving functions (`load_user_config`, `resolve_authoring_from`) only read. `to_toml` returns a `String`. So loading or running a configured feature cannot rewrite the configuration.\n\n**Tests** (`tests/configuration.rs`)\n- `absent_and_minimal_configuration_are_distinct_and_read_only` checks that an absent file gives `None` and is not created. A minimal file loads, and its bytes (comment included) are unchanged afterwards. `to_toml` followed by `parse` equals the original config.\n- `backend_configuration_round_trips_without_materializing_defaults` covers both backends, explicit `aws_profile`, `region` and nested options, and omitted `endpoint`, `concurrency` and `projects`. The serialized text contains no `endpoint`, no `http://localhost`, and no `concurrency`. Parsing the serialized text gives an equal config.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` checks that an omitted `concurrency` stays omitted after `to_toml`, and that an explicit `concurrency = 7` is preserved and round-trips. It runs for both backends.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values` checks that the serialized output contains the env var name `MODEL_KEY` but not the resolved secret `private-value`.\n\n**Minor gaps** (not enough to fail the requirement)\n- There is no direct round-trip test for an explicit `endpoint`, for `projects` entries, or for an empty `configs` table. The explicit-versus-omitted design is covered for other optional fields, and the serde attributes are uniform.\n- Nothing asserts that the config file's bytes are unchanged after `resolve_authoring_from`, although that code has no write path.\n\nThe linked `requirements.authoring.configuration_serialization` is also implemented. The backend tag and fields are flattened into one table, `options` is a subtable, `configs` is required but may be empty, and `projects` and `options` default to empty maps.",
   "inputs": [
     {
-      "file": "md/requirements/authoring.md",
-      "line_start": 275,
-      "line_end": 284,
+      "requirements": "requirements.configuration.serialization",
+      "matches": [
+        "requirements.configuration.serialization"
+      ],
       "text": [
-        ":::{req} configuration_serialization",
-        "The `[authoring]` table MUST serialize UserAuthoringConfig. Each",
-        "`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with",
-        "`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same",
-        "table. Backend-specific inference options MUST appear in its `options` subtable.",
-        "Within a present authoring section, `configs` MUST be present but MAY be empty;",
-        "omitted `projects` and `options` tables MUST deserialize as empty maps.",
-        "Serialization MUST follow the common rules in",
-        "{cite}`requirements.configuration.serialization`.",
+        ":::{req} serialization",
+        "Saved configuration MUST remain distinct from resolved runtime configuration.",
+        "Serializing and deserializing a valid configuration MUST preserve its semantic",
+        "values, including explicit versus omitted settings. Optional fields MAY be",
+        "omitted on serialization; defaults and environment-derived values MUST NOT be",
+        "materialized into omitted fields. TOML comments and formatting need not",
+        "round-trip.",
+        "",
+        "Loading configuration or running a configured feature MUST NOT rewrite the user",
+        "or project configuration as a side effect. Resolved credentials and live runtime",
+        "objects MUST NOT enter the serialized data structures.",
         ":::"
       ]
     },
@@ -107,6 +110,9 @@
         "// {impl}`requirements.authoring.configuration_precedence`",
         "// {impl}`requirements.authoring.configuration_storage`",
         "// {impl}`requirements.configuration.serialization`",
+        "// {impl}`requirements.authoring.concurrency`",
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.configuration.loading`",
         "pub fn resolve_authoring_from(",
         "    path: &Path,",
         "    user: Option<&UserConfig>,",
@@ -146,23 +152,19 @@
         "                format!(\"no configuration selected; {CONFIG_EXAMPLES}\"),",
         "            )",
         "        })?;",
-        "    let backend = authoring",
-        "        .configs",
-        "        .get(selected)",
-        "        .ok_or_else(|| {",
-        "            invalid(",
-        "                path,",
-        "                \"authoring\",",
-        "                format!(\"unknown configuration {selected:?}; {CONFIG_EXAMPLES}\"),",
-        "            )",
-        "        })?",
-        "        .backend",
-        "        .clone();",
+        "    let config = authoring.configs.get(selected).ok_or_else(|| {",
+        "        invalid(",
+        "            path,",
+        "            \"authoring\",",
+        "            format!(\"unknown configuration {selected:?}; {CONFIG_EXAMPLES}\"),",
+        "        )",
+        "    })?;",
         "    Ok(ResolvedAuthoringConfig {",
         "        config_path: path.to_owned(),",
         "        project_root,",
         "        name: selected.to_owned(),",
-        "        backend,",
+        "        concurrency: config.concurrency,",
+        "        backend: config.backend.clone(),",
         "    })",
         "}"
       ]
@@ -209,6 +211,9 @@
       "text": [
         "// {test}`requirements.authoring.configuration_structure`",
         "// {test}`requirements.authoring.configuration_serialization`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.authoring.concurrency`",
         "// {test}`requirements.configuration.serialization`",
         "#[test]",
         "fn backend_configuration_round_trips_without_materializing_defaults() {",
@@ -251,7 +256,61 @@
         "    let serialized = config.to_toml().unwrap();",
         "    assert!(!serialized.contains(\"endpoint\"));",
         "    assert!(!serialized.contains(\"http://localhost\"));",
+        "    assert!(!serialized.contains(\"concurrency\"));",
         "    assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "tests/configuration.rs",
+      "rust_item": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]",
+      "text": [
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.configuration_structure`",
+        "// {test}`requirements.authoring.configuration_serialization`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn authoring_concurrency_defaults_overrides_and_invalid_values() {",
+        "    let dir = tempfile::tempdir().unwrap();",
+        "    let path = dir.path().join(\"config.toml\");",
+        "    for backend in [\"bedrock\", \"ollama\"] {",
+        "        let base =",
+        "            format!(\"version = 1\\n[authoring.configs.model]\\nbackend = '{backend}'\\nmodel = 'm'\\n\");",
+        "        let defaults = UserConfig::parse(&base, &path).unwrap();",
+        "        let resolved =",
+        "            resolve_authoring_from(&path, Some(&defaults), dir.path(), Some(\"model\")).unwrap();",
+        "        assert_eq!(resolved.concurrency, None);",
+        "        let expected = if backend == \"bedrock\" {",
+        "            std::thread::available_parallelism()",
+        "                .map(|n| n.get())",
+        "                .unwrap_or(1)",
+        "        } else {",
+        "            1",
+        "        };",
+        "        assert_eq!(resolved.effective_concurrency(), expected);",
+        "        assert!(!defaults.to_toml().unwrap().contains(\"concurrency\"));",
+        "",
+        "        let configured = UserConfig::parse(&format!(\"{base}concurrency = 7\\n\"), &path).unwrap();",
+        "        let resolved =",
+        "            resolve_authoring_from(&path, Some(&configured), dir.path(), Some(\"model\")).unwrap();",
+        "        assert_eq!(resolved.concurrency.unwrap().get(), 7);",
+        "        assert_eq!(resolved.effective_concurrency(), 7);",
+        "        let serialized = configured.to_toml().unwrap();",
+        "        assert!(serialized.contains(\"concurrency = 7\"));",
+        "        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);",
+        "        assert!(resolved.backend.options().is_empty());",
+        "",
+        "        for invalid in [\"0\", \"-1\", \"1.5\", \"'2'\"] {",
+        "            let error = UserConfig::parse(&format!(\"{base}concurrency = {invalid}\\n\"), &path)",
+        "                .unwrap_err()",
+        "                .to_string();",
+        "            assert!(error.contains(&path.display().to_string()), \"{error}\");",
+        "            assert!(error.contains(\"concurrency\"), \"{error}\");",
+        "        }",
+        "    }",
         "}"
       ]
     },
@@ -285,6 +344,2794 @@
         "    assert!(serialized.contains(\"MODEL_KEY\"));",
         "    assert!(!serialized.contains(\"private-value\"));",
         "}"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 275,
+      "line_end": 284,
+      "text": [
+        "directory listings are not evidence.",
+        "",
+        "Choose true only when the function cites every applicable requirement or",
+        "example. Choose false for missing citations or insufficient information.",
+        "Explain how you identified the applicable set and how the cited declarations",
+        "account for the function's behavior, with source locations, and why the reviewed",
+        "requirements inputs cover that set. The determination",
+        "must be boolean; FIXME is not a function-attestation outcome.",
+        "",
+        "Call submit_judgment exactly once with determination and a nonempty Markdown"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 4,
+      "line_end": 8,
+      "text": [
+        "use std::path::Path;",
+        "",
+        "use serde_json::{Value, json};",
+        "",
+        "use crate::DefinitionKind;"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 170,
+      "line_end": 176,
+      "text": [
+        "    if output.1 {",
+        "        fs::create_dir_all(root.join(\"evidence\"))?;",
+        "        fs::write(",
+        "            &path,",
+        "            format!(\"{}\\n\", serde_json::to_string_pretty(&record)?),",
+        "        )?;",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 233,
+      "line_end": 239,
+      "text": [
+        "            fs::create_dir_all(parent)?;",
+        "        }",
+        "        fs::write(",
+        "            &path,",
+        "            format!(\"{}\\n\", serde_json::to_string_pretty(&sidecar)?),",
+        "        )?;",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 335,
+      "line_end": 339,
+      "text": [
+        "fn read_or_new(path: &Path, fallback: Value) -> io::Result<Value> {",
+        "    match fs::read_to_string(path) {",
+        "        Ok(source) => serde_json::from_str(&source)",
+        "            .map_err(|error| invalid_input(format!(\"{}: invalid JSON: {error}\", path.display()))),",
+        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(fallback),"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 3,
+      "line_end": 7,
+      "text": [
+        "use std::path::{Path, PathBuf};",
+        "",
+        "use serde_json::{Value, json};",
+        "use tokio::task::JoinSet;",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 148,
+      "line_end": 152,
+      "text": [
+        "            let mut entries = match fs::read_to_string(&path) {",
+        "                Ok(text) => {",
+        "                    let mut record: Value = serde_json::from_str(&text)?;",
+        "                    record",
+        "                        .get_mut(\"functions\")"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 175,
+      "line_end": 179,
+      "text": [
+        "    // Replace the complete file so those reads see either complete version.",
+        "    let mut file = tempfile::NamedTempFile::new_in(parent)?;",
+        "    writeln!(file, \"{}\", serde_json::to_string_pretty(&record)?)?;",
+        "    file.persist(&path).map_err(|error| error.error)?;",
+        "    Ok(path)"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 3,
+      "line_end": 7,
+      "text": [
+        "use std::path::{Path, PathBuf};",
+        "",
+        "use serde_json::{Value, json};",
+        "",
+        "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 94,
+      "line_end": 98,
+      "text": [
+        "        let evidence_path = root.join(\"evidence\").join(format!(\"{subject_name}.json\"));",
+        "        match fs::read_to_string(&evidence_path) {",
+        "            Ok(content) => {",
+        "                let evidence: Value = serde_json::from_str(&content)",
+        "                    .map_err(|error| format!(\"{}: {error}\", evidence_path.display()))?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 174,
+      "line_end": 178,
+      "text": [
+        "        let path = root.join(\"evidence/rust\").join(format!(\"{rust_file}.json\"));",
+        "        match fs::read_to_string(&path) {",
+        "            Ok(content) => {",
+        "                let sidecar: Value = serde_json::from_str(&content)",
+        "                    .map_err(|error| format!(\"{}: {error}\", path.display()))?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 418,
+      "line_end": 428,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    pub(crate) fn project() -> tempfile::TempDir {",
+        "        let root = tempfile::tempdir().unwrap();",
+        "        fs::create_dir_all(root.path().join(\"md\")).unwrap();",
+        "        fs::create_dir_all(root.path().join(\"src\")).unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"Cargo.toml\"),",
+        "            \"[package]\\nname='fixture'\\nversion='0.1.0'\\n\",",
+        "        )",
+        "        .unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 447,
+      "line_end": 451,
+      "text": [
+        "        let root = project();",
+        "        let terms = format!(",
+        "            \":::{{definition}} unit\\n:phrase: unit\\nA {}.\\n:::\\n\\n:::{{definition}} value\\n:phrase: value\\nA {}.\\n:::\\n\",",
+        "            role(\"term\", \"terms.value\"),",
+        "            role(\"term\", \"terms.unit\")"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 455,
+      "line_end": 463,
+      "text": [
+        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {}\\n:::\\n\",",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"term\", \"terms.unit\"),",
+        "            role(\"cite\", \"requirements.distant\"),",
+        "            role(\"cite\", \"requirements.ready\")",
+        "        );",
+        "        fs::write(root.path().join(\"md/requirements.md\"), declarations).unwrap();",
+        "        fs::write(root.path().join(\"src/lib.rs\"), format!(\"struct Thing;\\nimpl Thing {{\\n    // {}\\n    fn run(&self) {{}}\\n    fn unrelated(&self) {{}}\\n}}\\n// {}\\nfn test_ready() {{}}\\n\", role(\"impl\", \"requirements.ready\"), role(\"test\", \"requirements.ready\"))).unwrap();",
+        "        fs::write(root.path().join(\"notes.txt\"), \"new source text\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 512,
+      "line_end": 516,
+      "text": [
+        "            2",
+        "        );",
+        "        assert!(inputs.iter().any(",
+        "            |input| input[\"file\"] == \"notes.txt\" && input[\"text\"] == json!([\"new source text\"])",
+        "        ));"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 533,
+      "line_end": 537,
+      "text": [
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    // {test}`requirements.ci.authoring_inputs`",
+        "    #[test]",
+        "    fn unresolved_existing_selector_fails_before_inference() {",
+        "        let root = project();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 556,
+      "line_end": 560,
+      "text": [
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    // {test}`requirements.definitions.authoring_inputs`",
+        "    // {test}`requirements.ci.authoring_inputs`",
+        "    #[test]"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 564,
+      "line_end": 573,
+      "text": [
+        "            root.path().join(\"md/requirements.md\"),",
+        "            format!(",
+        "                \":::{{req}} ready\\nThe project MUST be ready.\\n:::\\n\\n:::{{req}} uncited\\nUse {}.\\n:::\\n\",",
+        "                role(\"term\", \"terms.unit\")",
+        "            ),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"md/terms.md\"),",
+        "            \":::{definition} unit\\n:phrase: unit\\nA complete unit.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 577,
+      "line_end": 583,
+      "text": [
+        "            root.path().join(\"src/lib.rs\"),",
+        "            format!(",
+        "                \"// {}\\npub fn ready() {{}}\\n\",",
+        "                role(\"impl\", \"requirements.ready\")",
+        "            ),",
+        "        )",
+        "        .unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 623,
+      "line_end": 627,
+      "text": [
+        "        );",
+        "        assert!(",
+        "            inputs",
+        "                .iter()",
+        "                .any(|input| input[\"text\"] == json!([\"current notes\"]))"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 638,
+      "line_end": 642,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    // {test}`requirements.authoring.function_attestations`",
+        "    // {test}`requirements.ci.authoring_inputs`",
+        "    #[test]"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 646,
+      "line_end": 650,
+      "text": [
+        "            root.path().join(\"src/lib.rs\"),",
+        "            format!(",
+        "                \"// {}\\npub fn ready() {{}}\\n\",",
+        "                role(\"impl\", \"requirements.ready\")",
+        "            ),"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 657,
+      "line_end": 664,
+      "text": [
+        "            json!({\"file\":\"evidence/removed.json\", \"line_start\":1, \"line_end\":2, \"text\":[\"removed evidence\"]}),",
+        "            json!({\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old source\"]}),",
+        "        ];",
+        "        if cfg!(unix) {",
+        "            old_inputs.push(json!({\"file\":\"previous-evidence.json\", \"line_start\":1, \"line_end\":999999, \"text\":[\"aliased judgment\"]}));",
+        "        }",
+        "        let path = root.path().join(\"evidence/requirements.ready.json\");",
+        "        fs::write(&path, json!({\"inputs\":old_inputs}).to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 682,
+      "line_end": 686,
+      "text": [
+        "                .filter(|input| input.get(\"file\").is_some())",
+        "                .collect::<Vec<_>>();",
+        "            assert_eq!(file_inputs.len(), 1);",
+        "            assert_eq!(file_inputs[0][\"file\"], \"notes.txt\");",
+        "            assert_eq!(file_inputs[0][\"text\"], json!([\"current source\"]));"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 16,
+      "line_end": 20,
+      "text": [
+        "use rig_core::completion::{CompletionRequest, ToolDefinition};",
+        "use rig_core::message::{Message, ToolResultContent, turn_failure};",
+        "use serde_json::{Value, json};",
+        "",
+        "use crate::config::{self, BackendKind, ResolvedAuthoringConfig};"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 246,
+      "line_end": 255,
+      "text": [
+        "        &AuthoringSubject::Definition(subject.to_owned()),",
+        "        &config,",
+        "        usage,",
+        "    )",
+        "    .await?;",
+        "    let json = format!(\"{}\\n\", serde_json::to_string_pretty(&evidence)?);",
+        "    let evidence_path = match output {",
+        "        EvidenceOutput::File => {",
+        "            let path = root.join(\"evidence\").join(format!(\"{subject}.json\"));",
+        "            fs::create_dir_all(path.parent().expect(\"evidence parent\"))?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 336,
+      "line_end": 340,
+      "text": [
+        "        }",
+        "    };",
+        "    let start = chapter.find(opening).expect(\"approved prompt template\");",
+        "    let template = chapter[start..]",
+        "        .split(\"\\n```\")"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 344,
+      "line_end": 348,
+      "text": [
+        "        AssessmentKind::Definition(_) => String::new(),",
+        "        AssessmentKind::RustFunction { citations, .. } => serde_json::to_string_pretty(citations)?,",
+        "    };",
+        "    Ok(template",
+        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 391,
+      "line_end": 395,
+      "text": [
+        "    } else {",
+        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})",
+        "    };",
+        "    definitions.push(json!({\"name\": \"submit_judgment\", \"description\": \"Submit your final judgment exactly once. No other message supplies the result.\",",
+        "        \"parameters\": {\"type\":\"object\", \"additionalProperties\": false, \"required\":[\"determination\",\"rationale\"], \"properties\": {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 550,
+      "line_end": 554,
+      "text": [
+        "            ).with_finish_reason(FinishReason::ToolCalls))",
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.function_attestations`"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 4,
+      "line_end": 8,
+      "text": [
+        "use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};",
+        "use rig_core::{DynModel, operation::Completion};",
+        "use serde_json::{Map, Value};",
+        "",
+        "use crate::config::BackendConfig;"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 15,
+      "line_end": 19,
+      "text": [
+        "pub(super) struct RigProvider {",
+        "    model: DynModel<Completion>,",
+        "    options: serde_json::Value,",
+        "    bedrock: bool,",
+        "}"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 157,
+      "line_end": 161,
+      "text": [
+        "    }",
+        "    if let Some(value) = options.remove(\"stopSequences\") {",
+        "        request.options.stop = serde_json::from_value(value)",
+        "            .map_err(|_| option_type(\"stopSequences\", \"an array of strings\"))?;",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 176,
+      "line_end": 180,
+      "text": [
+        "    use rig_core::completion::{FinishReason, Usage};",
+        "    use rig_core::message::{Opaque, Origin, Reasoning, Text};",
+        "    use serde_json::json;",
+        "",
+        "    // {test}`requirements.authoring.configuration_storage`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 4,
+      "line_end": 8,
+      "text": [
+        "use std::process::Command;",
+        "",
+        "use serde_json::{Map, Value, json};",
+        "",
+        "use super::inputs::{AssessmentSources, generated_evidence_path};"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 186,
+      "line_end": 190,
+      "text": [
+        "        .stdout",
+        "        .split(|byte| *byte == b'\\n')",
+        "        .filter(|line| !line.is_empty())",
+        "    {",
+        "        let event: Value = serde_json::from_slice(line)"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 326,
+      "line_end": 335,
+      "text": [
+        "    // {test}`requirements.definitions.authoring_inputs`",
+        "    #[test]",
+        "    fn reading_records_only_delivered_sources_and_their_terms() {",
+        "        let root = project();",
+        "        fs::write(",
+        "            root.path().join(\"md/terms.md\"),",
+        "            \":::{definition} value\\n:phrase: value\\nA useful value.\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 403,
+      "line_end": 409,
+      "text": [
+        "    #[test]",
+        "    fn search_merges_context_windows_and_respects_ignore_rules() {",
+        "        let root = project();",
+        "        fs::create_dir(root.path().join(\".git\")).unwrap();",
+        "        fs::write(root.path().join(\".gitignore\"), \"ignored.txt\\n\").unwrap();",
+        "        fs::write(root.path().join(\"ignored.txt\"), \"needle\\n\").unwrap();",
+        "        fs::write(root.path().join(\".hidden.txt\"), \"needle\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 415,
+      "line_end": 419,
+      "text": [
+        "                    format!(\"line {number}\")",
+        "                }",
+        "            })",
+        "            .collect::<Vec<_>>();",
+        "        fs::write(root.path().join(\"sample.txt\"), lines.join(\"\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 454,
+      "line_end": 469,
+      "text": [
+        "    fn generated_evidence_is_excluded_from_reads_search_and_discovery() {",
+        "        let root = project();",
+        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir(root.path().join(\"src/evidence\")).unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"evidence/old.json\"),",
+        "            \"needle in a previous judgment\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"evidence/generated.rs\"),",
+        "            \"fn generated() {}\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(root.path().join(\"source.txt\"), \"needle in source\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 1,
+      "line_end": 4,
+      "text": [
+        "use std::collections::{BTreeMap, BTreeSet};",
+        "use std::fs::{self, OpenOptions};",
+        "use std::io::{self, Write};",
+        "use std::path::{Path, PathBuf};"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 7,
+      "line_end": 12,
+      "text": [
+        "",
+        "use rig_core::completion::Usage;",
+        "use serde::Serialize;",
+        "use serde_json::Value;",
+        "",
+        "static SEQUENCE: AtomicU64 = AtomicU64::new(0);"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 92,
+      "line_end": 96,
+      "text": [
+        "        fs::create_dir_all(&directory)?;",
+        "        let path = directory.join(format!(\"{run_id}.json\"));",
+        "        OpenOptions::new()",
+        "            .write(true)",
+        "            .create_new(true)"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 262,
+      "line_end": 271,
+      "text": [
+        "",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(super) fn save(&self) -> io::Result<()> {",
+        "        let mut file = OpenOptions::new()",
+        "            .write(true)",
+        "            .truncate(true)",
+        "            .open(&self.path)?;",
+        "        serde_json::to_writer_pretty(&mut file, &self.record)?;",
+        "        file.write_all(b\"\\n\")",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 353,
+      "line_end": 362,
+      "text": [
+        "mod tests {",
+        "    use super::*;",
+        "    use serde_json::json;",
+        "    use std::time::Duration;",
+        "",
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    fn persisted(log: &UsageLog) -> Value {",
+        "        serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 8,
+      "line_end": 39,
+      "text": [
+        "use std::path::{Component, Path, PathBuf};",
+        "",
+        "use serde::{Deserialize, Serialize};",
+        "",
+        "const CONFIG_EXAMPLES: &str = \"see md/requirements/authoring.md#editing-the-file\";",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct UserConfig {",
+        "    pub version: u32,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub authoring: Option<UserAuthoringConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct ProjectConfig {}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct UserAuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub default: Option<String>,",
+        "    pub configs: BTreeMap<String, AuthoringConfig>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub projects: BTreeMap<PathBuf, ProjectSelection>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct ProjectSelection {",
+        "    pub config: String,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 42,
+      "line_end": 53,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "pub struct AuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub concurrency: Option<NonZeroUsize>,",
+        "    #[serde(flatten)]",
+        "    pub backend: BackendConfig,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(tag = \"backend\", rename_all = \"lowercase\")]",
+        "pub enum BackendConfig {",
+        "    Bedrock(BedrockConfig),"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 56,
+      "line_end": 84,
+      "text": [
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct BedrockConfig {",
+        "    pub model: String,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub aws_profile: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub region: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub options: BTreeMap<String, OptionValue>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct OllamaConfig {",
+        "    pub model: String,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub endpoint: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub api_key_env: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub options: BTreeMap<String, OptionValue>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(untagged)]",
+        "pub enum OptionValue {",
+        "    String(String),"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 91,
+      "line_end": 95,
+      "text": [
+        "",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(rename_all = \"lowercase\")]",
+        "pub enum BackendKind {",
+        "    Bedrock,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 136,
+      "line_end": 140,
+      "text": [
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.authoring.concurrency`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let config: Self = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 153,
+      "line_end": 157,
+      "text": [
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 183,
+      "line_end": 187,
+      "text": [
+        "impl UserAuthoringConfig {",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if let Some(name) = &self.default {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 237,
+      "line_end": 250,
+      "text": [
+        "",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
+        "    pub fn options_json(&self) -> io::Result<serde_json::Value> {",
+        "        for value in self.options().values() {",
+        "            value.validate()?;",
+        "        }",
+        "        serde_json::to_value(self.options()).map_err(io::Error::other)",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {",
+        "        if self.model_ref().model.is_empty() {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 296,
+      "line_end": 300,
+      "text": [
+        "impl OptionValue {",
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    fn validate(&self) -> io::Result<()> {",
+        "        match self {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 511,
+      "line_end": 515,
+      "text": [
+        "        backend: config.backend.clone(),",
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration_storage`"
+      ]
+    },
+    {
+      "file": "src/definition_glob.rs",
+      "line_start": 1,
+      "line_end": 4,
+      "text": [
+        "// {impl}`requirements.references.definition_globs`",
+        "pub(crate) fn validate(pattern: &str) -> Result<(), String> {",
+        "    if pattern.is_empty() {",
+        "        return Err(\"definition glob must not be empty\".to_owned());"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 4,
+      "line_end": 8,
+      "text": [
+        "use std::path::{Component, Path, PathBuf};",
+        "",
+        "use serde_json::{Map, Value};",
+        "use toml_edit::DocumentMut;",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 34,
+      "line_end": 38,
+      "text": [
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 365,
+      "line_end": 369,
+      "text": [
+        "    }",
+        "    files.sort();",
+        "    files",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 380,
+      "line_end": 384,
+      "text": [
+        "    let label = display_path(root, path);",
+        "    let content = match fs::read_to_string(path) {",
+        "        Ok(content) => content,",
+        "        Err(error) => {",
+        "            errors.push(format!(\"{label}: cannot read evidence: {error}\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 481,
+      "line_end": 485,
+      "text": [
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "// {impl}`requirements.ci.input_containment`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 568,
+      "line_end": 572,
+      "text": [
+        "            errors,",
+        "        );",
+        "    }",
+        "    validate_file_range_input(root, definitions, object, label, errors)",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 652,
+      "line_end": 656,
+      "text": [
+        "                None",
+        "            })",
+        "        })",
+        "        .collect()",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 699,
+      "line_end": 703,
+      "text": [
+        "            compact_diff(&old, &new)",
+        "        ));",
+        "    }",
+        "    Some(resolved)",
+        "}"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 902,
+      "line_end": 906,
+      "text": [
+        "    line_end: usize,",
+        "}",
+        "",
+        "// {impl}`requirements.references.evidence_coverage`",
+        "// {impl}`requirements.references.targets`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 949,
+      "line_end": 953,
+      "text": [
+        "        let evidence_file = root.join(\"evidence\").join(format!(\"{name}.json\"));",
+        "        let references = by_definition.remove(name).unwrap_or_default();",
+        "        if definition.kind == DefinitionKind::Example",
+        "            && !references",
+        "                .iter()"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1073,
+      "line_end": 1077,
+      "text": [
+        "// {impl}`requirements.references.evidence_coverage`",
+        "fn evidence_input_ranges(",
+        "    root: &Path,",
+        "    path: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1101,
+      "line_end": 1105,
+      "text": [
+        "                .collect::<Vec<_>>()",
+        "        })",
+        "        .collect()",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1171,
+      "line_end": 1175,
+      "text": [
+        "    inspected",
+        "}",
+        "",
+        "// {impl}`requirements.references.rust_function_attestations`",
+        "// {impl}`requirements.ci.schema`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1202,
+      "line_end": 1206,
+      "text": [
+        "                ));",
+        "            }",
+        "            return valid;",
+        "        }",
+        "        Err(error) => {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1385,
+      "line_end": 1389,
+      "text": [
+        "                function.declaration_line",
+        "            ));",
+        "        }",
+        "    }",
+        "    valid"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1396,
+      "line_end": 1401,
+      "text": [
+        "    use serde_json::json;",
+        "    use tempfile::TempDir;",
+        "",
+        "    use super::validate_repository;",
+        "",
+        "    // {test}`requirements.integration.report_api`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1417,
+      "line_end": 1421,
+      "text": [
+        "    #[test]",
+        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
+        "        let temp = TempDir::new().unwrap();",
+        "        let root = temp.path();",
+        "        let path = root.join(\"book.toml\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1448,
+      "line_end": 1452,
+      "text": [
+        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
+        "            (\"[book.src]\", \"book.src must be a string\"),",
+        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
+        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1464,
+      "line_end": 1475,
+      "text": [
+        "                \"{configuration:?}: {errors:?}\"",
+        "            );",
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.inputs`",
+        "    #[test]",
+        "    fn validates_full_names_requirement_text_and_input_lines() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1502,
+      "line_end": 1511,
+      "text": [
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.errors`",
+        "    // {test}`requirements.ci.diagnostics`",
+        "    // {test}`requirements.ci.input_containment`",
+        "    // {test}`requirements.ci.definition_errors`",
+        "    #[test]",
+        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1531,
+      "line_end": 1540,
+      "text": [
+        "                    {",
+        "                        \"file\": \"../outside\",",
+        "                        \"line_start\": 0,",
+        "                        \"line_end\": 2,",
+        "                        \"text\": [1]",
+        "                    }",
+        "                ]",
+        "            })",
+        "            .to_string(),",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1547,
+      "line_end": 1551,
+      "text": [
+        "        fs::write(",
+        "            temp.path().join(\"evidence/ghost.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ghost.\",",
+        "                \"determination\": true,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1579,
+      "line_end": 1583,
+      "text": [
+        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
+        "            \"requirement requirements.empty has no text\",",
+        "        ] {",
+        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1590,
+      "line_end": 1596,
+      "text": [
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        let implementation = [\"{\", \"impl}`foo.bar.ready`\"].concat();",
+        "        let citation = [\"{\", \"cite}`foo.bar.ready`\"].concat();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1625,
+      "line_end": 1629,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1633,
+      "line_end": 1638,
+      "text": [
+        "    #[test]",
+        "    fn reports_unknown_references_and_uncovered_lines() {",
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1671,
+      "line_end": 1675,
+      "text": [
+        "        assert!(",
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\"",
+        "        );",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1679,
+      "line_end": 1683,
+      "text": [
+        "    #[test]",
+        "    fn colon_requirement_span_includes_markdown_and_excludes_following_text() {",
+        "        let temp = fixture();",
+        "        let first = \"First MUST work.\\n\\n```text\\n# Example heading\\n:::\\n```\\n\\n## New section\\n\\nSetext section\\n--------------\";",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1703,
+      "line_end": 1712,
+      "text": [
+        "        }",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 2);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.ci.span`",
+        "    // {test}`requirements.ci.definition_errors`",
+        "    #[test]"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1733,
+      "line_end": 1741,
+      "text": [
+        "        assert_eq!(report.requirements, 1);",
+        "        assert!(",
+        "            report.errors.join(\"\\n\").contains(",
+        "                \"md/requirements.md:1: requirement requirements.ready is missing a closing colon fence\"",
+        "            ),",
+        "            \"{:?}\",",
+        "            report.errors",
+        "        );",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1744,
+      "line_end": 1748,
+      "text": [
+        "    #[test]",
+        "    fn validates_four_or_more_colon_fences_and_longer_closers() {",
+        "        let body = \"Body MUST remain.\\n\\n:::{note}\\nNested.\\n:::\\n\\nStill in the requirement.\";",
+        "        for (opening, closing) in [(\"::::\", \"::::\"), (\"::::\", \":::::\"), (\":::::::\", \"::::::::\")] {",
+        "            let temp = fixture();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1778,
+      "line_end": 1786,
+      "text": [
+        "    // {test}`requirements.examples.definition`",
+        "    // {test}`requirements.examples.evidence`",
+        "    // {test}`requirements.ci.schema`",
+        "    // {test}`requirements.references.evidence_coverage`",
+        "    // {test}`requirements.references.attestation_reassessment`",
+        "    // {test}`requirements.ci.requirements_inputs`",
+        "    // {test}`requirements.ci.rust_item_inputs`",
+        "    #[test]",
+        "    fn cited_example_with_a_test_and_matching_evidence_validates() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1799,
+      "line_end": 1803,
+      "text": [
+        "                \"rationale\": \"The example cites this rule.\",",
+        "                \"inputs\": [{",
+        "                    \"file\": \"md/rules.md\",",
+        "                    \"line_start\": 8,",
+        "                    \"line_end\": 8,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1817,
+      "line_end": 1821,
+      "text": [
+        "                \"inputs\": [{",
+        "                    \"file\": \"src/main.rs\",",
+        "                    \"line_start\": 1,",
+        "                    \"line_end\": 3,",
+        "                    \"text\": test_source.lines().collect::<Vec<_>>()"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1859,
+      "line_end": 1872,
+      "text": [
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.examples, 1);",
+        "        assert_eq!(report.evidence_files, 3);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "",
+        "        let rust_original = fs::read_to_string(&rust_evidence).unwrap();",
+        "        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();",
+        "        bad_citations[\"functions\"][0][\"citations\"] = json!([]);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1880,
+      "line_end": 1886,
+      "text": [
+        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"duplicate Rust function attestation\"),",
+        "            \"{errors}\"",
+        "        );",
+        "        fs::remove_file(&rust_evidence).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1891,
+      "line_end": 1902,
+      "text": [
+        "        );",
+        "        fs::write(&rust_evidence, rust_original).unwrap();",
+        "        let orphan = temp.path().join(\"evidence/rust/src/removed.rs.json\");",
+        "        fs::write(&orphan, \"{}\").unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"orphaned Rust attestation file\"),",
+        "            \"{errors}\"",
+        "        );",
+        "        fs::remove_file(orphan).unwrap();",
+        "",
+        "        let old = fs::read_to_string(&example_path).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1908,
+      "line_end": 1913,
+      "text": [
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            test_source.replace(\"assert!(true)\", \"assert!(false)\"),",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1920,
+      "line_end": 1931,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"md/rules.md\"),",
+        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"requirements glob matches changed\"),",
+        "            \"{errors}\"",
+        "        );",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1934,
+      "line_end": 1938,
+      "text": [
+        "        fs::write(&example_path, evidence.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1955,
+      "line_end": 1960,
+      "text": [
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
+        "    }",
+        "",
+        "    // {test}`requirements.ci.definition_errors`",
+        "    // {test}`requirements.examples.definition`"
+      ]
+    },
+    {
+      "file": "src/hook.rs",
+      "line_start": 3,
+      "line_end": 7,
+      "text": [
+        "use std::path::{Path, PathBuf};",
+        "",
+        "use serde_json::{Value, json};",
+        "",
+        "use crate::setup;"
+      ]
+    },
+    {
+      "file": "src/hook.rs",
+      "line_start": 9,
+      "line_end": 15,
+      "text": [
+        "// {impl}`requirements.integration.symposium_setup_hook`",
+        "pub(crate) fn session_start() -> Result<(), Box<dyn Error>> {",
+        "    let input: Value = serde_json::from_reader(io::stdin()).unwrap_or(Value::Null);",
+        "    let response = session_start_response(&input, &std::env::current_dir()?);",
+        "    serde_json::to_writer(io::stdout().lock(), &response)?;",
+        "    Ok(())",
+        "}"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 7,
+      "line_end": 11,
+      "text": [
+        "use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};",
+        "use mdbook_preprocessor::config::Config;",
+        "use serde_json::Value;",
+        "",
+        "use crate::evidence::{Declaration, inspect_repository};"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 161,
+      "line_end": 165,
+      "text": [
+        "        let judgment = record",
+        "            .as_deref()",
+        "            .and_then(|record| serde_json::from_str::<Value>(record).ok())",
+        "            .and_then(|record| {",
+        "                record"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 492,
+      "line_end": 496,
+      "text": [
+        "    let parsed = detail_evidence",
+        "        .record",
+        "        .and_then(|record| serde_json::from_str::<Value>(record).ok());",
+        "    let evidence = parsed.as_ref().and_then(Value::as_object);",
+        "    content.push_str(\"\\n## Rationale\\n\\n\");"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 603,
+      "line_end": 607,
+      "text": [
+        "        push_code_block(content, &lines.join(\"\\n\"), code_language(file));",
+        "    } else {",
+        "        let raw = serde_json::to_string_pretty(input).expect(\"JSON values can be serialized\");",
+        "        push_code_block(content, &raw, \"json\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 741,
+      "line_end": 745,
+      "text": [
+        "    use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};",
+        "    use mdbook_preprocessor::config::Config;",
+        "    use serde_json::json;",
+        "    use tempfile::TempDir;",
+        ""
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 781,
+      "line_end": 785,
+      "text": [
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        let requirements = [",
+        "            (\"ready\", \"Ready MUST work.\"),"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 793,
+      "line_end": 798,
+      "text": [
+        "            source.push_str(&format!(\":::{{req}} {name}\\n{body}\\n:::\\n\\n\"));",
+        "        }",
+        "        fs::write(temp.path().join(\"md/requirements/core.md\"), &source).unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            [\"// {\", \"impl}`requirements.core.uncovered`\\n\"].concat(),"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 805,
+      "line_end": 809,
+      "text": [
+        "            (\"uncovered\", \"Uncovered MUST work.\", true),",
+        "        ] {",
+        "            fs::write(",
+        "                temp.path()",
+        "                    .join(format!(\"evidence/requirements.core.{name}.json\")),"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1039,
+      "line_end": 1043,
+      "text": [
+        "                \"line_start\": 26,",
+        "                \"line_end\": 37,",
+        "                \"text\": [\"pub fn validate_repository() {}\"]",
+        "            }]",
+        "        })"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1204,
+      "line_end": 1212,
+      "text": [
+        "        fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        let source = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} pending\\nPending case. CITE`rules.ready`\\n:::\\n\\n:::{example} missing\\nMissing case. CITE`rules.ready`\\n:::\\n\"",
+        "            .replace(\"CITE\", \"{cite}\");",
+        "        fs::write(temp.path().join(\"md/rules.md\"), &source).unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/rules.pending.json\"),",
+        "            json!({"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 3,
+      "line_end": 7,
+      "text": [
+        "use std::path::{Component, Path, PathBuf};",
+        "",
+        "use serde_json::{Value, json};",
+        "",
+        "use crate::definition_glob;"
+      ]
+    },
+    {
+      "file": "src/judgment.rs",
+      "line_start": 1,
+      "line_end": 3,
+      "text": [
+        "use serde_json::{Value, json};",
+        "",
+        "/// A requirement or example assessment, independent of source freshness."
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 27,
+      "line_end": 31,
+      "text": [
+        "/// `habeas::validate()`.",
+        "#[track_caller]",
+        "pub fn validate() {",
+        "    // {impl}`requirements.integration.validate`",
+        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 88,
+      "line_end": 92,
+      "text": [
+        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
+        "            habeas::preprocess_book(&mut book, &context.root)?;",
+        "            serde_json::to_writer(io::stdout().lock(), &book)?;",
+        "            Ok(())",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 328,
+      "line_end": 332,
+      "text": [
+        "",
+        "// {impl}`requirements.references.rust_function_coverage`",
+        "pub(crate) fn validate_rust_functions(",
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 535,
+      "line_end": 551,
+      "text": [
+        "        fs::create_dir_all(project.path().join(\"target\")).unwrap();",
+        "        fs::create_dir_all(project.path().join(\"evidence\")).unwrap();",
+        "        fs::write(project.path().join(\"src/lib.rs\"), \"fn uncited() {}\\n\").unwrap();",
+        "        fs::write(",
+        "            project.path().join(\"src/evidence/check.rs\"),",
+        "            \"fn nested_source() {}\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(project.path().join(\"tests/broken.rs\"), \"fn unfinished( {\\n\").unwrap();",
+        "        fs::write(",
+        "            project.path().join(\"target/generated.rs\"),",
+        "            \"fn ignored() {}\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            project.path().join(\"evidence/fixture.rs\"),",
+        "            \"fn ignored() {}\\n\","
+      ]
+    },
+    {
+      "file": "src/rust_items.rs",
+      "line_start": 423,
+      "line_end": 427,
+      "text": [
+        "// {impl}`requirements.references.rust_item_selectors`",
+        "// {impl}`requirements.ci.rust_item_inputs`",
+        "pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {",
+        "    let syntax = syn::parse_file(source)?;",
+        "    let mut collector = ItemCollector {"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 85,
+      "line_end": 89,
+      "text": [
+        "            fs::create_dir_all(parent)?;",
+        "        }",
+        "        fs::write(path, content)?;",
+        "    }",
+        "    Ok(())"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 168,
+      "line_end": 172,
+      "text": [
+        "    write_new_or_same(&css_path, BADGE_CSS)?;",
+        "    write_new_or_same(&test_path, TEST_SOURCE)?;",
+        "    fs::write(&book_path, book.to_string())?;",
+        "    println!(\"Habeas configured in {}\", root.display());",
+        "    Ok(())"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 1,
+      "line_end": 5,
+      "text": [
+        "use std::collections::{BTreeMap, BTreeSet};",
+        "",
+        "use serde_json::{Map, Value};",
+        "",
+        "use crate::evidence::Declaration;"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 113,
+      "line_end": 117,
+      "text": [
+        "",
+        "// {impl}`requirements.definitions.dependencies`",
+        "pub(crate) fn validate_dependencies(",
+        "    declarations: &BTreeMap<String, Declaration>,",
+        "    record: &Map<String, Value>,"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 368,
+      "line_end": 378,
+      "text": [
+        "`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same",
+        "table. Backend-specific inference options MUST appear in its `options` subtable.",
+        "Within a present authoring section, `configs` MUST be present but MAY be empty;",
+        "omitted `projects` and `options` tables MUST deserialize as empty maps.",
+        "Serialization MUST follow the common rules in",
+        "{cite}`requirements.configuration.serialization`.",
+        ":::",
+        "",
+        ":::{req} concurrency",
+        "Each named authoring configuration MUST accept an optional positive integer",
+        "`concurrency` in its configuration table. When omitted, the maximum number of"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 139,
+      "line_end": 149,
+      "text": [
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let config: Self = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;",
+        "        config.validate(path)?;",
+        "        Ok(config)",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    pub fn to_toml(&self) -> io::Result<String> {",
+        "        self.validate(Path::new(\"user configuration\"))?;",
+        "        toml::to_string_pretty(self)"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 313,
+      "line_end": 329,
+      "text": [
+        "    // {impl}`requirements.authoring.configuration_precedence`",
+        "    pub fn endpoint(&self) -> &str {",
+        "        self.endpoint.as_deref().unwrap_or(\"http://localhost:11434\")",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.configuration_precedence`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn api_key(&self) -> io::Result<Option<String>> {",
+        "        self.api_key_from(|name| std::env::var_os(name))",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.configuration_precedence`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn api_key_from(",
+        "        &self,",
+        "        lookup: impl Fn(&str) -> Option<OsString>,",
+        "    ) -> io::Result<Option<String>> {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 417,
+      "line_end": 427,
+      "text": [
+        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
+        "        )",
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.configuration.serialization`",
+        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
+        "    match fs::read_to_string(path) {",
+        "        Ok(text) => UserConfig::parse(&text, path).map(Some),",
+        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 450,
+      "line_end": 460,
+      "text": [
+        "    let config = load_user_config(&path)?;",
+        "    resolve_authoring_from(&path, config.as_ref(), root, explicit)",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "// {impl}`requirements.configuration.serialization`",
+        "// {impl}`requirements.authoring.concurrency`",
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring_from("
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 64,
+      "line_end": 74,
+      "text": [
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
+        "}",
+        "",
+        "// {test}`requirements.configuration.structure`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
+        "    let dir = tempfile::tempdir().unwrap();",
+        "    let path = dir.path().join(\"user.toml\");",
+        "    assert!(load_user_config(&path).unwrap().is_none());"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 96,
+      "line_end": 106,
+      "text": [
+        "}",
+        "",
+        "// {test}`requirements.authoring.configuration_structure`",
+        "// {test}`requirements.authoring.configuration_serialization`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn backend_configuration_round_trips_without_materializing_defaults() {",
+        "    let source = r#\""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 286,
+      "line_end": 296,
+      "text": [
+        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
+        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
+        "    }",
+        "    let valid = UserConfig::parse(\"version = 1\\n[authoring]\\nconfigs = {}\", path).unwrap();",
+        "    assert!(valid.authoring.unwrap().configs.is_empty());",
+        "}",
+        "",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn ollama_authentication_resolves_separately_and_rejects_missing_values() {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 84,
+      "line_end": 135,
+      "text": [
+        "    String(String),",
+        "    Boolean(bool),",
+        "    Integer(i64),",
+        "    Float(f64),",
+        "    Array(Vec<OptionValue>),",
+        "    Map(BTreeMap<String, OptionValue>),",
+        "}",
+        "",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(rename_all = \"lowercase\")]",
+        "pub enum BackendKind {",
+        "    Bedrock,",
+        "    Ollama,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]",
+        "pub struct ModelRef {",
+        "    pub backend: BackendKind,",
+        "    pub model: String,",
+        "}",
+        "",
+        "/// The selected saved values together with their source, without resolved secrets.",
+        "#[derive(Clone, Debug)]",
+        "pub struct ResolvedAuthoringConfig {",
+        "    pub config_path: PathBuf,",
+        "    pub project_root: PathBuf,",
+        "    pub name: String,",
+        "    pub concurrency: Option<NonZeroUsize>,",
+        "    pub backend: BackendConfig,",
+        "}",
+        "",
+        "#[derive(Clone, Copy, Debug)]",
+        "pub enum ConfigPlatform {",
+        "    Unix,",
+        "    Windows,",
+        "}",
+        "",
+        "impl ConfigPlatform {",
+        "    // {impl}`requirements.configuration.user_location`",
+        "    // {impl}`requirements.configuration.state_location`",
+        "    pub fn current() -> Self {",
+        "        if cfg!(windows) {",
+        "            Self::Windows",
+        "        } else {",
+        "            Self::Unix",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "impl UserConfig {",
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 130,
+      "line_end": 300,
+      "text": [
+        "    let local = &authoring.configs[\"local\"].backend;",
+        "    let BackendConfig::Ollama(ollama) = local else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert_eq!(ollama.endpoint(), \"http://localhost:11434\");",
+        "    assert_eq!(ollama.endpoint, None);",
+        "    assert!(ollama.options.is_empty());",
+        "    assert_eq!(local.model_ref().model, \"tiny:latest\");",
+        "    assert_eq!(local.model_ref().backend, BackendKind::Ollama);",
+        "    let json = authoring.configs[\"Cloud\"].backend.options_json().unwrap();",
+        "    assert_eq!(json[\"custom\"][\"arbitrary\"], \"provider-defined\");",
+        "    assert_eq!(json[\"max_tokens\"], 777);",
+        "    let serialized = config.to_toml().unwrap();",
+        "    assert!(!serialized.contains(\"endpoint\"));",
+        "    assert!(!serialized.contains(\"http://localhost\"));",
+        "    assert!(!serialized.contains(\"concurrency\"));",
+        "    assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);",
+        "}",
+        "",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.configuration_structure`",
+        "// {test}`requirements.authoring.configuration_serialization`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn authoring_concurrency_defaults_overrides_and_invalid_values() {",
+        "    let dir = tempfile::tempdir().unwrap();",
+        "    let path = dir.path().join(\"config.toml\");",
+        "    for backend in [\"bedrock\", \"ollama\"] {",
+        "        let base =",
+        "            format!(\"version = 1\\n[authoring.configs.model]\\nbackend = '{backend}'\\nmodel = 'm'\\n\");",
+        "        let defaults = UserConfig::parse(&base, &path).unwrap();",
+        "        let resolved =",
+        "            resolve_authoring_from(&path, Some(&defaults), dir.path(), Some(\"model\")).unwrap();",
+        "        assert_eq!(resolved.concurrency, None);",
+        "        let expected = if backend == \"bedrock\" {",
+        "            std::thread::available_parallelism()",
+        "                .map(|n| n.get())",
+        "                .unwrap_or(1)",
+        "        } else {",
+        "            1",
+        "        };",
+        "        assert_eq!(resolved.effective_concurrency(), expected);",
+        "        assert!(!defaults.to_toml().unwrap().contains(\"concurrency\"));",
+        "",
+        "        let configured = UserConfig::parse(&format!(\"{base}concurrency = 7\\n\"), &path).unwrap();",
+        "        let resolved =",
+        "            resolve_authoring_from(&path, Some(&configured), dir.path(), Some(\"model\")).unwrap();",
+        "        assert_eq!(resolved.concurrency.unwrap().get(), 7);",
+        "        assert_eq!(resolved.effective_concurrency(), 7);",
+        "        let serialized = configured.to_toml().unwrap();",
+        "        assert!(serialized.contains(\"concurrency = 7\"));",
+        "        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);",
+        "        assert!(resolved.backend.options().is_empty());",
+        "",
+        "        for invalid in [\"0\", \"-1\", \"1.5\", \"'2'\"] {",
+        "            let error = UserConfig::parse(&format!(\"{base}concurrency = {invalid}\\n\"), &path)",
+        "                .unwrap_err()",
+        "                .to_string();",
+        "            assert!(error.contains(&path.display().to_string()), \"{error}\");",
+        "            assert!(error.contains(\"concurrency\"), \"{error}\");",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.authoring.rig_configuration_mapping`",
+        "#[test]",
+        "fn explicit_project_and_default_selections_choose_whole_configs() {",
+        "    let dir = tempfile::tempdir().unwrap();",
+        "    let root = dir.path().canonicalize().unwrap();",
+        "    let config_path = root.join(\"config.toml\");",
+        "    let mut config = UserConfig::parse(",
+        "        r#\"",
+        "version = 1",
+        "[authoring]",
+        "default = \"default\"",
+        "[authoring.configs.default]",
+        "backend = \"bedrock\"",
+        "model = \"cloud-id\"",
+        "aws_profile = \"named\"",
+        "[authoring.configs.project]",
+        "backend = \"ollama\"",
+        "model = \"project:tag\"",
+        "endpoint = \"http://server:11434\"",
+        "[authoring.configs.explicit]",
+        "backend = \"ollama\"",
+        "model = \"explicit:tag\"",
+        "\"#,",
+        "        &config_path,",
+        "    )",
+        "    .unwrap();",
+        "    assert_eq!(",
+        "        resolve_authoring_from(&config_path, Some(&config), &root, None)",
+        "            .unwrap()",
+        "            .name,",
+        "        \"default\"",
+        "    );",
+        "    config.authoring.as_mut().unwrap().projects.insert(",
+        "        root.clone(),",
+        "        habeas::config::ProjectSelection {",
+        "            config: \"project\".to_owned(),",
+        "        },",
+        "    );",
+        "    let project =",
+        "        resolve_authoring_from(&config_path, Some(&config), &root.join(\".\"), None).unwrap();",
+        "    assert_eq!(project.name, \"project\");",
+        "    assert_eq!(project.project_root, root);",
+        "    let BackendConfig::Ollama(ollama) = project.backend else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert_eq!(ollama.endpoint(), \"http://server:11434\");",
+        "    let explicit =",
+        "        resolve_authoring_from(&config_path, Some(&config), &root, Some(\"explicit\")).unwrap();",
+        "    let BackendConfig::Ollama(ollama) = explicit.backend else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert_eq!(ollama.model, \"explicit:tag\");",
+        "    assert_eq!(ollama.endpoint, None);",
+        "    let error = resolve_authoring_from(&config_path, Some(&config), &root, Some(\"DEFAULT\"))",
+        "        .unwrap_err()",
+        "        .to_string();",
+        "    assert!(error.contains(\"DEFAULT\"));",
+        "    assert!(error.contains(\"config.toml\"));",
+        "    assert!(error.contains(\"editing-the-file\"));",
+        "    assert!(",
+        "        resolve_authoring_from(&config_path, None, &root, None)",
+        "            .unwrap_err()",
+        "            .to_string()",
+        "            .contains(\"no authoring configuration\")",
+        "    );",
+        "}",
+        "",
+        "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "#[test]",
+        "fn invalid_schema_and_feature_values_report_the_configuration_path() {",
+        "    let path = Path::new(\"/settings/habeas/config.toml\");",
+        "    for source in [",
+        "        \"version = 2\",",
+        "        \"version = '1'\",",
+        "        \"\",",
+        "        \"version = 1\\nunknown = true\",",
+        "        \"version = 1\\n[authoring]\",",
+        "        \"version = 1\\n[authoring]\\nconfigs = {}\\ndefault = '_bad'\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = ''\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\nunknown = true\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'unsupported'\\nmodel = 'm'\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'BAD=KEY'\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
+        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
+        "    ] {",
+        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
+        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
+        "    }",
+        "    let valid = UserConfig::parse(\"version = 1\\n[authoring]\\nconfigs = {}\", path).unwrap();",
+        "    assert!(valid.authoring.unwrap().configs.is_empty());",
+        "}",
+        "",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn ollama_authentication_resolves_separately_and_rejects_missing_values() {",
+        "    let config = UserConfig::parse(",
+        "        \"version = 1\\n[authoring.configs.remote]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'MODEL_KEY'\",",
+        "        Path::new(\"config.toml\"),",
+        "    ).unwrap();"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 172,
+      "line_end": 172,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 235,
+      "line_end": 235,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 178,
+      "line_end": 178,
+      "text": [
+        "    file.persist(&path).map_err(|error| error.error)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 424,
+      "line_end": 424,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 429,
+      "line_end": 430,
+      "text": [
+        "        fs::write(root.path().join(\"book.toml\"), \"[book]\\nsrc='md'\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 453,
+      "line_end": 453,
+      "text": [
+        "        fs::write(root.path().join(\"md/terms.md\"), terms).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 461,
+      "line_end": 463,
+      "text": [
+        "        fs::write(root.path().join(\"md/requirements.md\"), declarations).unwrap();",
+        "        fs::write(root.path().join(\"src/lib.rs\"), format!(\"struct Thing;\\nimpl Thing {{\\n    // {}\\n    fn run(&self) {{}}\\n    fn unrelated(&self) {{}}\\n}}\\n// {}\\nfn test_ready() {{}}\\n\", role(\"impl\", \"requirements.ready\"), role(\"test\", \"requirements.ready\"))).unwrap();",
+        "        fs::write(root.path().join(\"notes.txt\"), \"new source text\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 465,
+      "line_end": 465,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 539,
+      "line_end": 539,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 563,
+      "line_end": 563,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 571,
+      "line_end": 571,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 576,
+      "line_end": 576,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 584,
+      "line_end": 584,
+      "text": [
+        "        fs::write(root.path().join(\"notes.txt\"), \"current notes\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 586,
+      "line_end": 586,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 645,
+      "line_end": 645,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 653,
+      "line_end": 653,
+      "text": [
+        "        fs::write(root.path().join(\"notes.txt\"), \"current source\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 664,
+      "line_end": 664,
+      "text": [
+        "        fs::write(&path, json!({\"inputs\":old_inputs}).to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 667,
+      "line_end": 667,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 256,
+      "line_end": 256,
+      "text": [
+        "            fs::write(&path, json)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 562,
+      "line_end": 562,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 330,
+      "line_end": 330,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 335,
+      "line_end": 335,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 407,
+      "line_end": 409,
+      "text": [
+        "        fs::write(root.path().join(\".gitignore\"), \"ignored.txt\\n\").unwrap();",
+        "        fs::write(root.path().join(\"ignored.txt\"), \"needle\\n\").unwrap();",
+        "        fs::write(root.path().join(\".hidden.txt\"), \"needle\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 419,
+      "line_end": 419,
+      "text": [
+        "        fs::write(root.path().join(\"sample.txt\"), lines.join(\"\\n\")).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 458,
+      "line_end": 458,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 463,
+      "line_end": 463,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 468,
+      "line_end": 469,
+      "text": [
+        "        fs::write(root.path().join(\"source.txt\"), \"needle in source\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 147,
+      "line_end": 147,
+      "text": [
+        "    pub fn to_toml(&self) -> io::Result<String> {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1407,
+      "line_end": 1408,
+      "text": [
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1428,
+      "line_end": 1428,
+      "text": [
+        "            fs::write(&path, configuration).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1459,
+      "line_end": 1459,
+      "text": [
+        "            fs::write(&path, configuration).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1477,
+      "line_end": 1477,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1482,
+      "line_end": 1482,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1513,
+      "line_end": 1513,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1518,
+      "line_end": 1518,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1542,
+      "line_end": 1542,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1547,
+      "line_end": 1547,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1558,
+      "line_end": 1558,
+      "text": [
+        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1590,
+      "line_end": 1590,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1601,
+      "line_end": 1603,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
+        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1636,
+      "line_end": 1636,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1644,
+      "line_end": 1645,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1683,
+      "line_end": 1683,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1691,
+      "line_end": 1691,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1715,
+      "line_end": 1715,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1720,
+      "line_end": 1720,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1749,
+      "line_end": 1749,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1756,
+      "line_end": 1756,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1790,
+      "line_end": 1790,
+      "text": [
+        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1793,
+      "line_end": 1794,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1811,
+      "line_end": 1811,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1829,
+      "line_end": 1829,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1873,
+      "line_end": 1873,
+      "text": [
+        "        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1880,
+      "line_end": 1880,
+      "text": [
+        "        fs::write(&rust_evidence, duplicate.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1892,
+      "line_end": 1892,
+      "text": [
+        "        fs::write(&rust_evidence, rust_original).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1894,
+      "line_end": 1894,
+      "text": [
+        "        fs::write(&orphan, \"{}\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1905,
+      "line_end": 1905,
+      "text": [
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1909,
+      "line_end": 1910,
+      "text": [
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1920,
+      "line_end": 1921,
+      "text": [
+        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1934,
+      "line_end": 1934,
+      "text": [
+        "        fs::write(&example_path, evidence.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1946,
+      "line_end": 1946,
+      "text": [
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1967,
+      "line_end": 1968,
+      "text": [
+        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 783,
+      "line_end": 783,
+      "text": [
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 795,
+      "line_end": 796,
+      "text": [
+        "        fs::write(temp.path().join(\"md/requirements/core.md\"), &source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 807,
+      "line_end": 807,
+      "text": [
+        "            fs::write("
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1206,
+      "line_end": 1206,
+      "text": [
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1209,
+      "line_end": 1210,
+      "text": [
+        "        fs::write(temp.path().join(\"md/rules.md\"), &source).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 537,
+      "line_end": 538,
+      "text": [
+        "        fs::write(project.path().join(\"src/lib.rs\"), \"fn uncited() {}\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 543,
+      "line_end": 544,
+      "text": [
+        "        fs::write(project.path().join(\"tests/broken.rs\"), \"fn unfinished( {\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 549,
+      "line_end": 549,
+      "text": [
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 87,
+      "line_end": 87,
+      "text": [
+        "        fs::write(path, content)?;"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 170,
+      "line_end": 170,
+      "text": [
+        "    fs::write(&book_path, book.to_string())?;"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 10,
+      "line_end": 10,
+      "text": [
+        "use serde::{Deserialize, Serialize};"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 14,
+      "line_end": 14,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 22,
+      "line_end": 22,
+      "text": [
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 26,
+      "line_end": 26,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 36,
+      "line_end": 36,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 42,
+      "line_end": 42,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 50,
+      "line_end": 50,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 57,
+      "line_end": 57,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 69,
+      "line_end": 69,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 76,
+      "line_end": 76,
+      "text": [
+        "    pub api_key_env: Option<String>,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 81,
+      "line_end": 81,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 92,
+      "line_end": 92,
+      "text": [
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 99,
+      "line_end": 99,
+      "text": [
+        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 105,
+      "line_end": 105,
+      "text": [
+        "/// The selected saved values together with their source, without resolved secrets."
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 258,
+      "line_end": 258,
+      "text": [
+        "            && let Some(name) = &config.api_key_env"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 263,
+      "line_end": 263,
+      "text": [
+        "                &format!(\"{setting}.api_key_env\"),"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 320,
+      "line_end": 321,
+      "text": [
+        "    pub fn api_key(&self) -> io::Result<Option<String>> {",
+        "        self.api_key_from(|name| std::env::var_os(name))"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 326,
+      "line_end": 326,
+      "text": [
+        "    pub fn api_key_from("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 330,
+      "line_end": 330,
+      "text": [
+        "        self.api_key_env.as_ref().map(|name| {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 335,
+      "line_end": 335,
+      "text": [
+        "                    format!(\"authoring api_key_env {name:?} must name a set, nonempty UTF-8 environment variable\")))"
       ]
     }
   ]

@@ -115,9 +115,11 @@ Every project file named directly by an evidence input or resolved from its sele
 ## Existing evidence inputs used by authoring
 
 :::{req} authoring_inputs
-When `habeas author-evidence` assesses a subject with existing evidence, the
-current resolution of each existing input selector MUST contribute to the
+When `habeas author` assesses a subject with existing evidence, the
+current resolution of each existing source input selector MUST contribute to the
 mandatory input set defined by {cite}`requirements.authoring.mandatory_inputs`.
+Selectors into generated project-root `evidence/` output, including symlink
+aliases, MUST be omitted so old judgments cannot become new source evidence.
 The contribution MUST use the current source text selected by that input, rather
 than its old recorded text. Reading these selectors MUST NOT modify the existing
 evidence. The previous determination and rationale MUST NOT be supplied as

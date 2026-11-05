@@ -45,7 +45,7 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::
 
 :::{req} function_attestation_guidance
-Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: after reviewing the function and applicable requirement and example texts, the agent is confirming that the function carries citations for every applicable requirement or named example. The agent MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed before its determination is true.
+Habeas's bundled agent skills and any output that requests or reports a function attestation MUST explain its purpose: the configured model reviews the function and applicable requirement and example texts to judge whether the function cites every applicable requirement or named example. They MUST direct the supervising agent to run `habeas author --all` for that assessment. The model's rationale MUST explain how it identified the relevant definitions, why its requirements inputs cover them, and how the cited texts account for the function's behavior, including interactions between requirements. Matching input snapshots and a matching citation list alone MUST NOT justify a true determination. A changed function or reviewed definition set MUST be reassessed by the harness before its determination is true. {cite}`requirements.authoring.function_attestations`
 :::
 
 :::{req} bootstrap_skill
@@ -53,7 +53,7 @@ Habeas MUST bundle a skill for deriving initial requirements from an existing co
 :::
 
 :::{req} requirements_review_skill
-The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST allow truthful false determinations while implementation is pending.
+The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.
 :::
 
 :::{req} behavior_review_guidance
@@ -61,7 +61,7 @@ Habeas's bundled agent skills MUST direct agents reviewing code against requirem
 :::
 
 :::{req} internal_detail_guidance
-Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement, such as `internal-detail`, obtain the user's agreement, cite it on the function, and record evidence explaining why each such function introduces no additional end-user-observable behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.
+Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement, such as `internal-detail`, obtain the user's agreement, cite it on the function, and run `habeas author --all` for the harness to assess its evidence. That assessment MUST account for whether the cited requirement explains the function's behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.
 :::
 
 :::{req} invocation

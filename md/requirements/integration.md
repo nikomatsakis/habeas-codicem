@@ -2,6 +2,10 @@
 
 :::{req} validate
 `habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.
+Its failure message MUST instruct the agent to run `habeas author --all`, address
+the reported gaps, and rerun tests. Validation MUST remain deterministic and MUST
+NOT invoke authoring itself. {cite}`requirements.authoring.batch`
+{cite}`requirements.authoring.deterministic_validation`
 :::
 
 :::{req} self_test

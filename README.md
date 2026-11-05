@@ -28,7 +28,11 @@ To configure the project before starting an agent session, or if the hook is una
 
 Add a `{test}` citation to an appropriate project requirement or named example for the generated test, and cite the rest of your Rust functions before expecting validation to pass.
 
-After setup, run `cargo test --workspace` to validate requirements and evidence.
+Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement evidence, example evidence, and Rust function attestations. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current accepted records are preserved. Run `cargo test --workspace` afterward to validate the saved evidence without inference.
+
+Bedrock authoring defaults to the available logical CPU count in simultaneous
+assessments; Ollama defaults to one. Set a positive `concurrency` in the named
+authoring configuration to override either default.
 
 Run `cargo agents sync` after updating the Habeas dependency to refresh the bundled skills.
 
@@ -61,7 +65,7 @@ With two managed forwards active, pressing q stops both. {cite}`requirements.for
 :::
 ```
 
-Tests can target the example with `{test}` followed by its full name, `requirements.forwarding.two_active`. The agent must explain in `evidence/requirements.forwarding.two_active.json` how those tests cover both active forwards and the result of pressing q. See [How it works](md/reference.md#examples).
+Tests can target the example with `{test}` followed by its full name, `requirements.forwarding.two_active`. The authoring harness records its model's judgment in `evidence/requirements.forwarding.two_active.json`, explaining how those tests cover both active forwards and the result of pressing q. See [How it works](md/reference.md#examples).
 
 ## Experimental GitHub autofix workflow
 
@@ -69,11 +73,11 @@ The [Habeas autofix workflow](.github/workflows/habeas-autofix.yml) keeps the
 whole review cycle for an `autofix` issue in one PR and one branch:
 
 1. An owner opens an issue with the label or adds the label to an existing issue.
-   The agent opens a PR with proposed requirements, examples, and pending evidence.
+   The agent opens a PR with proposed requirements and examples; evidence remains pending.
 2. In **📝 Adjust requirements** mode, owner comments and reviews refine the
    proposal. An **Approve** review of the current head enables coding.
 3. In **🛠 Author code** mode, the agent implements the approved requirements,
-   tests their examples, and completes evidence. Owner feedback triggers revisions.
+   tests their examples, and runs `habeas author --all` for evidence. Owner feedback triggers revisions.
    Code commits preserve requirements approval.
 4. If implementation reveals that an obligation needs revision, the agent returns
    to **📝 Adjust requirements**, explains the reason, and publishes a
@@ -117,9 +121,13 @@ identity. Add the `autofix` label and trigger it as an owner. The workflow must
 be on the default branch for issue and review events to run it.
 
 Requirements commits may fail the full `habeas::validate()` test because pending
-evidence honestly has `determination: false`. Proposal runs check book rendering;
+evidence is missing, stale, or has a false judgment. Proposal runs check book rendering;
 code runs must pass the regular Cargo and mdBook checks. The workflow does not
 merge automatically or create a second implementation PR.
+
+Evidence authoring requires a configured model and provider access. The current
+autofix job's network restriction may prevent that step; the agent reports that
+blocker and leaves evidence pending instead of writing it by hand.
 
 ## Developing and publishing the book
 

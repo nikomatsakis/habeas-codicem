@@ -36,7 +36,7 @@ pub fn validate() {
     let report = validate_repository(root).expect("cannot validate requirement evidence");
     if !report.errors.is_empty() {
         panic!(
-            "Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\n- {}",
+            "Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\n- {}\n\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.",
             report.requirements,
             report.examples,
             report.evidence_files,

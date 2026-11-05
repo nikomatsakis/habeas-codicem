@@ -33,8 +33,12 @@ enum Command {
     Info {
         selector: String,
     },
-    AuthorEvidence {
-        subject: String,
+    #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
+    Author {
+        subject: Option<String>,
+        /// Author all requirement, example, and function evidence needing attention.
+        #[arg(long, conflicts_with = "stdout")]
+        all: bool,
         #[arg(long)]
         config: Option<String>,
         /// Write evidence JSON to stdout instead of updating its file.
@@ -115,25 +119,45 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         // {impl}`requirements.authoring.invocation`
-        Command::AuthorEvidence {
+        // {impl}`requirements.authoring.batch`
+        // {impl}`requirements.authoring.concurrency`
+        Command::Author {
             subject,
+            all,
             config,
             stdout,
         } => {
             let root = setup::project_root()?;
+            // Tokio's fixed worker pool is shared by all async assessments.
+            let runtime = tokio::runtime::Runtime::new()?;
+            if all {
+                let outcome =
+                    runtime.block_on(habeas::authoring::author_all(&root, config.as_deref()))?;
+                println!(
+                    "{} authored; {} unchanged; {} failed",
+                    outcome.completed.len(),
+                    outcome.unchanged,
+                    outcome.failures.len()
+                );
+                if !outcome.failures.is_empty() {
+                    return Err(io::Error::other(
+                        "evidence authoring failed for one or more subjects; see diagnostics above",
+                    )
+                    .into());
+                }
+                return Ok(());
+            }
             let output = if stdout {
                 habeas::authoring::EvidenceOutput::Stdout
             } else {
                 habeas::authoring::EvidenceOutput::File
             };
-            let outcome = tokio::runtime::Runtime::new()?.block_on(
-                habeas::authoring::author_evidence_with_output(
-                    &root,
-                    &subject,
-                    config.as_deref(),
-                    output,
-                ),
-            )?;
+            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(
+                &root,
+                &subject.expect("clap requires a subject or --all"),
+                config.as_deref(),
+                output,
+            ))?;
             let summary = format!(
                 "{}: {} / {} — {}",
                 outcome.subject,

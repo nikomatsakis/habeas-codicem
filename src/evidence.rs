@@ -40,6 +40,8 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 pub(crate) struct RepositoryInspection {
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) report: EvidenceReport,
+    pub(crate) rust_functions: Vec<(String, String, bool)>,
+    pub(crate) discovery_errors: Vec<String>,
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
@@ -62,11 +64,16 @@ pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Decla
 
 // {impl}`requirements.integration.report_api`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.ci.errors`
+// {impl}`requirements.ci.diagnostics`
+// {impl}`requirements.examples.evidence`
 pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {
     let root = fs::canonicalize(root)?;
     let mut errors = Vec::new();
     let md_root = book_source_dir(&root, &mut errors);
     let definitions = collect_definitions(&root, &md_root, &mut errors);
+    let mut discovery_errors = errors.clone();
     let evidence_root = root.join("evidence");
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
@@ -119,7 +126,8 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     // {impl}`requirements.references.rust_function_coverage`
     crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);
     // {impl}`requirements.references.rust_function_attestations`
-    validate_rust_attestations(&root, &definitions, &mut errors);
+    let rust_functions =
+        validate_rust_attestations(&root, &definitions, &mut errors, &mut discovery_errors);
 
     let examples = definitions
         .values()
@@ -137,15 +145,40 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
             errors,
         },
         definitions,
+        rust_functions,
+        discovery_errors,
     })
 }
 
 // {impl}`requirements.ci.book_source`
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.ci.diagnostics`
 fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
     let path = root.join("book.toml");
     let source = match fs::read_to_string(&path) {
         Ok(content) => match content.parse::<DocumentMut>() {
-            Ok(book) => book["book"]["src"].as_str().unwrap_or("src").to_owned(),
+            Ok(book) => {
+                let table = match book.get("book") {
+                    Some(item) => match item.as_table_like() {
+                        Some(table) => Some(table),
+                        None => {
+                            errors.push("book.toml: book must be a table".to_owned());
+                            return root.join("md");
+                        }
+                    },
+                    None => None,
+                };
+                match table.and_then(|table| table.get("src")) {
+                    Some(item) => match item.as_str() {
+                        Some(source) => source.to_owned(),
+                        None => {
+                            errors.push("book.toml: book.src must be a string".to_owned());
+                            return root.join("md");
+                        }
+                    },
+                    None => "src".to_owned(),
+                }
+            }
             Err(error) => {
                 errors.push(format!("book.toml: invalid TOML: {error}"));
                 return root.join("md");
@@ -1072,31 +1105,43 @@ fn evidence_input_ranges(
 
 // {impl}`requirements.references.rust_function_attestations`
 // {impl}`requirements.ci.orphans`
+// {impl}`requirements.authoring.batch`
 fn validate_rust_attestations(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
-) {
+    discovery_errors: &mut Vec<String>,
+) -> Vec<(String, String, bool)> {
+    let mut inspected = Vec::new();
     let mut expected_files = BTreeSet::new();
-    for file in crate::rust_coverage::rust_files(root, errors) {
+    let initial_errors = errors.len();
+    let files = crate::rust_coverage::rust_files(root, errors);
+    discovery_errors.extend(errors[initial_errors..].iter().cloned());
+    for file in files {
         let rust_file = display_path(root, &file);
         let source = match fs::read_to_string(&file) {
             Ok(source) => source,
             Err(error) => {
-                errors.push(format!("{rust_file}: cannot read Rust source: {error}"));
+                let error = format!("{rust_file}: cannot read Rust source: {error}");
+                discovery_errors.push(error.clone());
+                errors.push(error);
                 continue;
             }
         };
         let functions = match crate::rust_items::function_citations(&source, definitions) {
             Ok(functions) => functions,
-            Err(_) => continue, // the Rust citation check reports this parse failure
+            Err(error) => {
+                // The citation check also includes this in the validation report.
+                discovery_errors.push(format!("{rust_file}: cannot parse Rust source: {error}"));
+                continue;
+            }
         };
         if functions.is_empty() {
             continue;
         }
         let evidence_path = root.join("evidence/rust").join(format!("{rust_file}.json"));
         expected_files.insert(evidence_path.clone());
-        validate_rust_attestation_file(
+        let valid = validate_rust_attestation_file(
             root,
             &evidence_path,
             &rust_file,
@@ -1104,6 +1149,13 @@ fn validate_rust_attestations(
             definitions,
             errors,
         );
+        inspected.extend(functions.iter().map(|(item, _)| {
+            (
+                rust_file.clone(),
+                item.selector.clone(),
+                valid.contains(&item.selector),
+            )
+        }));
     }
     let evidence_root = root.join("evidence/rust");
     if evidence_root.is_dir() {
@@ -1116,12 +1168,17 @@ fn validate_rust_attestations(
             }
         }
     }
+    inspected
 }
 
 // {impl}`requirements.references.rust_function_attestations`
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.determination`
 // {impl}`requirements.definitions.dependencies`
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.ci.orphans`
+// {impl}`requirements.ci.errors`
+// {impl}`requirements.ci.diagnostics`
 fn validate_rust_attestation_file(
     root: &Path,
     path: &Path,
@@ -1129,7 +1186,9 @@ fn validate_rust_attestation_file(
     functions: &[(crate::rust_items::RustItem, BTreeSet<(String, String)>)],
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
-) {
+) -> BTreeSet<String> {
+    let mut valid = BTreeSet::new();
+    let initial_errors = errors.len();
     let label = display_path(root, path);
     let purpose =
         "review each function and confirm it cites every applicable requirement or named example";
@@ -1142,25 +1201,25 @@ fn validate_rust_attestation_file(
                     function.declaration_line, function.selector
                 ));
             }
-            return;
+            return valid;
         }
         Err(error) => {
             errors.push(format!(
                 "{label}: cannot read Rust attestation: {error}; {purpose}"
             ));
-            return;
+            return valid;
         }
     };
     let value: Value = match serde_json::from_str(&source) {
         Ok(value) => value,
         Err(error) => {
             errors.push(format!("{label}: invalid JSON: {error}; {purpose}"));
-            return;
+            return valid;
         }
     };
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object; {purpose}"));
-        return;
+        return valid;
     };
     check_keys(object, &["rust_file", "functions"], &label, errors);
     if let Some(recorded_file) = string_field(object, "rust_file", &label, errors)
@@ -1171,14 +1230,16 @@ fn validate_rust_attestation_file(
         ));
     }
     let Some(entries) = array_field(object, "functions", &label, errors) else {
-        return;
+        return valid;
     };
+    let valid_header = errors.len() == initial_errors;
     let expected = functions
         .iter()
         .map(|(function, citations)| (function.selector.as_str(), (function, citations)))
         .collect::<BTreeMap<_, _>>();
     let mut present = BTreeSet::new();
     for (index, entry) in entries.iter().enumerate() {
+        let initial_errors = errors.len();
         let entry_label = format!("{label}: functions[{index}]");
         let Some(entry) = entry.as_object() else {
             errors.push(format!("{entry_label}: expected a JSON object"));
@@ -1211,6 +1272,7 @@ fn validate_rust_attestation_file(
         );
         let entry_label = format!("{entry_label} ({location}; {purpose})");
         if !present.insert(selector.to_owned()) {
+            valid.remove(selector);
             errors.push(format!(
                 "{entry_label}: duplicate Rust function attestation"
             ));
@@ -1312,6 +1374,9 @@ fn validate_rust_attestation_file(
                 }
             }
         }
+        if valid_header && errors.len() == initial_errors {
+            valid.insert(selector.to_owned());
+        }
     }
     for (selector, (function, _)) in expected {
         if !present.contains(selector) {
@@ -1321,6 +1386,7 @@ fn validate_rust_attestation_file(
             ));
         }
     }
+    valid
 }
 
 #[cfg(test)]
@@ -1345,6 +1411,59 @@ mod tests {
         )
         .unwrap();
         temp
+    }
+
+    // {test}`requirements.ci.book_source`
+    #[test]
+    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let path = root.join("book.toml");
+        for (configuration, expected) in [
+            ("", "src"),
+            ("[book]\ntitle = 'Example'\n", "src"),
+            ("[book]\nsrc = 'docs'\n", "docs"),
+            ("book = { src = 'docs' }\n", "docs"),
+        ] {
+            fs::write(&path, configuration).unwrap();
+            let mut errors = Vec::new();
+            assert_eq!(
+                super::book_source_dir(root, &mut errors),
+                root.join(expected)
+            );
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        fs::remove_file(&path).unwrap();
+        let mut errors = Vec::new();
+        super::book_source_dir(root, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("book.toml: cannot read book configuration"))
+        );
+        for (configuration, expected) in [
+            ("[book", "invalid TOML"),
+            ("book = 'wrong'", "book must be a table"),
+            ("[book]\nsrc = 7", "book.src must be a string"),
+            ("[book]\nsrc = false", "book.src must be a string"),
+            ("[book]\nsrc = []", "book.src must be a string"),
+            ("[book.src]", "book.src must be a string"),
+            ("[book]\nsrc = ''", "book.src must be a directory"),
+            ("[book]\nsrc = '/outside'", "book.src must be a directory"),
+            ("[book]\nsrc = '../outside'", "book.src must be a directory"),
+            (
+                "[book]\nsrc = 'md/../outside'",
+                "book.src must be a directory",
+            ),
+        ] {
+            fs::write(&path, configuration).unwrap();
+            let mut errors = Vec::new();
+            super::book_source_dir(root, &mut errors);
+            assert!(
+                errors.iter().any(|error| error.contains(expected)),
+                "{configuration:?}: {errors:?}"
+            );
+        }
     }
 
     // {test}`requirements.integration.report_api`
@@ -1556,6 +1675,7 @@ mod tests {
     }
 
     // {test}`requirements.ci.span`
+    // {test}`requirements.ci.fence_lengths`
     #[test]
     fn colon_requirement_span_includes_markdown_and_excludes_following_text() {
         let temp = fixture();

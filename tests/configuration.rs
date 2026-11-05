@@ -97,6 +97,9 @@ fn absent_and_minimal_configuration_are_distinct_and_read_only() {
 
 // {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.authoring.concurrency`
 // {test}`requirements.configuration.serialization`
 #[test]
 fn backend_configuration_round_trips_without_materializing_defaults() {
@@ -139,7 +142,56 @@ model = "tiny:latest"
     let serialized = config.to_toml().unwrap();
     assert!(!serialized.contains("endpoint"));
     assert!(!serialized.contains("http://localhost"));
+    assert!(!serialized.contains("concurrency"));
     assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
+}
+
+// {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.configuration.loading`
+// {test}`requirements.configuration.serialization`
+#[test]
+fn authoring_concurrency_defaults_overrides_and_invalid_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for backend in ["bedrock", "ollama"] {
+        let base =
+            format!("version = 1\n[authoring.configs.model]\nbackend = '{backend}'\nmodel = 'm'\n");
+        let defaults = UserConfig::parse(&base, &path).unwrap();
+        let resolved =
+            resolve_authoring_from(&path, Some(&defaults), dir.path(), Some("model")).unwrap();
+        assert_eq!(resolved.concurrency, None);
+        let expected = if backend == "bedrock" {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        assert_eq!(resolved.effective_concurrency(), expected);
+        assert!(!defaults.to_toml().unwrap().contains("concurrency"));
+
+        let configured = UserConfig::parse(&format!("{base}concurrency = 7\n"), &path).unwrap();
+        let resolved =
+            resolve_authoring_from(&path, Some(&configured), dir.path(), Some("model")).unwrap();
+        assert_eq!(resolved.concurrency.unwrap().get(), 7);
+        assert_eq!(resolved.effective_concurrency(), 7);
+        let serialized = configured.to_toml().unwrap();
+        assert!(serialized.contains("concurrency = 7"));
+        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);
+        assert!(resolved.backend.options().is_empty());
+
+        for invalid in ["0", "-1", "1.5", "'2'"] {
+            let error = UserConfig::parse(&format!("{base}concurrency = {invalid}\n"), &path)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&path.display().to_string()), "{error}");
+            assert!(error.contains("concurrency"), "{error}");
+        }
+    }
 }
 
 // {test}`requirements.authoring.configuration_precedence`

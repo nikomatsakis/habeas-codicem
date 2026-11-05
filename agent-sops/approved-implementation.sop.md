@@ -8,8 +8,12 @@ Apply the shared one-PR protocol. Start in **🛠 Author code**.
    this repository or `habeas info` where installed. Identify obligations already
    satisfied and the changes needed for the selected owner feedback.
 2. Implement the approved behavior and test its concrete examples. Add `{impl}`
-   and `{test}` references and maintain evidence with exact current inputs.
-   Keep `determination: false` when evidence is incomplete. Do not edit `md/`
+   and `{test}` references, then run `cargo habeas author --all` (or installed
+   `habeas author --all`) to assess evidence and function attestations. Leave
+   evidence JSON, judgments, rationales, and input snapshots to that harness.
+   Address reported gaps in source, citations, or tests and rerun authoring.
+   Report unavailable model configuration or provider access as a blocker.
+   Do not edit `md/`
    while authoring code. If an obligation needs revision, follow the shared
    transition protocol: restore this run's code changes, propose requirements
    in a separate requirements-only commit, and wait for approval on this PR.

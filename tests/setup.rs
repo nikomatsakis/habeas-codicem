@@ -118,6 +118,29 @@ fn setup_preserves_existing_agent_skills() {
 }
 
 // {test}`requirements.cli.setup_project`
+// {test}`requirements.integration.symposium_setup_hook`
+// {test}`requirements.cli.setup`
+#[test]
+fn setup_uses_src_when_book_table_or_source_setting_is_absent() {
+    for configuration in ["", "[book]\ntitle = 'Example'\n"] {
+        let temp = fixture();
+        let project = temp.path();
+        fs::write(project.join("book.toml"), configuration).unwrap();
+        fs::write(project.join("src/SUMMARY.md"), "# Summary\n").unwrap();
+        run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+        assert!(project.join("src/habeas.css").is_file());
+        assert_eq!(session_start(project, project), json!({"SessionStart": {}}));
+        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join("book.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        book["book"]["src"] = toml_edit::value(7);
+        fs::write(project.join("book.toml"), book.to_string()).unwrap();
+        assert!(session_start(project, project)["SessionStart"]["additionalContext"].is_string());
+    }
+}
+
+// {test}`requirements.cli.setup_project`
 // {test}`requirements.cli.setup_css`
 #[test]
 fn setup_rejects_invalid_book_configuration() {
@@ -126,6 +149,10 @@ fn setup_rejects_invalid_book_configuration() {
     let binary = env!("CARGO_BIN_EXE_habeas");
 
     for (book, expected) in [
+        ("book = 'wrong'\n", "book must be a table"),
+        ("[book]\nsrc = 7\n", "book.src must be a string"),
+        ("[book]\nsrc = ''\n", "book.src must be a directory"),
+        ("[book]\nsrc = '/outside'\n", "book.src must be a directory"),
         (
             "[book]\nsrc = \"../outside\"\n",
             "book.src must be a directory",

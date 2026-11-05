@@ -33,4 +33,16 @@ Once the plugin is enabled, `cargo agents sync` provides Habeas's skills to your
 
 If you previously ran `habeas agents` or `habeas setup --install-skills`, inspect the resulting `.agents/skills/habeas-*` directories for local edits before your first Symposium sync. Save customized files under different names or elsewhere, remove those old copies, and run `cargo agents sync` to receive Symposium-managed skills.
 
-Use the `habeas-bootstrap-requirements` skill to derive an initial set of requirements from an existing codebase and its tests. Setup does not write requirements or evidence for you. Cite a project requirement or named example on the generated `tests/habeas.rs` test and on every other first-party Rust function, including internal helpers; then record evidence for the citations. See [How it works](./reference.md) for those steps, the evidence index, and instructions for using a local checkout.
+Use the `habeas-bootstrap-requirements` skill to derive an initial set of requirements from an existing codebase and its tests. Setup does not write requirements or evidence for you. Cite a project requirement or named example on the generated `tests/habeas.rs` test and on every other first-party Rust function, including internal helpers.
+
+Configure an authoring model using the [Bedrock or Ollama examples](./reference.md#authoring-evidence-with-a-model), then run:
+
+```sh
+habeas author --all
+cargo test --workspace
+```
+
+The authoring harness creates evidence and function attestations in separate model
+conversations. The supervising agent fixes reported gaps and reruns the command;
+it does not compose evidence itself. CI checks the saved evidence without inference.
+See [How it works](./reference.md) for the evidence index and local-checkout workflow.

@@ -1,0 +1,473 @@
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+#[derive(Default)]
+struct Requests {
+    subjects: Vec<String>,
+    active: usize,
+    peak: usize,
+    first_pair_overlapped: bool,
+}
+
+struct Server {
+    endpoint: String,
+    requests: Arc<(Mutex<Requests>, Condvar)>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Server {
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.concurrency`
+    fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new((Mutex::new(Requests::default()), Condvar::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_requests = requests.clone();
+        let worker_stop = stop.clone();
+        let thread = thread::spawn(move || {
+            let mut workers = Vec::new();
+            while !worker_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let requests = worker_requests.clone();
+                        workers.push(thread::spawn(move || {
+                            serve(stream, requests, require_overlap, failing_subject);
+                        }));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("cannot accept mock request: {error}"),
+                }
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        Self {
+            endpoint,
+            requests,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    // {test}`requirements.authoring.batch`
+    fn subjects(&self) -> Vec<String> {
+        self.requests.0.lock().unwrap().subjects.clone()
+    }
+}
+
+impl Drop for Server {
+    // {test}`requirements.authoring.concurrency`
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.thread.take().unwrap().join().unwrap();
+    }
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.function_attestations`
+fn serve(
+    mut stream: TcpStream,
+    requests: Arc<(Mutex<Requests>, Condvar)>,
+    require_overlap: bool,
+    failing_subject: Option<&str>,
+) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut reader = BufReader::new(&mut stream);
+    let mut length = None;
+    loop {
+        let mut line = String::new();
+        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+    }
+    let mut bytes = vec![0; length.expect("request content length")];
+    reader.read_exact(&mut bytes).unwrap();
+    let request: Value = serde_json::from_slice(&bytes).unwrap();
+    let prompt = request["messages"][0]["content"].as_str().unwrap();
+    let subject = prompt
+        .lines()
+        .find_map(|line| line.strip_prefix("Subject: "))
+        .expect("assessment subject")
+        .to_owned();
+
+    let (lock, arrived) = &*requests;
+    let mut state = lock.lock().unwrap();
+    state.subjects.push(subject.clone());
+    state.active += 1;
+    state.peak = state.peak.max(state.active);
+    arrived.notify_all();
+    if require_overlap && state.subjects.len() == 1 {
+        let (next, _) = arrived
+            .wait_timeout_while(state, Duration::from_secs(3), |state| {
+                state.subjects.len() < 2
+            })
+            .unwrap();
+        state = next;
+        state.first_pair_overlapped = state.subjects.len() >= 2;
+    }
+    drop(state);
+    // Keep requests in flight long enough for an incorrectly unbounded batch to
+    // exceed its configured concurrency, without assuming task launch order.
+    thread::sleep(Duration::from_millis(40));
+    let failed = failing_subject.is_some_and(|name| subject == name);
+    let response = if failed {
+        json!({"error": "fixture model rejected this subject"})
+    } else {
+        json!({
+            "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
+            "message":{"role":"assistant", "content":"", "tool_calls":[{
+                "id":"judgment", "type":"function", "function":{
+                    "name":"submit_judgment", "arguments":{
+                        "determination":true,
+                        "rationale":format!("Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs.")
+                    }
+                }
+            }]},
+            "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
+        })
+    };
+    let body = response.to_string();
+    let status = if failed { "400 Bad Request" } else { "200 OK" };
+    let mut state = lock.lock().unwrap();
+    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    state.active -= 1;
+}
+
+struct Fixture {
+    _temp: TempDir,
+    project: PathBuf,
+    config_root: PathBuf,
+    state: PathBuf,
+    config: PathBuf,
+    config_text: String,
+}
+
+impl Fixture {
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.function_attestations`
+    // {test}`requirements.authoring.concurrency`
+    fn new(endpoint: &str, concurrency: Option<usize>) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let config_root = temp.path().join("config");
+        let state = temp.path().join("state");
+        for directory in [
+            project.join("md"),
+            project.join("src"),
+            config_root.join("habeas"),
+        ] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = 'batch-fixture'\nversion = '0.1.0'\nedition = '2024'\n",
+        )
+        .unwrap();
+        fs::write(project.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        fs::write(
+            project.join("md/SUMMARY.md"),
+            "# Summary\n\n- [Requirements](requirements.md)\n",
+        )
+        .unwrap();
+        fs::write(project.join("md/requirements.md"), ":::{req} alpha\nalpha MUST return one.\n:::\n\n:::{req} beta\nbeta MUST return two.\n:::\n\n:::{example} alpha_case\nCalling alpha returns one. CITE`requirements.alpha`\n:::\n".replace("CITE", "{cite}")).unwrap();
+        fs::write(project.join("src/lib.rs"), "// IMPL`requirements.alpha`\npub fn alpha() -> u8 { 1 }\n\n// IMPL`requirements.beta`\npub fn beta() -> u8 { 2 }\n\n// TEST`requirements.alpha_case`\n#[test]\nfn alpha_case() { assert_eq!(alpha(), 1); }\n".replace("IMPL", "{impl}").replace("TEST", "{test}")).unwrap();
+        let mut config_text = format!(
+            "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\nbackend = 'ollama'\nmodel = 'fixture-model'\nendpoint = '{endpoint}'\n"
+        );
+        if let Some(concurrency) = concurrency {
+            config_text.push_str(&format!("concurrency = {concurrency}\n"));
+        }
+        let config = config_root.join("habeas/config.toml");
+        fs::write(&config, &config_text).unwrap();
+        Self {
+            _temp: temp,
+            project,
+            config_root,
+            state,
+            config,
+            config_text,
+        }
+    }
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.concurrency`
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .current_dir(&self.project)
+            .env("XDG_CONFIG_HOME", &self.config_root)
+            .env("APPDATA", &self.config_root)
+            .env("XDG_STATE_HOME", &self.state)
+            .env("LOCALAPPDATA", &self.state)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.function_attestations`
+    fn evidence(&self, name: &str) -> Value {
+        serde_json::from_slice(
+            &fs::read(self.project.join(format!("evidence/{name}.json"))).unwrap(),
+        )
+        .unwrap()
+    }
+
+    // {test}`requirements.authoring.function_attestations`
+    fn function(&self, selector: &str) -> Value {
+        self.evidence("rust/src/lib.rs")["functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["rust_item"] == selector)
+            .expect("function attestation")
+            .clone()
+    }
+
+    // {test}`requirements.authoring.usage_storage`
+    // {test}`requirements.authoring.batch`
+    fn usage(&self) -> Vec<Value> {
+        let path = self.state.join(if cfg!(windows) {
+            "habeas/state/authoring/usage"
+        } else {
+            "habeas/authoring/usage"
+        });
+        fs::read_dir(path)
+            .unwrap()
+            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())
+            .collect()
+    }
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.function_attestations`
+// {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.usage_storage`
+// {test}`requirements.ci.determination`
+#[test]
+fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {
+    let server = Server::start(true, None);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "pub fn beta()",
+            "// FIXME(#123): beta has no test yet.\npub fn beta()",
+        ),
+    )
+    .unwrap();
+    let output = fixture.run(&["author", "--all", "--config", "mock"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6);
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let entries = fixture.evidence("rust/src/lib.rs");
+    assert_eq!(entries["functions"].as_array().unwrap().len(), 3);
+    let mut beta = fixture.evidence("requirements.beta");
+    beta["determination"] = json!({"FIXME":["#123"]});
+    beta["rationale"] = "The source explicitly acknowledges the missing beta test.".into();
+    fs::write(
+        fixture.project.join("evidence/requirements.beta.json"),
+        serde_json::to_vec_pretty(&beta).unwrap(),
+    )
+    .unwrap();
+    let example = fixture.evidence("requirements.alpha_case");
+    let beta_function = fixture.function("fn[beta]");
+    let test_function = fixture.function("fn[alpha_case]");
+    let usage = fixture.usage();
+    assert_eq!(usage.len(), 6);
+    assert!(
+        usage
+            .iter()
+            .all(|run| run["outcome"] == "completed" && run["evidence_written"] == true)
+    );
+    {
+        let requests = server.requests.0.lock().unwrap();
+        assert_eq!(
+            requests.peak, 2,
+            "the configured concurrency bounds in-flight requests"
+        );
+        assert!(
+            requests.first_pair_overlapped,
+            "a second assessment must start before the first model response"
+        );
+    }
+
+    fs::write(&fixture.config, "invalid TOML [").unwrap();
+    let no_op = fixture.run(&["author", "--all"]);
+    assert!(
+        no_op.status.success(),
+        "{}",
+        String::from_utf8_lossy(&no_op.stderr)
+    );
+    fs::remove_file(&fixture.config).unwrap();
+    let no_config = fixture.run(&["author", "--all"]);
+    assert!(
+        no_config.status.success(),
+        "{}",
+        String::from_utf8_lossy(&no_config.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6);
+    assert_eq!(fixture.usage().len(), 6);
+
+    fs::write(&fixture.config, &fixture.config_text).unwrap();
+    let changed = fs::read_to_string(&source)
+        .unwrap()
+        .replace("-> u8 { 1 }", "-> u8 { 1_u8 }");
+    fs::write(source, changed).unwrap();
+    let updated = fixture.run(&["author", "--all"]);
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    assert_eq!(server.subjects().len(), 8);
+    assert_eq!(fixture.usage().len(), 8);
+    assert_eq!(fixture.evidence("requirements.beta"), beta);
+    assert_eq!(fixture.evidence("requirements.alpha_case"), example);
+    assert_eq!(fixture.function("fn[beta]"), beta_function);
+    assert_eq!(fixture.function("fn[alpha_case]"), test_function);
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+// {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.batch`
+#[test]
+fn ollama_batches_are_serial_by_default() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6);
+    assert_eq!(server.requests.0.lock().unwrap().peak, 1);
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.usage_storage`
+#[test]
+fn failed_assessment_keeps_other_results_and_reports_failure() {
+    let server = Server::start(true, Some("requirement requirements.alpha"));
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(!output.status.success());
+    assert_eq!(server.subjects().len(), 6);
+    assert!(
+        !fixture
+            .project
+            .join("evidence/requirements.alpha.json")
+            .exists()
+    );
+    assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
+    assert_eq!(
+        fixture.evidence("requirements.alpha_case")["determination"],
+        true
+    );
+    assert_eq!(
+        fixture.evidence("rust/src/lib.rs")["functions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let usage = fixture.usage();
+    assert_eq!(usage.len(), 6);
+    assert_eq!(
+        usage
+            .iter()
+            .filter(|run| run["outcome"] == "failed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        usage
+            .iter()
+            .filter(|run| run["outcome"] == "completed")
+            .count(),
+        5
+    );
+    let diagnostics = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(diagnostics.contains("requirements.alpha"), "{diagnostics}");
+    assert!(
+        diagnostics.contains("fixture model rejected"),
+        "{diagnostics}"
+    );
+}
+
+// {test}`requirements.authoring.batch`
+#[test]
+fn batch_stdout_is_rejected_before_authoring() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let output = fixture.run(&["author", "--all", "--stdout"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--stdout"));
+    assert!(server.subjects().is_empty());
+    assert!(!fixture.project.join("evidence").exists());
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.ci.definition_errors`
+// {test}`requirements.references.rust_function_coverage`
+#[test]
+fn discovery_errors_fail_before_configuration_or_inference() {
+    for (declarations, source, location, diagnostic) in [
+        ("", "fn broken(", "src/lib.rs", "cannot parse Rust source"),
+        (
+            ":::{req} unclosed\nThis MUST be valid.\n",
+            "",
+            "md/requirements.md",
+            "missing a closing colon fence",
+        ),
+    ] {
+        let fixture = Fixture::new("http://127.0.0.1:9", None);
+        fs::write(fixture.project.join("md/requirements.md"), declarations).unwrap();
+        fs::write(fixture.project.join("src/lib.rs"), source).unwrap();
+        fs::remove_file(&fixture.config).unwrap();
+        let output = fixture.run(&["author", "--all"]);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(location), "{stderr}");
+        assert!(stderr.contains(diagnostic), "{stderr}");
+        assert!(!stderr.contains("no authoring configuration"), "{stderr}");
+        assert!(!fixture.state.exists());
+        assert!(!fixture.project.join("evidence").exists());
+    }
+}
