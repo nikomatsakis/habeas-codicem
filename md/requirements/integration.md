@@ -8,6 +8,34 @@
 The Habeas crate MUST have a Cargo integration test that invokes `habeas::validate()` against its own project, so its own requirements and evidence are checked recursively by `cargo test`.
 :::
 
+:::{req} live_bedrock_test
+The Habeas crate MUST have a Cargo integration test that exercises evidence
+authoring against a real configured Bedrock model when AWS credentials can be
+loaded. It MUST skip before reading configuration or resolving credentials when
+the `CI` environment variable is present. Outside CI, it MUST skip with a visible
+warning when no Bedrock authoring configuration exists or the AWS SDK cannot load
+credentials. Skip warnings MUST be visible under ordinary `cargo test` output.
+
+`HABEAS_LIVE_CONFIG`, when set, MUST select a named authoring configuration for
+the test. Otherwise the test MUST use the project's or user's selected
+configuration when it selects Bedrock, falling back to the first named Bedrock
+configuration in name order. Malformed configuration and invalid explicit
+selections MUST fail the test. The selected profile, region, model, and options
+MUST come from that configuration; credential resolution MUST use the AWS SDK.
+
+Once credentials load, model-request and authoring failures MUST fail the test
+rather than be treated as skips. The test MUST exercise an additional source read
+and judgment submission using a temporary project and stdout evidence output,
+without changing the checkout's evidence. It MUST retain ordinary usage history
+and check the returned evidence and recorded usage. Deterministic tests MUST
+verify the CI and missing-credential skip paths without calling a model.
+{cite}`requirements.authoring.provider`
+{cite}`requirements.authoring.source_tools`
+{cite}`requirements.authoring.submission`
+{cite}`requirements.authoring.persistence`
+{cite}`requirements.authoring.usage_storage`
+:::
+
 :::{req} symposium
 For a Cargo workspace that depends on `habeas`, interactive `cargo agents sync` MUST let the user enable Habeas's plugin. Once enabled, it MUST make the skills shipped with the selected Habeas version available to configured agents. After the selected version changes, `cargo agents sync` MUST provide the skills shipped with the new version.
 :::

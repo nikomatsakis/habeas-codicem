@@ -186,6 +186,35 @@ book rendering remain deterministic and do not require model configuration or
 credentials. {cite}`requirements.authoring.usage_storage`
 {cite}`requirements.authoring.deterministic_validation`
 
+### Live Bedrock tests
+
+`cargo test` includes a live Bedrock integration test. It skips with a visible
+warning in CI, when no Bedrock authoring configuration exists, or when the AWS
+SDK cannot load credentials. A skip returns successfully, so Cargo displays `ok`
+rather than `ignored`. Once credentials load, provider and authoring errors fail
+the test. Local runs with credentials make billable model requests and retain
+their usage records in the usual user state directory.
+
+Run just these tests with:
+
+```sh
+cargo test --test live_bedrock
+```
+
+The live test uses the project's or user's selected Bedrock configuration,
+falling back to the first named Bedrock configuration in name order. To select
+one explicitly:
+
+```sh
+HABEAS_LIVE_CONFIG=sonnet cargo test --test live_bedrock
+```
+
+The test uses a temporary project and stdout evidence output, leaving the
+checkout's evidence unchanged. Any set `CI` environment variable disables live
+testing before configuration or credential lookup, even if credentials are
+available. For example, `CI=1 cargo test` runs the suite without live inference.
+{cite}`requirements.integration.live_bedrock_test`
+
 ## References
 
 Source files and book chapters can mark lines as implementing, citing, or testing a requirement or example:
