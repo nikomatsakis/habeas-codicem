@@ -61,3 +61,82 @@ implements explicit, and the obligation is stronger, not weaker.
 "Discovery and parse-failure handling is incomplete … A batch would proceed
 despite them, although the requirement says failure to discover or parse
 project sources must report an error and not succeed."
+
+## `requirements.authoring.read_denial` — requests outside the project
+
+**Old text:** the requirement ended with:
+
+> Malformed tool arguments and ordinary read failures MUST retain their existing
+> recoverable tool-error behavior.
+
+**New text:** one paragraph appended:
+
+> A dispatched model request naming a path outside the project root, before
+> symlinks are resolved, that no workspace allow rule or generated-output rule
+> permits MUST be treated as an ordinary read failure rather than an abort: it
+> MUST return an explanatory tool error, add no evidence input, and let the
+> assessment continue. An explicit workspace disallow matching such a path MUST
+> still abort. A mandatory input naming such a path, and a request inside the
+> project whose symlink target leaves it, MUST still abort.
+
+**Reason.** Aborting on a denied read exists so that the operator fixes
+project policy, either by staging an untracked file or by adding a workspace
+allow or disallow rule. When a model reaches outside the project, for example
+into `~/.cargo/registry/src` to check a dependency's behavior, it is exploring.
+Neither the operator nor the model can fix that by staging a file, and aborting
+throws away the whole assessment. This made
+`requirements.authoring.provider_backoff` repeatedly impossible to assess. The
+cases that do concern policy still abort: explicit disallows, in-project
+exclusions (untracked files, `evidence/`, credential-bearing workspace
+configuration), in-project symlinks whose targets leave the project, and
+mandatory inputs. The change is implemented in `src/authoring/access.rs`
+(`OutsideProject`) and `tools::dispatch`, and tested by
+`unpermitted_requests_outside_the_project_are_recoverable_tool_errors` and
+`mandatory_inputs_outside_the_project_still_abort`.
+
+**Prompting rationale:** `requirements.authoring.provider_backoff` assessments
+aborted with a read_denial error after the model asked to read
+`/root/.cargo/registry/src`, which is outside the project.
+
+## `requirements.authoring.source_tools` — consistency with read_denial
+
+**Old text:**
+
+> Access-policy denials MUST abort;
+> other failed reads MUST return an explanatory tool error.
+
+**New text:**
+
+> Access-policy denials MUST abort
+> except where {cite}`requirements.authoring.read_denial` makes them ordinary read
+> failures; other failed reads MUST return an explanatory tool error.
+
+**Reason.** Keeps this requirement consistent with the read_denial exception
+above, so the two requirements do not contradict each other.
+
+**Prompting rationale:** the same provider_backoff read_denial abort.
+
+## `requirements.authoring.outline_tool`, `file_discovery`, `text_search` — defer to read_denial
+
+**Old text:**
+- outline_tool: "Explicitly requesting an excluded file MUST abort under
+  {cite}`requirements.authoring.read_denial`."
+- file_discovery: "…unless access was denied, which MUST abort under
+  {cite}`requirements.authoring.read_denial`."
+- text_search: "…explicitly requesting an excluded path MUST abort under
+  {cite}`requirements.authoring.read_denial`."
+
+**New text:**
+- outline_tool: "…MUST be handled as a denial under
+  {cite}`requirements.authoring.read_denial`."
+- file_discovery: "…which MUST be handled under
+  {cite}`requirements.authoring.read_denial`."
+- text_search: "…MUST be handled as a denial under
+  {cite}`requirements.authoring.read_denial`."
+
+**Reason.** Each of these restated "abort", which would contradict the new
+read_denial exception for unpermitted paths outside the project. They now defer
+to read_denial, which keeps the abort for every in-project and policy-relevant
+denial.
+
+**Prompting rationale:** the same provider_backoff read_denial abort.
