@@ -9,7 +9,7 @@ Every JSON file directly under `evidence/` MUST correspond to a declared require
 :::
 
 :::{req} schema
-A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input, including one in a Rust function attestation, MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. Line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
+A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. Line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
 :::
 
 :::{req} requirement_text
@@ -17,15 +17,25 @@ The `requirement` string in each evidence file MUST match all Markdown inside it
 :::
 
 :::{req} determination
-For requirement and example evidence, both `true` and `FIXME` MUST satisfy the determination check in `habeas::validate()`. A false determination MUST fail validation and be reported with its rationale. Every Rust function attestation MUST have `determination: true`; a false attestation MUST be reported with its rationale. All other evidence checks MUST still pass: FIXME MUST NOT excuse malformed, missing, or stale evidence or uncovered references. Validation MUST check the recorded outcome, schema, input freshness, and reference coverage without inference or reassessing whether a source comment adequately acknowledges a gap.
+For requirement and example evidence, both `true` and `FIXME` MUST satisfy the determination check in `habeas::validate()`. A false determination MUST fail validation and be reported with its rationale. Each definition's determination MUST be checked on its own; a false determination MUST NOT fail the definitions it implements, tests, or cites. All other evidence checks MUST still pass: FIXME MUST NOT excuse malformed, missing, or stale evidence or uncovered references. Validation MUST check the recorded outcome, schema, input freshness, and reference coverage without inference or reassessing whether a source comment adequately acknowledges a gap.
 :::
 
 :::{req} review_criteria
 The reviewer MUST assess the named subject using its text, referenced requirements,
 and terminology definitions. For a requirement, the reviewer MUST assess whether
-the cited code implements every stated obligation and whether its tests cover the
-interesting cases in the design space, including relevant boundaries and failure
-cases. When there are no tests, the reviewer MUST assess whether the logic is
+the code marked with `{impl}` implements every stated obligation completely and
+exactly as stated, and whether its
+tests cover the interesting cases in the design space, including relevant
+boundaries and failure cases. The reviewer MUST also assess whether the
+implementation is marked completely: code that implements part of the
+requirement under {cite}`requirements.references.targets` without an `{impl}`
+reference to it, including code that refers to it only with `{cite}`, MUST be
+treated as a gap. Behavior in the `{impl}` code that the requirement does not
+specify MUST be accounted for by another definition that the same code
+implements; otherwise it MUST be treated as a gap. When another requirement implements part of the subject, the
+reviewer MUST assess whether its text carries out that part, and MUST NOT
+reassess its implementation, tests, or evidence; that requirement is assessed
+separately. When there are no tests, the reviewer MUST assess whether the logic is
 simple enough to need no test or a test is impractical to author, and explain that
 judgment in the rationale.
 
@@ -71,15 +81,32 @@ For a Rust-item input, Habeas MUST parse `rust_file` with `syn` and resolve `rus
 :::
 
 :::{req} requirements_inputs
-For a requirements input, Habeas MUST match the glob in `requirements` against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A glob matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the glob and affected definitions when available.
+For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.
+:::
+
+:::{definition} validation_error
+:phrase: validation error
+
+One message in a repository validation report, describing a single failed check.
+It begins with the affected evidence file, requirement, or source location, names
+the failed check, and states the specific missing, invalid, or changed value,
+with the expected value when available. It is concise because agents are its
+primary readers.
 :::
 
 :::{req} errors
-Habeas MUST continue validating after an error and report all validation errors it finds in one run. Each error MUST identify the affected evidence file or requirement and explain the failure.
+Repository validation MUST continue after a failed check and report every failed
+check it finds in one run, each as a {term}`requirements.ci.validation_error`.
+This is a convention for every validation error; the requirement for each check
+states which conditions that check reports.
 :::
 
 :::{req} diagnostics
-Every validation error MUST identify the failed check and give an agent enough detail to diagnose it. If the stored requirement text differs from the current chapter text, the error MUST name the requirement and show a compact line-oriented diff, with `-` for recorded lines and `+` for current lines. If recorded input text differs from the current file, the error MUST name the file and line range and show the same kind of diff. Other errors MUST state the specific missing or invalid value and the expected value when available. Diagnostics SHOULD be concise because agents are the primary readers.
+When stored requirement text differs from the current chapter text, the
+{term}`requirements.ci.validation_error` MUST name the requirement and show a
+compact line-oriented diff, with `-` for recorded lines and `+` for current lines.
+When recorded input text differs from the current file, the validation error MUST
+name the file and line range and show the same kind of diff.
 
 ```text
 evidence/requirements.ci.inputs.json: requirement text changed (md/requirements.md:43)

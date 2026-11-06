@@ -1,7 +1,7 @@
 # References and Rust items
 
 :::{req} targets
-Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.
+Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.
 
 ```text
 {impl}`requirements.references.targets`
@@ -15,24 +15,30 @@ In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST ren
 :::
 
 :::{req} evidence_coverage
-For every `{impl}`, `{cite}`, and `{test}` reference in a project source file, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
+For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
 :::
 
 :::{req} rust_function_coverage
-During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST cite a requirement. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.
 :::
 
 :::{req} definition_globs
-A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. The same glob matching rule MUST be used by requirements evidence inputs and CLI definition filters. All three MUST match against both requirements and named examples.
+A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. Every definition selection MUST use this matching rule, including requirements evidence inputs, CLI definition filters, and the authoring `references` tool, and MUST match against both requirements and named examples.
+:::
+
+:::{definition} definition_selection
+:phrase: definition selection
+
+A full requirement or example name, or a definition glob, identifying the
+requirements and named examples it matches under
+{cite}`requirements.references.definition_globs`. A name without `*` selects
+exactly that definition.
 :::
 
 :::{req} rust_item_selectors
 Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.
 :::
 
-:::{req} rust_function_attestations
-For every function or method covered by `references.rust_function_coverage`, repository validation MUST require exactly one attestation in `evidence/rust/<rust_file>.json`. Each such file MUST be an object with exactly `rust_file` and `functions`, where `rust_file` matches its repository-relative source path and `functions` is an array. Each attestation MUST contain exactly `rust_item`, `citations`, `determination`, `rationale`, and `inputs`. Its `determination` MUST remain a boolean assessing citation coverage; the FIXME outcome applies to requirement and example judgments. Its `citations` MUST be the nonempty set of valid references owned by the function, each recorded by role and full requirement or example name. Its `inputs` MUST include one Rust-item input selecting the function and at least one requirements input; together, the requirements inputs MUST match every name in `citations`. Habeas MUST validate every input and fail for a missing, duplicate, orphaned, stale, or false attestation, a changed citation set, or an empty rationale. Each finding MUST identify the source file, current line when available, and item selector.
-:::
 
 :::{req} markdown_literals
 In Markdown, escaped roles and role-looking text in inline code, fenced code, or raw HTML MUST remain literal and MUST NOT count as references. A `{req}` directive inside a fenced code example and a legacy inline `{req}` role MUST NOT define a requirement.
@@ -74,29 +80,28 @@ For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requiremen
 Given a requirement `foo.a.bar` and a named example `foo.a.b.bar`, `foo.*.bar` matches both, in that order. A requirements input stores both full names and their complete raw fenced declarations. Adding another matching definition invalidates the existing input. {cite}`requirements.references.definition_globs` {cite}`requirements.ci.requirements_inputs`
 :::
 
-:::{example} attestation_reassessment
-A function attestation has a Rust-item input selecting its function and a requirements input matching the definitions reviewed for it. Changing the function's raw lines or adding a definition matched by the requirements glob invalidates the attestation until the agent reviews it again. {cite}`requirements.references.rust_function_attestations`
-:::
 
 ## References as authoring inputs
 
 :::{req} authoring_inputs
-When authoring evidence, every requirement or example directly referenced by the
-assessed subject MUST contribute its complete fenced declaration to the
-mandatory input set defined by {cite}`requirements.authoring.mandatory_inputs`.
+When authoring evidence, the edges defined by
+{cite}`requirements.references.targets` MUST determine the reference
+contributions to the mandatory input set defined by
+{cite}`requirements.authoring.mandatory_inputs`. The target of each edge leaving
+the assessed subject MUST contribute; sources with only edges into the subject
+MUST NOT contribute and remain discoverable under
+{cite}`requirements.authoring.reference_index`. A `{cite}` made by the subject
+contributes the cited definition's complete fenced declaration. An `{impl}` or
+`{test}` reference to the subject contributes the source containing it: for a
+reference in a Rust item, the complete smallest enclosing item with its attached
+comments and attributes; for a reference in a Markdown requirement, example, or
+terminology declaration, that complete declaration; for other references, the
+complete containing source file. Literal references, evidence copies, and
+generated output MUST remain excluded under the existing reference-discovery
+rules.
 
-Every source containing a valid implementation, citation, or test reference to
-the assessed subject MUST also contribute to that set. For a reference in a Rust
-item, the contribution MUST include the complete smallest enclosing item with
-its attached comments and attributes. For a reference in a Markdown requirement,
-example, or terminology declaration, it MUST include that complete declaration.
-For other references, it MUST include the complete containing source file.
-Literal references, evidence copies, and generated output MUST remain excluded
-under the existing reference-discovery rules.
-
-These contribution rules MUST apply to references directly from or to the
-assessed subject. Including another declaration MUST NOT by itself recursively
-expand that declaration's incoming or outgoing requirement and example references.
-Citation links MUST NOT be described as proof that all substantively relevant
-sources have been found.
+These contribution rules MUST apply only to edges directly leaving the assessed
+subject. Including another declaration or source MUST NOT by itself recursively
+expand that source's own edges. Reference links MUST NOT be described as proof
+that all substantively relevant sources have been found.
 :::

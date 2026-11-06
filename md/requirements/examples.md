@@ -1,7 +1,7 @@
 # Named examples
 
 :::{req} definition
-An mdBook chapter MAY define an example with an opening fence of at least three colons immediately followed by `{example} <name>` and a closing colon-only fence of at least the opening length. The full name MUST use the same chapter-derived namespace and valid-name rules as `{req}`. The body MUST include all Markdown between the fences, excluding surrounding whitespace, and MUST describe a concrete case with expected behavior. An example MUST contain at least one valid `{cite}` reference to a requirement it illustrates. An example directive inside a fenced code block MUST remain literal.
+An mdBook chapter MAY define an example with an opening fence of at least three colons immediately followed by `{example} <name>` and a closing colon-only fence of at least the opening length. The full name MUST use the same chapter-derived namespace and valid-name rules as `{req}`. The body MUST include all Markdown between the fences, excluding surrounding whitespace, and MUST describe a concrete case with expected behavior. An example MUST contain at least one valid `{cite}` or `{test}` reference to a requirement it illustrates; `{cite}` makes the requirement an input to the example's assessment, and `{test}` makes the example an input to the requirement's assessment, under {cite}`requirements.references.targets`. An example MAY use both. An example directive inside a fenced code block MUST remain literal.
 :::
 
 :::{req} evidence

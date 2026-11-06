@@ -1,6 +1,6 @@
 # Authoring evidence
 
-Habeas gives a model a requirement, example, or Rust function and its mandatory source inputs.
+Habeas gives a model a requirement or example and its mandatory source inputs.
 The model can discover files, request more inputs, and submit one judgment. The
 harness records the inputs and writes the judgment into the existing evidence
 format. Rig provides the connection to the user's configured model.
@@ -16,10 +16,12 @@ for the single-subject command.
 :::
 
 :::{req} batch
-`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement,
-named example, and first-party Rust function whose evidence or attestation is
-missing, stale, invalid, or false. It MUST preserve accepted, current records,
-including accepted FIXME judgments, without invoking a model for those records.
+`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement
+and named example whose evidence is missing, stale, or invalid. It MUST preserve
+current records without invoking a model for them, including accepted FIXME
+judgments and current false judgments. A current false judgment is reassessed
+only when its subject or inputs change, or when it is named explicitly with
+{cite}`requirements.authoring.invocation`.
 `--all` MUST be mutually exclusive with a subject name and `--stdout`.
 Failure to discover declarations or parse project sources MUST report an error,
 not a successful empty batch. A batch with no assessments needed MUST succeed
@@ -33,15 +35,11 @@ exit status if any assessment fails. False judgments MUST still be written as
 completed assessments; they remain failures under ordinary evidence validation.
 An access-policy denial MUST abort only the affected assessment under
 {cite}`requirements.authoring.read_denial`.
-Concurrent function assessments in one source file MUST be merged into that
-file's attestation record without losing other function entries. Assessments
-reading that record MUST see a complete version while results are saved.
 
 The bundled Habeas skills MUST direct the supervising agent to run this command
 to create or refresh evidence. They MUST leave judgments, rationales, and input
 snapshots to the authoring harness; the supervising agent addresses findings by
 changing requirements, source citations, implementation, or tests.
-{cite}`requirements.authoring.function_attestations`
 {cite}`requirements.authoring.concurrency`
 {cite}`requirements.authoring.usage_storage`
 {cite}`requirements.authoring.persistence`
@@ -58,7 +56,7 @@ Progress measures completed work, not satisfaction of requirements.
 
 Inspection MUST also show a progress bar for each phase with a known amount of
 work, including evidence files, reference source files and coverage, Rust
-attestations, and assessment selection. The display MUST label the current phase
+function coverage, and assessment selection. The display MUST label the current phase
 and show its completed and total checks; its percentage measures that phase's
 checks, not estimated time or overall inspection completion. Discovery and other
 phases whose totals are not yet known MUST use an indeterminate activity display.
@@ -84,7 +82,7 @@ usage-record metadata.
 
 `-v` and `--verbose` MUST additionally show each false judgment's recorded Markdown
 rationale on stderr; rationales MUST be omitted by default. This applies to
-single-subject and batch authoring, including Rust function attestations. It MUST
+single-subject and batch authoring. It MUST
 NOT print true rationales or append recorded
 input snapshots. Reporting MUST use the completed assessment's existing result,
 without additional inference. In `--stdout` mode, stdout MUST remain only the
@@ -120,7 +118,7 @@ recorded as evidence only after the request succeeds.
 
 ## Model tools
 
-The model receives four tools: `habeas`, `list_files`, `ripgrep`, and `submit_judgment`.
+The model receives five tools: `habeas`, `list_files`, `ripgrep`, `references`, and `submit_judgment`.
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
 
@@ -156,8 +154,8 @@ read MUST abort under {cite}`requirements.authoring.read_denial`.
 File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read
 through EOF; the returned evidence input MUST contain the actual numeric ending
 line. The model-facing tool description MUST include the argument conventions
-from the cited requirements, including Rust selector syntax, requirement globs,
-and full definition names, with a short request example for each form.
+from the cited requirements, including Rust selector syntax, definition
+selections, and full definition names, with a short request example for each form.
 
 A successful call MUST return the requested evidence input, populated by the
 harness with the selected source text, using the existing evidence schema.
@@ -266,7 +264,11 @@ SearchResult {
 
 The tool MUST search the requested permitted file or directory using
 ripgrep's regular-expression syntax and default case-sensitive search and ignore
-rules. Explicitly allowed paths and discovered generated-output directories MUST
+rules. It MUST search in process using ripgrep's library crates, without
+requiring an external `rg` executable, and MUST apply source-access policy while
+walking files rather than filtering results afterwards. It MAY search files in
+parallel; results MUST be ordered by path and then line regardless of
+parallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST
 be searched even when ignored or hidden; workspace disallow rules still apply.
 Its model-facing description MUST explain those conventions. `context`
 MUST be nonnegative and specify how many lines before and after each matching
@@ -283,6 +285,49 @@ Required terminology MUST be included under
 to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
 No matches MUST return empty arrays; invalid arguments or a failed search MUST
 return an explanatory tool error.
+:::
+
+### Look up definitions and references: `references`
+
+:::{req} reference_index
+The harness MUST expose a `references` tool with this interface:
+
+```text
+references({ selection: String? }) -> ReferenceIndex
+
+ReferenceIndex {
+    definitions: Array<DefinitionName>,
+    sites: Array<ReferenceSite>,
+}
+
+DefinitionName { name: String, kind: "requirement" | "example" }
+
+ReferenceSite {
+    name: String,
+    role: "impl" | "cite" | "test",
+    file: String,
+    line: Integer,
+    rust_item: String?,
+}
+```
+
+`selection` MUST be a {term}`requirements.references.definition_selection`.
+Without `selection`, the tool MUST return
+the full name and kind of every requirement and named example in full-name
+order, with empty `sites`. With `selection`, it MUST return the selected definitions
+in full-name order and one flattened `sites` array containing every valid
+`{impl}`, `{cite}`, and `{test}` reference to any match under
+{cite}`requirements.references.targets`, each naming the definition it
+references, ordered by name, file, and line. A site in a Rust item MUST give the
+selector of its smallest enclosing item under
+{cite}`requirements.references.rust_item_selectors`. Sites in sources excluded by
+{cite}`requirements.authoring.source_tools` MUST be omitted without aborting.
+An invalid selection or one matching no definition MUST return an explanatory tool
+error.
+
+Results are listings without source text. Like directory listings, they MUST
+NOT become evidence inputs; the model requests the sources it relies on with the
+`habeas` tool.
 :::
 
 ### Submit the result: `submit_judgment`
@@ -336,7 +381,7 @@ The contribution rules live with [requirements](../requirements.md#requirements-
 ### Prompt template
 
 :::{req} initial_prompt
-The initial request MUST provide the four tool definitions above and the
+The initial request MUST provide the five tool definitions above and the
 following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name, and
 `{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using
@@ -351,12 +396,19 @@ Subject: {{subject_kind}} {{subject_name}}
 
 Read the subject and mandatory inputs below. Use habeas to request any additional
 source information you need. Use list_files to discover files and directories,
-and ripgrep to search file contents.
-The harness records source inputs for you; directory listings are not evidence.
+ripgrep to search file contents, and references to list requirement names or
+every source that references the selected definitions.
+The harness records source inputs for you; listings and reference lookups are
+not evidence.
 
 Assess only the named subject, using cited requirements and definitions as context.
-For a requirement, check that the cited code implements it as stated and that
-tests cover the interesting points in the design space. If there are no tests,
+For a requirement, check that the code marked {impl} implements every obligation
+completely and exactly as stated, and that tests cover the interesting points in the design space. Also check that the
+implementation is marked completely: code that implements part of the
+requirement without an {impl} reference to it, including code that refers to it
+only with {cite}, is a gap. So is behavior in the {impl} code that this
+requirement does not specify, unless another definition that code implements
+specifies it. If there are no tests,
 assess whether simplicity or impracticality justifies their absence, and explain.
 For an example, assess whether test setup and assertions cover its scenario and
 expected outcomes. A true judgment needs at least one {test} reference to the
@@ -370,57 +422,6 @@ Choose false for other gaps or insufficient evidence. Explain your judgment in
 a Markdown rationale with source locations, including any acknowledged gaps.
 
 When you are ready, call submit_judgment exactly once with determination and
-rationale. That tool call is your final answer.
-
-Mandatory inputs:
-{{mandatory_inputs}}
-```
-:::
-
-### Rust function attestations
-
-:::{req} function_attestations
-The harness MUST author Rust function attestations using the schema and citation
-completeness criteria in {cite}`requirements.references.rust_function_attestations`.
-It MUST supply the complete function, its current citations, all requirement and
-example declarations selected by `*`, and their required terminology as mandatory
-inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation
-input selectors MUST also contribute their current resolutions, subject to the
-generated-output exclusion above. The harness MUST
-derive the recorded citations from source and record the inputs it supplies;
-the model MUST supply only the boolean determination and rationale. FIXME MUST
-be rejected for a function attestation.
-
-The same four tools and exactly-once submission rule MUST apply. The initial
-prompt MUST use the following template, replacing `{{subject_name}}` with the
-repository-relative Rust file and selector, `{{citations}}` with the current
-citation objects as JSON, and `{{mandatory_inputs}}` with the mandatory input
-array. {cite}`requirements.authoring.submission`
-{cite}`requirements.authoring.delivered_inputs`
-
-```text
-Bring your expert judgment to the task of assessing a Rust function's citation completeness.
-
-Subject: {{subject_name}}
-Current citations: {{citations}}
-
-Read the whole function and the requirement and example declarations below.
-Look beyond the citations already present for every applicable requirement or
-example, including obligations governing observable branches and error cases.
-Assess citation completeness, not whether those requirements are implemented.
-
-Use habeas for additional source inputs, list_files to discover files, and
-ripgrep to search their contents. The harness records source inputs for you;
-directory listings are not evidence.
-
-Choose true only when the function cites every applicable requirement or
-example. Choose false for missing citations or insufficient information.
-Explain how you identified the applicable set and how the cited declarations
-account for the function's behavior, with source locations, and why the reviewed
-requirements inputs cover that set. The determination
-must be boolean; FIXME is not a function-attestation outcome.
-
-Call submit_judgment exactly once with determination and a nonempty Markdown
 rationale. That tool call is your final answer.
 
 Mandatory inputs:

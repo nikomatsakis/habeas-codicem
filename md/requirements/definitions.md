@@ -19,7 +19,7 @@ Validation MUST reject missing definitions and changed snapshot text, identifyin
 :::
 
 :::{req} dependencies
-Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs. Rust function attestations MUST include definition inputs for every term referenced by their reviewed inputs, including selected requirements and examples.
+Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs.
 
 Habeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.
 
@@ -27,7 +27,7 @@ Validation MUST report missing required definition inputs and MUST NOT silently 
 :::
 
 :::{req} selection
-Existing requirements input globs MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the glob. Sharing a glob's matching name prefix alone MUST NOT make a definition a dependency.
+A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.
 :::
 
 :::{req} capture
@@ -41,11 +41,11 @@ A definition named `glossary.first_parent_history` declares the phrase "first-pa
 :::
 
 :::{example} transitive_cycle
-Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. A function attestation whose requirements input selects R also requires both inputs. Dependency collection terminates. Changing B's phrase or body invalidates both records' snapshots of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`
+Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. Dependency collection terminates. Changing B's phrase or body invalidates R's snapshot of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`
 :::
 
 :::{example} glob_dependency
-A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that glob. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the glob. {cite}`requirements.definitions.selection`
+A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that selection. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the selection. {cite}`requirements.definitions.selection`
 :::
 
 :::{example} reassessment
