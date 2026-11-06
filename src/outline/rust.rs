@@ -53,6 +53,7 @@ fn item_macro(node: Node<'_>) -> bool {
 }
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 fn is_comment(node: Node<'_>, _source: &str) -> bool {
     matches!(node.kind(), "line_comment" | "block_comment")
 }
@@ -115,6 +116,7 @@ fn attaches(node: Node<'_>, _source: &str) -> bool {
 }
 
 // {impl}`requirements.references.rust_item_selectors`
+// {impl}`requirements.references.outlines`
 const KINDS: &[KindRule] = &[
     KindRule::new("function_item", "fn", NameRule::Field("name")),
     KindRule::new("function_signature_item", "fn", NameRule::Field("name")),
@@ -141,6 +143,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.rust_item_selectors`
+// {impl}`requirements.references.outline_comments`
 pub(crate) static PROFILE: Profile = Profile {
     name: "rust",
     extensions: &["rs"],

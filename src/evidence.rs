@@ -1176,11 +1176,12 @@ fn collect_references_with_progress(
                 }
             };
             if kind.is_dir() {
-                let excluded = directory == root
-                    && matches!(
-                        entry.file_name().to_str(),
-                        Some(".git" | "target" | "book" | "evidence")
-                    );
+                // Repository metadata and Cargo build output are skipped at
+                // any depth; the book build and evidence snapshots at the
+                // project root.
+                let name = entry.file_name();
+                let excluded = matches!(name.to_str(), Some(".git" | "target"))
+                    || (directory == root && matches!(name.to_str(), Some("book" | "evidence")));
                 if !excluded {
                     stack.push(path);
                 }
@@ -1688,6 +1689,78 @@ mod tests {
         assert!(
             errors.contains(&format!("no input covers {known} at src/notes.txt:2")),
             "{errors}"
+        );
+    }
+
+    // {test}`requirements.ci.identifiers`
+    #[test]
+    fn invalid_full_names_from_chapter_paths_are_reported_and_not_defined() {
+        let temp = fixture();
+        fs::create_dir_all(temp.path().join("md/bad dir")).unwrap();
+        fs::write(
+            temp.path().join("md/bad dir/rules.md"),
+            "# Rules\n\n:::{req} good\nGood.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("md/reqs/index.md"),
+            "# Top\n\n:::{req} top\nTop.\n:::\n",
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        let errors = report.errors.join("\n");
+        assert!(
+            errors.contains("md/bad dir/rules.md:3: invalid requirement name \"bad dir.rules.good\""),
+            "{errors}"
+        );
+        // The invalid name is not defined, so no evidence is expected for it,
+        // while `reqs/index.md` contributes an empty namespace.
+        assert!(!errors.contains("evidence/bad dir"), "{errors}");
+        assert!(
+            errors.contains("evidence/top.json: missing for requirement at md/reqs/index.md:3"),
+            "{errors}"
+        );
+        assert_eq!(report.errors.len(), 2, "{errors}");
+    }
+
+    // {test}`requirements.references.targets`
+    #[test]
+    fn reference_discovery_skips_evidence_snapshots_and_build_output() {
+        let temp = fixture();
+        let reference = ["{", "impl}`foo.bar.ready`"].concat();
+        let line = format!("// {reference}\n");
+        for file in [
+            "src/counted.rs",
+            "nested/book/counted.txt",
+            "nested/evidence/counted.txt",
+            "evidence/copy.json",
+            "book/chapter.html",
+            "target/debug/out.rs",
+            "crates/sub/target/out.rs",
+            ".git/info/notes",
+        ] {
+            let path = temp.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, &line).unwrap();
+        }
+        fs::write(temp.path().join("src/binary.dat"), b"\0\0{impl}").unwrap();
+        let mut errors = Vec::new();
+        let mut found = super::collect_references(temp.path(), &mut errors)
+            .into_iter()
+            .map(|reference| {
+                let file = reference.file.strip_prefix(temp.path()).unwrap();
+                format!("{}:{}", file.display(), reference.line)
+            })
+            .collect::<Vec<_>>();
+        found.sort();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            found,
+            [
+                "nested/book/counted.txt:1",
+                "nested/evidence/counted.txt:1",
+                "src/counted.rs:1",
+            ]
         );
     }
 

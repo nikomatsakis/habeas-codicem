@@ -36,6 +36,7 @@ const KINDS: &[KindRule] = &[
 ];
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 const TYPESCRIPT: Profile = Profile {
     name: "typescript",
     extensions: &["ts", "mts", "cts"],
@@ -52,6 +53,7 @@ const TYPESCRIPT: Profile = Profile {
 pub(crate) static PROFILE: Profile = TYPESCRIPT;
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 pub(crate) static TSX_PROFILE: Profile = Profile {
     name: "tsx",
     extensions: &["tsx"],

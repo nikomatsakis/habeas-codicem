@@ -234,6 +234,7 @@ impl LineIndex {
 
 /// The plain-text profile: one anonymous `line` node per non-blank line.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_selectors`
 // {impl}`requirements.references.structural_hash`
 fn plain_text(profile: &'static Profile, source: &str, lines: &LineIndex) -> Outline {
     let mut root_hash = Encoder::new();
@@ -279,7 +280,9 @@ fn plain_text(profile: &'static Profile, source: &str, lines: &LineIndex) -> Out
     }
 }
 
+/// The root node for the whole file; its segment and selector are empty.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_selectors`
 fn root_node(
     source: &str,
     lines: &LineIndex,
@@ -356,6 +359,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.references.outline_comments`
     fn is_comment(&self, node: Node<'_>) -> bool {
         (self.profile.is_comment)(node, self.source)
     }
@@ -545,7 +549,10 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
-    /// Assigns hashes, selectors, line ranges, and comment owners.
+    /// Builds the root and outline nodes, linking parents and children, and
+    /// assigns hashes, selectors, line ranges including attached siblings,
+    /// and comment owners.
+    // {impl}`requirements.references.outlines`
     // {impl}`requirements.references.outline_selectors`
     fn finish(self, lines: &LineIndex) -> Outline {
         let mut nodes = Vec::with_capacity(self.drafts.len());

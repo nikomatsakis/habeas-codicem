@@ -51,6 +51,7 @@ impl KindRule {
 
 /// A language's outline profile.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
 pub(crate) struct Profile {
     /// Profile name, such as `rust` or `plain-text`.
@@ -92,6 +93,7 @@ impl Profile {
 }
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 pub(crate) fn kind_is_comment(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "comment"
 }
