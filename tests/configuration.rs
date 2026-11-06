@@ -262,6 +262,14 @@ model = "explicit:tag"
             .to_string()
             .contains("no authoring configuration")
     );
+}
+
+// {test}`requirements.authoring.configuration_precedence`
+#[test]
+fn configurations_without_any_selection_report_how_to_choose_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let config_path = root.join("config.toml");
     // Configurations exist, but no name, project entry, or default selects one.
     let unselected = UserConfig::parse(
         "version = 1\n[authoring.configs.only]\nbackend = 'ollama'\nmodel = 'm:tag'\n",

@@ -557,6 +557,97 @@ mod tests {
     use crate::authoring::inputs::tests::{project, role};
 
     // {test}`requirements.authoring.additional_read`
+    #[test]
+    fn additional_read_flow_searches_outlines_and_reads_a_rust_file() {
+        let root = project();
+        fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} value\n:phrase: value\nA useful value.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn work() {{}}\n\nfn other() {{}}\n",
+                role("term", "terms.value")
+            ),
+        )
+        .unwrap();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        // The listing finds the directory's file and records nothing.
+        let listing = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
+        assert_eq!(listing.result, json!([{"path":"src/lib.rs","kind":"file"}]));
+        assert!(listing.inputs.is_empty());
+        // Searching the Rust file returns the innermost item containing the match.
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"path":"src/lib.rs","pattern":"work","context":0}),
+        )
+        .unwrap();
+        let searched = search
+            .inputs
+            .iter()
+            .filter(|input| input["file"] == "src/lib.rs")
+            .collect::<Vec<_>>();
+        assert_eq!(searched.len(), 1, "{:#?}", search.inputs);
+        assert_eq!(searched[0]["item"], "fn[work]");
+        sources.record_inputs(&search.inputs);
+        // Outlining it lists its items without content and records nothing.
+        let outline = dispatch(&sources, "outline", &json!({"file":"src/lib.rs"})).unwrap();
+        assert!(outline.inputs.is_empty());
+        let items = outline
+            .result
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["item"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(items, ["fn[work]", "fn[other]"]);
+        assert!(!outline.result.to_string().contains("fn other()"));
+        // Reading one item by selector returns it with its terminology.
+        let item = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"src/lib.rs","item":"fn[other]"}),
+        )
+        .unwrap();
+        assert_eq!(item.result["input"]["item"], "fn[other]");
+        assert_eq!(item.result["input"]["text"][0], "fn other() {}");
+        sources.record_inputs(&item.inputs);
+        // A line range without line_end reads through EOF.
+        let eof = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":2}),
+        )
+        .unwrap();
+        let covered = eof.result["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| input["item"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(covered, ["fn[work]", "fn[other]"]);
+        sources.record_inputs(&eof.inputs);
+        let recorded = sources.recorded_inputs();
+        for item in ["fn[work]", "fn[other]"] {
+            assert!(
+                recorded.contains(
+                    &crate::inputs::outline_input(root.path(), "src/lib.rs", item).unwrap()
+                ),
+                "{item} recorded: {recorded:?}"
+            );
+        }
+        assert!(
+            recorded
+                .iter()
+                .any(|input| input["definition"] == "terms.value"),
+            "terminology recorded: {recorded:?}"
+        );
+    }
+
+    // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.delivered_inputs`
@@ -578,32 +669,6 @@ mod tests {
         let listing = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
         assert_eq!(listing.result, json!([{"path":"src/lib.rs","kind":"file"}]));
         assert!(listing.inputs.is_empty());
-        // Searching the Rust file returns the innermost item containing the match.
-        let search = dispatch(
-            &sources,
-            "ripgrep",
-            &json!({"path":"src/lib.rs","pattern":"work","context":0}),
-        )
-        .unwrap();
-        assert!(
-            search
-                .inputs
-                .iter()
-                .any(|input| input["item"] == "fn[work]" && input["kind"] == "fn"),
-            "{:#?}",
-            search.inputs
-        );
-        assert!(
-            search
-                .inputs
-                .iter()
-                .all(|input| input["file"] == "src/lib.rs" || input["definition"].is_string())
-        );
-        // Outlining it lists items without content and records nothing.
-        let outline = dispatch(&sources, "outline", &json!({"file":"src/lib.rs"})).unwrap();
-        assert!(outline.inputs.is_empty());
-        assert_eq!(outline.result[0]["item"], "fn[work]");
-        assert!(!outline.result.to_string().contains("fn work()"));
         let read = dispatch(
             &sources,
             "habeas",
