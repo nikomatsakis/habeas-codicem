@@ -88,7 +88,9 @@ nearest outline ancestor. A profile MAY attach grammar siblings to an outline
 node, such as Rust attributes and doc comments preceding an item, so the outline
 tree need not match the grammar tree exactly; attached siblings are part of that
 node for its line range and hash. Every file's outline MUST have a root node
-for the whole file. Comments MUST NOT be outline nodes. Profiles MUST be
+for the whole file, independent of language. Source in no other outline node,
+such as top-level statements no profile maps, MUST belong to the root node;
+profiles MUST NOT invent fallback kinds for it. Comments MUST NOT be outline nodes. Profiles MUST be
 documented. Upgrading a grammar or profile MAY change outlines and MUST be
 treated as a deliberate change.
 :::
@@ -109,19 +111,18 @@ reversible. Line numbers MUST NOT form part of a selector.
 
 :::{req} structural_hash
 A node's structural hash MUST be the SHA-256 digest of an unambiguous encoding of
-its outline-relevant structure: the kinds of its named grammar nodes and the text
-of its leaf tokens, in source order, including siblings its profile attaches to
-it. It MUST exclude whitespace and comments, except comment kinds its profile
-includes; the Rust profile MUST include doc comments. Prose, namely Markdown
-text and the text of hashed comments, MUST be hashed as its ordered list of words,
-where words are separated by whitespace and the whitespace itself, including
-leading and trailing whitespace, is never hashed. Each word MUST be encoded
-separately, so `ab cd` and `abcd` differ. Comment delimiters, such as `//`, `///`, `//!`,
-`/*`, `*/`, and a leading `*` on a continuation line, MUST NOT be part of a
-hashed comment's text, so reflowing a comment run across more or fewer lines
-does not change the hash; code
-string literals MUST be hashed as written. A `line` node's hash MUST be the
-digest of the line's text without leading and trailing whitespace. A node's
+its outline-relevant structure, including siblings its profile attaches to it:
+the kinds of its named grammar nodes and, in source order, its text pieces. A
+text piece MUST be the text of a leaf token, or text inside a node that no child
+token covers. Each text piece MUST be hashed as its ordered list of words, where
+words are separated by whitespace, the whitespace itself, including leading and
+trailing whitespace, is never hashed, and each word is encoded separately, so
+`ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments
+MUST be excluded, except comment kinds the profile includes; the Rust profile
+MUST include doc comments. For an included comment, only its text MUST be hashed,
+not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`,
+so reflowing it across more or fewer lines does not change the hash. A `line`
+node's hash MUST be computed by the same word rule over the line's text. A node's
 identity hash MUST be computed the same way but MUST also exclude its outline
 descendants and their attached siblings, so editing a descendant does not change
 its ancestors' selectors.
@@ -134,7 +135,10 @@ same line MUST form a run by itself and MUST belong to the innermost outline nod
 containing that line. Any other run MUST belong to the next outline node that
 starts after it within the smallest node containing it; when that container has
 no such node, the run MUST belong to the container, which is the root node at top
-level. A reference in a comment MUST count for the node its run belongs to under
+level. A profile MAY bind a comment kind to its container
+instead: such a run MUST belong to the smallest node containing it. The Rust
+profile MUST bind inner doc comments (`//!`, `/*!`) to their container, so a
+file-level inner doc comment belongs to the root node. A reference in a comment MUST count for the node its run belongs to under
 {cite}`requirements.references.rust_item_coverage` and
 {cite}`requirements.references.authoring_inputs`.
 :::
