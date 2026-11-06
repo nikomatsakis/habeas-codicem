@@ -14,17 +14,18 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
 :impl: assets/skills/habeas-requirements/SKILL.md
 A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`
 declaration MAY list `:test:` options, immediately after its opening fence and
-before its body, one project file path per option line. Each anchor MUST be an `{impl}` or `{test}` edge, under
-{cite}`requirements.references.targets`, from the definition to the complete
-anchored file, for files that cannot or should not carry a reference themselves.
+before its body, one per option line, naming a project file path or
+`path#selector` for one outline node under
+{cite}`requirements.references.outline_selectors`. Each anchor MUST be an `{impl}` or `{test}` edge, under
+{cite}`requirements.references.targets`, from the definition to the anchored file or
+node, for files that cannot or should not carry a reference themselves.
 Paths MUST follow the path rules in {cite}`requirements.ci.schema`. Option lines
 MUST NOT form part of the definition's text for evidence comparison or for
 requirements inputs, and MUST NOT render as body text.
 
-An anchored file MUST be covered by the definition's evidence under
-{cite}`requirements.references.evidence_coverage`, by an input containing the
-complete file, so changing the file makes that evidence stale. A path that does
-not resolve to a readable, permitted file MUST be a validation error naming the
+An anchored file or node MUST be covered by the definition's evidence under
+{cite}`requirements.references.evidence_coverage`, by an input selecting it, so changing the file makes that evidence stale. A path or selector that
+does not resolve to a readable, permitted file or node MUST be a validation error naming the
 definition and the path; authoring MUST report it before inference, because the
 definition cannot be assessed without it. Any other option line in a `{req}` or
 `{example}` declaration MUST be a validation error.
@@ -44,7 +45,7 @@ For every `{impl}` and `{test}` reference in a project source file, including on
 :::
 
 :::{req} rust_item_coverage
-During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. A comment immediately preceding an item's declaration or its attributes is attached to that item. A comment within an item's body, including one before a field, variant, or attribute inside it, belongs to the smallest enclosing item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
 :::
 
 :::{req} definition_globs
@@ -61,7 +62,71 @@ exactly that definition.
 :::
 
 :::{req} rust_item_selectors
-Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.
+The Rust outline profile under {cite}`requirements.references.outlines` MUST
+identify items by segments describing their syntactic ancestry within the file,
+such as `fn[run]`, `struct[Packet]`, and `mod[local]/fn[run]`, and MUST NOT
+resolve Rust modules across files. Functions, methods, structs, enums, unions,
+traits, impls, modules, macros, constants, statics, type aliases, and extern
+blocks MUST be outline nodes. Impl segments MUST be named by their syntactic self
+type and optional trait path, as `impl[Thing]` and `impl[Thing/Trait]`. `use`
+declarations and other items without a suitable name MUST be anonymous. Selector
+spelling MUST be documented.
+:::
+
+## Outlines
+
+:::{req} outlines
+Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML
+sources with pinned tree-sitter grammars, selected by file extension. Every
+other text file MUST use a plain-text profile in which each line that is not
+blank is an anonymous outline node of kind `line`. Each supported language MUST
+have an outline profile that maps grammar node kinds to short outline kind names
+and, for each mapped kind, states whether a node is named, and by which fields
+or children, or anonymous. Only mapped kinds MUST appear in the outline; other
+nodes MUST be transparent, so their outline descendants appear under the
+nearest outline ancestor. A profile MAY attach grammar siblings to an outline
+node, such as Rust attributes and doc comments preceding an item, so the outline
+tree need not match the grammar tree exactly; attached siblings are part of that
+node for its line range and hash. Every file's outline MUST have a root node
+for the whole file. Comments MUST NOT be outline nodes. Profiles MUST be
+documented. Upgrading a grammar or profile MAY change outlines and MUST be
+treated as a deliberate change.
+:::
+
+:::{req} outline_selectors
+An outline selector MUST be a `/`-separated path of segments from the file's
+root node to an outline node; the empty selector MUST select the root node. A
+named node's segment MUST be `kind[name]`. An anonymous node's segment MUST be
+`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity
+hash under {cite}`requirements.references.structural_hash`. Siblings whose
+segments would otherwise be identical MUST be disambiguated by `#N`, their
+one-based position among those siblings in source order, except `line` nodes:
+identical lines are interchangeable, so a `line` selector MUST resolve when any
+line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,
+`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are
+reversible. Line numbers MUST NOT form part of a selector.
+:::
+
+:::{req} structural_hash
+A node's structural hash MUST be the SHA-256 digest of its outline-relevant
+structure: the kinds of its named grammar nodes and the text of its leaf tokens,
+in source order, including siblings its profile attaches to it. It MUST exclude
+whitespace and comments, except comment kinds its profile includes; the Rust
+profile MUST include doc comments. A `line` node's hash MUST be the digest of the
+line's text. A node's identity hash MUST be computed the same way but MUST also
+exclude its outline descendants, so editing a descendant does not change its
+ancestors' selectors.
+:::
+
+:::{req} outline_comments
+In every supported language, a comment MUST belong to the smallest outline node
+it appears within, other than the root. Otherwise it MUST belong to an adjacent
+node: one that starts on the line after the comment ends, or ends on the line
+before the comment starts. A comment adjacent to two nodes, or to none, MUST
+belong to the next node after it in the file, and to the root node when no node
+follows. A reference in a comment MUST count for the node it belongs to under
+{cite}`requirements.references.rust_item_coverage` and
+{cite}`requirements.references.authoring_inputs`.
 :::
 
 
@@ -90,15 +155,15 @@ Two sibling declarations named `run` in one file, guarded by different `#[cfg]` 
 :::
 
 :::{example} selector_use
-For consecutive sibling declarations `use alpha::A;` and `use beta::B;`, the selectors are `use#1` and `use#2`. Changing an import target leaves that declaration's positional selector the same and changes its raw evidence input. A named declaration such as `struct Packet;` instead has selector `struct[Packet]`. {cite}`requirements.references.rust_item_selectors` {cite}`requirements.ci.rust_item_inputs`
+For consecutive sibling declarations `use alpha::A;` and `use beta::B;`, each selector is an anonymous `use@<hash>` segment derived from that declaration's structure. Inserting a declaration before them leaves both selectors unchanged; changing an import target gives that declaration a new selector. A named declaration such as `struct Packet;` instead has selector `struct[Packet]`. {cite}`requirements.references.rust_item_selectors` {cite}`requirements.references.outline_selectors`
 :::
 
 :::{example} selector_raw_lines
-For a function preceded by a doc comment, an attribute, and an attached citation comment, a Rust-item input starts at the earliest attached line and ends at the function's final line. Its `text` contains those complete raw source lines. Inserting lines before them changes the displayed range without changing the input. {cite}`requirements.ci.rust_item_inputs`
+For a function preceded by a doc comment, an attribute, and an attached citation comment, an outline input's displayed range starts at the earliest attached line and ends at the function's final line. Inserting lines before the function changes the displayed range without changing the input. Editing the citation comment leaves its hash unchanged; editing the doc comment changes it. {cite}`requirements.ci.outline_inputs` {cite}`requirements.references.structural_hash`
 :::
 
 :::{example} selector_same_line
-For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --rust-item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`. Both contain the complete raw line. {cite}`requirements.cli.add_input_rust_item`
+For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`, each with its own structural hash. {cite}`requirements.cli.add_input_item`
 :::
 
 :::{example} definition_glob_cases
@@ -119,8 +184,8 @@ MUST NOT contribute and remain discoverable under
 contributes the cited definition's complete fenced declaration. An anchor under
 {cite}`requirements.references.anchors` contributes the complete anchored file.
 An in-source `{impl}` or `{test}` reference to the subject contributes the source
-containing it: for a reference in a Rust item, the complete smallest enclosing item with its attached
-comments and attributes; for a reference in a Markdown requirement, example, or
+containing it: for a reference in a supported language, the smallest enclosing
+outline node under {cite}`requirements.references.outline_comments`; for a reference in a Markdown requirement, example, or
 terminology declaration, that complete declaration; for other references, the
 complete containing source file. Literal references, evidence copies, and
 generated output MUST remain excluded under the existing reference-discovery

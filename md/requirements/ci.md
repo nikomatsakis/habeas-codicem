@@ -9,7 +9,7 @@ Every JSON file directly under `evidence/` MUST correspond to a declared require
 :::
 
 :::{req} schema
-A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input MUST have exactly one of four forms: a file-range input with `file`, `line_start`, `line_end`, and `text`; a Rust-item input with `rust_file`, `rust_item`, and `text`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. Line numbers MUST be positive integers, `matches` MUST be an array of distinct full definition names, and `text` MUST be a nonempty array of strings.
+A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input MUST have exactly one of three forms: an outline input with `file`, `item`, and `hash`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. `matches` MUST be an array of distinct full definition names, `hash` MUST be a lowercase hexadecimal SHA-256 digest, and `text` MUST be a nonempty array of strings. Evidence MUST NOT store source text for outline inputs.
 :::
 
 :::{req} requirement_text
@@ -72,12 +72,18 @@ MUST NOT suffice.
 
 See [FIXME examples](#fixme-examples) for concrete review judgments and CI results.
 
-:::{req} inputs
-For a file-range input, Habeas MUST verify that `line_start` and `line_end` identify an inclusive, ordered range in `file` and that `text` exactly matches the current raw lines in that range. Habeas MUST report missing files, invalid ranges, and changed lines.
-:::
 
-:::{req} rust_item_inputs
-For a Rust-item input, Habeas MUST parse `rust_file` with `syn` and resolve `rust_item` to exactly one item. It MUST determine an inclusive range of complete raw source lines containing that item, including attached doc comments, attributes, and leading citation comments. It MUST compare `text` with those lines without serializing the `syn` tree, and derive the range again during validation for display and reference coverage. Moving unchanged lines because of edits earlier in the file MUST NOT invalidate the input. Habeas MUST report a missing file, parse failure, invalid or ambiguous selector, or changed lines.
+:::{req} outline_inputs
+For an outline input, Habeas MUST parse `file` with its language's grammar under
+{cite}`requirements.references.outlines` and resolve `item` to exactly one
+outline node under {cite}`requirements.references.outline_selectors`. It MUST
+compare `hash` with the node's current structural hash under
+{cite}`requirements.references.structural_hash`. It MUST derive the node's
+inclusive line range, including attached comments and attributes, during
+validation for display and reference coverage. Moving the node, editing other
+nodes, or editing comments its profile does not hash MUST NOT invalidate the
+input. Habeas MUST report a missing file, unsupported language, parse failure,
+invalid or ambiguous selector, or changed hash.
 :::
 
 :::{req} requirements_inputs
@@ -105,11 +111,11 @@ states which conditions that check reports.
 When stored requirement text differs from the current chapter text, the
 {term}`requirements.ci.validation_error` MUST name the requirement and show a
 compact line-oriented diff, with `-` for recorded lines and `+` for current lines.
-When recorded input text differs from the current file, the validation error MUST
-name the file and line range and show the same kind of diff.
+When an outline input's hash differs from its node's current hash, the validation
+error MUST name the file, the selector, and the node's current line range.
 
 ```text
-evidence/requirements.ci.inputs.json: requirement text changed (md/requirements.md:43)
+evidence/requirements.ci.outline_inputs.json: requirement text changed (md/requirements.md:43)
 - Habeas SHOULD check input lines.
 + Habeas MUST check input lines.
 ```
@@ -228,11 +234,10 @@ account for the additional defect. CI rejects the false determination.
 ### Recorded FIXME evidence becomes stale
 
 :::{example} fixme_stale_input
-A current evidence record has `{"FIXME": ["#125"]}` and passes CI. A source comment
-within one of its recorded file-range inputs then changes. CI rejects the record
-because the recorded text no longer matches, even though its determination is
-still FIXME. Validation reports the changed input without running a model or
+A current evidence record has `{"FIXME": ["#125"]}` and passes CI. The code in one
+of its recorded outline inputs then changes. CI rejects the record because the
+input's hash no longer matches, even though its determination is still FIXME. Validation reports the changed input without running a model or
 reassessing the documented gap.
 {cite}`requirements.ci.determination`
-{cite}`requirements.ci.inputs`
+{cite}`requirements.ci.outline_inputs`
 :::

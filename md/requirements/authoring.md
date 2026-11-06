@@ -121,7 +121,7 @@ recorded as evidence only after the request succeeds.
 
 ## Model tools
 
-The model receives five tools: `habeas`, `list_files`, `ripgrep`, `references`, and `submit_judgment`.
+The model receives six tools: `habeas`, `list_files`, `outline`, `ripgrep`, `references`, and `submit_judgment`.
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
 
@@ -133,13 +133,13 @@ forms. Each form MUST correspond to one existing evidence-input kind:
 
 | Request fields | Evidence input returned | Definition |
 | --- | --- | --- |
-| `file: String`, `line_start: Integer`, optional `line_end: Integer` | File-range input | {cite}`requirements.ci.inputs` |
-| `rust_file: String`, `rust_item: String` | Rust-item input | {cite}`requirements.ci.rust_item_inputs` |
+| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |
+| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |
 | `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |
 | `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |
 
-Rust file and selector arguments MUST use the syntax defined by
-{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current
+Selector arguments MUST use the syntax defined by
+{cite}`requirements.references.outline_selectors`. Reads MUST use the current
 project working tree, including unstaged changes to tracked files and staged new
 files. By default, source inputs MUST stay within the project root after
 resolving symlinks; in a Git worktree, both the requested file and its resolved
@@ -154,10 +154,15 @@ follow {cite}`requirements.configuration.evidence_paths`, including explicit
 permission for otherwise excluded inputs. A denied mandatory input or explicit
 read MUST abort under {cite}`requirements.authoring.read_denial`.
 
-File line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read
-through EOF; the returned evidence input MUST contain the actual numeric ending
-line. The model-facing tool description MUST include the argument conventions
-from the cited requirements, including Rust selector syntax, definition
+Line numbers are only a way to request sources; recorded evidence MUST identify
+sources by outline selector and structural hash, never by line number. Request
+line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read
+through EOF. A line-range request MUST be resolved to the innermost outline
+nodes covering the requested lines, which are `line` nodes in a file using the
+plain-text profile; the result MUST show the model each node's selector, current
+line range, and source text, and the harness MUST record those nodes as outline
+inputs. The model-facing tool description MUST include the argument conventions
+from the cited requirements, including outline selector syntax, definition
 selections, and full definition names, with a short request example for each form.
 
 A successful call MUST return the requested evidence input, populated by the
@@ -212,8 +217,8 @@ Workspace disallow entries MUST override this permission.
 Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be
 able to allow undiscovered outputs explicitly using `habeas.toml`. The model's
 root directory listing MUST expose available generated-output directories,
-including external ones. Generated inputs MUST use the existing file-range and
-Rust-item formats and receive ordinary freshness checks. Validation MUST NOT
+including external ones. Generated inputs MUST use outline inputs and receive
+ordinary freshness checks. Validation MUST NOT
 invoke a build to materialize an input.
 :::
 
@@ -251,6 +256,34 @@ output. Explicitly requesting an excluded path MUST return an
 authoring error under {cite}`requirements.authoring.read_denial`.
 :::
 
+### List a file's outline: `outline`
+
+:::{req} outline_tool
+The harness MUST expose an `outline` tool with this interface:
+
+```text
+outline({ file: String }) -> Array<OutlineEntry>
+
+OutlineEntry {
+    item: String,
+    kind: String,
+    name: String?,
+    line_start: Integer,
+    line_end: Integer,
+    children: Array<OutlineEntry>,
+}
+```
+
+The tool MUST return the outline of a permitted file in a supported language
+under {cite}`requirements.references.outlines`, with each node's selector under
+{cite}`requirements.references.outline_selectors`, its kind, its name when it is
+named, and its current inclusive line range, nested by outline ancestry. Results
+MUST contain no source text and MUST NOT become evidence inputs; the model reads
+the nodes it relies on with the `habeas` tool. For a file using the plain-text
+profile, the outline lists its `line` nodes. Explicitly requesting an excluded
+file MUST abort under {cite}`requirements.authoring.read_denial`.
+:::
+
 ### Search file contents: `ripgrep`
 
 :::{req} text_search
@@ -260,7 +293,7 @@ The harness MUST expose a `ripgrep` tool with this interface:
 ripgrep({ pattern: String, path: String = ".", context: Integer = 5 }) -> SearchResult
 
 SearchResult {
-    inputs: Array<FileRangeInput>,
+    inputs: Array<EvidenceInput>,
     definitions: Array<DefinitionInput>,
 }
 ```
@@ -276,9 +309,11 @@ be searched even when ignored or hidden; workspace disallow rules still apply.
 Its model-facing description MUST explain those conventions. `context`
 MUST be nonnegative and specify how many lines before and after each matching
 line to include, defaulting to five on each side. Windows MUST stop at file
-boundaries, and overlapping windows in the same file MUST be merged. Each
-resulting window MUST be returned as a file-range input with its source path,
-inclusive line range, and complete text under {cite}`requirements.ci.inputs`.
+boundaries, and overlapping windows in the same file MUST be merged. Each match and its context lines MUST be returned and
+recorded as the innermost outline nodes containing them, under
+{cite}`requirements.ci.outline_inputs`; a match in a comment belongs to the node
+the comment belongs to under {cite}`requirements.references.outline_comments`.
+Each result MUST include the selected source text for the model.
 Setting `context` to zero MUST return only matching lines.
 Search results MUST exclude files disallowed by
 {cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
@@ -310,7 +345,7 @@ ReferenceSite {
     role: "impl" | "cite" | "test",
     file: String,
     line: Integer?,
-    rust_item: String?,
+    item: String?,
 }
 ```
 
@@ -323,9 +358,9 @@ in full-name order and one flattened `sites` array containing every valid
 {cite}`requirements.references.targets`, each naming the definition it
 references, ordered by name, file, and line. An anchor under
 {cite}`requirements.references.anchors` MUST be reported as a site for its
-anchored file without a line. A site in a Rust item MUST give the
-selector of its smallest enclosing item under
-{cite}`requirements.references.rust_item_selectors`. Sites in sources excluded by
+anchored file without a line. A site in a supported language MUST give the
+selector of its smallest enclosing outline node under
+{cite}`requirements.references.outline_comments`. Sites in sources excluded by
 {cite}`requirements.authoring.source_tools` MUST be omitted without aborting.
 An invalid selection or one matching no definition MUST return an explanatory tool
 error.
@@ -386,7 +421,7 @@ evidence is [not carried forward](ci.md#existing-evidence-inputs-used-by-authori
 ### Prompt template
 
 :::{req} initial_prompt
-The initial request MUST provide the five tool definitions above and the
+The initial request MUST provide the six tool definitions above and the
 following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name, and
 `{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using
@@ -401,7 +436,8 @@ Subject: {{subject_kind}} {{subject_name}}
 
 Read the subject and mandatory inputs below. Use habeas to request any additional
 source information you need. Use list_files to discover files and directories,
-ripgrep to search file contents, and references to list requirement names or
+outline to list a file's selectable nodes, ripgrep to search file contents, and
+references to list requirement names or
 every source that references the selected definitions.
 The harness records source inputs for you; listings and reference lookups are
 not evidence.
@@ -779,10 +815,9 @@ contents to the model and records them as evidence inputs.
 ## Recording results
 
 :::{req} delivered_inputs
-The harness MUST record the source text it supplies to the model, including
-mandatory inputs and additional reads, using the existing evidence input formats
-defined by {cite}`requirements.ci.inputs`,
-{cite}`requirements.ci.rust_item_inputs`,
+The harness MUST record the sources it supplies to the model, including
+mandatory inputs and additional reads, using the evidence input formats
+defined by {cite}`requirements.ci.outline_inputs`,
 {cite}`requirements.ci.requirements_inputs`, and
 {cite}`requirements.definitions.inputs`. The harness MUST create these records
 itself so ordinary evidence validation can check them later.
@@ -861,11 +896,11 @@ requirement, both functions, and the required definition as evidence inputs.
 :::{example} additional_read
 The model calls `list_files` to find a directory, then `ripgrep` to find matching
 lines in a Rust file. The listing creates no evidence input; the search returns
-and records file-range inputs including five context lines on each side, where
-available. A `habeas` request with that file's `rust_file` and
-a `rust_item` selector returns and records the complete Rust item, along with any
-required terminology. A file-range request omitting `line_end` reads through EOF
-and records the actual ending line without requiring the model to know it.
+and records the innermost Rust item containing each match. An `outline` request
+for that file lists its items without content and creates no evidence input. A
+`habeas` request with the file and one item's selector returns and records that
+item, along with any required terminology. A line-range request omitting
+`line_end` reads through EOF and records the outline nodes it covers.
 {cite}`requirements.authoring.file_discovery`
 {cite}`requirements.authoring.text_search`
 {cite}`requirements.authoring.source_tools`
