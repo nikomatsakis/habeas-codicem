@@ -103,6 +103,11 @@ impl AssessmentSources {
             reference.name == subject_name
                 && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
         }) {
+            // Generated evidence, including symlink aliases, is omitted by
+            // default rather than denied.
+            if access.omit_generated_evidence(&root, &reference.file) {
+                continue;
+            }
             access.file(&root, &reference.file)?;
             insert_selector(
                 &mut selectors,
@@ -112,6 +117,9 @@ impl AssessmentSources {
 
         // {impl}`requirements.references.anchors`
         for anchor in &subject.anchors {
+            if access.omit_generated_evidence(&root, Path::new(&anchor.file)) {
+                continue;
+            }
             let selector = access
                 .file(&root, Path::new(&anchor.file))
                 .and_then(|_| {
@@ -884,6 +892,99 @@ pub(super) mod tests {
                 ("notes.txt", ""),
                 ("src/lib.rs", "mod[inner]"),
             ]
+        );
+    }
+    // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.read_denial`
+    #[test]
+    fn generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed() {
+        let root = project();
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        fs::write(root.path().join("evidence/report.md"), "# Report\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("evidence", root.path().join("alias")).unwrap();
+        let declaration = |anchor: &str| {
+            fs::write(
+                root.path().join("md/requirements.md"),
+                format!(":::{{req}} ready\n:impl: {anchor}\nThe project MUST be ready.\n:::\n"),
+            )
+            .unwrap();
+        };
+        let has_file = |sources: &AssessmentSources, file: &str| {
+            sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == file)
+        };
+
+        // Default exclusion omits the anchor instead of aborting.
+        declaration("evidence/report.md");
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            !has_file(&sources, "evidence/report.md"),
+            "{:#?}",
+            sources.mandatory_inputs()
+        );
+        assert_eq!(sources.mandatory_inputs().len(), 1);
+
+        // A symlink alias into `evidence/` is omitted too.
+        #[cfg(unix)]
+        {
+            declaration("alias/report.md");
+            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            assert!(
+                !has_file(&sources, "alias/report.md"),
+                "{:#?}",
+                sources.mandatory_inputs()
+            );
+            assert_eq!(sources.mandatory_inputs().len(), 1);
+        }
+
+        // An explicit allow permits the selection.
+        declaration("evidence/report.md");
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['evidence/report.md']\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            has_file(&sources, "evidence/report.md"),
+            "{:#?}",
+            sources.mandatory_inputs()
+        );
+
+        // An explicit disallow aborts before inference.
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['evidence']\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("evidence/report.md"), "{error}");
+    }
+
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn generated_evidence_references_are_omitted_by_default() {
+        let root = project();
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        fs::write(
+            root.path().join("evidence/notes.md"),
+            format!("# Notes\n\n{}\n", role("impl", "requirements.ready")),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            !sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "evidence/notes.md"),
+            "{:#?}",
+            sources.mandatory_inputs()
         );
     }
 }

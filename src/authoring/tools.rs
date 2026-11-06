@@ -21,13 +21,14 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.credentials`
+// {impl}`requirements.authoring.outline_tool`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -38,15 +39,15 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.",
+            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, each with its item selector (for habeas {file, item} reads), kind, name (null when anonymous), and current one-based inclusive line_start and line_end. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas. Requesting an excluded file aborts the assessment.",
+            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, each with its item selector (for habeas {file, item} reads), kind, name (null when anonymous), and current one-based inclusive line_start and line_end. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas. Requesting an excluded project file aborts the assessment; an unpermitted file outside the project returns a tool error.",
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.",
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
@@ -59,6 +60,8 @@ pub(crate) fn definitions() -> Vec<Value> {
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.outline_tool`
+// {impl}`requirements.authoring.read_denial`
 pub(crate) fn dispatch(
     sources: &AssessmentSources,
     name: &str,
@@ -75,6 +78,7 @@ pub(crate) fn dispatch(
         "references" => references(sources, arguments),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
+    .map_err(super::access::recoverable_outside_request)
 }
 
 // {impl}`requirements.authoring.source_tools`
@@ -1439,6 +1443,117 @@ mod tests {
             ])
         );
         assert!(result.inputs.is_empty());
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.outline_tool`
+    #[test]
+    fn unpermitted_requests_outside_the_project_are_recoverable_tool_errors() {
+        let root = project();
+        let external = tempfile::tempdir().unwrap();
+        fs::write(external.path().join("lib.rs"), "fn external() {}\n").unwrap();
+        let file = external.path().join("lib.rs");
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let requests = [
+            ("habeas", json!({"file": file, "line_start": 1})),
+            ("habeas", json!({"file": file, "item": "fn[external]"})),
+            ("list_files", json!({"path": external.path()})),
+            ("outline", json!({"file": file})),
+            (
+                "ripgrep",
+                json!({"path": external.path(), "pattern": "external"}),
+            ),
+        ];
+        for (name, arguments) in &requests {
+            let error = dispatch(&sources, name, arguments).err().unwrap();
+            assert_ne!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{name}: {error}"
+            );
+            assert!(error.to_string().contains("outside the project"), "{error}");
+        }
+        assert!(sources.recorded_inputs().is_empty());
+
+        // A matching disallow still aborts, as do in-project denials.
+        fs::write(
+            root.path().join("habeas.toml"),
+            format!(
+                "version = 1\n[evidence]\ndisallow = [{:?}]\n",
+                external.path().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        fs::write(root.path().join("evidence/old.json"), "{}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (name, arguments) in &requests[..1] {
+            let error = dispatch(&sources, name, arguments).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        }
+        let error = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file": "evidence/old.json", "item": ""}),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn mandatory_inputs_outside_the_project_still_abort() {
+        let root = project();
+        let external = tempfile::tempdir().unwrap();
+        fs::write(external.path().join("skill.md"), "# Skill\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\n:impl: {}\nThe project MUST be ready.\n:::\n",
+                external.path().join("skill.md").display()
+            ),
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("outside the project"), "{error}");
+    }
+
+    // {test}`requirements.authoring.outline_tool`
+    #[test]
+    fn outline_tool_is_advertised_with_a_required_file_argument() {
+        let definitions = definitions();
+        let outline = definitions
+            .iter()
+            .find(|definition| definition["name"] == "outline")
+            .expect("outline tool is advertised");
+        assert_eq!(
+            outline["parameters"],
+            json!({
+                "type": "object",
+                "properties": {"file": {"type": "string"}},
+                "required": ["file"],
+                "additionalProperties": false
+            })
+        );
+        let description = outline["description"].as_str().unwrap();
+        for phrase in [
+            "item selector",
+            "kind",
+            "name",
+            "line_start",
+            "line_end",
+            "no source text",
+        ] {
+            assert!(description.contains(phrase), "{description}");
+        }
     }
 
     // {test}`requirements.authoring.outline_tool`

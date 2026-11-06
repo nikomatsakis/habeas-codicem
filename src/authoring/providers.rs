@@ -70,6 +70,13 @@ impl ProviderBackoff {
     }
 }
 
+/// Wraps Rig's error unchanged, so `ProviderBackoff::next_delay` can read its
+/// HTTP status, provider code, and `Retry-After` header.
+// {impl}`requirements.authoring.provider_backoff`
+fn provider_failure(error: ProviderError) -> io::Error {
+    io::Error::other(error)
+}
+
 // {impl}`requirements.authoring.provider_backoff`
 fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
     let header = error
@@ -107,6 +114,8 @@ impl RigProvider {
                     .erase()
             }
             BackendConfig::Ollama(config) => {
+                // Rig's reqwest transport sends each request once; it has no
+                // hidden retry layer to disable.
                 let mut provider = rig_core::providers::ollama::OllamaConfig::new()
                     .with_base_url(config.endpoint());
                 if let Some(key) = config.api_key()? {
@@ -168,7 +177,7 @@ impl CompletionProvider for RigProvider {
             apply_bedrock_options(&mut request, &mut options)?;
         }
         request.additional_params = (!options.is_empty()).then_some(Value::Object(options));
-        let mut response = self.model.call(request).await.map_err(io::Error::other)?;
+        let mut response = self.model.call(request).await.map_err(provider_failure)?;
         if self.bedrock {
             normalize_bedrock_client_calls(&mut response)?;
         }
@@ -369,6 +378,28 @@ mod tests {
             ProviderBackoff::default().next_delay(&error),
             Some(Duration::from_secs(90))
         );
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[tokio::test]
+    async fn bedrock_sdk_retries_are_disabled() {
+        let config: BedrockConfig =
+            toml::from_str("model = 'test'\nregion = 'us-west-2'\n").unwrap();
+        let sdk = bedrock_sdk_config(&config).await;
+        let retry = sdk.retry_config().expect("retry configuration is set");
+        assert_eq!(retry.max_attempts(), 1, "{retry:?}");
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[test]
+    fn rig_failures_keep_their_provider_report_for_backoff() {
+        let mut backoff = ProviderBackoff::default();
+        let error = provider_failure(provider_error(Some(429), None));
+        assert!(backoff.next_delay(&error).is_some());
+        let error = provider_failure(provider_error(None, Some("ServiceUnavailableException")));
+        assert!(backoff.next_delay(&error).is_some());
+        let error = provider_failure(provider_error(Some(400), Some("ValidationException")));
+        assert_eq!(backoff.next_delay(&error), None);
     }
 
     // {test}`requirements.authoring.credentials`

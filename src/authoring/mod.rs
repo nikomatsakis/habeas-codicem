@@ -746,4 +746,82 @@ mod tests {
         assert_eq!(log["requests"][0]["outcome"], "failed");
         assert_eq!(log["requests"][1]["outcome"], "completed");
     }
+    /// Fails with throttling before both requests, answering the first
+    /// recovered request with a source read and the second with a judgment.
+    struct ThrottledToolProvider {
+        requests: RefCell<Vec<(tokio::time::Instant, Value)>>,
+    }
+
+    impl CompletionProvider for ThrottledToolProvider {
+        // {test}`requirements.authoring.provider_backoff`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let attempt = self.requests.borrow().len();
+            self.requests.borrow_mut().push((
+                tokio::time::Instant::now(),
+                serde_json::to_value(&request).unwrap(),
+            ));
+            match attempt {
+                0 | 2 => Err(io::Error::other(
+                    rig_core::error::ProviderError::from_provider_body("slow down")
+                        .with_provider_status(Some(429.try_into().unwrap())),
+                )),
+                1 => Ok(CompletionResponse::new(
+                    vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                        "read",
+                        ToolFunction::new(
+                            ToolName::new("habeas").unwrap(),
+                            json!({"file": "src/lib.rs", "item": "fn[run]"}),
+                        ),
+                    ))],
+                    Usage::default(),
+                    Origin::new("fixture", "fixture", "fixture"),
+                    Value::Null,
+                )
+                .with_finish_reason(FinishReason::ToolCalls)),
+                _ => JudgmentProvider(json!(true)).complete(request).await,
+            }
+        }
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    // {test}`requirements.authoring.usage_requests`
+    #[tokio::test(start_paused = true)]
+    async fn success_resets_backoff_and_retries_keep_history_without_repeating_tools() {
+        let (project, _state, mut sources, mut usage) = retry_fixture();
+        fs::write(project.path().join("src/lib.rs"), "fn run() {}\n").unwrap();
+        let provider = ThrottledToolProvider {
+            requests: RefCell::default(),
+        };
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let requests = provider.requests.borrow();
+        assert_eq!(requests.len(), 4);
+        // Each throttled request waits within the initial one-second window:
+        // the successful tool turn reset the window doubled by the first failure.
+        for (failed, retried) in [(0, 1), (2, 3)] {
+            let delay = requests[retried].0 - requests[failed].0;
+            assert!(
+                delay >= Duration::from_millis(500) && delay <= Duration::from_secs(1),
+                "{delay:?}"
+            );
+        }
+        assert_eq!(requests[0].1, requests[1].1);
+        // The retry after the tool turn resends the same history, tool
+        // results, and tools.
+        assert_eq!(requests[2].1, requests[3].1);
+        assert_ne!(requests[1].1, requests[2].1);
+        assert!(requests[3].1.to_string().contains("fn run()"));
+
+        // The read ran once, and its input was recorded after the retried
+        // request succeeded.
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["tool_calls"]["habeas"], 1, "{log:#}");
+        assert_eq!(log["request_count"], 4);
+        let inputs = record["inputs"].as_array().unwrap();
+        assert!(
+            inputs
+                .iter()
+                .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[run]"),
+            "{inputs:#?}"
+        );
+    }
 }

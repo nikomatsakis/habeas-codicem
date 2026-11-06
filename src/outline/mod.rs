@@ -63,6 +63,7 @@ pub(crate) struct OutlineNode {
 impl OutlineNode {
     /// The name as displayed, with parts joined by `/`.
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.authoring.outline_tool`
     pub(crate) fn display_name(&self) -> Option<String> {
         self.name.as_ref().map(|parts| parts.join("/"))
     }

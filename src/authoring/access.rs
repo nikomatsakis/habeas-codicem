@@ -134,7 +134,16 @@ impl SourceAccess {
             return Ok(target);
         }
         let lexical_request = normalize(&root.join(relative));
-        if !lexical_request.starts_with(root) || !target.starts_with(root) {
+        if !lexical_request.starts_with(root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                OutsideProject(format!(
+                    "{} is outside the project and no habeas.toml rule permits it; only project sources and explicitly allowed paths can be read",
+                    relative.display()
+                )),
+            ));
+        }
+        if !target.starts_with(root) {
             return Err(denied(format!(
                 "{} resolves outside the project; add an explicit habeas.toml allow rule before retrying",
                 relative.display()
@@ -253,6 +262,41 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 }
 
 // {impl}`requirements.authoring.read_denial`
+/// A denial of a request that names a path outside the project and is not
+/// permitted by workspace or generated-output policy. Mandatory inputs abort on
+/// it; a model's dispatched request receives it as a recoverable tool error.
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.source_tools`
+#[derive(Debug)]
+pub(crate) struct OutsideProject(String);
+
+impl std::fmt::Display for OutsideProject {
+    // {impl}`requirements.authoring.read_denial`
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for OutsideProject {}
+
+/// Turns a denial of a path outside the project into an ordinary read failure,
+/// leaving every other error unchanged.
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.authoring.file_discovery`
+// {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.outline_tool`
+pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<OutsideProject>())
+    {
+        io::Error::other(error.to_string())
+    } else {
+        error
+    }
+}
+
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
 }
