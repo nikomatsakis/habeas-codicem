@@ -51,15 +51,17 @@ The enabled Habeas Symposium plugin MUST request a global Cargo installation of 
 :::
 
 :::{req} symposium_setup_hook
-For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project depending on `habeas` MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.
+For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project whose manifest lists `habeas` under `[dev-dependencies]`, as {cite}`requirements.cli.setup` adds it, MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.
 :::
 
 :::{req} ci
-GitHub Actions MUST run `cargo test --locked --workspace` and `mdbook test` for pull requests and pushes to `main`. After those checks pass on `main`, it MUST build the book and deploy the generated `book/` directory to GitHub Pages. The book MUST set `output.html.site-url` to `/habeas-codicem/` for project-site hosting.
+:impl: .github/workflows/ci.yml#pair[jobs]
+A GitHub Actions CI workflow MUST run, for pull requests and pushes to `main`, these checks: `cargo test --locked --workspace`, `mdbook test`, the autofix controller tests with `node --test .github/scripts/autofix.test.mjs`, and, in a separate job, the Symposium session-start hook smoke test `tests/symposium_hook_smoke.py`. It MUST also build the book, and on a push to `main`, only after every check job passes, it MUST deploy the generated `book/` directory to GitHub Pages. The book MUST set `output.html.site-url` to `/habeas-codicem/` for project-site hosting.
 :::
 
 :::{req} release
-A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to create release pull requests and publish approved versions. Publishing MUST require a merged release-plz pull request. The release job MUST request an OIDC token for crates.io trusted publishing, and both jobs MUST use a GitHub token from a repository secret so release pull requests can trigger the normal pull request checks.
+:impl: .github/workflows/release-plz.yml#pair[jobs]
+A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to create release pull requests and publish approved versions. Both jobs MUST run only when the repository owner is `nikomatsakis`, so forks do not attempt releases. Release pull request runs for the same ref MUST NOT run concurrently; a later run MUST wait for an earlier one rather than cancel it. Publishing MUST require a merged release-plz pull request. The release job MUST request an OIDC token for crates.io trusted publishing, and both jobs MUST use a GitHub token from a repository secret so release pull requests can trigger the normal pull request checks.
 :::
 
 :::{req} report_api

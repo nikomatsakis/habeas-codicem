@@ -55,3 +55,116 @@ Each evidence detail page MUST display its state as a Shields.io static badge im
 Reason: The grouping rule listed four groups by edge kind but did not say what happens to a source reached by more than one kind of edge, such as a function marked both impl and test. The renderer places each input once, in the first applicable group (Implementation before Tests before Referenced definitions before Other sources), which keeps every input as a single disclosure and avoids duplicate input numbering. The new text states that each input appears once, in the first group that applies to it. A test now covers a dual-edge source. Nothing else in the requirement changed.
 
 Prompted by: evidence/requirements.index.detail_format.json gap 3: "Dual edges are not specified. `DefinitionEdges::group` returns at the first matching edge, so a source that is both an impl and a test target appears only under Implementation. ... This case is neither specified nor tested."
+
+## `requirements.integration.release`
+
+Old text:
+
+```text
+A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to create release pull requests and publish approved versions. Publishing MUST require a merged release-plz pull request. The release job MUST request an OIDC token for crates.io trusted publishing, and both jobs MUST use a GitHub token from a repository secret so release pull requests can trigger the normal pull request checks.
+```
+
+New text:
+
+```text
+A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to create release pull requests and publish approved versions. Both jobs MUST run only when the repository owner is `nikomatsakis`, so forks do not attempt releases. Release pull request runs for the same ref MUST NOT run concurrently; a later run MUST wait for an earlier one rather than cancel it. Publishing MUST require a merged release-plz pull request. The release job MUST request an OIDC token for crates.io trusted publishing, and both jobs MUST use a GitHub token from a repository secret so release pull requests can trigger the normal pull request checks.
+```
+
+Reason: Both release-plz jobs in `.github/workflows/release-plz.yml` carry an `if: github.repository_owner == 'nikomatsakis'` guard, and the release-PR job has a `concurrency` group keyed on the ref with `cancel-in-progress: false`. These are deliberate: forks must not try to publish or open release PRs, and overlapping release-PR runs must queue rather than race or cancel each other. The old text did not mention either, so the reviewer treated them as unspecified behaviour in the marked workflow. The new text states both. The original obligations are unchanged, and a test now checks the guard and the concurrency setting.
+
+Prompted by: evidence/requirements.integration.release.json, "Minor, unspecified behavior": "The jobs have an `if: github.repository_owner == 'nikomatsakis'` guard. The PR job has a `concurrency` group. Neither is specified by this requirement or by another definition."
+
+## `requirements.configuration.workspace_structure`
+
+(Made by the configuration sub-task.)
+
+Old text:
+
+```text
+`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
+Its supported feature tables are `[authoring]` and `[evidence]`; either MAY be
+absent. Unknown common keys, unsupported versions, invalid field types, and
+invalid TOML MUST produce a diagnostic identifying the file and setting.
+Features MUST define their own data structures and loading rules under
+{cite}`requirements.configuration.feature_sections`. A file containing only
+`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table
+inside `book.toml`.
+```
+
+New text:
+
+```text
+`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
+Its supported feature tables are `[authoring]` and `[evidence]`; either MAY be
+absent. Unknown keys, unsupported versions, and invalid field types MUST produce
+a diagnostic identifying the file and setting. Invalid TOML, including content
+that is not UTF-8, MUST produce a diagnostic identifying the file, with the line
+and column of a syntax error.
+Features MUST define their own data structures and loading rules under
+{cite}`requirements.configuration.feature_sections`. A file containing only
+`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table
+inside `book.toml`.
+```
+
+Reason: A TOML syntax error or a file that is not UTF-8 has no setting to name, so the old text asked for something that cannot exist in those cases. The new text requires the line and column for syntax errors and the setting wherever one exists, and extends the unknown-key rule from common keys to all keys, which the code already enforces. The code was also fixed so serde decoding errors name the setting path (for example `evidence.disallow`). No intended obligation is weakened.
+
+Prompted by: evidence/requirements.configuration.workspace_structure.json (reassessment): "Imprecise setting in two diagnostics: An invalid-UTF-8 read error and a TOML syntax error name the file but give an empty or no setting", alongside the original "Setting identification" gap, which was fixed in code.
+
+## `requirements.configuration.evidence_paths`
+
+(Made by the configuration sub-task.)
+
+Old text:
+
+```text
+The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and
+`disallow` MUST be arrays of nonempty literal paths, each naming a file or a
+directory subtree. Relative paths MUST resolve from the selected `habeas.toml`
+directory; absolute paths MUST be supported. These paths are not glob patterns.
+
+For authoring reads, a matching disallow MUST reject the path; otherwise a
+matching allow MUST permit it; otherwise the default source-access rules MUST
+apply. Explicit allow MUST override every default, including Git tracking,
+project containment, generated-evidence exclusion, and automatic generated-output
+rules. Disallow MUST win even when an allow or generated-output rule also matches.
+Both the requested path and its resolved symlink target MUST be checked for
+disallow, so an allowed alias cannot expose a disallowed target.
+
+The same explicit disallow rules and external-path exceptions MUST apply when
+resolving recorded evidence inputs, including ordinary validation and
+`add-input`. Validation MUST remain independent of Git index membership: it
+checks the recorded inputs' existence and contents. Loading path policy MUST NOT
+resolve credentials or validate unused authoring settings.
+```
+
+New text:
+
+```text
+The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and
+`disallow` MUST be arrays of nonempty literal paths, each naming a file or a
+directory subtree. Relative paths MUST resolve from the selected `habeas.toml`
+directory; absolute paths MUST be supported. These paths are not glob patterns.
+An omitted `allow` or `disallow` MUST mean an empty array, and an absent
+`[evidence]` table MUST mean both are empty, so only the default source-access
+rules apply. No operation requires the section. The table has no user-file
+counterpart, and these rules have no invocation options. This section refines
+{impl}`requirements.configuration.feature_sections` for the evidence feature.
+
+For authoring reads, a matching disallow MUST reject the path; otherwise a
+matching allow MUST permit it; otherwise the default source-access rules MUST
+apply. Explicit allow MUST override every default, including Git tracking,
+project containment, generated-evidence exclusion, and automatic generated-output
+rules. Disallow MUST win even when an allow or generated-output rule also matches.
+Both the requested path and its resolved symlink target MUST be checked for
+disallow, so an allowed alias cannot expose a disallowed target.
+
+The same explicit disallow rules and external-path exceptions MUST apply when
+resolving recorded evidence inputs, including ordinary validation and
+`add-input`. Validation MUST remain independent of Git index membership: it
+checks the recorded inputs' existence and contents. Loading path policy MUST NOT
+resolve credentials or validate unused authoring settings.
+```
+
+Reason: Refinement, not weakening. `requirements.configuration.feature_sections` requires each feature to state its absent-section behaviour, which operations require the section, and how user, project, and invocation settings combine. The evidence feature only implied these in a schema comment. The added sentences state what the code already does (`#[serde(default)]`, `unwrap_or_default`) and mark this requirement as refining feature_sections for the evidence feature. Obligations are added, none removed.
+
+Prompted by: evidence/requirements.configuration.feature_sections.json: "No document or code is marked impl for `feature_sections` ... The `[evidence]` feature is a second feature section ... but it is not tied to `feature_sections` either."

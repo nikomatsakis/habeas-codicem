@@ -85,6 +85,7 @@ EvidenceConfig {
 feature adds a named, typed optional field to the
 applicable structure. These are explicitly defined fields, not an unrestricted
 map of arbitrary settings.
+{impl}`requirements.configuration.documentation`
 
 :::{req} structure
 The user configuration file MUST be UTF-8 TOML serializing UserConfig. It MUST
@@ -102,8 +103,10 @@ requirements.
 :::{req} workspace_structure
 `habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
 Its supported feature tables are `[authoring]` and `[evidence]`; either MAY be
-absent. Unknown common keys, unsupported versions, invalid field types, and
-invalid TOML MUST produce a diagnostic identifying the file and setting.
+absent. Unknown keys, unsupported versions, and invalid field types MUST produce
+a diagnostic identifying the file and setting. Invalid TOML, including content
+that is not UTF-8, MUST produce a diagnostic identifying the file, with the line
+and column of a syntax error.
 Features MUST define their own data structures and loading rules under
 {cite}`requirements.configuration.feature_sections`. A file containing only
 `version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table
@@ -115,6 +118,11 @@ The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and
 `disallow` MUST be arrays of nonempty literal paths, each naming a file or a
 directory subtree. Relative paths MUST resolve from the selected `habeas.toml`
 directory; absolute paths MUST be supported. These paths are not glob patterns.
+An omitted `allow` or `disallow` MUST mean an empty array, and an absent
+`[evidence]` table MUST mean both are empty, so only the default source-access
+rules apply. No operation requires the section. The table has no user-file
+counterpart, and these rules have no invocation options. This section refines
+{impl}`requirements.configuration.feature_sections` for the evidence feature.
 
 For authoring reads, a matching disallow MUST reject the path; otherwise a
 matching allow MUST permit it; otherwise the default source-access rules MUST
@@ -157,6 +165,9 @@ disallow = ["generated/private"]
 
 `generated/private` is excluded even though its parent is allowed. An allow is an
 exception to the defaults, not an exclusive list of every readable path.
+Edit either array to change the policy, or delete the `[evidence]` table to
+restore the default source-access rules.
+{impl}`requirements.configuration.documentation`
 
 ## Feature sections
 
