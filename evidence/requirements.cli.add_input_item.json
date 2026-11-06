@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input --item <file>:<line>` MUST parse the file under {cite}`requirements.references.outlines` and add or refresh one\noutline input for every outline node declared on that line. A named node is\ndeclared on the line containing its name; an anonymous node is declared on the\nline where it starts. Each input MUST store the selected `file` under the path\nrules in {cite}`requirements.ci.schema`, the node's selector, and its structural\nhash. The command MUST report every selected node and reject a line on which no\nnode is declared.",
-  "determination": false,
-  "rationale": "**Verdict: false.** The behavior and tests look right, but the `{impl}` marking is incomplete. One piece of the logic the requirement specifies is not marked as implementing it.\n\n**What is implemented and tested**\n- `src/main.rs` `fn[main]` (the `Command::AddInput` arm) passes `--item` through as `InputMode::ItemsAtLine`.\n- `src/add_input.rs` `selectors_for_mode` splits `<file>:<line>` on the last `:` and parses the line number. It parses the file through `OutlineCache::parse`, which uses the outline profiles. It then selects every node returned by `declared_on_line`. If none is returned, it errors with `<file>:<line>: no outline node is declared on this line`.\n- The stored `file` is the path relative to the project root when it is under the root, and the resolved path otherwise. `add_input_external_sources_respect_allow_and_disallow` shows an allowed external file stored as an absolute path, and a disallowed one rejected.\n- `InputSelector::to_input` and `resolve` in `src/inputs.rs` store `file`, `item` and the node's structural hash, with no source text.\n- `update_inputs` adds a new input, refreshes a changed one, or reports `unchanged`. It prints one line per selected node, so every selected node is reported. The \"pending determination\" handling it also does is specified by `requirements.cli.add_input`.\n- `tests/commands.rs` `add_input_modes_capture_outline_nodes_and_refresh_idempotently` covers these cases:\n  - Two nodes on one line (`fn[main]` and `fn[main]/fn[nested]`).\n  - A plain-text `line@…` node, and a blank plain-text line rejected.\n  - Idempotent re-adding, with the file left byte-identical.\n  - A line with no declared node (`src/main.rs:3`), checked against the exact error message.\n  - A non-numeric line and a missing file.\n  - Comment edits leaving the hash unchanged, and doc-comment edits changing it.\n- The unit test `line_queries_find_innermost_and_declared_nodes` in `src/outline/tests.rs` covers `declared_on_line` directly.\n\n**Gap: incomplete `{impl}` marking**\n- The rule that a named node is declared on the line containing its name, and an anonymous node on the line where it starts, is implemented in two places:\n  - `Outline::declared_on_line` in `src/outline/mod.rs` (lines 809–816).\n  - The `declaration_line` assignment in `Builder::finish` (lines 548–598), with the plain-text profile setting it in `plain_text` (lines 235–280).\n- `requirements.references.outlines` does not define \"declared on a line\". Only `requirements.cli.add_input_item` does.\n- `declared_on_line` is marked only with `{impl}` of `requirements.references.outlines`. `Builder::finish` and `plain_text` are marked only with other outline requirements (`outline_selectors`, `structural_hash`) and `outlines`.\n- None of them is marked `{impl}` of `requirements.cli.add_input_item`. The references listing shows `{impl}` only on `add_input`, `selectors_for_mode`, `update_inputs`, `InputSelector::resolve` and `main`.\n- This is core logic for the requirement that is not marked as implementing it.\n- The code does not acknowledge the gap with a FIXME, so the verdict is `false`, not a FIXME judgment.",
+  "determination": true,
+  "rationale": "**Verdict:** the sources satisfy `requirements.cli.add_input_item`. The code is marked `{impl}`, the behavior matches the text, and the tests cover the interesting cases.\n\n**Implementation**\n- **CLI.** `src/main.rs` (`enum[Command]` / `AddInput`, and `main`) takes `--item <file>:<line>` as one of two exclusive modes and passes it to `add_input` as `InputMode::ItemsAtLine`.\n- **Parsing and line parsing.** `selectors_for_mode` in `src/add_input.rs` splits the spec with `rsplit_once(':')`, so paths containing colons still work. It rejects a non-numeric line. It parses the file through `OutlineCache::parse`, which uses the outline profile chosen by file extension. That includes the plain-text profile, where each non-blank line is an anonymous `line` node (`plain_text` in `src/outline/mod.rs`).\n- **Declared-on-line rule.** `Outline::declared_on_line` selects every non-root node whose `declaration_line` equals the requested line. The builder sets `declaration_line` to the line of the name for named nodes (`Builder::name` returns the name's start byte). For anonymous nodes it uses the line where the node starts, excluding attached docs and attributes (`walk` and `finish`). Several nodes on one line, such as `fn[main]` and `fn[main]/fn[nested]`, are all selected.\n- **Rejection.** If nothing is selected, `selectors_for_mode` returns the error `<file>:<line>: no outline node is declared on this line`. Line 0 and blank lines are rejected the same way. The `?` operator aborts the command before the record is written.\n- **Stored input.** `InputSelector::to_input` in `src/inputs.rs` stores exactly `file`, `item` (the selector) and `hash` (the node's structural hash), with no source text. `file` is recorded project-relative when inside the project (`strip_prefix(root)`). Otherwise it is the absolute resolved path, which matches the path rules in `requirements.ci.schema`. `resolve` checks containment through `read_project_file`.\n- **Add, refresh, report.** `update_inputs` matches an existing input by selector. It then reports `added`, `refreshed` or `unchanged` for every selected node, followed by the selector. It leaves the record byte-identical when nothing changed.\n- **Extra behavior.** `update_inputs` also resets `determination` to false and captures definition inputs when something changed. That behavior belongs to `requirements.cli.add_input` and `requirements.definitions.capture`, and the code carries `{impl}` markers for those.\n\n**Tests** (`tests/commands.rs`)\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently`:\n  - Adding `src/main.rs:4` reports both `fn[main]` and `fn[main]/fn[nested]`.\n  - A plain-text line (`notes.txt:3`) is added as a `line@…` node.\n  - Repeating a call reports `unchanged` and leaves the file byte-identical.\n  - Rejected locations leave the record unchanged: a doc-comment line (`src/main.rs:3`), a blank line (`notes.txt:2`), a non-numeric line (`src/main.rs:x`) and a missing file (`missing.rs:1`). The first of these also has its exact error message asserted.\n  - Stored inputs equal `outline_input` results.\n  - The hash ignores a citation comment but changes with doc-comment edits.\n- `add_input_requires_one_target_and_mode_and_resets_changed_records`:\n  - Exactly one target and one mode are enforced.\n  - Unknown or wrong-kind targets are rejected before anything is written.\n  - A changed source produces `refreshed`, updating the existing input in place at the right position.\n  - A review reset follows a changed input.\n- `add_input_external_sources_respect_allow_and_disallow`: an external file is stored under its absolute path when allowed, and the command fails without modifying the record when the file is disallowed.\n\n**Minor gaps.** Multi-line declarations where the name is on a later line than the node start are not tested explicitly, and the tests exercise only the Rust and plain-text profiles. The shared `declaration_line` logic covers these cases, so I don't think they are a meaningful gap.",
   "inputs": [
     {
       "requirements": "requirements.cli.add_input_item",
@@ -75,13 +75,48 @@
     },
     {
       "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_input]",
+      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+    },
+    {
+      "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
       "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
       "file": "src/main.rs",
+      "item": "enum[Command]",
+      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
+    },
+    {
+      "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "209601c59434068ecff945202b701ec4cd80c8208b01012a83ee35625c7f0f94"
+      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[plain_text]",
+      "hash": "cbc6b87bc4f6a40b6820dc65c8f96e6d0c4eb8a1c43e54382032b958eb50f884"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[name]",
+      "hash": "3406f7c386644cdc49357361948584c5d95968cab93fa09a2e19a29156e74556"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[walk]",
+      "hash": "05a24bc13c26a59d9e0ced08b8dd9cc1b36d228cab3dd1f8a25818f02a24d31e"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
+      "hash": "730ff51b4a17e9c916fbe7463187ba0511ab4bc94ea117741d0c7088f52c7a41"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[declared_on_line]",
+      "hash": "73cef5253c65b3cc36adcf1739851ff5b452cc3bcb3584553c84c630daf00928"
     },
     {
       "file": "tests/commands.rs",
@@ -94,122 +129,79 @@
       "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
     },
     {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Evidence]",
-      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
+      "hash": "481e3d75bfef6134f7c6435db78acd1a683a5264afe57bff61afabaf466d1254"
     },
     {
-      "file": "md/requirements/cli.md",
-      "item": "section[Command-line%20interface]",
-      "hash": "79cdf2a0a52b677d671cb92662c2eab824959f4f6a0b5e0a13803ff49c7c0d4a"
+      "file": "src/authoring/access.rs",
+      "item": "fn[normalize]",
+      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
-      "hash": "e5e1e753f5af5b1cb73d5f609d795407bfb68c769920aeb976957346db13aec5"
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[declared_on_line]",
-      "hash": "73cef5253c65b3cc36adcf1739851ff5b452cc3bcb3584553c84c630daf00928"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[line_queries_find_innermost_and_declared_nodes]",
-      "hash": "d838571a0d96992f40a5e26430a200414da698d33682344a0324f3e3dc1efd40"
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@420a7d4fdb66",
-      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@e843693d3cbe",
-      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@d3e0d9ac0ad2",
-      "hash": "d3e0d9ac0ad2ee9e013d5071a145d5488e0d5b5b2b58097bf4c7aeb5fd7b9f58"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@7125e65f50d7",
-      "hash": "7125e65f50d7d2245442f1bcdc5fe5aec850ea8e0ebfd3c8dbdcdcc22e21c23c"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "use@9deeef890732",
-      "hash": "9deeef8907322f72d657fceb434a61fb71a6ba1456f75a3570b2ffd0913d8753"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "enum[InputTarget]",
-      "hash": "e815bdb1c82bc768118ee63d85eadcb84486b0ac7a5b9ae33762d8c9f073c71f"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "enum[InputMode]",
-      "hash": "8f4b9f5b90082028ac182d6f82de6adc2797562d75eb32eef4d96cb84ea182d0"
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[parse]",
-      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
+      "item": "impl[ConfigPlatform]",
+      "hash": "816fa731bb902965f928c77a8204fb9d14c729f3e24c44320d7ff47e12dc84e7"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[parse]",
-      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+      "item": "impl[UserConfig]",
+      "hash": "1c8c4f12d0c8aa68141f51f0b5f6210995d702934c62b76e640b7611db3a0c90"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]",
+      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
     },
     {
       "file": "src/evidence.rs",
-      "item": "impl[Anchor]/fn[parse]",
-      "hash": "da87663c5ea1062ec0c811610c4fc7630224b3f8f54fb7c30c02960d2b8dd938"
+      "item": "struct[AnchorTarget]",
+      "hash": "5a296ee3aeaf7120d450a0662f3a7a088e1182edd16c0111e640d6a2638fe5a9"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[Anchor]",
+      "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[InputLocation]",
+      "hash": "99ea2be1f267223b80d87d341410380c2b14855b158cb3be7bedd36ee329724f"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[InputLocation]",
+      "hash": "dea18032fc35a91d2f7725791250ff4d1b26d1636aa106c78e5ee06bbbf3e604"
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]/fn[parse]",
-      "hash": "5b613997dffb4c64f83409f4d889c838e51d929b47679119fedf793538c7a48e"
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[from_input]",
-      "hash": "36656c01e7424e4090153587c050dfd41868a8f14b91f908649232e20450cb22"
+      "item": "impl[OutlineCache]",
+      "hash": "e2b73fb5ab3ea089731a8720517490f1ac0891d24210de9fdab90341e075e6ec"
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_input]",
-      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+      "item": "impl[ParsedSource]",
+      "hash": "290e7c1e137a3ff4781614fe1b266f4beca497eb2fbcd3992418ae2a75f7a5f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_model_input]",
+      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
     },
     {
       "file": "src/outline/mod.rs",
@@ -218,13 +210,28 @@
     },
     {
       "file": "src/outline/mod.rs",
+      "item": "impl[OutlineNode]",
+      "hash": "c4146800beb37f82f661491db6044922285309a9f587990b4c542d807bfc3ce6"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[ResolveError/fmt::Display]",
+      "hash": "6d8021ad7b3e368491a06b947a8eef73ef345992d6aed538b1cac8f57c7ec49d"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[ResolveError/std::error::Error]",
+      "hash": "8d040e2a42ef1900f6ff1171b36f305e5ace68921d216e461c29880363abf8e4"
+    },
+    {
+      "file": "src/outline/mod.rs",
       "item": "fn[parse]",
       "hash": "8133358e153dd92a174a893d815a05cccdba64227de0b233187d7526b7927a35"
     },
     {
       "file": "src/outline/mod.rs",
-      "item": "fn[plain_text]",
-      "hash": "cbc6b87bc4f6a40b6820dc65c8f96e6d0c4eb8a1c43e54382032b958eb50f884"
+      "item": "fn[parse_with]",
+      "hash": "c78942451f3a6a9f5d1bd6b05e3d80b0884e352f10a15719b190429c78a96f60"
     },
     {
       "file": "src/outline/mod.rs",
@@ -233,13 +240,38 @@
     },
     {
       "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
-      "hash": "730ff51b4a17e9c916fbe7463187ba0511ab4bc94ea117741d0c7088f52c7a41"
+      "item": "struct[Draft]",
+      "hash": "fbbc10b5947d4c09592650e90cb9e3d7665e7d136fb62e9242b09ccfb34dc455"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[run_owner]",
+      "hash": "f407a84b4a67ebbee979c3a9b305512322e6858a2c40ee48288352f91537e574"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]",
+      "hash": "7d809597ae1071829e01cd4f956d388865f05e410ae42a96efda43f7275a61d5"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[innermost_at_line]",
+      "hash": "8d528d088614e5ee17ffa2e2c679a23195b6ecbeb96ff5f95b9f466d288b7355"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[comment_owners_at_line]",
+      "hash": "d146efc8ec0a109dda903d8a745fa3c50a29acabb0c2b7664f17d1075f0008bf"
     },
     {
       "file": "src/rust_coverage.rs",
       "item": "fn[missing_function_references]",
       "hash": "d111e2c751c573871d70748ea4ad6ceb354c506408d013246cf531086e84238e"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[rust_files]",
+      "hash": "6cbf8202921361b48f062ffaa7825cd1cb9306a68da954c426f0b2607d41c26b"
     }
   ]
 }

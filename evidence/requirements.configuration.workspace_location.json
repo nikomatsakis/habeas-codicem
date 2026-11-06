@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
-  "determination": false,
-  "rationale": "**Implementation:** this looks correct and is marked `{impl}` consistently.\n\n- `workspace_document` (`src/config.rs:693`) canonicalizes the given root and starts at the current directory when it is inside that root. Otherwise it starts at the root. It walks `ancestors()` and uses the first `habeas.toml` it finds. It returns that file alone, so nothing is merged.\n- A `NotFound` result for a candidate moves on to the next ancestor. If no file is found, the result is `Ok(None)`, which means absent settings.\n- Any other metadata error, or any failure to read or parse an existing candidate, is returned with the path in the message. An unreadable candidate therefore cannot silently fall through to an ancestor.\n- The loaded `root` is the parent directory of the selected file (`load_workspace_config`, `load_workspace_evidence`). `PathPolicy::load` in `src/authoring/access.rs` joins evidence paths onto it. The Cargo and mdBook root stays separate, because `inspect_repository_with_progress` keeps using its own `root`.\n- The code only reads files, so loading never creates `habeas.toml`.\n- `main` loads the workspace evidence config from the current directory. `inspect_repository` and `inspect_repository_with_progress` load it from the project root.\n\n**Tests:**\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (`tests/configuration.rs`) covers the nearest file winning, with no merging of the ancestor's `allow`. It covers the base directory being the selected file's parent. It also covers the file staying byte-identical after loading and a missing file giving `None`. A library call whose root is not an ancestor of the current directory is exercised too.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (`tests/authoring_cli.rs`) covers the CLI started from a nested directory, with the parent file ignored.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs`) and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs`) cover the nearest file and malformed-file diagnostics that name the path.\n\n**Gap:** nothing tests the obligation that discovery must report unreadable candidate files rather than silently selecting an ancestor. The only error cases tested are invalid TOML, wrong version and unknown keys. I found no test that makes a candidate unreadable, for example a directory named `habeas.toml`, a permission-denied file, or an unreadable parent directory, and then checks that discovery errors instead of using an ancestor's file. The `read_to_string` and `symlink_metadata` error branches are therefore unverified.\n\nTwo smaller points are weakly tested:\n- No test asserts that loading does not create `habeas.toml`. It is only implicit in the absent-file case.\n- The library case where the current directory is inside the given project root is exercised only through CLI subprocesses.\n\nThere is no FIXME acknowledging the unreadable-file gap, so the determination is false.",
+  "determination": true,
+  "rationale": "The sources satisfy the requirement. I checked each obligation against the {impl} code and the {test} coverage.\n\n**Implementation**\n- **Discovery:** `workspace_document` in `src/config.rs` does the discovery.\n  - It canonicalizes the given root. The start directory is the current directory if that is inside the root, and the root otherwise.\n  - It then walks `start.ancestors()` and takes the first `habeas.toml` found. That is the \"nearest enclosing\" file, and it covers both the library-root rule and the cwd-inside-project rule.\n  - It returns that one file's parsed table and never merges ancestor files. `load_workspace_config` and `load_workspace_evidence` both build on it.\n- **Missing file:** `NotFound` on every candidate leads to `Ok(None)`, which means absent workspace settings.\n- **Unreadable candidates:** `symlink_metadata` is used. Any other error, a failed read (for example a directory named `habeas.toml`), or a parse failure is returned with the candidate's path in the message. The walk does not continue to an ancestor.\n- **No file creation:** the loaders only read. Nothing in `src` creates `habeas.toml`.\n- **Base for relative paths:** the loaded structs carry `root = path.parent()`. `PathPolicy::load` in `src/authoring/access.rs` joins relative allow and disallow paths onto that directory. The Cargo and mdBook project root stays the separate `root` that `inspect_repository_with_progress` uses.\n- **Invocation directory:** `main` in `src/main.rs` calls `load_workspace_evidence(&current_dir()?)`. It does this for every command except setup, hook and mdbook-supports, which don't resolve evidence inputs. Repository inspection in `src/evidence.rs` also loads it, and errors are reported.\n- **Marking:** a search of `src` for `habeas.toml`, `load_workspace_*` and `workspace_document` found no other place that locates the file. `resolve_authoring` (`src/config.rs`) only delegates to `load_workspace_config`, which carries the {impl} marker, so marking is complete.\n\n**Tests**\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (`tests/configuration.rs`):\n  - It checks that a project with no file of its own inherits an ancestor file, and that the loaded root is the ancestor's directory.\n  - It checks that a nearer file wins with no merging: the outer allow list is not combined with the inner disallow list.\n  - It checks that the file is not rewritten.\n  - It checks that a malformed nearest file gives an error naming its path.\n  - It checks that no file anywhere gives `None`.\n- `unreadable_configuration_files_are_reported_instead_of_skipped`: a directory named `habeas.toml` in the project, with a valid ancestor file present, produces an error naming that path for both loaders. It also checks that loading from an empty directory creates no file.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs`): the CLI run from a nested directory uses the nested file. The same run from the root fails on the root file's bad version, and a malformed nested file is reported with its path rather than falling back to the parent.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (`tests/authoring_cli.rs`): the nested file is used and the bad parent file is ignored.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs`): the library validation path loads the workspace file and reports invalid ones with the file name.\n\nTogether these cover nearest-file selection, no merging, missing and unreadable files, cwd-inside-project and root-based starts, and no creation of the file. I found no gaps.",
   "inputs": [
     {
       "requirements": "requirements.configuration.workspace_location",
@@ -54,7 +54,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "209601c59434068ecff945202b701ec4cd80c8208b01012a83ee35625c7f0f94"
+      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -72,14 +72,24 @@
       "hash": "4a1e5484da50abc6d54cccb531029d25ed1996e173f5eb014ecdfa9e69dcc20f"
     },
     {
+      "file": "tests/configuration.rs",
+      "item": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]",
+      "hash": "faac10d0f6016f3f8f3edd34c2304e4930eed364a0b115faeef738c38bf019f9"
+    },
+    {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
+      "item": "impl[PathPolicy]/fn[check_disallow]",
+      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "633e94e0bfaf8edbc4e4892768672ffa57410694e16bbfc774a7a1bba3079cf4"
     },
     {
       "file": "src/authoring/access.rs",
@@ -102,11 +112,6 @@
       "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
-    },
-    {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
       "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
@@ -117,14 +122,9 @@
       "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
-    },
-    {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
-      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
+      "item": "fn[definitions]",
+      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -138,6 +138,16 @@
     },
     {
       "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
+      "hash": "7c91da83f7607a87fcd5eb61ba7c80008806f4052d704d4616e891001bd70e43"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
+      "hash": "bd29c2fa110ed2c54197782e38fb1b9cf3db78f2a5e482aa35f907939882ae45"
+    },
+    {
+      "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
       "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
     },
@@ -145,26 +155,6 @@
       "file": "src/config.rs",
       "item": "fn[resolve_authoring]",
       "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "use@ec3f2c37f86c",
-      "hash": "ec3f2c37f86c9ab66a39b1503bfbdfa2e740d1f22ddde13f9fab2a4f8bfdfa74"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
-      "hash": "1c52e2de8994a9792a83f6f9e2c6f2861d432ea65327adca6a9ec5dd4c477f1e"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]",
-      "hash": "2f7d90c5cd6ac721390861eb6e8760d9b35646f1306b8856b5009ca5a3e1b8b2"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
-      "hash": "04e0bb3382ec1ba0982960e6e5a2254e7cacc9ce324a0d46442a9271c9c9e5d8"
     }
   ]
 }
