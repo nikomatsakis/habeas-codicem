@@ -445,7 +445,7 @@ following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name, and
 `{{mandatory_inputs}}` with the complete mandatory inputs as a JSON array using
 the existing evidence-input formats. The template MUST otherwise be used as
-written. Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,
+written. Its review guidance MUST follow {impl}`requirements.ci.review_criteria`,
 {cite}`requirements.examples.evidence`, and {cite}`requirements.ci.outcomes`.
 
 ```text
@@ -463,12 +463,15 @@ not evidence.
 
 Assess only the named subject, using cited requirements and definitions as context.
 For a requirement, check that the code marked {impl} implements every obligation
-completely and exactly as stated, and that tests cover the interesting points in the design space. Also check that the
+completely and exactly as stated, and that tests cover the interesting points in
+the design space, including relevant boundaries and failure cases. Also check that the
 implementation is marked completely: code that implements part of the
 requirement without an {impl} reference to it, including code that refers to it
 only with {cite}, is a gap. So is behavior in the {impl} code that this
 requirement does not specify, unless another definition that code implements
-specifies it. If there are no tests,
+specifies it. When another requirement implements part of the subject, assess
+whether its text carries out that part; do not reassess its implementation,
+tests, or evidence. If there are no tests,
 assess whether simplicity or impracticality justifies their absence, and explain.
 For an example, assess whether test setup and assertions cover its scenario and
 expected outcomes. A true judgment needs at least one {test} reference to the
@@ -479,7 +482,8 @@ the remaining gaps are explicitly acknowledged in source comments or tests;
 list their issue references or other identifying content. The usual convention
 is FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.
 Choose false for other gaps or insufficient evidence. Explain your judgment in
-a Markdown rationale with source locations, including any acknowledged gaps.
+a Markdown rationale with source locations, including any acknowledged gaps; for
+a requirement, explain the implementation and testing judgments.
 
 When you are ready, call submit_judgment exactly once with determination and
 rationale. That tool call is your final answer.
@@ -499,10 +503,15 @@ assessment tools, prompt, or evidence format.
 
 :::{req} configuration
 Authoring MUST use the `[authoring]` sections of the shared user configuration
-and the selected workspace's `habeas.toml`.
+and the selected workspace's `habeas.toml`, refining
+{impl}`requirements.configuration.feature_sections` for the authoring feature.
 {cite}`requirements.configuration.user_location`
 {cite}`requirements.configuration.structure`
-{cite}`requirements.configuration.feature_sections`
+Assessing a subject with `habeas author`, singly or in a batch that needs at
+least one assessment, MUST require an `[authoring]` section in at least one of
+these files; either section MAY be absent. No other operation requires the
+section, including a batch with no assessments needed and the operations in
+{cite}`requirements.authoring.deterministic_validation`.
 It MUST support named configurations, workspace defaults, and a user-local
 selection for each project. Credential-source references SHOULD be used;
 explicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.
@@ -688,6 +697,8 @@ For workspace settings, create `habeas.toml` in the directory whose descendants
 should use them. The nearest enclosing file wins. This complete workspace file
 selects the user's saved `cloud` configuration and makes a generated source
 directory readable while excluding its private subtree:
+{impl}`requirements.configuration.documentation`
+{impl}`requirements.authoring.configuration_documentation`
 
 ```toml
 version = 1
@@ -777,9 +788,16 @@ editing an existing file.
 Run `habeas author --all` to fill in evidence needing attention, or
 `habeas author <full-name>` to assess one requirement or example. Add `--config local`
 to override the saved selection for one run. Set `concurrency` alongside `backend`
-and `model` to override the provider's default number of simultaneous assessments:
+and `model` to override the provider's default number of simultaneous assessments.
+This complete user `config.toml` sets it for the `cloud` configuration; the same
+table can appear in a workspace `habeas.toml`:
 
 ```toml
+version = 1
+
+[authoring]
+default = "cloud"
+
 [authoring.configs.cloud]
 backend = "bedrock"
 model = "MODEL_ID"

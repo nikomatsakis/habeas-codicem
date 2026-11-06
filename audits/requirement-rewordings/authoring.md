@@ -140,3 +140,144 @@ to read_denial, which keeps the abort for every in-project and policy-relevant
 denial.
 
 **Prompting rationale:** the same provider_backoff read_denial abort.
+
+## `requirements.authoring.initial_prompt` — carry all of review_criteria
+
+**Old text:**
+
+> Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,
+
+> completely and exactly as stated, and that tests cover the interesting points in the design space.
+
+> specifies it. If there are no tests,
+
+> a Markdown rationale with source locations, including any acknowledged gaps.
+
+**New text:**
+
+> Its review guidance MUST follow {impl}`requirements.ci.review_criteria`,
+
+> completely and exactly as stated, and that tests cover the interesting points in
+> the design space, including relevant boundaries and failure cases.
+
+> specifies it. When another requirement implements part of the subject, assess
+> whether its text carries out that part; do not reassess its implementation,
+> tests, or evidence. If there are no tests,
+
+> a Markdown rationale with source locations, including any acknowledged gaps; for
+> a requirement, explain the implementation and testing judgments.
+
+**Reason.** The template is the text that carries out `review_criteria` for the
+model, so the requirement implements part of it rather than only citing it. Three
+obligations of `review_criteria` were missing from the template: test coverage of
+relevant boundaries and failure cases, the rule for parts implemented by another
+requirement, and explaining the implementation and testing judgments. The
+template now states each of them. `initial_prompt_carries_the_review_criteria`
+in `src/authoring/mod.rs` asserts the new phrases.
+
+**Prompting rationale:** `evidence/requirements.ci.review_criteria.json`: "The
+prompt template has no such instruction [for another requirement implementing part
+of the subject]", "The requirement says tests must cover 'relevant boundaries and
+failure cases'. The template says only 'interesting points in the design space'",
+"The requirement says the rationale must explain 'the implementation and testing
+judgments' … The template only asks to 'explain your judgment … with source
+locations'", and "`requirements.authoring.initial_prompt` only `{cite}`s
+`review_criteria`".
+
+## "Editing the file" — mark and complete the configuration examples
+
+**Old text** (prose after `requirements.authoring.configuration_documentation`):
+
+> directory readable while excluding its private subtree:
+
+> Set `concurrency` alongside `backend`
+> and `model` to override the provider's default number of simultaneous assessments:
+>
+> ```toml
+> [authoring.configs.cloud]
+> backend = "bedrock"
+> model = "MODEL_ID"
+> concurrency = 4
+> ```
+
+**New text:**
+
+> directory readable while excluding its private subtree:
+> {impl}`requirements.configuration.documentation`
+> {impl}`requirements.authoring.configuration_documentation`
+
+> Set `concurrency` alongside `backend`
+> and `model` to override the provider's default number of simultaneous assessments.
+> This complete user `config.toml` sets it for the `cloud` configuration; the same
+> table can appear in a workspace `habeas.toml`:
+>
+> ```toml
+> version = 1
+>
+> [authoring]
+> default = "cloud"
+>
+> [authoring.configs.cloud]
+> backend = "bedrock"
+> model = "MODEL_ID"
+> concurrency = 4
+> ```
+
+**Reason.** The "Editing the file" section documents the authoring configuration,
+including the only explicit-credential example, but was not marked as
+implementing the documentation requirements; the reference is in the section, so
+it covers all of its examples. The `concurrency` example was a fragment with no
+`version = 1` and no file named. It is now a complete, named file.
+`documented_configuration_examples_are_complete_valid_files` in
+`tests/configuration.rs` now also parses every TOML example in this chapter and
+checks that the literal-credential example uses only uppercase placeholders.
+
+**Prompting rationale:** `evidence/requirements.configuration.documentation.json`:
+"The only example of explicit credential fields … is in
+`md/requirements/authoring.md`, 'Editing the file'. That section carries only a
+`{cite}` of this requirement", "The test excludes `md/requirements/authoring.md`,
+so that document's TOML examples are unchecked", and "`md/requirements/authoring.md`
+also has a `concurrency` fragment that is not a complete file. It starts at
+`[authoring.configs.cloud]`, has no `version = 1`, and does not name the file to
+edit."
+
+## `requirements.authoring.configuration` — refine feature_sections
+
+**Old text:**
+
+> Authoring MUST use the `[authoring]` sections of the shared user configuration
+> and the selected workspace's `habeas.toml`.
+> {cite}`requirements.configuration.user_location`
+> {cite}`requirements.configuration.structure`
+> {cite}`requirements.configuration.feature_sections`
+> It MUST support named configurations, …
+
+**New text:**
+
+> Authoring MUST use the `[authoring]` sections of the shared user configuration
+> and the selected workspace's `habeas.toml`, refining
+> {impl}`requirements.configuration.feature_sections` for the authoring feature.
+> {cite}`requirements.configuration.user_location`
+> {cite}`requirements.configuration.structure`
+> Assessing a subject with `habeas author`, singly or in a batch that needs at
+> least one assessment, MUST require an `[authoring]` section in at least one of
+> these files; either section MAY be absent. No other operation requires the
+> section, including a batch with no assessments needed and the operations in
+> {cite}`requirements.authoring.deterministic_validation`.
+> It MUST support named configurations, …
+
+**Reason.** The authoring configuration requirements define the authoring
+feature's sections, types, defaults, validation, and precedence, which is what
+`feature_sections` asks each feature to specify, so this requirement refines it.
+`feature_sections` also requires each feature to state which operations require
+its section; for authoring this was only implied by the missing-configuration
+error. Only `resolve_authoring`, called by single-subject authoring and by a
+batch with work to do, requires the section; the batch requirement and
+`deterministic_validation` already exempt the other operations.
+
+**Prompting rationale:** `evidence/requirements.configuration.feature_sections.json`:
+"The authoring spec in `md/requirements/authoring.md` … only `{cite}`s
+`feature_sections`, once, in `configuration`. It has no `{impl}` or `{test}`
+relationship to it", and "The authoring spec never states which operations
+require the `[authoring]` section. The requirement obliges each feature to say
+this explicitly."
