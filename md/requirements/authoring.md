@@ -26,7 +26,7 @@ judgments and current false judgments. A current false judgment is reassessed
 only when its subject or inputs change, or when it is named explicitly with
 {cite}`requirements.authoring.invocation`.
 `--all` MUST be mutually exclusive with a subject name and `--stdout`.
-Failure to discover declarations or parse project sources MUST report an error,
+Failure to discover declarations or to read, scan, or parse project sources MUST report an error,
 not a successful empty batch. A batch with no assessments needed MUST succeed
 without resolving model configuration or credentials.
 
@@ -37,7 +37,12 @@ successful writes when another assessment fails. It MUST return a nonzero
 exit status if any assessment fails. False judgments MUST still be written as
 completed assessments; they remain failures under ordinary evidence validation.
 An access-policy denial MUST abort only the affected assessment under
-{cite}`requirements.authoring.read_denial`.
+{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the
+whole batch: queued assessments MUST NOT start, running assessments MUST be
+cancelled, and an assessment whose evidence has not been written when the
+interruption arrives MUST NOT write it. Evidence already written MUST be
+retained, and the command MUST report the number of assessments not started as
+a batch failure.
 
 The bundled Habeas skills MUST direct the supervising agent to run this command
 to create or refresh evidence. They MUST leave judgments, rationales, and input
