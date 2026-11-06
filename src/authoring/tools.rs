@@ -1347,7 +1347,7 @@ mod tests {
         for index in (0..40).rev() {
             fs::write(
                 root.path().join(format!("src/file{index:02}.rs")),
-                "// needle\nfn a() {}\n// needle\n",
+                "// needle\nfn a() {\n    // needle\n}\n",
             )
             .unwrap();
         }
@@ -1379,7 +1379,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|input| input["item"] == "fn[a]" && input["line_end"] == 3)
+                .all(|input| input["item"] == "fn[a]" && input["line_end"] == 4)
         );
         for _ in 0..5 {
             let again = dispatch(

@@ -57,6 +57,7 @@ pub(crate) static PROFILE: Profile = Profile {
     fallback: "stmt",
     is_comment,
     hashes_comment: never,
+    comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
     attaches: never,
     prose: false,

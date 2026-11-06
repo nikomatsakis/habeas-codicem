@@ -510,20 +510,13 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         let draft = &self.drafts[index];
         let mut encoder = Encoder::new();
         for node in draft.attached.iter().chain([&draft.core]) {
-            self.encode(&mut encoder, *node, index, identity, false);
+            self.encode(&mut encoder, *node, index, identity);
         }
         encoder.finish()
     }
 
     // {impl}`requirements.references.structural_hash`
-    fn encode(
-        &self,
-        encoder: &mut Encoder,
-        node: Node<'_>,
-        index: usize,
-        identity: bool,
-        in_comment: bool,
-    ) {
+    fn encode(&self, encoder: &mut Encoder, node: Node<'_>, index: usize, identity: bool) {
         if identity
             && self
                 .owners
@@ -532,16 +525,18 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         {
             return;
         }
-        let is_comment = self.is_comment(node);
-        if is_comment && !(self.profile.hashes_comment)(node, self.source) {
+        if self.is_comment(node) {
+            if (self.profile.hashes_comment)(node, self.source) {
+                let (group, prose) = (self.profile.comment_prose)(node, self.source);
+                encoder.prose(group, &prose);
+            }
             return;
         }
-        let in_comment = in_comment || is_comment;
         if node.is_named() {
             encoder.kind(node.kind());
         }
         if node.child_count() == 0 {
-            self.encode_text(encoder, text(node, self.source), in_comment);
+            self.encode_text(encoder, text(node, self.source), false);
         } else {
             // Some grammars, such as Markdown's, leave text between child
             // tokens unlexed; it is still part of the node's leaf text.
@@ -551,7 +546,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 if let Some(gap) = self.source.get(position..child.start_byte()) {
                     self.encode_text(encoder, gap, true);
                 }
-                self.encode(encoder, child, index, identity, in_comment);
+                self.encode(encoder, child, index, identity);
                 position = position.max(child.end_byte());
             }
             if let Some(gap) = self.source.get(position..node.end_byte()) {
@@ -563,9 +558,9 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
-    /// Hashes leaf text: prose, comments, and unlexed gaps (`words`) as
-    /// whitespace-separated words, other text as written unless it is only
-    /// whitespace.
+    /// Hashes leaf text: prose and unlexed gaps (`words`) as an ordered list
+    /// of words, other text as written unless it is only whitespace. Hashed
+    /// comments are encoded as prose by [`Self::encode`].
     // {impl}`requirements.references.structural_hash`
     fn encode_text(&self, encoder: &mut Encoder, text: &str, words: bool) {
         if self.profile.prose || words {
@@ -660,8 +655,8 @@ fn disambiguate(nodes: &mut [OutlineNode]) {
     }
 }
 
-/// Groups adjacent comments into runs, assigns each run's owner under the
-/// comment rules, and widens owners' line ranges to cover their comments.
+/// Groups comments into runs, assigns each run's owner under the comment
+/// rules, and widens owners' line ranges to cover their comments.
 // {impl}`requirements.references.outline_comments`
 fn assign_comments(
     nodes: &mut [OutlineNode],
@@ -699,13 +694,15 @@ fn assign_comments(
         let last = &drafts[*run.last().expect("nonempty run")];
         let (start, _) = lines.range(first.byte_start, first.byte_end);
         let (_, end) = lines.range(last.byte_start, last.byte_end);
-        let owner = comment_owner(
-            nodes,
-            &base,
-            (start, end),
-            (first.byte_start, last.byte_end),
-            first.binds_to_container,
-        );
+        let owner = if trails_code(source, first.byte_start) {
+            trailing_owner(nodes, &base, start, first.byte_start)
+        } else {
+            run_owner(
+                nodes,
+                (first.byte_start, last.byte_end),
+                first.binds_to_container,
+            )
+        };
         for index in run {
             owners[*index] = owner;
         }
@@ -737,47 +734,56 @@ fn trails_code(source: &str, byte: usize) -> bool {
     !source[line_start..byte].trim().is_empty()
 }
 
-/// The owner of a comment run spanning `lines` and `bytes`: the smallest node
-/// containing it, else the one adjacent child of that node, else the next
-/// child after it; at the top level, the next node or the root.
+/// The owner of a comment that follows code on `line`: the innermost node
+/// containing that line, by the line ranges in `base`. When several sibling
+/// nodes share the line, the last one starting before the comment wins.
 // {impl}`requirements.references.outline_comments`
-fn comment_owner(
+fn trailing_owner(
     nodes: &[OutlineNode],
     base: &[(usize, usize)],
-    lines: (usize, usize),
-    bytes: (usize, usize),
-    binds_to_container: bool,
+    line: usize,
+    byte: usize,
 ) -> usize {
-    let container = (0..nodes.len())
-        .filter(|index| base[*index].0 <= lines.0 && lines.1 <= base[*index].1)
-        .min_by_key(|index| {
-            (
-                base[*index].1 - base[*index].0,
-                nodes[*index].byte_end - nodes[*index].byte_start,
-                std::cmp::Reverse(nodes[*index].byte_start),
-            )
-        })
-        .unwrap_or(0);
+    let covers = |index: usize| base[index].0 <= line && line <= base[index].1;
+    let mut current = 0;
+    loop {
+        let next = nodes[current]
+            .children
+            .iter()
+            .copied()
+            .rev()
+            .find(|child| covers(*child) && nodes[*child].byte_start < byte);
+        match next {
+            Some(child) => current = child,
+            None => return current,
+        }
+    }
+}
+
+/// The owner of a comment run spanning `bytes` that does not follow code on
+/// its line: the next child starting after it within the smallest node
+/// containing it, else that container. A run that binds to its container,
+/// such as a Rust inner doc comment, always belongs to the container.
+// {impl}`requirements.references.outline_comments`
+fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: bool) -> usize {
+    let mut container = 0;
+    while let Some(child) = nodes[container]
+        .children
+        .iter()
+        .copied()
+        .find(|child| nodes[*child].byte_start <= bytes.0 && bytes.1 <= nodes[*child].byte_end)
+    {
+        container = child;
+    }
     if binds_to_container {
         return container;
     }
-    let children = &nodes[container].children;
-    let adjacent = children
+    nodes[container]
+        .children
         .iter()
         .copied()
-        .filter(|child| base[*child].0 == lines.1 + 1 || base[*child].1 + 1 == lines.0)
-        .collect::<Vec<_>>();
-    let next = || {
-        children
-            .iter()
-            .copied()
-            .find(|child| nodes[*child].byte_start >= bytes.1)
-    };
-    match adjacent.as_slice() {
-        [only] => *only,
-        [] if container != 0 => container,
-        _ => next().unwrap_or(container),
-    }
+        .find(|child| nodes[*child].byte_start >= bytes.1)
+        .unwrap_or(container)
 }
 
 impl Outline {

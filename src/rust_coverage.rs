@@ -341,9 +341,10 @@ mod feature {
         /* @impl@`requirements.example` */
     }
 
+    // A comment run belongs to the next item even across a blank line.
     // @impl@`requirements.example`
 
-    fn distant_comment() {}
+    fn after_blank_line() {}
 
     // @impl@`requirements.example`
     fn previous() {} // @impl@`requirements.example`
@@ -370,7 +371,6 @@ fn cited_by_outer_doc() {}
                 "Widget",
                 "containing_string",
                 "unknown_reference",
-                "distant_comment",
                 "after_trailing_comment",
                 "after_inner_doc"
             ]

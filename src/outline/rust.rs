@@ -79,6 +79,35 @@ fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "inner_doc_comment_marker")
 }
 
+/// A doc comment's prose group, inner or outer, and its text without the
+/// `///`, `//!`, `/**`, `/*!`, and `*/` delimiters or the leading `*` of a
+/// block comment's continuation lines.
+// {impl}`requirements.references.structural_hash`
+fn doc_prose(node: Node<'_>, source: &str) -> (&'static str, String) {
+    let group = if is_inner_doc_comment(node, source) {
+        "inner_doc_comment"
+    } else {
+        "outer_doc_comment"
+    };
+    let body = text(node, source);
+    let prose = if let Some(line) = body.strip_prefix("//") {
+        line.strip_prefix(['/', '!']).unwrap_or(line).to_owned()
+    } else {
+        let inner = body.strip_prefix("/*").unwrap_or(body);
+        let inner = inner.strip_suffix("*/").unwrap_or(inner);
+        let inner = inner.strip_prefix(['*', '!']).unwrap_or(inner);
+        let mut lines = inner.lines();
+        let first = lines.next().unwrap_or("").to_owned();
+        lines.fold(first, |mut prose, line| {
+            let line = line.trim_start();
+            prose.push('\n');
+            prose.push_str(line.strip_prefix('*').unwrap_or(line));
+            prose
+        })
+    };
+    (group, prose)
+}
+
 /// Attributes and outer doc comments attach to the following item.
 // {impl}`requirements.references.outlines`
 fn attaches(node: Node<'_>, _source: &str) -> bool {
@@ -120,6 +149,7 @@ pub(crate) static PROFILE: Profile = Profile {
     fallback: "item",
     is_comment,
     hashes_comment: is_doc_comment,
+    comment_prose: doc_prose,
     comment_binds_to_container: is_inner_doc_comment,
     attaches,
     prose: false,

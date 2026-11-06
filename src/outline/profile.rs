@@ -68,6 +68,9 @@ pub(crate) struct Profile {
     pub(crate) is_comment: fn(Node<'_>, &str) -> bool,
     /// Whether a comment is part of structural hashes.
     pub(crate) hashes_comment: fn(Node<'_>, &str) -> bool,
+    /// A hashed comment's prose group and its text without comment
+    /// delimiters; adjacent comments of one group hash as one run of words.
+    pub(crate) comment_prose: fn(Node<'_>, &str) -> (&'static str, String),
     /// Whether a comment always belongs to the node enclosing it, such as a
     /// Rust inner doc comment.
     pub(crate) comment_binds_to_container: fn(Node<'_>, &str) -> bool,
@@ -101,6 +104,12 @@ pub(crate) fn kind_is_comment(node: Node<'_>, _source: &str) -> bool {
 // {impl}`requirements.references.structural_hash`
 pub(crate) fn never(_node: Node<'_>, _source: &str) -> bool {
     false
+}
+
+/// Comment prose for profiles that hash no comments: the whole text.
+// {impl}`requirements.references.structural_hash`
+pub(crate) fn whole_comment(node: Node<'_>, source: &str) -> (&'static str, String) {
+    ("comment", text(node, source).to_owned())
 }
 
 // {impl}`requirements.references.outlines`

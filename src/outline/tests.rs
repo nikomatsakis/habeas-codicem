@@ -166,9 +166,74 @@ fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     assert_eq!(identity, edited_identity);
 }
 
+/// The structural hash of `fn[run]` in a Rust source.
+// {test}`requirements.references.structural_hash`
+fn run_hash(source: &str) -> String {
+    let outline = outline("src/lib.rs", source);
+    outline.nodes[outline.resolve("fn[run]").unwrap()]
+        .structural_hash
+        .clone()
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn reflowing_doc_comments_keeps_the_hash() {
+    let original = run_hash("/// a\n/// b\nfn run() {}\n");
+    assert_eq!(run_hash("/// a b\nfn run() {}\n"), original);
+    assert_eq!(run_hash("///   a\n///\n///   b  \nfn run() {}\n"), original);
+    assert_eq!(run_hash("/** a\n * b\n */\nfn run() {}\n"), original);
+    assert_ne!(run_hash("/// a c\nfn run() {}\n"), original);
+    assert_ne!(run_hash("/// b a\nfn run() {}\n"), original);
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn prose_words_are_encoded_separately() {
+    assert_ne!(
+        run_hash("/// ab cd\nfn run() {}\n"),
+        run_hash("/// abcd\nfn run() {}\n")
+    );
+    let section = |source: &str| {
+        let outline = outline("a.md", source);
+        outline.nodes[outline.resolve("section[H]").unwrap()]
+            .structural_hash
+            .clone()
+    };
+    assert_ne!(section("# H\nab cd\n"), section("# H\nabcd\n"));
+    assert_eq!(section("# H\nab cd\n"), section("# H\n  ab\ncd  \n"));
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn editing_a_doc_comment_word_changes_the_hash() {
+    let original = run_hash("/// Returns the count.\nfn run() {}\n");
+    assert_ne!(run_hash("/// Returns the total.\nfn run() {}\n"), original);
+    assert_ne!(run_hash("/// Returns  the count\nfn run() {}\n"), original);
+    assert_eq!(
+        run_hash("/// Returns  the\n/// count.\nfn run() {}\n"),
+        original
+    );
+    assert_ne!(
+        run_hash("fn run() { \"ab cd\"; }\n"),
+        run_hash("fn run() { \"ab  cd\"; }\n")
+    );
+}
+
+/// The selector of the node owning the comment containing `needle`.
+// {test}`requirements.references.outline_comments`
+fn comment_owner(outline: &Outline, source: &str, needle: &str) -> String {
+    let start = source.find(needle).unwrap();
+    let comment = outline
+        .comments
+        .iter()
+        .find(|comment| comment.byte_start <= start && start < comment.byte_end)
+        .unwrap_or_else(|| panic!("no comment contains {needle:?}"));
+    outline.nodes[comment.owner].selector.clone()
+}
+
 // {test}`requirements.references.outline_comments`
 #[test]
-fn comments_belong_to_containing_adjacent_or_next_nodes() {
+fn comment_runs_belong_to_the_next_node_or_their_container() {
     let source = "\
 //! Crate docs.
 fn first() {}
@@ -192,27 +257,21 @@ mod m {
 // final
 ";
     let outline = outline("src/lib.rs", source);
-    let owner = |needle: &str| {
-        let start = source.find(needle).unwrap();
-        let comment = outline
-            .comments
-            .iter()
-            .find(|comment| comment.byte_start <= start && start < comment.byte_end)
-            .unwrap();
-        outline.nodes[comment.owner].selector.clone()
-    };
+    let owner = |needle: &str| comment_owner(&outline, source, needle);
     assert_eq!(owner("Crate docs"), "");
     assert_eq!(owner("between first"), "fn[second]");
     assert_eq!(owner("trailing second"), "fn[second]");
-    assert_eq!(owner("before third"), "fn[second]");
+    assert_eq!(owner("before third"), "fn[third]");
     assert_eq!(owner("inside third"), "fn[third]");
     assert_eq!(owner("floating"), "mod[m]");
     assert_eq!(owner("Module docs"), "mod[m]");
     assert_eq!(owner("above inner"), "mod[m]/fn[inner]");
     assert_eq!(owner("alone in m"), "mod[m]");
-    assert_eq!(owner("final"), "mod[m]");
+    assert_eq!(owner("final"), "");
     let second = &outline.nodes[outline.resolve("fn[second]").unwrap()];
-    assert_eq!((second.line_start, second.line_end), (3, 5));
+    assert_eq!((second.line_start, second.line_end), (3, 4));
+    let third = &outline.nodes[outline.resolve("fn[third]").unwrap()];
+    assert_eq!((third.line_start, third.line_end), (5, 9));
     assert_eq!(
         outline
             .innermost_at_line(3)
@@ -221,6 +280,55 @@ mod m {
             .collect::<Vec<_>>(),
         ["fn[second]"]
     );
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn comment_between_two_fns_belongs_to_the_next() {
+    let source = "fn a() {}\n// one\n// two\nfn b() {}\n";
+    let outline = outline("src/lib.rs", source);
+    assert_eq!(comment_owner(&outline, source, "one"), "fn[b]");
+    assert_eq!(comment_owner(&outline, source, "two"), "fn[b]");
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn trailing_comment_after_last_fn_in_mod_belongs_to_the_mod() {
+    let source = "mod m {\n    fn a() {}\n    // tail\n}\nfn b() {}\n";
+    let outline = outline("src/lib.rs", source);
+    assert_eq!(comment_owner(&outline, source, "tail"), "mod[m]");
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn top_level_comment_with_nothing_after_belongs_to_the_root() {
+    let source = "fn a() {}\n// tail\n";
+    let outline = outline("src/lib.rs", source);
+    assert_eq!(comment_owner(&outline, source, "tail"), "");
+    let a = &outline.nodes[outline.resolve("fn[a]").unwrap()];
+    assert_eq!((a.line_start, a.line_end), (1, 1));
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn comment_after_code_on_a_line_belongs_to_that_lines_node() {
+    let source = "\
+mod m {
+    fn a() {} // after a
+    // before b
+    fn b() {
+        let x = 1; // inside b
+    } // closing b
+} // closing m
+fn c() {}
+";
+    let outline = outline("src/lib.rs", source);
+    let owner = |needle: &str| comment_owner(&outline, source, needle);
+    assert_eq!(owner("after a"), "mod[m]/fn[a]");
+    assert_eq!(owner("before b"), "mod[m]/fn[b]");
+    assert_eq!(owner("inside b"), "mod[m]/fn[b]");
+    assert_eq!(owner("closing b"), "mod[m]/fn[b]");
+    assert_eq!(owner("closing m"), "mod[m]");
 }
 
 // {test}`requirements.references.outlines`
