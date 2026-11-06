@@ -1,0 +1,126 @@
+//! Rust outline profile.
+
+use tree_sitter::Node;
+
+use super::profile::{KindRule, NameRule, Profile, text};
+
+/// Names an impl by its syntactic self type and optional trait path.
+// {impl}`requirements.references.rust_item_selectors`
+fn impl_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
+    let self_type = text(node.child_by_field_name("type")?, source).to_owned();
+    Some(match node.child_by_field_name("trait") {
+        Some(path) => vec![self_type, text(path, source).to_owned()],
+        None => vec![self_type],
+    })
+}
+
+/// Names an extern block by its ABI string, `Rust` when absent.
+// {impl}`requirements.references.rust_item_selectors`
+fn extern_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
+    let mut cursor = node.walk();
+    let modifier = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "extern_modifier");
+    let abi = modifier.and_then(|modifier| {
+        let mut cursor = modifier.walk();
+        let literal = modifier
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "string_literal")?;
+        let mut cursor = literal.walk();
+        let content = literal
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "string_content")
+            .map_or_else(String::new, |content| text(content, source).to_owned());
+        Some(content)
+    });
+    Some(vec![abi.unwrap_or_else(|| "Rust".to_owned())])
+}
+
+/// Whether a grammar node sits directly in an item list.
+// {impl}`requirements.references.rust_item_selectors`
+fn in_item_list(node: Node<'_>) -> bool {
+    node.parent()
+        .is_some_and(|parent| matches!(parent.kind(), "source_file" | "declaration_list"))
+}
+
+/// Whether a macro invocation is an item rather than an expression.
+// {impl}`requirements.references.rust_item_selectors`
+fn item_macro(node: Node<'_>) -> bool {
+    in_item_list(node)
+        || node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "expression_statement" && in_item_list(parent))
+}
+
+// {impl}`requirements.references.outlines`
+fn is_comment(node: Node<'_>, _source: &str) -> bool {
+    matches!(node.kind(), "line_comment" | "block_comment")
+}
+
+/// Whether a comment has the given doc comment marker child.
+// {impl}`requirements.references.structural_hash`
+fn has_marker(node: Node<'_>, marker: &str) -> bool {
+    let mut cursor = node.walk();
+    is_comment(node, "")
+        && node
+            .children(&mut cursor)
+            .any(|child| child.kind() == marker)
+}
+
+/// Doc comments, outer and inner, are hashed.
+// {impl}`requirements.references.structural_hash`
+fn is_doc_comment(node: Node<'_>, _source: &str) -> bool {
+    has_marker(node, "outer_doc_comment_marker") || has_marker(node, "inner_doc_comment_marker")
+}
+
+/// Inner doc comments document the item enclosing them.
+// {impl}`requirements.references.outline_comments`
+fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
+    has_marker(node, "inner_doc_comment_marker")
+}
+
+/// Attributes and outer doc comments attach to the following item.
+// {impl}`requirements.references.outlines`
+fn attaches(node: Node<'_>, _source: &str) -> bool {
+    node.kind() == "attribute_item" || has_marker(node, "outer_doc_comment_marker")
+}
+
+// {impl}`requirements.references.rust_item_selectors`
+const KINDS: &[KindRule] = &[
+    KindRule::new("function_item", "fn", NameRule::Field("name")),
+    KindRule::new("function_signature_item", "fn", NameRule::Field("name")),
+    KindRule::new("struct_item", "struct", NameRule::Field("name")),
+    KindRule::new("enum_item", "enum", NameRule::Field("name")),
+    KindRule::new("union_item", "union", NameRule::Field("name")),
+    KindRule::new("trait_item", "trait", NameRule::Field("name")),
+    KindRule::new("impl_item", "impl", NameRule::Custom(impl_name)),
+    KindRule::new("mod_item", "mod", NameRule::Field("name")),
+    KindRule::new("macro_definition", "macro", NameRule::Field("name")),
+    KindRule::new("macro_invocation", "macro", NameRule::Anonymous).when(item_macro),
+    KindRule::new("const_item", "const", NameRule::Field("name")),
+    KindRule::new("static_item", "static", NameRule::Field("name")),
+    KindRule::new("type_item", "type", NameRule::Field("name")),
+    KindRule::new("associated_type", "type", NameRule::Field("name")),
+    KindRule::new("foreign_mod_item", "extern", NameRule::Custom(extern_name)),
+    KindRule::new(
+        "extern_crate_declaration",
+        "extern-crate",
+        NameRule::Field("name"),
+    ),
+    KindRule::new("use_declaration", "use", NameRule::Anonymous),
+];
+
+// {impl}`requirements.references.outlines`
+// {impl}`requirements.references.rust_item_selectors`
+pub(crate) static PROFILE: Profile = Profile {
+    name: "rust",
+    extensions: &["rs"],
+    language: Some(|| tree_sitter_rust::LANGUAGE.into()),
+    kinds: KINDS,
+    fallback: "item",
+    is_comment,
+    hashes_comment: is_doc_comment,
+    comment_binds_to_container: is_inner_doc_comment,
+    attaches,
+    prose: false,
+};

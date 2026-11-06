@@ -3,84 +3,9 @@ use std::fs;
 use std::ops::Range;
 use std::path::Path;
 
-use proc_macro2::Span;
-use syn::spanned::Spanned;
-use syn::visit::{self, Visit};
-
 use crate::evidence::Declaration;
+use crate::outline::{self, OutlineError};
 use crate::reference_roles;
-
-// {impl}`requirements.references.rust_item_coverage`
-struct Function {
-    kind: &'static str,
-    name: String,
-    line: usize,
-    start: usize,
-    end: usize,
-}
-
-// {impl}`requirements.references.rust_item_coverage`
-struct FunctionCollector {
-    functions: Vec<Function>,
-}
-
-impl FunctionCollector {
-    // {impl}`requirements.references.rust_item_coverage`
-    fn add(&mut self, kind: &'static str, name: &syn::Ident, span: Span) {
-        let range = span.byte_range();
-        self.functions.push(Function {
-            kind,
-            name: name.to_string(),
-            line: span.start().line,
-            start: range.start,
-            end: range.end,
-        });
-    }
-}
-
-impl<'ast> Visit<'ast> for FunctionCollector {
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.add("function", &node.sig.ident, node.span());
-        visit::visit_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.add("function", &node.sig.ident, node.span());
-        visit::visit_impl_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        self.add("function", &node.sig.ident, node.span());
-        visit::visit_trait_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_foreign_item_fn(&mut self, node: &'ast syn::ForeignItemFn) {
-        self.add("function", &node.sig.ident, node.span());
-        visit::visit_foreign_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
-        self.add("struct", &node.ident, node.span());
-        visit::visit_item_struct(self, node);
-    }
-
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
-        self.add("enum", &node.ident, node.span());
-        visit::visit_item_enum(self, node);
-    }
-
-    // {impl}`requirements.references.rust_item_coverage`
-    fn visit_item_union(&mut self, node: &'ast syn::ItemUnion) {
-        self.add("union", &node.ident, node.span());
-        visit::visit_item_union(self, node);
-    }
-}
 
 // {impl}`requirements.references.rust_item_coverage`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
@@ -197,83 +122,18 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-// {impl}`requirements.references.rust_item_coverage`
-pub(crate) fn attached_comment_indices(
-    source: &str,
-    comments: &[Range<usize>],
-    function_start: usize,
-) -> Vec<usize> {
-    let mut position = function_start;
-    let mut indices = Vec::new();
-    for (index, comment) in comments.iter().enumerate().rev() {
-        if comment.end > position {
-            continue;
-        }
-        if source[comment.clone()].starts_with("//!") || source[comment.clone()].starts_with("/*!")
-        {
-            break;
-        }
-        let line_start = source[..comment.start]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        if source[comment.clone()].starts_with("//")
-            && !source[line_start..comment.start].trim().is_empty()
-        {
-            break;
-        }
-        let gap = &source[comment.end..position];
-        if !gap.trim().is_empty() || gap.bytes().filter(|byte| *byte == b'\n').count() > 1 {
-            break;
-        }
-        indices.push(index);
-        position = comment.start;
-    }
-    indices
-}
-
+/// Lists functions, methods, structs, enums, and unions with no valid
+/// reference in a comment belonging to them, as `(line, kind, name)`.
 // {impl}`requirements.references.rust_item_coverage`
 // {impl}`requirements.definitions.references`
 fn missing_function_references(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
-) -> Result<Vec<(usize, &'static str, String)>, syn::Error> {
-    let syntax = syn::parse_file(source)?;
-    let mut collector = FunctionCollector {
-        functions: Vec::new(),
-    };
-    collector.visit_file(&syntax);
-    let functions = collector.functions;
-    let comments = comments(source);
-    let mut owners = vec![None; comments.len()];
-
-    for (function_index, function) in functions.iter().enumerate() {
-        for comment_index in attached_comment_indices(source, &comments, function.start) {
-            owners[comment_index] = Some(function_index);
-        }
-    }
-    for (comment_index, comment) in comments.iter().enumerate() {
-        if source[comment.clone()].starts_with("//!") || source[comment.clone()].starts_with("/*!")
-        {
-            continue;
-        }
-        if owners[comment_index].is_none() {
-            owners[comment_index] = functions
-                .iter()
-                .enumerate()
-                .filter(|(_, function)| {
-                    function.start <= comment.start && comment.end <= function.end
-                })
-                .min_by_key(|(_, function)| function.end - function.start)
-                .map(|(index, _)| index);
-        }
-    }
-
-    let mut cited = vec![false; functions.len()];
-    for (comment_index, owner) in owners.iter().enumerate() {
-        let Some(function_index) = owner else {
-            continue;
-        };
-        if reference_roles(&source[comments[comment_index].clone()], false)
+) -> Result<Vec<(usize, &'static str, String)>, OutlineError> {
+    let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
+    let mut cited = vec![false; outline.nodes.len()];
+    for comment in &outline.comments {
+        if reference_roles(&source[comment.byte_start..comment.byte_end], false)
             .iter()
             .any(|role| {
                 role.kind != crate::ReferenceKind::Term
@@ -282,13 +142,24 @@ fn missing_function_references(
                         .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
             })
         {
-            cited[*function_index] = true;
+            cited[comment.owner] = true;
         }
     }
-    Ok(functions
-        .into_iter()
+    Ok(outline
+        .nodes
+        .iter()
         .zip(cited)
-        .filter_map(|(item, cited)| (!cited).then_some((item.line, item.kind, item.name)))
+        .filter_map(|(node, cited)| {
+            let kind = match node.kind {
+                "fn" => "function",
+                "struct" => "struct",
+                "enum" => "enum",
+                "union" => "union",
+                _ => return None,
+            };
+            let name = node.display_name()?;
+            (!cited).then_some((node.declaration_line, kind, name))
+        })
         .collect())
 }
 
@@ -377,8 +248,8 @@ pub(crate) fn validate_rust_functions(
             }
             Err(error) => {
                 let error = format!(
-                    "{label}:{}: cannot parse Rust source: {error}",
-                    error.span().start().line
+                    "{label}:{}: cannot parse Rust source: {}",
+                    error.line, error.message
                 );
                 discovery_errors.push(error.clone());
                 errors.push(error);

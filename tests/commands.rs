@@ -46,7 +46,13 @@ fn fixture() -> TempDir {
     fs::write(temp.path().join("md/requirements.md"), source).unwrap();
     fs::write(
         temp.path().join("src/main.rs"),
-        ["fn main() {}\n// {", "impl}`requirements.uncovered`\n"].concat(),
+        // The comment lies between two functions, so it belongs to the next
+        // one and `main` stays uncited.
+        [
+            "fn main() {}\n// {",
+            "impl}`requirements.uncovered`\nfn after() {}\n",
+        ]
+        .concat(),
     )
     .unwrap();
     for (name, text, determination) in [

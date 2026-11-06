@@ -379,7 +379,72 @@ The bundled skill MUST explain how to author evidence.
 
 For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
 
-Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`
+Rust selectors use syntactic ancestry within one repository-relative file, under the Rust outline profile below. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `extern[C]/fn[puts]`, and `fn[outer]/fn[inner]`. An impl is named by its self type and optional trait as written, so `impl<T> Trait for Wrapper<T>` is `impl[Wrapper<T>/Trait]`. `use` declarations and item-position macro invocations are anonymous, such as `use@3f2a9c01b7de`. Modules are never resolved across files. {cite}`requirements.references.rust_item_selectors`
+
+## Outlines
+
+Habeas reads sources as outlines: trees of nodes chosen by a per-language profile from a pinned tree-sitter grammar. The file extension picks the profile; every other text file uses the plain-text profile. Each outline has a root node for the whole file. Grammar nodes a profile does not map are transparent, so their outline descendants appear under the nearest outline ancestor. A top-level grammar node that contains no outline node becomes an anonymous node of the profile's fallback kind, so top-level code always lies in some node below the root. Comments are never outline nodes. {cite}`requirements.references.outlines`
+
+### Selectors
+
+A selector is a `/`-separated path of segments from the root; the empty selector is the root. A named node's segment is `kind[name]`; an anonymous node's is `kind@hash`, the first twelve hex digits of its identity hash. Siblings whose segments would otherwise be identical gain `#1`, `#2`, and so on in source order, except `line` nodes: identical lines are interchangeable and a `line` selector resolves to any line with that content. In names, `%`, `[`, `]`, `/`, `#`, `@`, and whitespace are percent-encoded as UTF-8 bytes. A name made of parts, such as an impl's type and trait, joins the encoded parts with a literal `/` inside the brackets. Line numbers are never part of a selector. {cite}`requirements.references.outline_selectors`
+
+### Hashes
+
+A node's structural hash is the SHA-256 digest of a length-prefixed encoding of the kinds of its named grammar nodes, node boundaries, and its leaf token text, in source order, including siblings the profile attaches to it. Whitespace between tokens and comments the profile does not hash are excluded. In Markdown, and inside hashed comments, leaf text is hashed as whitespace-separated words, so reflowing prose does not change the hash. A `line` node's hash is the digest of the line's text without surrounding whitespace. The identity hash is computed the same way but also skips the node's outline descendants, with their attached siblings, so editing a nested function does not change its parent's selector. {cite}`requirements.references.structural_hash`
+
+### Comments
+
+A comment, or a run of comments on consecutive lines with nothing else between them, belongs to the smallest node whose line range contains it. Within that node, it belongs instead to the single child that starts on the line after it ends or ends on the line before it starts. A run adjacent to two children belongs to the next child after it. A run adjacent to no child belongs to the containing node, or, at the top level, to the next top-level node, or to the root when nothing follows. A comment following code on the same line is a run by itself, and belongs to the node on that line. A Rust inner doc comment (`//!`, `/*!`) belongs to the node enclosing it. A node's line range runs from its earliest attached sibling or owned comment to its last line or owned comment. {cite}`requirements.references.outline_comments`
+
+### Outline profiles
+
+| Profile | Extensions | Kind | Grammar nodes | Name |
+| --- | --- | --- | --- | --- |
+| Rust | `.rs` | `fn` | `function_item`, `function_signature_item` | `name` |
+| | | `struct`, `enum`, `union`, `trait`, `mod` | `struct_item`, `enum_item`, `union_item`, `trait_item`, `mod_item` | `name` |
+| | | `impl` | `impl_item` | `type` field, then `/` and the `trait` field when present |
+| | | `macro` | `macro_definition` | `name` |
+| | | `macro` | `macro_invocation` in item position | anonymous |
+| | | `const`, `static` | `const_item`, `static_item` | `name` |
+| | | `type` | `type_item`, `associated_type` | `name` |
+| | | `extern` | `foreign_mod_item` | ABI string, `Rust` when absent |
+| | | `extern-crate` | `extern_crate_declaration` | `name` |
+| | | `use` | `use_declaration` | anonymous |
+| | | `item` | fallback | anonymous |
+| Python | `.py`, `.pyi` | `def` | `function_definition` | `name` |
+| | | `class` | `class_definition` | `name` |
+| | | `stmt` | fallback | anonymous |
+| TypeScript | `.ts`, `.mts`, `.cts`, `.tsx` | `function` | `function_declaration`, `generator_function_declaration`, `function_signature` | `name` |
+| | | `class` | `class_declaration`, `abstract_class_declaration` | `name` |
+| | | `method` | `method_definition`, `method_signature`, `abstract_method_signature` | `name` |
+| | | `interface`, `type`, `enum` | `interface_declaration`, `type_alias_declaration`, `enum_declaration` | `name` |
+| | | `namespace` | `internal_module`, `module` | `name` |
+| | | `stmt` | fallback | anonymous |
+| CSS | `.css` | `rule` | `rule_set` | selector list, whitespace collapsed |
+| | | `media`, `supports` | `media_statement`, `supports_statement` | query text, whitespace collapsed |
+| | | `keyframes` | `keyframes_statement` | keyframes name |
+| | | `stmt` | fallback | anonymous |
+| Markdown | `.md`, `.markdown` | `section` | `section` | heading text, whitespace collapsed; anonymous before the first heading |
+| | | `block` | fallback, such as front matter | anonymous |
+| TOML | `.toml` | `table` | `table`, `table_array_element` | key as written |
+| | | `pair` | `pair` | key as written |
+| | | `item` | fallback | anonymous |
+| YAML | `.yml`, `.yaml` | `pair` | `block_mapping_pair`, `flow_pair` | `key` as written |
+| | | `item` | `block_sequence_item` | anonymous |
+| | | `node` | fallback | anonymous |
+| Plain text | any other | `line` | each non-blank line | anonymous |
+
+Profile details:
+
+- Rust: attributes and outer doc comments before an item attach to it. Doc comments, outer and inner, are hashed; other comments are not.
+- Python: decorators attach to the decorated `def` or `class`. Docstrings are ordinary string statements and are hashed.
+- TypeScript: `.tsx` files use the TSX grammar with the same table. An `export` wrapper is transparent.
+- CSS: `/* */` comments are not hashed.
+- Markdown: sections nest by heading level. An HTML comment block (`<!-- ... -->`) is a comment and is not hashed.
+- TOML and YAML: `#` comments are not hashed. Quoted keys keep their quotes in names.
+
+Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or changing a profile can change selectors and hashes, so it is a deliberate change. {cite}`requirements.references.outlines`
 
 ## Checking and viewing
 
