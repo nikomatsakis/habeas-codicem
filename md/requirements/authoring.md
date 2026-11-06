@@ -95,16 +95,21 @@ Verbosity MUST NOT change persistence, validation, or exit-status rules.
 :::
 
 :::{req} provider_backoff
-When a provider reports transient throttling through HTTP 429 or a Bedrock
-`ThrottlingException`, the harness MUST wait and retry the same completion
-request, retaining its prompt, history, tools, and pending inputs. It MUST NOT
+When a provider reports a transient failure, the harness MUST wait and retry
+the same completion request. Transient failures are throttling, reported
+through HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,
+reported through HTTP 500, 502, 503, or 504 or a Bedrock
+`ServiceUnavailableException`, `InternalServerException`, or
+`ModelNotReadyException`; and a request with no response after ten minutes,
+which the harness MUST abandon. The retry MUST retain its prompt, history,
+tools, and pending inputs. It MUST NOT
 restart the assessment or repeat already completed tool calls. A permanent
 input/context-length error, authentication failure, or invalid request MUST
 remain an error; mentioning tokens in an error message alone MUST NOT trigger
 retries.
 
 The backoff window MUST start at one second and double after each consecutive
-throttled attempt, up to sixty seconds. Each delay MUST be randomly selected
+transient failure, up to sixty seconds. Each delay MUST be randomly selected
 between half and all of that window to spread parallel retries. An available
 provider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a
 minimum delay even when longer than the window. A successful response MUST reset
