@@ -1787,3 +1787,212 @@ fn missing_or_empty_api_key_env_fails_before_any_model_request() {
         );
     }
 }
+
+/// The bundled skills with line wrapping collapsed, so phrases can be matched
+/// across lines.
+// {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.cli.bootstrap_skill`
+// {test}`requirements.cli.requirements_review_skill`
+fn bundled_skill(name: &str) -> String {
+    let skill = match name {
+        "habeas-requirements" => include_str!("../assets/skills/habeas-requirements/SKILL.md"),
+        "habeas-evidence" => include_str!("../assets/skills/habeas-evidence/SKILL.md"),
+        "habeas-bootstrap-requirements" => {
+            include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md")
+        }
+        _ => panic!("unknown skill {name}"),
+    };
+    skill.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.cli.bootstrap_skill`
+// {test}`requirements.cli.requirements_review_skill`
+fn assert_phrases(name: &str, phrases: &[&str]) {
+    let text = bundled_skill(name);
+    for phrase in phrases {
+        assert!(text.contains(phrase), "{name} lacks {phrase:?}");
+    }
+}
+
+// {test}`requirements.cli.behavior_review_guidance`
+#[test]
+fn bundled_skills_direct_behavior_review_against_requirements() {
+    // Inspecting every observable branch and checking for unspecified behavior.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Inspect every end-user-observable result and branch, including errors and input handling",
+            "Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "Review every end-user-observable result and branch, including errors and input handling",
+            "Verify that the code fulfills each applicable requirement and does not introduce additional observable behavior without an agreed requirement",
+        ],
+    );
+    // The requirement and example review criteria, including test adequacy and
+    // justified absence of tests.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "implements every obligation completely and exactly as stated",
+            "whether tests cover interesting design cases",
+            "code that implements part of the requirement without `{impl}`, including code that only cites it",
+            "any behavior in `{impl}` code that no definition implemented there specifies",
+            "For absent tests, it assesses whether simplicity or impracticality justifies their absence",
+            "whether test setup and assertions cover the scenario and expected outcomes",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "checks that its `{test}` sources cover interesting design cases",
+            "It may justify absent tests for simple logic or where testing is impractical",
+            "Examples require tests covering the scenario and expected outcomes",
+        ],
+    );
+    // The three outcomes and the documented-gap convention.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "three outcomes: `true`, `false`, or `{\"FIXME\": [\"#125\"]}`",
+            "when source comments or tests explicitly acknowledge the uncovered aspects",
+            "A documented gap does not excuse other, unacknowledged gaps",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "The convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but other source locations are allowed",
+        ],
+    );
+    // Reference roles.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "`{impl}`: it implements part of the definition",
+            "`{test}`: it is designed to verify behavior the definition specifies",
+            "`{cite}`: it relies on, supports, or refers to the definition without implementing or testing it",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "Mark code `{impl}` where it implements part of a definition and tests `{test}` where they are designed to verify it; use `{cite}` only for related code that does neither",
+        ],
+    );
+    // Interacting requirements, and a citation alone is not an explanation.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "When requirements interact, mark every requirement implemented at the relevant point with `{impl}` and explain how their texts jointly account for the behavior",
+            "A reference alone does not explain why a behavior, such as accepting `^C`, is specified",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "When requirements interact, mark each one implemented at a meaningful implementation point with `{impl}`",
+            "A tag alone does not establish that the behavior matches the requirement",
+        ],
+    );
+}
+
+// {test}`requirements.cli.bootstrap_skill`
+#[test]
+fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
+    // Bundled: Symposium publishes every skill under assets/skills, and this one
+    // is discoverable there by its name.
+    let manifest: toml::Value =
+        toml::from_str(include_str!("../Cargo.toml")).expect("Cargo.toml parses");
+    let skills = manifest["package"]["metadata"]["symposium"]["skills"]
+        .as_array()
+        .unwrap();
+    assert!(
+        skills
+            .iter()
+            .any(|skill| skill["source"]["path"].as_str() == Some("assets/skills")),
+        "{skills:?}"
+    );
+    let raw = include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md");
+    assert!(
+        raw.starts_with("---\nname: habeas-bootstrap-requirements\ndescription: Build an initial Habeas requirement set from an existing codebase"),
+        "{raw}"
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            // Read the code and tests.
+            "Read the project's existing requirements, documentation, public entry points, implementation, and tests",
+            "Follow behavior through the code",
+            // Map every first-party test.
+            "Every first-party runnable test or test case",
+            "Put at least one `{test}` reference with a full requirement or example name on each test definition or individual case",
+            // Map every end-user-visible source unit.
+            "Every explicit function or method in first-party Rust sources",
+            "Also inventory relevant public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches",
+            "Do not count one tagged entry point as coverage for deeper code",
+            "Add a requirement or example reference in a Rust comment attached to each inventoried function or method",
+            // Report gaps; no claim of completeness without independent review.
+            "Have both inventories independently reviewed against the source and tests before claiming complete coverage",
+            "Claim 100% only when both inventories have no unmapped items",
+            "List remaining gaps with file locations and reasons; do not invent evidence or silently exclude difficult cases",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill`
+#[test]
+fn bundled_skills_require_agreed_requirements_before_code() {
+    let requirements = bundled_skill("habeas-requirements");
+    // Draft IDs and exact text, obtain agreement, install, and only then code.
+    let order = [
+        "draft the smallest set of observable obligations",
+        "the proposed chapter location, full IDs, and exact fenced text",
+        "Ask the user to agree to or revise this requirement set",
+        "Keep drafts out of the mdBook while review is pending, and do not write implementation or test code yet",
+        "After agreement, install the approved requirements in the mdBook and confirm their names",
+        "Then implement the behavior and add tests",
+    ];
+    let mut from = 0;
+    for phrase in order {
+        let at = requirements[from..]
+            .find(phrase)
+            .unwrap_or_else(|| panic!("habeas-requirements lacks {phrase:?} after byte {from}"));
+        from += at + phrase.len();
+    }
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "a general request to build the feature does not",
+            // Substantive changes to agreed obligations.
+            "If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "Review a substantive change to an approved requirement with the user before changing its text",
+        ],
+    );
+    // Inferred requirements are reviewed by the user before installation.
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "Treat requirements inferred from existing code as proposals",
+            "Show the user their proposed full IDs and exact text",
+            "Obtain agreement on the proposals before installing them in the mdBook",
+        ],
+    );
+    // Missing or false evidence is acceptable; no placeholder evidence.
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "Missing evidence or a truthful false judgment is expected while implementation is pending; do not write placeholder evidence yourself",
+            "The supervising agent must not compose or refresh evidence JSON, determinations, rationales, or source inputs itself",
+        ],
+    );
+}
