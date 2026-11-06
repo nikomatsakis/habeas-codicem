@@ -367,16 +367,16 @@ applicable contribution, deduplicate identical selections, and report
 unresolvable mandatory inputs before inference. The complete set MUST be supplied
 in the initial model request.
 Generated output under project-root `evidence/`, including symlink aliases, MUST
-be omitted from previous input selections when the default exclusion applies.
-An explicit workspace allow MUST permit those selections; an explicit disallow
-MUST abort under {cite}`requirements.authoring.read_denial`.
+be omitted from mandatory inputs when the default exclusion applies. An explicit
+workspace allow MUST permit those selections; an explicit disallow MUST abort
+under {cite}`requirements.authoring.read_denial`.
 :::
 
 The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),
 [examples](examples.md#examples-as-authoring-inputs),
-[references](references.md#references-as-authoring-inputs),
-[terminology](definitions.md#terminology-as-authoring-inputs), and
-[existing evidence inputs](ci.md#existing-evidence-inputs-used-by-authoring).
+[references](references.md#references-as-authoring-inputs), and
+[terminology](definitions.md#terminology-as-authoring-inputs). Existing
+evidence is [not carried forward](ci.md#existing-evidence-inputs-used-by-authoring).
 
 ### Prompt template
 
