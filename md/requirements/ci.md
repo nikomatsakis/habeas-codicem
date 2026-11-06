@@ -1,7 +1,7 @@
 # CI and evidence validation
 
 :::{req} coverage
-Every requirement defined by a fenced `{req}` directive in a chapter under the configured mdBook source directory MUST have an evidence file named `evidence/<full-requirement-name>.json`. The full name MUST use the chapter's path-derived namespace followed by the directive name; for example, a directive named `check` in `md/requirements.md` has the full name `requirements.check`. Habeas MUST apply this rule to its own requirements in this chapter.
+Repository validation MUST check that every requirement defined by a fenced `{req}` directive in a chapter under the configured mdBook source directory has an evidence file named `evidence/<full-requirement-name>.json`, and MUST report each requirement whose evidence file is missing. The full name MUST use the chapter's path-derived namespace followed by the directive name; for example, a directive named `check` in `md/requirements.md` has the full name `requirements.check`.
 :::
 
 :::{req} orphans
