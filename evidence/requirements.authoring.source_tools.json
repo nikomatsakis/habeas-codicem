@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `habeas` tool accepting exactly one of these request\nforms. Each form MUST correspond to one existing evidence-input kind:\n\n| Request fields | Evidence input returned | Definition |\n| --- | --- | --- |\n| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |\n| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |\n| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |\n| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |\n\nSelector arguments MUST use the syntax defined by\n{cite}`requirements.references.outline_selectors`. Reads MUST use the current\nproject working tree, including unstaged changes to tracked files and staged new\nfiles. By default, source inputs MUST stay within the project root after\nresolving symlinks; in a Git worktree, both the requested file and its resolved\ntarget MUST be present in the Git index. Projects outside Git MUST use the same\ncontainment rules without requiring an index. Failure to read an existing\nrepository's index MUST be reported as an error.\nThe project-root `evidence/` directory and an active workspace configuration\ncontaining literal credentials MUST be excluded from model reads by default,\nincluding symlink aliases. Generated build outputs MUST follow\n{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST\nfollow {cite}`requirements.configuration.evidence_paths`, including explicit\npermission for otherwise excluded inputs. A denied mandatory input or explicit\nread MUST abort under {cite}`requirements.authoring.read_denial`.\n\nLine numbers are only a way to request sources; recorded evidence MUST identify\nsources by outline selector and structural hash, never by line number. Request\nline numbers MUST be one-based and inclusive, and omitting `line_end` MUST read\nthrough EOF. A line-range request MUST be resolved to the innermost outline\nnodes covering the requested lines, which are `line` nodes in a file using the\nplain-text profile; the result MUST show the model each node's selector, current\nline range, and source text, and the harness MUST record those nodes as outline\ninputs. The model-facing tool description MUST include the argument conventions\nfrom the cited requirements, including outline selector syntax, definition\nselections, and full definition names, with a short request example for each form.\n\nA successful call MUST return the requested evidence input, populated by the\nharness with the selected source text, using the existing evidence schema.\n{cite}`requirements.ci.schema`\nRequired terminology dependencies MUST be returned alongside it as additional\ndefinition inputs under {cite}`requirements.definitions.authoring_inputs`.\nThe result MUST have this shape:\n\n```text\nHabeasResult {\n    input: EvidenceInput,\n    definitions: Array<DefinitionInput>,\n}\n```\n\n`definitions` MUST be empty when no additional terminology is required. The\nharness MUST record inputs supplied to the model in the assessment's evidence.\nA failed read MUST add no evidence input. Access-policy denials MUST abort;\nother failed reads MUST return an explanatory tool error.",
-  "determination": false,
-  "rationale": "The `habeas` tool is largely implemented and well tested. A few gaps against the requirement text remain, and none is acknowledged in a FIXME.\n\n**Covered well**\n- `tools::read` (src/authoring/tools.rs) accepts the four request forms and rejects empty, mixed and unknown argument combinations through `check_keys`, `string` and `integer`. The test `reading_records_only_delivered_sources_and_their_terms` exercises these rejections, EOF behaviour for an omitted `line_end`, and bad ranges.\n- Line ranges resolve to the innermost covering nodes through `read_lines`, `nodes_for_range` and `nodes_for_lines`. `line_range_reads_record_the_innermost_covering_nodes` tests this and also checks that recorded inputs carry no line numbers or text.\n- Source-access policy lives in `SourceAccess::path`, `file` and `tracked_sources`. The tests cover the following:\n  - staged and dirty files are readable, and untracked files are denied with a `git add` hint;\n  - symlink alias and target must both be tracked;\n  - nested projects see only their part of the index;\n  - an unreadable index or invalid Git configuration is an error, not a fallback;\n  - non-Git projects work without an index;\n  - `evidence/` and workspace credentials are excluded, including via symlink aliases;\n  - allow and disallow rules behave as specified;\n  - Cargo output directories are discovered without a build, and an inherited `OUT_DIR` is ignored.\n- Denials abort the assessment and other read failures come back as tool errors. `assess` in src/authoring/mod.rs does this, and `explicit_untracked_reads_abort_without_another_request_or_evidence_write` (tests/authoring_cli.rs) covers it.\n- Inputs are recorded only after a successful delivery, because `pending` is extended only on `Ok`.\n\n**Gaps**\n1. **Result shape.** The requirement says the result \"MUST have this shape\" `HabeasResult { input, definitions }`. The line-range form instead returns `{inputs, definitions}`. `tools::read` does this, and the tool description documents it. Returning several nodes is sensible, but it departs from the stated shape, and no source comment acknowledges or justifies the departure.\n2. **No test of the tool description.** The requirement says the model-facing description MUST include the argument conventions and a short example for each form. `tools::definitions` contains this text, but no test asserts it. The Bedrock CLI test checks only the schema fields. A regression in the description would go undetected.\n3. **Incomplete `{impl}` marking.** \"The harness MUST record inputs supplied to the model in the assessment's evidence\" and the rule that evidence identifies sources by selector and hash, never by line number, are part of this requirement. The code doing this is marked only for other requirements, not for `source_tools`:\n   - `AssessmentSources::record_inputs` and `recorded_inputs` (src/authoring/inputs.rs) are marked `delivered_inputs` (plus `outline_inputs` for `record_inputs`).\n   - `recorded_input` (src/inputs.rs) is marked `delivered_inputs` and `ci.schema`.\n   - `InputSelector::to_input` (src/inputs.rs) is marked for `ci.schema`, `cli.add_input` and related requirements, not `source_tools`.\n   - `PathPolicy::allowed` and `PathPolicy::check_disallow` carry no `source_tools` marking, though they enforce part of the access rules stated here.\n\nBecause of these unacknowledged gaps, the subject is not fully met.",
+  "determination": true,
+  "rationale": "I judge the requirement satisfied. The one soft spot is that the tool description's wording has no direct test.\n\n**Request forms and schema**\n- `tools::definitions` (src/authoring/tools.rs) exposes the `habeas` tool. Its schema has a plain object root with optional `file`, `line_start`, `line_end`, `item`, `requirements` and `definition`, and `additionalProperties:false`. The Bedrock test in tests/authoring_cli.rs checks this schema.\n- `tools::read` accepts exactly one form and rejects the rest through `check_keys`. The forms are file+line_start[+line_end], file+item, requirements, and definition.\n- Each form maps to an existing input kind. The line and item forms use `InputSelector::Outline`, the requirements form uses `InputSelector::Requirements`, and the definition form uses `InputSelector::Definition`.\n- `source_input` and `to_model_input` (src/inputs.rs) populate the result with `kind`, `line_start`, `line_end` and `text` on top of the recorded input.\n\n**Line ranges**\n- `read_lines` checks that line numbers are one-based and inclusive and that `line_start`/`line_end` are in range. Omitting `line_end` reads through EOF.\n- `nodes_for_range` and `nodes_for_lines` resolve the range to the innermost covering nodes.\n- Tests: `reading_records_only_delivered_sources_and_their_terms` covers EOF reads, line 0, an out-of-range line, a missing item, and incomplete, mixed or extra argument combinations. `line_range_reads_record_the_innermost_covering_nodes` covers innermost-node selection and records only selector and hash.\n\n**Result shape and recording**\n- A successful call returns `{input, definitions}`, or `{inputs, definitions}` for the line-range form. The plural reflects that the requirement's table lists \"Outline inputs\" for that form, and the tool description documents it. I do not count this as a gap.\n- Terminology dependencies come from `additional_definitions` (transitive, deduplicated) and are returned alongside the input.\n- `assess` records inputs only after a successful delivery. An `Err` adds nothing to the evidence.\n- A `PermissionDenied` error aborts the assessment, while other read errors return as tool errors. `explicit_untracked_reads_abort_without_another_request_or_evidence_write` covers the abort end to end.\n\n**Access policy**\n- `SourceAccess::path` and `SourceAccess::file` enforce these rules:\n  - Reads use the working tree.\n  - Containment is checked after symlink resolution.\n  - In a Git worktree, both the requested file and its resolved target must be in the index, with a diagnostic pointing to `git add`.\n  - Projects outside Git use the same containment rules without an index.\n  - `evidence/` and credential-bearing `habeas.toml` are excluded.\n  - Cargo build-script outputs are permitted.\n  - `habeas.toml` allow and disallow rules apply, and disallow wins, including through alias targets.\n- `tracked_sources` returns an error when the index cannot be read.\n- Tests in src/authoring/access.rs and src/authoring/tools.rs cover these cases:\n  - nested projects and an empty `.git` in an ancestor;\n  - a corrupt index and an invalid Git config;\n  - allow and disallow precedence with symlink aliases and ancestors;\n  - credentials;\n  - an inherited `OUT_DIR`;\n  - generated evidence;\n  - outside symlinks;\n  - staged and dirty versus untracked files;\n  - Git symlink alias and target tracking;\n  - external and ignored allowed paths;\n  - Cargo output before and after a build, and its disallowing.\n\n**Tool description**\n- The description includes the argument conventions: selector syntax with `kind[name]`, `kind@hash`, `#N` and percent-encoding, definition selections and full definition names, and a short example for each of the four forms.\n- No test asserts the description wording. The text is static and visibly complete, so I do not count this as a material gap.\n\n**Marking**\nThe implementing code carries `{impl}` references to this requirement. Other behaviours in the marked functions, such as `list_files`, search and credentials, are specified by the other requirements those functions also reference.",
   "inputs": [
     {
       "requirements": "requirements.authoring.source_tools",
@@ -256,12 +256,12 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "ebfa9dc19aa687ef76409ee994626a84ff34ed0068c5e30d45a72ae896083dde"
+      "hash": "633e94e0bfaf8edbc4e4892768672ffa57410694e16bbfc774a7a1bba3079cf4"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[file]",
-      "hash": "7e85bb9094d2b811599bd03756aa339f9a72bc26953f41f6a3f8890ab1aa3fae"
+      "hash": "d657c7657a2da7dbabe6bbe2388ea5f93672f99948fbc74d2b7072658d5703ca"
     },
     {
       "file": "src/authoring/access.rs",
@@ -276,17 +276,17 @@
     {
       "file": "src/authoring/access.rs",
       "item": "fn[resolve]",
-      "hash": "dbe084fd64501fdfe06de9c8b0062d2983df9a49e315b6c4c49e1b960dca50c4"
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "fn[tracked_sources]",
-      "hash": "a629ef21d9cc7a83823a7ff1dd592d4e82716cf06276183c82cd25cc958da178"
+      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[git]",
-      "hash": "be60a77e3a05ecb44a7e864d117cb37bb649975fcbf5e7b0f46df7d289c62772"
+      "hash": "026f1a1f4e69b5a2aa50b8ca4715b5028f15bf0501301d92ada0bcfba12026fb"
     },
     {
       "file": "src/authoring/access.rs",
@@ -296,7 +296,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
-      "hash": "0204d412519a314f94b550b230cc9db238973681adacb42607dd085d7a01539d"
+      "hash": "04e0bb3382ec1ba0982960e6e5a2254e7cacc9ce324a0d46442a9271c9c9e5d8"
     },
     {
       "file": "src/authoring/access.rs",
@@ -306,37 +306,37 @@
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
-      "hash": "2b1244e51b503430ea1ec06d3e7b1b95c81f98655c37057c2b1ef305d55edfa1"
+      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "5dd4b31a80da195e066629fa3a018e4cc553c8ea1ebf488cd2e5d4c20e8a33f7"
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "3f42864619d8f9fd959d3fa3b627e44b009ebc7b9198e54bbc974637185dd4c2"
+      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "9fb2c8f3ea769c3f0c484f58ca639d3180646d22f93c945791eefd9aafbdd211"
+      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "dcdb797b2e2df0d2c8e5b5dbe33f5c2c63509aa355e10f7cb6525c4c228e71c7"
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "994728df823b6bbb189812bee219c18daea969a94dd7bce075cf0bb32a47e588"
+      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "946a4db6e2efc48af190534f77a1ace8cb8edd28284170e8203ff7c12e8d547b"
+      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -351,7 +351,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "7328154a4a915fd8b891324603a266f043164a3321da08da47f979b2f6fc501e"
+      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -376,22 +376,22 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "6a1f95af636730ee450cc36e7847a32e51a288bcadc4af13d0ad5af6d4319516"
+      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "c2dde298701587d1b099c291deef762564ec37a0a75117663ed7f82405d65eb8"
+      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
-      "hash": "df614bcb78331da093225474a109dfe520f116711ab415ee635c700f5612f22e"
+      "hash": "7e252081e666e82ce2e550a18e17b95fc52f0e9eee30a2f6a3f6e7df5b3119bb"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -401,27 +401,27 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[list_files]",
-      "hash": "7844d1967f9cdcd36ffef4d92faea6b035b7a6dfd34d4a94ac4afd558c2b54ad"
+      "hash": "22c6fcd10294a303c39adebf81ffd0319c244f5e1e5c5f24ef54dd4ebb41377e"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "801b0b45cf5c944b85dff7f8662a7af6a4ec40d35ded8f2bddd960a83dfe9c09"
+      "hash": "c71320b40ade275633a2dbfd32e6d949b4c537ba76927694283167816a99b491"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[check_keys]",
-      "hash": "fe6d6607863064a361539ba73bca18b7d60b3712b2f9f0a7a5bf8f0fa51acb9e"
+      "hash": "5742561000c80a55016d788a76a974991f8570fc8339b8a85c5382a03593233e"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[string]",
-      "hash": "a2705c0ece0985f6fed7cb4b47fd816fe1d4c44eab6e28f0bd51ee94bfc7110d"
+      "hash": "28e84ccff6e9bd409feed5343425d2b30375117beb27cf5251fcec7684f1167d"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[integer]",
-      "hash": "6b9229a5cbdf54d9050c817e7bf6610f35be92169ef210a4d75422b27506e0c9"
+      "hash": "bcd5395853965f714473c22a608b4175392cd69257e606a1246598e5b67b6545"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -431,42 +431,42 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
-      "hash": "602e67b123fdb273ff6d87e9bfcc48b49b3c219a43634b7d6ee10cb1f10cd769"
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
-      "hash": "3fe49d33dfa70a2bd10dc815b0ca70992a078a2b6c31e87ced465a9ca0a45bfb"
+      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]",
-      "hash": "e8754c958a18c66c4414729efab8c3ac45565251f583ba1374da0ae019531af9"
+      "hash": "491a76e9184d5955c505c8a55b2593392f8966cf5be5755fab8149ef214fca71"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
-      "hash": "4549912de14c5ee5892c6e602e6c5db4c1ff77d8a9d0260519f5993e637b4803"
+      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
-      "hash": "ffff33cf90ca7fd16eb01f07809e2acd5dcc74587f1aae4281695421464ef2df"
+      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
-      "hash": "80dbfd182a97dc80d12b54e5746789304b2bec10fad355e6dcd4d5bf4d3f14c6"
+      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
-      "hash": "6289c50f6cbbc09d201331f5b4a74218f54ee10e1d5e59d3296e10236f8f3734"
+      "hash": "204a1e1b56a975bbf449d5e38f893f680bc0563c1b4ffcd65c9544c0461b1eff"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "2f0af97fbd766a3b4618f88bf0166b0da92048180c8612fbca9da2a82cad6034"
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
     },
     {
       "file": "src/inputs.rs",
@@ -491,17 +491,17 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_untracked_reads_abort_without_another_request_or_evidence_write]",
-      "hash": "c836bf2b50fd992608cfe9b112cc49967d1c264da1ab1a5c49ae26c3ea2e52f5"
+      "hash": "dac087a4dc68c347eedcde7da1f619ed2112a8149a8fa311f3abb3b577facc85"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "9c368a31e112c63a717c79e490de1a0b92151442949336fe52d7fc25aa0aa308"
+      "hash": "7d198562a62e845ab189a2249979c3593b0c0b4692d2caee238c95b74eb32d8a"
     },
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
-      "hash": "334db9087426522bd749ba0bd042005190bc388325543e5f100f7c764f1a4969"
+      "hash": "372d4143227c94e60be30077a9386da7eb61c0791690cc9b8d28686c026fda5d"
     },
     {
       "definition": "requirements.references.definition_selection",
@@ -517,74 +517,9 @@
       ]
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[load]",
-      "hash": "35a027acfa5aabc36215ae643a316ffcef92f7dd33cd4e635b6f1be457564ae3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[allowed]",
-      "hash": "5960d03100435ec0b4494b19a912cfe60ddb53c1f34b28300122bc37ac969d5b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[check_disallow]",
-      "hash": "0121fb7bd67c7f8739de8db49c44260b3619b14c33fcadd9667cb1c7df85195e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]",
-      "hash": "6dbd3e1f09f667b8e0e2d3899ceb49b72088ec0fc670cb28a7287a5ba2baec9b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[matches_rule]",
-      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[requested_location]",
-      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[generated_roots]",
-      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
-      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
-      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[record_inputs]",
-      "hash": "2b4b1c437218feacfb819597643fe1a6ab99035b71b6001fd0a5cc1751ffbe50"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]",
-      "hash": "9c50a31f04697f892f716b64d3e2414c0583599959e716dd1c9266822672cc78"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[recorded_input]",
-      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[check_project_file]",
-      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[tool_definitions]",
+      "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
     }
   ]
 }

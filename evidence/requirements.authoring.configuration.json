@@ -1,7 +1,7 @@
 {
   "requirement": "Authoring MUST use the `[authoring]` sections of the shared user configuration\nand the selected workspace's `habeas.toml`.\n{cite}`requirements.configuration.user_location`\n{cite}`requirements.configuration.structure`\n{cite}`requirements.configuration.feature_sections`\nIt MUST support named configurations, workspace defaults, and a user-local\nselection for each project. Credential-source references SHOULD be used;\nexplicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.\n{cite}`requirements.configuration.workspace_location`\n{cite}`requirements.configuration.workspace_structure`",
   "determination": true,
-  "rationale": "**Judgment: `requirements.authoring.configuration` is satisfied.**\n\n**Implementation** (all in `src/config.rs`, marked `{impl}`):\n- `resolve_authoring` (L807) loads the nearest workspace `habeas.toml` with `load_workspace_config`. It loads the user file from `user_config_path()` with `load_user_config`. It then delegates to `resolve_authoring_with_workspace_from`.\n- `resolve_authoring_with_workspace_from` (L843) uses only the `[authoring]` sections of the user and workspace files.\n  - It supports named configurations in both files (`configs` maps).\n  - It supports workspace defaults (`WorkspaceAuthoringConfig.default`).\n  - It supports a user-local per-project selection (`UserAuthoringConfig.projects`, keyed by the canonical project root).\n  - Selection order is explicit name, then user project selection, then workspace default, then user default.\n  - A workspace config of the same name takes precedence over the user's.\n  - A missing section, no selection, or an unknown name each produces a diagnostic that names the file.\n- Credential-source references are supported through `api_key_env` and `aws_profile`.\n- Explicit credentials (`credentials`, `api_key`) are supported in both files. `BackendConfig::validate` rejects `credentials` combined with `aws_profile`, and `api_key` combined with `api_key_env`. Empty values are rejected too. Those rules belong to `requirements.authoring.credentials` and carry their own `{impl}` marks.\n- The cited location and structure requirements are implemented, and marked `{impl}`, in separate functions:\n  - `user_config_path_from`;\n  - `workspace_document`, which searches upward, uses the nearest file only, and reports unreadable candidates;\n  - `validate_workspace_common`, which checks the version and rejects unknown keys.\n- Both the user and workspace structs use `deny_unknown_fields`.\n- I found no authoring-specific behavior in the marked code that the requirement doesn't cover.\n\n**Tests**:\n- `tests/configuration.rs::workspace_defaults_and_configs_combine_with_existing_user_selections` covers:\n  - the workspace default beating the user default;\n  - a workspace config replacing a same-named user config;\n  - the user project selection beating the workspace default;\n  - an explicit name beating both;\n  - a workspace default naming a user config;\n  - a workspace with no default falling back to the user default;\n  - a workspace-only setup with no user file;\n  - an unknown name giving a diagnostic that names the file.\n- `tests/configuration.rs::explicit_project_and_default_selections_choose_whole_configs` and `tests/authoring_cli.rs::Fixture::new` cover the user-file path. The fixture's user config uses `api_key_env`, a credential-source reference.\n- `tests/authoring_cli.rs::authoring_uses_nearest_workspace_configuration_without_a_user_file` is an end-to-end test.\n  - A parent `habeas.toml` has a bad default, and the nested one is selected without merging.\n  - There is no user file.\n  - The explicit `api_key` is sent to the provider and doesn't appear in the request body, usage record, stdout or stderr.\n\n**Minor observations, not gaps against this requirement:**\n- Project selections can only be changed by editing the file.\n- `UserAuthoringConfig.configs` has no serde default.\n\nNo FIXME markers apply.",
+  "rationale": "**Verdict:** the implementation covers the requirement and the tests exercise it. I found one minor edge case, described below, that I did not treat as a gap.\n\n**What the requirement asks for.** It is an umbrella requirement with four parts:\n- Authoring reads the `[authoring]` sections of the user config and of the nearest workspace `habeas.toml`.\n- It supports named configurations, workspace defaults, and a user-local per-project selection.\n- It prefers credential-source references, and still supports explicit credentials.\n- It relies on the cited common requirements for location and structure.\n\n**Implementation (`src/config.rs`).** All three functions are marked `{impl}` for this requirement.\n- `resolve_authoring` loads the nearest workspace file with `load_workspace_config`, which is `{impl}` for workspace_location and workspace_structure.\n  - It finds the user path with `user_config_path`, which follows the `user_location` rules and returns an error when the base directory cannot be determined.\n  - It loads the user file with `load_user_config`, which returns `None` when the file is missing, then resolves.\n- `resolve_authoring_with_workspace_from` validates both files and applies the order the spec requires:\n  - an explicit name, then the user's per-project selection keyed by canonical root, then the workspace default, then the user default;\n  - workspace configs override same-named user configs as whole records;\n  - missing or unknown selections produce diagnostics that name the file and point to documented examples.\n- The data types are `UserConfig` and `WorkspaceConfig` with `deny_unknown_fields`, plus `UserAuthoringConfig`, `WorkspaceAuthoringConfig`, `ProjectSelection` and `AuthoringConfig`. Each feature table is optional, so absence is distinguishable from explicit settings.\n- Credential-source references are supported through `aws_profile` and `api_key_env`.\n- Explicit credentials are supported through `BedrockCredentials` and `api_key`. Validation rejects the forbidden combinations and empty values, and `SecretString` redacts its debug output. `decode` scrubs credential values from TOML diagnostics.\n- The cited location and structure requirements are implemented and marked at `user_config_path_from`, `workspace_document`, `validate_workspace_common` and the `parse`/`validate` methods. I found no unmarked authoring-configuration behavior beyond what other definitions specify.\n\n**Tests.**\n- `tests/configuration.rs::workspace_defaults_and_configs_combine_with_existing_user_selections` is `{test}` for this requirement. It covers:\n  - the workspace default;\n  - a workspace config replacing a same-named user config as a whole record;\n  - the user's per-project selection;\n  - an explicit name;\n  - a workspace default that names a user config;\n  - fallback to the user default;\n  - workspace-only configuration with no user config;\n  - an unknown name, with a diagnostic that names the file.\n- `tests/authoring_cli.rs::authoring_uses_nearest_workspace_configuration_without_a_user_file` is an end-to-end test. It runs with no user file and a nested workspace file that shadows a parent file. It checks that the explicit `api_key` is used for the request and appears in no prompt, usage record or output.\n- `Fixture::new` in `tests/authoring_cli.rs` is `{test}` for this requirement and covers the user-config path end to end. It writes a user `config.toml` with named configs and `api_key_env`.\n- `tests/configuration.rs` also covers location, structure, round-tripping and redaction, and `tests/commands.rs` covers workspace loading.\n\n**Edge case not counted as a gap.** `resolve_authoring` calls `user_config_path()?` even when the workspace alone could supply the configuration. If neither HOME nor the other user-config base directory is available, a workspace-only run therefore fails with a diagnostic. The user-location text says the failure applies to \"an operation requiring user configuration\", so this is arguable. The workspace-only requirement is phrased in terms of the user config file being absent, and that case is handled and tested.",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration",
@@ -165,342 +165,42 @@
     {
       "file": "src/config.rs",
       "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "6e4658d39d846cf2c7aaf0277e2b3436e0623fe22ea5c476208f553ea1547157"
+      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "impl[Fixture]/fn[new]",
-      "hash": "6b7b36f30f716b7fab15ec0ee64feab0ffe765cd251ea0b9fecf660b2faf169b"
+      "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
-      "hash": "baf298107691f3efb4f54b082b22051a9a864d19fbadfd3c5372359113b6023a"
+      "hash": "4682a1c95ac85718935f1342508f0d5a28acba4f4ed39f9de1d7c6d9d7d4e919"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]",
-      "hash": "2a394132d159a87151bbd45edc061e8a23000b2f0f048517316e1e03747fea1e"
+      "hash": "2f7d90c5cd6ac721390861eb6e8760d9b35646f1306b8856b5009ca5a3e1b8b2"
     },
     {
       "file": "src/config.rs",
-      "item": "struct[UserConfig]",
-      "hash": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+      "item": "",
+      "hash": "77c81d1779ee668ffa9a9c872d1e1049bf9c29a69fa39209bb6afcd3cd1b735a"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[ProjectConfig]",
-      "hash": "487c2320263d6102d8c2df7c36cd39e87151d924b0897184bf6a5b5f30122729"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceConfig]",
-      "hash": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceAuthoringConfig]",
-      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[EvidenceConfig]",
-      "hash": "f25be8caf3c4f515b3a60e2b3262d173de9c5fb20e2d19f892470c9b18bc0902"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[LoadedWorkspaceConfig]",
-      "hash": "4b8838291dc0d39b581ee5dfc82764501ab9e0f8357cc1a89d4fde699d081959"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceEvidenceConfig]",
-      "hash": "6ef8de3f201aaf71b6e3a15d9166541b8fe0d1f660887a80b27c5672f87db379"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[SecretString]",
-      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[SecretString]/fn[expose_secret]",
-      "hash": "c59e21f16c756328a27b1ef698ca9aacf1afd4fe4ce4776e91ee34737a2a296c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
-      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[BedrockCredentials]",
-      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[UserAuthoringConfig]",
-      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ProjectSelection]",
-      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[AuthoringConfig]",
-      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[BackendConfig]",
-      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[BedrockConfig]",
-      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[OllamaConfig]",
-      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[OptionValue]",
-      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[BackendKind]",
-      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ModelRef]",
-      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ResolvedAuthoringConfig]",
-      "hash": "75bdbf9fba8779579c42bb2ae80184f6652737689884a1a3336bee278ecb911c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[ConfigPlatform]",
-      "hash": "a5de749a21f55c086f8e53b4112ba7f24db76ce29c826cf05dddd6e59c5ba7d5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ConfigPlatform]/fn[current]",
-      "hash": "5bfa8548bd5559ec166ddbb9e111c070fed9784132a346dfc55f8c6cca54281b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[parse]",
-      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[to_toml]",
-      "hash": "d24d6428fe23622c699f46683e5e4f95d45eb9038367bd1e8c887396e0fa4a17"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[validate]",
-      "hash": "3361c597e1f2e607ada65eaf00552bb48c2e2ac71ed70b8d66d7145e4fd3e320"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[parse]",
-      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[to_toml]",
-      "hash": "f52bccff6e8a199d4284f96b93524fb60a2cb47ee8bafd1ad43f9c5870751b19"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[validate]",
-      "hash": "56a5e390cc270f0b647b45d9b65d2af71ee3a7d0e0f692a86fb73fcf2bbdff78"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]/fn[validate]",
-      "hash": "057ba2aabef4e3a0078d3b621b1d2859f922b22b083d648b8dfc107546ae9808"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ProjectConfig]/fn[from_book_toml]",
-      "hash": "04e0bdc01fe59736d2feec995e4632d104c4e945854efe867a35b57b67cc3f62"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]/fn[validate]",
-      "hash": "9c180c075806e5c6018434ce8bb012885c2612b5be7685d3784da811a97ba4a1"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[model_ref]",
-      "hash": "08850ef1baf39ed65e13526a9d8d96e20a2e11a66b6033ffac04b58119c63ee9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options]",
-      "hash": "8ce0d90f10ed65ab98d87a32e12e29b8f8740a99ca0d5626b652b192e9c1ca3c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options_json]",
-      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "8da8cf7335aa662b4931705a99158f5a5f09614d66e961975f8f1bd434a8a571"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OptionValue]/fn[validate]",
-      "hash": "85e023195287b75ab3ef36edbd4537b7ee0fbacf5e3c858b864267ca2ccb2484"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]/fn[endpoint]",
-      "hash": "c415f1dc83d441fc82a14831a6748729838d6249d7b6bb4dffe78b73f305610b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]/fn[api_key]",
-      "hash": "5228ff96233c473974cb95a01d0d0dff8815da735dd6d667287a1fc5293176ee"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]/fn[api_key_from]",
-      "hash": "4cbee2b0d62fff27e91477c4e7dc56ba39a971b22743472dbbbffe0a68eaa4ff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ResolvedAuthoringConfig]/fn[model_ref]",
-      "hash": "ba39e0c3fba8e179a3f196296995e9c83d9a2e635529c978684d03d345962237"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ResolvedAuthoringConfig]/fn[effective_concurrency]",
-      "hash": "8379185dedc15d5caec74e7062d97dd212b9e463425f44c3e770169f17dffd2c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[user_config_path]",
-      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[user_config_path_from]",
-      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root]",
-      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root_from]",
-      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[absolute_directory]",
-      "hash": "82024e470bc377bbc0fc64f0702e8c445d30df5022d152673e1130e82fb5d222"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[required_directory]",
-      "hash": "104cb645df826b0825808695454101b82949f094c2503b404af9e3ffec41d300"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_user_config]",
-      "hash": "236dfdef96283bdd9b206c3ef8d3a8be0bbca71a230a60896100a1d421c1bc12"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_config]",
-      "hash": "84d954165b76af1a7fda6ce26851b3af3dfc85665c63517732fa9093e0c62528"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_evidence]",
-      "hash": "0c205d8c0b3d0e266e5397fa9f7b437e6c9442eae21bc6631ba80de6673bc0dc"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[workspace_document]",
-      "hash": "de86873accab7a0e75c706c008b1af5ceefaca741f94b4e503d6cb89248b3f63"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_workspace_common]",
-      "hash": "b8ff5c3ac11ed8de6ba176188bd36285e9b2cf7e3d9dd18d58ed76dbb1f8baf9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[parse_document]",
-      "hash": "de75f2c6919a55b1b7babc623d074f262cee88392fe8354f6d3ae7c581025b48"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[decode]",
-      "hash": "005923d17d0fd4b8e477414f29167ffa160e88ac377510da79ef03f33503b937"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_name]",
-      "hash": "fefc28308cf3fbbc456f4487611283feb80795bcb86170f38d4ce0e268c7eed4"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[invalid]",
-      "hash": "710ea0045da40f25a4b8b174cc823b2981a085a998726c96d738d5dde7713632"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]",
+      "hash": "41506cf97f5572a543fb7dd13473be71c759c79e496553ab6146925a8c2b9099"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "323d4bd9f7d3e60816e04cbff316f0db32575c44225a36d81fa72c8e5d561bf8"
+      "hash": "36deb619e4d6d1e1ec2ae64e7b26678169519fc38ff82e3a7d593fbc8989abae"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "e87ccffa89c54e55ec5a0b636f21d2fda0376ec1c44fabf97600f071b802d13b"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "use@ec3f2c37f86c",
-      "hash": "ec3f2c37f86c9ab66a39b1503bfbdfa2e740d1f22ddde13f9fab2a4f8bfdfa74"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]",
-      "hash": "79aa59bcf016d57237a6aefbcb6d8292c0020dec6b01078c8ac7643173ff7902"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
-      "hash": "83dd266303aa00322774d07ad2350445925697139b6f313e2307673b2897c073"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[selected_config]",
-      "hash": "f7bd785cf23b34054f759501e9cd2219d128738edbfc7ae0e9d2eb1f40d9fb2e"
+      "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
     }
   ]
 }

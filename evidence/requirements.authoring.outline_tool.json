@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose an `outline` tool with this interface:\n\n```text\noutline({ file: String }) -> Array<OutlineEntry>\n\nOutlineEntry {\n    item: String,\n    kind: String,\n    name: String?,\n    line_start: Integer,\n    line_end: Integer,\n    children: Array<OutlineEntry>,\n}\n```\n\nThe tool MUST return the outline of a permitted file in a supported language\nunder {cite}`requirements.references.outlines`, with each node's selector under\n{cite}`requirements.references.outline_selectors`, its kind, its name when it is\nnamed, and its current inclusive line range, nested by outline ancestry. Results\nMUST contain no source text and MUST NOT become evidence inputs; the model reads\nthe nodes it relies on with the `habeas` tool. For a file using the plain-text\nprofile, the outline lists its `line` nodes. Explicitly requesting an excluded\nfile MUST abort under {cite}`requirements.authoring.read_denial`.",
   "determination": false,
-  "rationale": "The behaviour and tests largely satisfy `requirements.authoring.outline_tool`. The one gap is incomplete `{impl}` marking.\n\n**What is implemented and tested**\n- `outline` in `src/authoring/tools.rs` (lines 125-140) takes a single required `file` string and rejects unknown keys through `check_keys`. It calls `AssessmentSources::parse_file` in `src/authoring/inputs.rs`, which first runs `access.file(...)`.\n- A denial surfaces as `PermissionDenied`. `assess` in `src/authoring/mod.rs` returns that error instead of giving it to the model as a tool result, so the assessment aborts as `read_denial` requires. Other failures stay recoverable tool errors.\n- `outline_entries` emits `item`, `kind`, `name` (from `display_name`, null when anonymous), `line_start`, `line_end` and recursive `children`. The nesting follows the outline tree, and no source text is included.\n- `ToolDelivery.inputs` is empty, so outline results are not recorded as evidence inputs.\n- Plain-text files get the outline from the shared outline code, which `requirements.references.outlines` covers.\n- The test `outline_lists_nested_nodes_without_text_or_inputs` checks:\n  - the exact nested JSON for a Rust file, with a doc comment included in the range but its text absent;\n  - empty inputs;\n  - a plain-text file with `line@…` selectors, null names, and blank lines skipped;\n  - errors for a missing file and for missing arguments;\n  - a `PermissionDenied` error for a file excluded by `habeas.toml`.\n- `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` adds the untracked-file denial, with the `git add` diagnostic.\n\n**The gap**\n- The tool's interface is declared in `definitions()` (`src/authoring/tools.rs`, lines 17-57): the `outline` name, description and parameter schema. That declaration is what \"MUST expose an `outline` tool with this interface\" refers to.\n- It is not marked `{impl}` for `requirements.authoring.outline_tool`. It carries only `source_tools`, `file_discovery`, `text_search`, `evidence_paths`, `generated_inputs`, `read_denial` and `credentials`.\n- The `\"outline\" => outline(...)` routing arm in `dispatch` has no such mark either. Its markers are `source_tools`, `file_discovery` and `text_search`.\n- Code that implements part of the requirement without an `{impl}` reference to it is a gap under the assessment criteria.\n\nThere are no FIXME comments acknowledging this, so the result is false rather than FIXME.",
+  "rationale": "The behaviour of the `outline` tool looks right and is tested. The code that actually exposes the tool is not marked `{impl}` for this requirement, and the requirement counts that as a gap.\n\n**What is implemented and marked**\n- `fn outline` (`src/authoring/tools.rs:125-140`) takes exactly `{file}` and rejects other keys. It calls `AssessmentSources::parse_file` (`src/authoring/inputs.rs:211-222`), which first calls `access.file(...)`. A denied file therefore returns `PermissionDenied`, and `assess` in `src/authoring/mod.rs` turns that into an abort instead of a recoverable tool result. Ordinary failures such as a missing file stay recoverable.\n- The tool returns `inputs: Vec::new()`, so its results never become evidence inputs.\n- `outline_entries` (`tools.rs:142-160`) emits `item`, `kind`, `name` (null when the node is anonymous), `line_start`, `line_end` and a recursive `children` array. It contains no source text. It starts from the root node's children, so nesting follows outline ancestry.\n- Plain-text files go through the same outline code, so each non-blank line appears as a `line@…` node.\n- The test `outline_lists_nested_nodes_without_text_or_inputs` (`tools.rs:1444-1488`) covers the main cases:\n  - It compares the full nested Rust result for a struct and an impl containing a fn.\n  - It checks that the doc-comment text is absent from the result and that `inputs` is empty.\n  - It checks the plain-text profile: `line` kind, null name, `line@` selectors, and line numbers that skip blank lines.\n  - It checks that a missing file and missing arguments are errors.\n  - It checks that a disallowed file gives `PermissionDenied`.\n- `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` also checks that an untracked file gives `PermissionDenied` with a `git add` hint.\n\n**Gap: the exposure of the tool is not marked**\n- The requirement says the harness MUST expose an `outline` tool with the stated interface. That is done in `tools::definitions()` (`tools.rs:17-57`), which holds the `outline` name, its `file` parameter schema marked required, and its description. It is also done in `dispatch`, which routes `\"outline\"` to `outline` (`tools.rs:59-78`).\n- Neither function carries `{impl}\\`requirements.authoring.outline_tool\\``. `definitions` is marked only with `source_tools`, `file_discovery`, `text_search`, `evidence_paths`, `generated_inputs`, `read_denial` and `credentials`. `dispatch` is marked with `source_tools`, `file_discovery` and `text_search`.\n- The `references` listing shows only `parse_file`, `outline` and `outline_entries` as `{impl}` sites. Code that implements part of the requirement without an `{impl}` reference is a gap under the assessment criteria.\n- No test checks that the `outline` tool is in the advertised definitions with the specified parameter schema. `outline_lists_nested_nodes_without_text_or_inputs` calls `dispatch` directly.\n\n**Minor note**\n`OutlineNode::display_name` produces the `name` field, including the `Self/Trait` joined form. It is marked only for `references.outlines`, not for this requirement.\n\nThere is no FIXME acknowledging the gap, so the determination is false.",
   "inputs": [
     {
       "requirements": "requirements.authoring.outline_tool",
@@ -55,7 +55,9 @@
         "node, such as Rust attributes and doc comments preceding an item, so the outline",
         "tree need not match the grammar tree exactly; attached siblings are part of that",
         "node for its line range and hash. Every file's outline MUST have a root node",
-        "for the whole file. Comments MUST NOT be outline nodes. Profiles MUST be",
+        "for the whole file, independent of language. Source in no other outline node,",
+        "such as top-level statements no profile maps, MUST belong to the root node;",
+        "profiles MUST NOT invent fallback kinds for it. Comments MUST NOT be outline nodes. Profiles MUST be",
         "documented. Upgrading a grammar or profile MAY change outlines and MUST be",
         "treated as a deliberate change.",
         ":::"
@@ -126,7 +128,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "4a3e79905506b4ca6253dbb9e74b85e5a5e87ebfd05c6131a708e0d931526359"
+      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -136,7 +138,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "946a4db6e2efc48af190534f77a1ace8cb8edd28284170e8203ff7c12e8d547b"
+      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -161,7 +163,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "7328154a4a915fd8b891324603a266f043164a3321da08da47f979b2f6fc501e"
+      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -175,13 +177,8 @@
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "fn[insert_selector]",
-      "hash": "54d9a173878107f95099d460a21bc217892ddadd5bab92477695cfd3f3b84496"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
       "item": "fn[reference_selector]",
-      "hash": "efc3b45f9b6aba2f86aa135df79d4dcc1457df3f21f6749e8ee44e585008b2e3"
+      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -191,27 +188,22 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "b880f9bd3dae69f969181bcae745e7f2a648d67d00fde34d475359fc62f5fdd4"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
-      "hash": "87337486950970b7a1cffd04d7157dff8eb897821c33f8d0a491997ca235774f"
+      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "1448005ed5fc5aca4f8a18dec1c0b86aa2e878c4ef8508e75abe26e88ed2eb1f"
+      "hash": "dcf7e54a23dcebb99ce3fc2313f72289801e3f03afde66f9e24e01ea8e632d13"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "c2dde298701587d1b099c291deef762564ec37a0a75117663ed7f82405d65eb8"
+      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
-      "hash": "df614bcb78331da093225474a109dfe520f116711ab415ee635c700f5612f22e"
+      "hash": "7e252081e666e82ce2e550a18e17b95fc52f0e9eee30a2f6a3f6e7df5b3119bb"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -221,32 +213,32 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[references]",
-      "hash": "d238429c4ca5f83d7c33098d882a98eb06e3fac94de1c49d4b57ff55774af343"
+      "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
-      "hash": "602e67b123fdb273ff6d87e9bfcc48b49b3c219a43634b7d6ee10cb1f10cd769"
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
-      "hash": "4549912de14c5ee5892c6e602e6c5db4c1ff77d8a9d0260519f5993e637b4803"
+      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
-      "hash": "a4af827c8e7158a6e50dea2c6f5c8ea3fe99914fb50c111e041be16d93b104ba"
+      "hash": "bd29c2fa110ed2c54197782e38fb1b9cf3db78f2a5e482aa35f907939882ae45"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "2f0af97fbd766a3b4618f88bf0166b0da92048180c8612fbca9da2a82cad6034"
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]",
-      "hash": "2d3dff72ec38f3c68779f0ca7a1f78e450121f919cbebf82279bc185d418c40b"
+      "hash": "3ccf9af34dbd89804259953f2034d4d0108fc3522e3a28bc4792632d72ac5865"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -261,12 +253,72 @@
     {
       "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "10ed6d1783f73301693d98dc4307efbfbe8582d686eae3ba424657ab83e49eef"
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
     },
     {
       "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
       "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
+      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
+      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
+      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
+      "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
+      "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess]",
+      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
+      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
+      "hash": "204a1e1b56a975bbf449d5e38f893f680bc0563c1b4ffcd65c9544c0461b1eff"
     },
     {
       "file": "src/outline/mod.rs",
@@ -284,69 +336,59 @@
       "hash": "a759ad0ae28972043bf872664d33978c70598bbb0a7dbfd850bace1efbbe9d1d"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "dbe084fd64501fdfe06de9c8b0062d2983df9a49e315b6c4c49e1b960dca50c4"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "5dd4b31a80da195e066629fa3a018e4cc553c8ea1ebf488cd2e5d4c20e8a33f7"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "3f42864619d8f9fd959d3fa3b627e44b009ebc7b9198e54bbc974637185dd4c2"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "9fb2c8f3ea769c3f0c484f58ca639d3180646d22f93c945791eefd9aafbdd211"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "dcdb797b2e2df0d2c8e5b5dbe33f5c2c63509aa355e10f7cb6525c4c228e71c7"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "994728df823b6bbb189812bee219c18daea969a94dd7bce075cf0bb32a47e588"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
-      "hash": "3a9ee653c5385f53cd750a86391efd9126ed8dcfb38fdb9ca38b08b957f17550"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
-      "hash": "aeabf0827994edfa97ab6b40fed021428e399383f5a5ee1745f49860c0921d67"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[submission]",
+      "hash": "3f4acd1d1c636179b58366914e69d8b699355c761c96b5b2842314d8d7da1860"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+      "item": "fn[tool_definitions]",
+      "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
-      "hash": "80dbfd182a97dc80d12b54e5746789304b2bec10fad355e6dcd4d5bf4d3f14c6"
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/use@8def5dd8f53e",
+      "hash": "8def5dd8f53e36ade7b3d7a2790195beae52e7fadcb9e41a2908e05616a2932b"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
-      "hash": "6289c50f6cbbc09d201331f5b4a74218f54ee10e1d5e59d3296e10236f8f3734"
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/use@d3e0d9ac0ad2",
+      "hash": "d3e0d9ac0ad2ee9e013d5071a145d5488e0d5b5b2b58097bf4c7aeb5fd7b9f58"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[definitions]",
+      "hash": "65866836139f2ff410592e6c4fc6ada7bb4a9e75b97d2d530245e9c204bb2709"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[finds_uncited_functions_without_using_enclosing_or_string_references]",
+      "hash": "b707b4cf148516e3b47217e474889a688002037b2f3647cd7896c8a24414fad4"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[checks_trait_test_helper_and_nested_functions_separately]",
+      "hash": "bd320cbf33ed73373b2e16e22a3b7265566cda6dbe589bbe6315febcf6c0f3bc"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[locates_functions_after_unicode_text]",
+      "hash": "9530c2f8a1e5893ec5d3fa85a6ded2a0d64b82f5afdb9f73622d4b4f76074d8e"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[reports_all_files_and_parse_failures]",
+      "hash": "7a27e6da1334ee44d7efe3ca2e90af4737bfdf1bd4a91cf28d4f721fe0b24914"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[structs_enums_and_unions_need_references_attached_or_inside]",
+      "hash": "80ad250f6e96ec348bacacddb150c1a1ef849bff07a1ddb3cce2237a33dd6eea"
     }
   ]
 }

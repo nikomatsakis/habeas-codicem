@@ -1,7 +1,7 @@
 {
   "requirement": "The Habeas crate MUST have a Cargo integration test that exercises evidence\nauthoring against a real configured Bedrock model when AWS credentials can be\nloaded. It MUST skip before reading configuration or resolving credentials when\nthe `CI` environment variable is present. Outside CI, it MUST fail when no\nBedrock authoring configuration exists, and MUST skip with a visible warning when\nthe AWS SDK cannot load credentials. Skip warnings MUST be visible under ordinary\n`cargo test` output.\n\n`HABEAS_LIVE_CONFIG`, when set, MUST select a named authoring configuration for\nthe test. Otherwise the test MUST use the project's or user's selected\nconfiguration when it selects Bedrock, falling back to the first named Bedrock\nconfiguration in name order. Malformed configuration and invalid explicit\nselections MUST fail the test. The selected profile, region, model, and options\nMUST come from that configuration; credential resolution MUST use the AWS SDK.\n\nOnce credentials load, model-request and authoring failures MUST fail the test\nrather than be treated as skips. The test MUST exercise an additional source read\nand judgment submission using a temporary project and stdout evidence output,\nwithout changing the checkout's evidence. It MUST retain ordinary usage history\nand check the returned evidence and recorded usage. Deterministic tests MUST\nverify the CI and missing-credential skip paths and the missing-configuration\nfailure without calling a model.\n{cite}`requirements.authoring.provider`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.submission`\n{cite}`requirements.authoring.persistence`\n{cite}`requirements.authoring.usage_storage`",
   "determination": true,
-  "rationale": "`tests/live_bedrock.rs` covers each obligation, and I found no gaps. The `{test}` markers are on all of its functions. A test-only requirement needs no `{impl}` code. The cited authoring requirements are exercised end to end through the real CLI. I read the sources but did not run the tests, and the live test needs real credentials.\n\n**Live test (`live_bedrock_authoring`)**\n- **CI skip:** If `CI` is set, it returns with a visible warning before it reads configuration or resolves credentials. The warning goes through `report`, which writes straight to stderr, so it shows under ordinary `cargo test`.\n- **Configuration selection (`selected_config`):**\n  - `HABEAS_LIVE_CONFIG` is read first.\n  - Without it, the per-project selection is used, then the user default. A selection is used only if it is Bedrock.\n  - Otherwise it falls back to the first Bedrock configuration. `configs` is a `BTreeMap`, so that is name order.\n  - An explicit selection that is not Bedrock, or is unknown, returns an error.\n  - Malformed configuration returns an error through `?`.\n  - A missing Bedrock configuration outside CI panics with an explanatory message, so the test fails.\n- **Credentials (`credentials_available`):**\n  - It uses the AWS SDK loader with the configured profile and region, and with explicit credentials if the configuration has them.\n  - A missing provider or a failed `provide_credentials()` produces a visible warning and a skip.\n  - Credentials present but no region is a hard failure. That is stricter than the requirement's skip wording, but a Bedrock request without a region could not succeed anyway.\n- **Authoring run:**\n  - Once credentials load, the test runs `author-evidence <subject> --config <name> --stdout` in a temporary project. The subprocess's failure is asserted, so request and authoring errors fail the test.\n  - The fixture's `src/parity.rs` is not cited anywhere, so the model must read it with an extra tool call.\n  - The test asserts the evidence JSON: the requirement text, a valid judgment, a nonempty rationale, and a recorded `src/parity.rs` outline input with an item and hash.\n  - It asserts that no `evidence/` directory is created in the project.\n  - It reads the usage record at the reported path and asserts backend, model, outcome `completed`, `evidence_output` `stdout`, `evidence_written` true, at least 2 requests, one `submit_judgment` call, and at least one read or search call.\n  - It does not redirect the state directory, so ordinary usage history is retained.\n\n**Deterministic test (`live_test_prerequisites_are_checked_without_inference`)**\nIt runs the live test as a child process with a clean AWS environment, a temporary config and state root, and an unreachable Bedrock endpoint (`skip_probe`). The cases are:\n- `CI` set with an invalid TOML config: succeeds with the CI-skip warning, which shows the config was not read.\n- Malformed config without `CI`: fails with \"cannot select live Bedrock configuration\".\n- No config file, config with no authoring section, and an Ollama-only config: each fails with \"no Bedrock authoring configuration\" and does not skip.\n- `HABEAS_LIVE_CONFIG=missing`: fails.\n- A Bedrock config with an AWS profile that has no credentials: succeeds with the \"AWS credentials unavailable\" warning and no usage record.\n- Fake static credentials: the live path is entered (\"live Bedrock test: configuration …\"), the request fails, and the test fails with \"live Bedrock authoring failed\" instead of skipping. This confirms that model errors are not treated as skips.\n\n**Documentation:** `md/reference.md` (\"Live Bedrock tests\") describes the behavior, including `HABEAS_LIVE_CONFIG` and the CI skip.\n\nOne case is not tested: an explicit `HABEAS_LIVE_CONFIG` that names a non-Bedrock configuration. The code handles it, and the missing-name case is tested.",
+  "rationale": "**Verdict: the subject is satisfied.** One minor test-coverage gap is noted below; I did not treat it as blocking.\n\nThe requirement asks for a Cargo integration test. That test is `tests/live_bedrock.rs`, so the test code is the implementation, and every site carries a `{test}` reference to the requirement. The cited authoring requirements are exercised through the end-to-end run, and `md/reference.md` (\"Live Bedrock tests\") documents the behaviour.\n\n**Skip and fail paths in `live_bedrock_authoring`**\n- It returns with a visible warning before reading configuration or credentials when `CI` is present (`var_os(...).is_some()`).\n- Outside CI, `.expect(\"no Bedrock authoring configuration…\")` fails the test when no Bedrock configuration exists.\n- Malformed configuration fails with \"cannot select live Bedrock configuration\".\n- When the AWS SDK cannot supply credentials, the test returns with a warning.\n- Warnings are written through `io::stderr().lock()` in `report`, which bypasses libtest capture, so they appear under ordinary `cargo test` output.\n\n**Configuration selection in `selected_config`**\n- `HABEAS_LIVE_CONFIG` is an explicit selection. A missing name or a non-Bedrock config is an error, and so is a non-Unicode value.\n- Without an explicit name, it uses the user's per-project selection, then the user default, but only if that selection is Bedrock.\n- Otherwise it takes the first Bedrock config in `BTreeMap` name order.\n- A malformed user config fails through `load_user_config`.\n\n**Credentials in `credentials_available`**\n- Credentials are resolved with the AWS SDK (`aws_config`), using the profile, region and literal credentials from the selected configuration.\n- A missing region after credentials load fails the test rather than skipping.\n\n**Live path**\n- Once credentials load, any failure to run `author-evidence` fails the test (`output.status.success()` is asserted).\n- The test builds a temporary fixture project and runs the real binary with `--config <name> --stdout`.\n- The fixture's `src/parity.rs` is uncited, so the model has to make an additional source read.\n- Usage goes to the ordinary user state directory and is retained. The test reads the usage record from the reported `Usage:` path.\n- It checks the evidence JSON: the requirement text, a valid determination, a nonempty rationale, and a recorded `src/parity.rs` input with an item selector and hash and no line text.\n- It checks that no `evidence/` directory was created and that usage shows backend `bedrock`, the model, outcome `completed`, `evidence_output` `stdout`, and `evidence_written` true.\n- It checks at least two requests, exactly one `submit_judgment` call, and at least one `habeas` or `ripgrep` call.\n\n**Deterministic tests in `live_test_prerequisites_are_checked_without_inference`**\n\nThese re-run the test binary in a sandbox with isolated config, state and AWS environment variables, so no model is called.\n- `CI` set plus a malformed config succeeds with the skip warning. This shows the CI skip comes before configuration is read.\n- Malformed config fails.\n- No config file, an empty config, and an Ollama-only config each fail with \"no Bedrock authoring configuration\" and no skip message.\n- An explicit missing `HABEAS_LIVE_CONFIG` fails.\n- A Bedrock config with a profile that has no credentials succeeds with the \"AWS credentials unavailable\" warning and no `Usage:` line.\n- With fake credentials, the request fails (the endpoint is a dead local port). The test fails with \"live Bedrock authoring failed\" and no skip warning, so model-request failures are not treated as skips.\n\n**Minor gap**\n\nThe selection-precedence branches are not tested deterministically. These are the per-project selection, a Bedrock user default, fallback to the first Bedrock config in name order, and an explicit non-Bedrock selection. The code handles them correctly, and the requirement's mandatory deterministic checks (CI skip, missing-credential skip, missing-configuration failure) are all present, so I did not treat this as blocking.",
   "inputs": [
     {
       "requirements": "requirements.integration.live_bedrock_test",
@@ -196,17 +196,17 @@
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[selected_config]",
-      "hash": "f7bd785cf23b34054f759501e9cd2219d128738edbfc7ae0e9d2eb1f40d9fb2e"
+      "hash": "aa872069767aefcfd77a14c0c3b9dcdfd526b6be69e731c7fa384611e7c2fbcb"
     },
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[credentials_available]",
-      "hash": "e3bb71cc6c5bdd41927bccc0329bd604d694fbc1d848cca3b20091cca67a05d0"
+      "hash": "a7873ca17f2ee02692cde9eec15128cfbee5fb23f3164e8da28351316ac02eec"
     },
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
-      "hash": "334db9087426522bd749ba0bd042005190bc388325543e5f100f7c764f1a4969"
+      "hash": "372d4143227c94e60be30077a9386da7eb61c0791690cc9b8d28686c026fda5d"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -216,7 +216,7 @@
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_test_prerequisites_are_checked_without_inference]",
-      "hash": "77bee3172ad1ca5150303fd4a74a40f169da119ae904233037f91ed890b71f7e"
+      "hash": "770b952012098e53f6bff69f257bde5937b89263032d02160ed4b2e4e72b51a4"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -266,12 +266,22 @@
     {
       "file": "tests/live_bedrock.rs",
       "item": "const[REQUIREMENT]",
-      "hash": "282ffe1bf7539b261fa781196e2f771ad925e09ae9755d1705af33f2d6480851"
+      "hash": "388bcfd8964eb082ed9b81700b83561a5774281beae8b3db1abb72aaa2d3c25b"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[OllamaConfig]",
-      "hash": "d99ab3df80374aaf9bc06934b388aba687f809cc3ca5d812c0d589db1afa7259"
+      "item": "struct[UserAuthoringConfig]",
+      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ProjectSelection]",
+      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]/fn[validate]",
+      "hash": "a7e2a658f40cf662969e7c741a907a58edf3c84bfbcf7ae1119f2d7f1e960931"
     },
     {
       "file": "src/config.rs",
@@ -290,48 +300,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "fn[state_root]",
-      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root_from]",
-      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[absolute_directory]",
-      "hash": "82024e470bc377bbc0fc64f0702e8c445d30df5022d152673e1130e82fb5d222"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[required_directory]",
-      "hash": "104cb645df826b0825808695454101b82949f094c2503b404af9e3ffec41d300"
-    },
-    {
-      "file": "src/config.rs",
       "item": "fn[load_user_config]",
-      "hash": "236dfdef96283bdd9b206c3ef8d3a8be0bbca71a230a60896100a1d421c1bc12"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_config]",
-      "hash": "84d954165b76af1a7fda6ce26851b3af3dfc85665c63517732fa9093e0c62528"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_evidence]",
-      "hash": "0c205d8c0b3d0e266e5397fa9f7b437e6c9442eae21bc6631ba80de6673bc0dc"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[decode]",
-      "hash": "005923d17d0fd4b8e477414f29167ffa160e88ac377510da79ef03f33503b937"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
     },
     {
       "file": "src/config.rs",
@@ -346,7 +316,7 @@
     {
       "file": "src/config.rs",
       "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "6e4658d39d846cf2c7aaf0277e2b3436e0623fe22ea5c476208f553ea1547157"
+      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
     },
     {
       "file": "md/reference.md",
@@ -354,14 +324,14 @@
       "hash": "a46db785c17834f4143ef3305332d7f7f1dbb0fbdf8f1e176b8aded2e8667f34"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceAuthoringConfig]",
-      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]/section[Live%20Bedrock%20tests]",
+      "hash": "430c934bc0bfae92427754ac0a9bc11367477b76f5a57cd8cc747085b904edcf"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[UserAuthoringConfig]",
-      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+      "file": "md/requirements/integration.md",
+      "item": "section[Project%20integration]",
+      "hash": "6a6adeee32fa93f5271a8ac4710cb928599fb0a5999094130b8615d9fc296f6c"
     }
   ]
 }

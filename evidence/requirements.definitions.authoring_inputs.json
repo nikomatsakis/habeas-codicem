@@ -1,7 +1,7 @@
 {
   "requirement": "When preparing the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`, every terminology definition\nreferenced by the subject or any contributed source MUST contribute its complete\nfenced declaration, including its phrase option. Definitions referenced by those\ndefinitions MUST also be included transitively, without duplicates or\nnontermination on cycles.\n\nWhen an additional source read introduces a terminology dependency, the same\ncomplete, transitive definition set MUST be supplied to the model and recorded\nbefore accepting a submission.",
-  "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements both obligations and the tests cover the main cases. A few test assertions are missing, listed under Gaps.\n\n**Initial mandatory set**\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`, marked `{impl}`) builds the contributed sources. These are the subject, the `{cite}`d requirements, the `{impl}`/`{test}` owning nodes, and the anchors.\n- It then calls `definition_inputs(..., &mandatory, Some(&subject.text))`.\n- `definition_inputs` (`{impl}`) calls `terms::dependencies`. That function:\n  - collects `{term}` references from the subject text;\n  - collects them from each contributed input: Rust comments, Markdown or plain-text bodies, and the bodies of requirement blocks;\n  - expands them to a fixed point with a `BTreeSet` and a `required.insert` guard. That gives no duplicates and no nontermination on cycles, and a missing target is an error.\n- `source_input` (`{impl}`) turns each definition into an input whose `text` is the definition's `raw_lines` (`InputSelector::resolve`). That is the complete fenced declaration, including the `:phrase:` option.\n- Duplicates are skipped with `mandatory.contains`.\n- `initial_prompt` puts `mandatory_inputs()` into the first model request, and `assess` seeds `pending` with them. `pending` is recorded on the first response, before any submission is handled.\n\n**Additional reads**\n- `read` and `search` in `src/authoring/tools.rs` (both `{impl}`) call `AssessmentSources::additional_definitions` (`{impl}`) on what they deliver.\n- It computes the same transitive set from the delivered inputs. It drops definitions already in the delivery or already recorded.\n- The tool result carries the definitions, and `ToolDelivery.inputs` includes them.\n- `assess` adds those inputs to `pending`. They are recorded at the top of the next loop iteration, before the submission branch runs.\n\n**Marking**\n- Every function that contributes to this requirement's behavior carries the `{impl}`. `terms::dependencies` is generic and is marked for `requirements.definitions.dependencies` and `selection`. `prepare` and `definition_inputs` reach it through the call above, and it has no `{impl}` for this requirement.\n- I saw no behavior in the `{impl}` code that this requirement or another definition it implements fails to specify.\n\n**Tests**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` builds two terms that reference each other (a cycle) and a subject that references only one. It asserts exactly two `definition` inputs, so transitivity, no duplicates and cycle termination are all checked.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` checks that a term referenced from a contributed Rust comment is included. It also checks that the term file's access policy is enforced.\n- `reading_records_only_delivered_sources_and_their_terms` (`src/authoring/tools.rs`) reads an item whose comment references a term. It asserts that the definition is delivered, that two inputs are recorded, and that recording is deduplicated. It also exercises the `requirements` and `definition` read forms.\n\n**Gaps (minor, not enough to fail)**\n- No test asserts the definition's text contains the fence and the phrase line. That text comes from `raw_lines`, which the `definitions.inputs` tests cover elsewhere.\n- No test covers a transitive term, or a term already recorded, arriving through an additional read. The `ripgrep` and line-range read paths are also untested for terms.\n- Those paths all use the same `additional_definitions` helper that the item-read test exercises.",
+  "determination": false,
+  "rationale": "**Verdict: false.** The definition-gathering logic is correct and well tested. The \"recorded before accepting a submission\" obligation is implemented in code that carries no `{impl}` for this requirement, and no test exercises it end to end.\n\n**What is implemented correctly**\n- `AssessmentSources::prepare` (src/authoring/inputs.rs:42-173) passes the subject text plus all mandatory inputs to `definition_inputs`. Those inputs are the subject declaration, `{cite}` targets, `{impl}`/`{test}` sources and anchors. Each resulting definition is appended to the mandatory set without duplicates.\n- `definition_inputs` (inputs.rs:415-440) delegates to `terms::dependencies` (src/terms.rs:45-116).\n  - It scans the subject text, Rust comments in outline inputs, Markdown outline inputs, requirements-input bodies and definition inputs for `{term}` references.\n  - It then closes the set transitively. A `BTreeSet` and `required.insert` guard give deduplication and termination on cycles.\n  - An unresolvable term returns an error. `prepare` propagates it, so the failure surfaces before inference.\n- Each definition is supplied as `InputSelector::Definition`. `resolve` returns `target.raw_lines` (src/inputs.rs). For terms, `definition_blocks` does not strip options (src/lib.rs), so the full fenced declaration and its `:phrase:` line are included.\n- The additional-read path is `additional_definitions` (inputs.rs:261-277), called from `tools::read` and `tools::search`.\n  - It computes the same transitive set from the delivered inputs.\n  - It drops definitions that were already delivered or recorded, and returns the rest to the model.\n  - In `assess` (src/authoring/mod.rs), the delivered inputs are added to `pending` and recorded before the next turn, which includes any submission.\n\n**Tests that cover the requirement**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` (inputs.rs:471-556) uses terms that reference each other in a cycle (`unit` and `value`). The subject references only `unit`. The test asserts exactly two definition inputs, which covers transitivity, deduplication and cycle termination.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` (inputs.rs:617-682) covers a term referenced only from a contributed source's comment, and read denial on the term file.\n- `reading_records_only_delivered_sources_and_their_terms` (src/authoring/tools.rs:553-658) covers an additional read that introduces a new term. It checks that the term is returned alongside the read, is recorded, and is not duplicated.\n\n**Gaps**\n1. **Missing `{impl}` marks.** The requirement says the same complete set must be \"supplied to the model and recorded before accepting a submission\". The recording step lives in `AssessmentSources::record_inputs` (inputs.rs:187-196), `recorded_input` (src/inputs.rs) and the `pending` handling in `assess` (mod.rs:412-532). These carry `{impl}` only for `delivered_inputs` and similar requirements, not for `requirements.definitions.authoring_inputs`. The same holds for `ToolDelivery` assembly in `tools::dispatch`. The task treats partially implementing code without an `{impl}` reference as a gap.\n2. **No end-to-end test of recording.** No test drives `assess` to show that definitions from an additional read are recorded in the evidence before a submission is accepted. The tools test only calls `record_inputs` directly. `search`'s definition delivery and a definition-bearing `requirements` read also have no direct assertions.\n3. **No explicit `:phrase:` assertion.** No test asserts that a delivered definition input's text includes the `:phrase:` line. This is guaranteed by `raw_lines`, but only indirectly.\n\nThere are no FIXME acknowledgements for any of these gaps.",
   "inputs": [
     {
       "requirements": "requirements.definitions.authoring_inputs",
@@ -47,7 +47,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "946a4db6e2efc48af190534f77a1ace8cb8edd28284170e8203ff7c12e8d547b"
+      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -67,12 +67,12 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "c1e6e2be1aedce966332810f1e63bca14af74ee76bdc12f071c5614c3ec5bdb8"
+      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "6a1f95af636730ee450cc36e7847a32e51a288bcadc4af13d0ad5af6d4319516"
+      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -82,12 +82,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "801b0b45cf5c944b85dff7f8662a7af6a4ec40d35ded8f2bddd960a83dfe9c09"
+      "hash": "c71320b40ade275633a2dbfd32e6d949b4c537ba76927694283167816a99b491"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
-      "hash": "602e67b123fdb273ff6d87e9bfcc48b49b3c219a43634b7d6ee10cb1f10cd769"
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
     },
     {
       "file": "src/terms.rs",
@@ -122,7 +122,7 @@
     {
       "file": "src/terms.rs",
       "item": "fn[declaration]",
-      "hash": "4221523ed17b632b4d932793ed68d41378ce9a14e36522277423a1abe547c205"
+      "hash": "5263149823d66ebe73fd2dbdf0eebb70dab76aea126cb1da175a6c5dc221d290"
     },
     {
       "file": "src/terms.rs",
@@ -132,47 +132,12 @@
     {
       "file": "src/terms.rs",
       "item": "fn[dependencies]",
-      "hash": "aa9114725e1f73f563341b87d8bd45dac17db12fb4c71ba0183ab53613266c18"
+      "hash": "3c2ddcd06f8a2731215a0c27627369e0f4ac60a2549f1600d0cb7f5ee1c4a213"
     },
     {
-      "file": "src/terms.rs",
-      "item": "fn[validate_dependencies]",
-      "hash": "a32aaee3ff5a80f2a979fab69c5fe4173683bc6b153f84da4d7c0c67ee6fdbaa"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@420a7d4fdb66",
-      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@3970e6901143",
-      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@af5af7ca9b21",
-      "hash": "af5af7ca9b21b459949168a24caa4a5918639b9884d390487f8cdfaa36b95032"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@4acd7fec4c4a",
-      "hash": "4acd7fec4c4a06f684055207db032e20d650cbfd84049329791caa29f3d7944a"
+      "file": "src/add_input.rs",
+      "item": "fn[update_inputs]",
+      "hash": "b7ef0060d2ffa22cef008e764ff74687b6677260ef3fffdb29e9bc5d09b422ca"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -181,38 +146,8 @@
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "use@3a464b643804",
-      "hash": "3a464b643804f06381e422e4a1a7154097db7f65a49504935a85a0e6b9fa8c70"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "enum[AssessmentKind]",
-      "hash": "9bd1851dbc93e4f08073b9381a305ca2be7a7571300b7d3ebcc1a24b36f61ee8"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentKind]",
-      "hash": "d4d564e0460b2cb970dd1dcb3ce9381286f57d181db4e6141d944e2b84b13a0b"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
       "item": "struct[AssessmentSources]",
       "hash": "9c5d8ba90a9b834e29500213852a01ff2bee426f13f73ed4d335d359cd2b76f3"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]",
-      "hash": "596faf06a06e0ff3f4e593a791cb17b797f59fbcff31a1f486b0ab51f560efbe"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_path]",
-      "hash": "df1f61c7b3a4bd67529fce5edc8c58f199c3183a6fa85569da97539acef0c39a"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_selector]",
-      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -226,78 +161,128 @@
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "7328154a4a915fd8b891324603a266f043164a3321da08da47f979b2f6fc501e"
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "a3f87dcf2b9125549fbfd02570ec43ddf209a3429eb38ce1be7d4edac0e7f6f3"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
-      "hash": "1bd97f9ef93ba8fdd423db968cb7c373b4efa3174afd40430062340350a7497f"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
-      "hash": "3a9ee653c5385f53cd750a86391efd9126ed8dcfb38fdb9ca38b08b957f17550"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
-      "hash": "aeabf0827994edfa97ab6b40fed021428e399383f5a5ee1745f49860c0921d67"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "b880f9bd3dae69f969181bcae745e7f2a648d67d00fde34d475359fc62f5fdd4"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "1448005ed5fc5aca4f8a18dec1c0b86aa2e878c4ef8508e75abe26e88ed2eb1f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "792de4a6e4c3dc00f4e12403f2c953553b710cecae5e954f8167ac9b74c22eba"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[initial_prompt]",
-      "hash": "e7da3bcb5ee82b6af7ebf8bdcc4d259b8ba733337fec6ae5bf91829858d8a208"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[submission]",
-      "hash": "0399b4a6cb4665e2c0d3cf700b5aac090be807722f8c47cfacbd37a6c94a2321"
+      "item": "fn[reference_selector]",
+      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[retry_fixture]",
-      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+      "item": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]",
+      "hash": "035a746b5d4bc5ef6fadfdb528065812f0d554534df0d7103a5b312980813022"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "b6ea41e0520a27f287ef5ef9bf0c947105fd047bf9d00f8c549b193159411dae"
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_config]",
+      "hash": "c6cd3b29dc1e52be19c7808b21770c700a46510956f3800f3c6acbb4f6262fdc"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[check_keys]",
-      "hash": "fe6d6607863064a361539ba73bca18b7d60b3712b2f9f0a7a5bf8f0fa51acb9e"
+      "item": "fn[definitions]",
+      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "2f0af97fbd766a3b4618f88bf0166b0da92048180c8612fbca9da2a82cad6034"
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_input]",
+      "hash": "7afcca3fd13ac29d384dfbc8d9c9dff12bb910ee7cb77898015f1eb987ab408d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "69a294c538429cd1e2d9f1d4274ec9f17a6b7e99c3b5d3c8329c44d6f8d96176"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[compact_diff]",
+      "hash": "6f358e5c5d4c9129a514ab0bf6d3cdd3eb7bbd562e0241208ada79cac17b6f4c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[outline]",
+      "hash": "f6d14193eb07c4168507ea6177970bf26d332f406b25ca3b600b6bd6ec27456b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "0588470ebd00187b0af8f3ddd82ed1739c36d83a5f9cca355a2837130828c8ba"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
+      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]/fn[group]",
+      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_sections]",
+      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
+      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
+      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[generated_detail_path_cannot_replace_a_chapter]",
+      "hash": "3202b1717afc420b649ce2c1abbaee8200fa7df46d02176794a81add5d890595"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[invalid_evidence_detail_remains_readable]",
+      "hash": "7c2c957ce29dc4ed7d97b8eebdf072ef96bf9cbffa3b39c959465690efdcc9bb"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
+      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[from_input]",
+      "hash": "36656c01e7424e4090153587c050dfd41868a8f14b91f908649232e20450cb22"
     },
     {
       "file": "src/inputs.rs",
@@ -312,35 +297,117 @@
     {
       "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "62ef579a8e3bfa3a76977643723328260e357e2e680735b3b8f2731fbbf90538"
+      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
-      "file": "md/requirements/definitions.md",
-      "item": "section[Named%20definitions]",
-      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
     },
     {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/lib.rs",
+      "item": "struct[Definition]",
+      "hash": "3276d2aed460f63c5439d617c7db5784b73345a60a556841d6819ccc294a38b6"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
-      "hash": "761408446d9007dd3b2b332dec5838741c30a504a73e66a97f2eb78d82b947d1"
+      "file": "src/lib.rs",
+      "item": "fn[preprocess_book]",
+      "hash": "eae1658741308bc6473dd5a7d45f9b1af8ebb159827de93edb7965e1e81c79bb"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "87934a098ca24ae34fe86d1562a33b50a9d693f8cc3f08609f7204a2df86be08"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "e5e1e753f5af5b1cb73d5f609d795407bfb68c769920aeb976957346db13aec5"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[Declaration]",
+      "hash": "5b7addc906a3fae054cc3f35d45bfbad8d504dc80e8ed3828de5a19606713d7b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[Anchor]",
+      "hash": "5a2a5470e6528b90894f59fbeeeaa1e27264f4d4950c72ecbabba671039a0585"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "6e0d1bcbefe2f48a1562a260a5dd81fc25e54da33c79bd059f85f76df0b5db1e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
+      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]",
+      "hash": "f539e377ee365c410ba96a3a3884b522cf16cbf1ec33224a3c2da4ebbba0122f"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[anonymous_selectors_use_identity_hashes]",
+      "hash": "3b8ce2033af0eabfb93fa3242d82e70aeb880f0507210431d1b3f6c345f46731"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
+      "hash": "8091c3b026c2c255fcf96b68ca25755b44dcc0ae6ab4d5ef9ba220f7be326b5b"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[definitions]",
+      "hash": "65866836139f2ff410592e6c4fc6ada7bb4a9e75b97d2d530245e9c204bb2709"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
+      "hash": "a798c0a3903164d2f2f1758c0bfddce483826b6137ee6509776efbe71c14f2a6"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_definitions]",
+      "hash": "24059237d9a5bdbfdb3c48f10b6191995590aa8525bdfb1b628a2fe80ed18337"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_references]",
+      "hash": "f6346cb8e4304b6412a888b691430412882f83f2cce6c5916d65b74e3da4e006"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[definition_blocks]",
+      "hash": "cec74f4655a876a65a771105c3229cec7ac9e5ddf582125fc85b1e820c16e577"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[option_line]",
+      "hash": "5e4135e7c92fcfcb4c145c36dbb27c5ce491f47e55f23346ff491303c4c207a4"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[without_options]",
+      "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[colon_fence]",
+      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Editing%20the%20file]",
+      "hash": "d9e3662cd1722948c833eeb495512b440e9bbb4ca4e4d4175ad242e98336c0db"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Recording%20results]",
+      "hash": "1343ea12b8521449038d642876ecdc285af2b3bb058bfc08c1d001e176543389"
     }
   ]
 }

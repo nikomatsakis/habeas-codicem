@@ -1,7 +1,7 @@
 {
   "requirement": "When stderr is an interactive terminal, `habeas author --all` MUST display an\nupdating progress bar with elapsed time, percentage, finished and total assessment\ncounts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,\nand authoring errors. The total MUST count only subjects selected for assessment;\ncurrent accepted records remain in the unchanged count. A finished assessment\nMUST advance progress whether it writes a judgment or reports an authoring error.\nProgress measures completed work, not satisfaction of requirements.\n\nInspection MUST also show a progress bar for each phase with a known amount of\nwork, including evidence files, reference source files and coverage, Rust\nfunction coverage, and assessment selection. The display MUST label the current phase\nand show its completed and total checks; its percentage measures that phase's\nchecks, not estimated time or overall inspection completion. Discovery and other\nphases whose totals are not yet known MUST use an indeterminate activity display.\nInspection progress MUST NOT change validation results or invoke inference.\nEnabled reports MUST remain readable alongside progress. An\ninterrupted batch MUST retain its actual progress without counting unstarted\nassessments as finished. Empty batches and early errors MUST clear the temporary\ndisplay. When stderr is redirected or `TERM=dumb`, the command MUST retain its\nplain line-oriented reports without terminal control sequences. `NO_COLOR` MUST\ndisable color without disabling progress on a supported terminal. The existing\nstdout completion summary and exit-status rules MUST remain unchanged.\n{cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.reporting`",
   "determination": false,
-  "rationale": "The batch progress bar is largely implemented, but inspection progress for Rust function coverage is missing. That is an explicit obligation, so the requirement is not fully met.\n\n**What is covered**\n- **Batch bar:**\n  - `src/authoring/progress.rs` builds a bar only when stderr is a terminal and `TERM` is not `dumb`.\n  - It shows elapsed time, percentage, finished/total, active/queued, and separate true/false/FIXME/error counts.\n  - It advances on both judgments and errors.\n  - `NO_COLOR` strips the colors but keeps the bar.\n  - Interrupted batches use `abandon()`, so unstarted work is not counted as finished.\n  - `Drop` clears an unfinished bar, which covers early errors.\n- **Total:** `author_all_with_options` in `src/authoring/batch.rs` returns before `progress.start` when no assessments are needed, and it passes only the selected subjects as the total.\n- **Inspection phases with a known total:** `src/evidence.rs` and `batch.rs` report counted progress for evidence files, reference source files, reference coverage and assessment selection. Discovery phases report `total: None`, which produces the indeterminate display.\n- **Tests:** The tests in `src/authoring/progress.rs` and `src/evidence.rs`, plus the PTY tests in `tests/authoring_batch.rs`, cover these behaviors:\n  - counted inspection phases;\n  - percentage rounding;\n  - the plain `dumb` terminal;\n  - `NO_COLOR`;\n  - the interrupted case;\n  - the empty batch;\n  - final counts and exit status.\n\n**Gap: Rust function coverage**\n- The requirement says inspection MUST show a progress bar for each phase with a known amount of work, \"including ... Rust function coverage\".\n- In `inspect_repository_with_progress`, the Rust phase emits only `InspectionProgress { stage: \"Rust citations\", completed: 0, total: None }`. That is the indeterminate display.\n- It then calls `crate::rust_coverage::validate_rust_functions(...)` with no progress callback.\n- That function (`src/rust_coverage.rs`) lists the Rust files up front and loops over them, so the total is known. It reports no per-file completed/total.\n- The Rust phase therefore never gets a counted bar with a percentage and completed/total checks.\n- `validate_rust_functions` also carries no `{impl}` reference to `requirements.authoring.progress`.\n- No test checks Rust-phase counts. The only counted-Rust test (`inspection_displays_counts_when_same_phase_discovers_its_total` in `progress.rs`) hand-feeds a stale stage name, \"Rust sidecar coverage\". The inspection test in `evidence.rs` lists only the evidence-file, reference-source-file and reference-coverage phases.\n- No FIXME acknowledges this gap.",
+  "rationale": "**Verdict: false.** The batch progress bar and most inspection phases are implemented and tested. The Rust function coverage phase is not, and the requirement names it explicitly.\n\n**What is implemented and tested**\n- The terminal batch bar is built in `src/authoring/progress.rs` (`new`, `start`, `refresh`, `completed`, `failed`, `finish`, `println`). It shows elapsed time, percentage, `pos/len` finished, active and queued counts, and separate true, false, FIXME and error counts.\n- The total is `subjects.len()` in `author_all_with_options` (`src/authoring/batch.rs`), which excludes the unchanged records.\n- Position is the sum of all four counters, so judgments and authoring errors both advance it.\n- Interrupted batches use `abandon()`, so unstarted work is not counted as finished.\n- Empty batches return before `progress.start`. `Drop` clears an unfinished bar.\n- The bar is chosen only when stderr is a terminal and `TERM` is not `dumb`. `NO_COLOR` strips the color from the templates but keeps the bar. Otherwise `println` falls back to plain `eprintln!`.\n- Inspection progress is wired through `inspect_repository_with_progress`, `collect_references_with_progress` and `validate_references` in `src/evidence.rs`. It reports counted phases for evidence files, reference source files, reference coverage and assessment selection. Discovery phases use an indeterminate display.\n- Tests include:\n  - PTY tests in `tests/authoring_batch.rs` covering final counts, `NO_COLOR`, `TERM=dumb`, interruption, verbose output and the empty batch.\n  - Unit tests in `src/evidence.rs` showing that progress leaves validation results unchanged and that each phase finishes.\n  - A percentage-rounding test and a phase-label test in `src/authoring/progress.rs`.\n\n**Gap: Rust function coverage has no counted progress**\n- The requirement says inspection MUST show a progress bar for each phase with a known amount of work, \"including … Rust function coverage\". It also says the display must show that phase's completed and total checks.\n- `inspect_repository_with_progress` emits only one update for this phase: `stage: \"Rust citations\", completed: 0, total: None`. It then calls `crate::rust_coverage::validate_rust_functions(...)`.\n- `validate_rust_functions` (`src/rust_coverage.rs`) takes no progress callback. It builds a list of Rust files and then loops over them, so the amount of work is known once `rust_files` returns.\n- The user therefore sees only an indeterminate spinner for the whole Rust function coverage pass, which is often the longest phase.\n- None of the cited tests check progress for this phase. The only test mentioning a Rust coverage phase (`inspection_displays_counts_when_same_phase_discovers_its_total`) uses a synthetic `\"Rust sidecar coverage\"` label. That label is stale and never emitted by the code.\n- `validate_rust_functions` is marked `{impl}` only for `requirements.references.rust_item_coverage`, not for this requirement. The partial implementation of the Rust coverage progress obligation is therefore also not marked.\n- No FIXME comment acknowledges the gap, so it cannot be classed as a FIXME.",
   "inputs": [
     {
       "requirements": "requirements.authoring.progress",
@@ -108,37 +108,37 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "323d4bd9f7d3e60816e04cbff316f0db32575c44225a36d81fa72c8e5d561bf8"
+      "hash": "36deb619e4d6d1e1ec2ae64e7b26678169519fc38ff82e3a7d593fbc8989abae"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[new]",
-      "hash": "19fb1f537887c546d49d222a0e4d903949921697960cccfc7abb18a29b3b6a0c"
+      "hash": "a6727f1556cf97a83cf5e7adfac2a451c2e80f81b0fa50691f36b6bf35008351"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[inspect]",
-      "hash": "3cec87078a9bbc7396846ed73192fb10ef1bcd0e575361bc9e752d69afc8231e"
+      "hash": "806361e900cd0bfccbfa8d51bda2d708d969d0b9d0dcff4c83e653b5eddfd4fd"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[start]",
-      "hash": "c7a9aebca86efb21f4a092b254ce5bee931aa0eb0e309c9b924232d4d45b4c36"
+      "hash": "3ab7df686d6258aa7ef06e03fb3252fa4a8d6cf7ee9724fa3855ad64fa361b73"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[completed]",
-      "hash": "4cb6a3a541d7cd011517bf9cd73652642b5b2fe2d6a39f35f054c174146f9dec"
+      "hash": "4419037b895202f6e034f1ce1cf77060cb31b4d394cc22d59692bea42f4fe91a"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[failed]",
-      "hash": "3e7ce2857e1e131a5310f70d692079778faafeb4fea379cff47c70d5133da144"
+      "hash": "217184500abe138c3d3f2ad090e4e10a372d343f463712a14098b3a4426b82bc"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[refresh]",
-      "hash": "b27e2ed67e4325d6b3f30b9473c8f551a0ca9ad4b691d78d865a462854693d7a"
+      "hash": "b9622df9d0cc13daa1a7097000baf9f960c647559e1caea910c2bba1fd592094"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -153,12 +153,12 @@
     {
       "file": "src/authoring/progress.rs",
       "item": "fn[progress_style]",
-      "hash": "2772e5a76026d9880dcd1bb92dc42f2ff840fa058384f3a5c2a4feb6a862f6f9"
+      "hash": "e6d2b5c6f362e4bc0d0d5c84084f9ad9cd534faf3aa4174608e778a211247681"
     },
     {
       "file": "src/authoring/progress.rs",
       "item": "fn[write_percentage]",
-      "hash": "698f0c188a77905c2944c74f40e8de00cb791ef11407d995ff5c34f606044eb4"
+      "hash": "f8e620c7cacf88c15c43a9cef274e7ce45a952e2801d49a053f93985f51da092"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -213,7 +213,7 @@
     {
       "file": "src/authoring/progress.rs",
       "item": "mod[tests]/fn[inspection_displays_counts_when_same_phase_discovers_its_total]",
-      "hash": "69f2d1806102d1e27af3cd60d1bea0af7ba453073931823736a13babff876962"
+      "hash": "d41d480d7613d2747735a3bb17d6bcf65b2c1f9f9aa160a94d3368d990965a71"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -223,37 +223,37 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "43f7933cbbf05cb990cdbc13342160ee114f99df21412e2a549350867ffdc1a0"
+      "hash": "1ccc4046a314160559504cfc1042ca910c997e28ae25c5c51c9a0791a5faf6eb"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
-      "hash": "a53259372c00f283513c7c270465abd264793498385cb24638c11212635fbee8"
+      "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[collect_references_with_progress]",
-      "hash": "ec3a77f1f4c1ada2cad0a45d77ee5f5a98327909a221077df87b1c4cfadf82ce"
+      "hash": "0105f9f7711469f37a63a6d1cfb1138deafc20620ecb4a289faacd4fc2dce37e"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
-      "hash": "00ea14f2cf700d2ff28e951c010d28c01dbba07ecb2803b7e88b389ece56b8ec"
+      "hash": "3a95e96496e59dc43099c9706020e030bcea1e25af3006c617f702a65cdf5ae6"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
-      "hash": "bf3cd6ba70bdae480d2c06537c38469802316a9437209eb941a6b0e7b9d2802e"
+      "hash": "01beeb1f859a67450bf04cf20e2aba05971ee91df7a46ff76eab1315fa5035d7"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Server]/fn[start_with]",
-      "hash": "4aff32087320becd2227ad0a64f8e7b35ffbfc163eb4c91baa17f3e9f9ba2cc1"
+      "hash": "1b354fd94cb0193f19cb5a86ceadc69d382a437dc6847142cb4aa91e7ad2cefb"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[serve]",
-      "hash": "ef9ca0db509243039e14e3dc64d60641c65201d6c1fc788482561046f61d96a0"
+      "hash": "da0c441cba60aaf1d5b9987dbe0b20f3d2239d648bffc8d8e7e4aa4ee347c7cb"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -263,42 +263,92 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Fixture]/fn[run_in_pty_with_args]",
-      "hash": "8afdb740434cd9f439ba5930d5b007ce11c3c4ae7353bb8a841be84fabea2eff"
+      "hash": "d5743ba8cc8ae65f67cc740181164483b659f6353914f5fbf6f10a224f249207"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "hash": "a1cc85857df2d07456387ff905e687d978f08abf662e7f88e12e4d7025a32391"
+      "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
-      "hash": "48130bc66d66dc9c14f94ec9ea705c641e6bd400775b4ef50fade08fc3bdd909"
+      "hash": "2f783bcf3d834f9ccc927e6516b705adfa4853ea5b72df0ad38c0bb69e1d3cd1"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
-      "hash": "1bfb25fd0b84933dcb33f58100317500ac1bade5a8b38d9c7fd68844db686677"
+      "hash": "6875494dd66dbcbedcdbc3696c6843224f1edade4c866f9faabf3223fbd08462"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_reports_false_rationales_only_when_verbose]",
-      "hash": "791756edeb4d4bfd0564468de5080996811b62f9d0c995ca2ddab3701bda6a5b"
+      "hash": "7921c1deb2c83dd0f1516eaca86f9b8d4b933a0d6b3c56b05db80b260f649300"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[verbose_false_rationale_is_readable_above_terminal_progress]",
-      "hash": "4b5993f1c72318c124e8f3d9a21a850c4d2ac2038f29983a1ff1700f6f20d4c2"
+      "hash": "e0d9ccf5ff084e1e67d97090fbdca5809cf56f51edacd9a62cd9f50e1cdd2dc2"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[dumb_terminal_keeps_plain_batch_diagnostics]",
-      "hash": "e44004ffca4c55843922dbcb4a4d93e77d810f728fb28f44e228b7a219a1dbf9"
+      "hash": "dc9ecf73c70789e9341ff68668d7578bfa0654076622487c5bafd839bb5e4149"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]",
-      "hash": "4b24a5b9a19eed40874479381d1acef479643c7b182b7212d28df88247a23c8e"
+      "hash": "05accd519445220bbcb88b42ddbcde60e3762cf2ed13369791216da5b5ce2fe0"
+    },
+    {
+      "file": "CHANGELOG.md",
+      "item": "section[Changelog]/section[%5B0.2.0%5D(https:%2F%2Fgithub.com%2Fnikomatsakis%2Fhabeas-codicem%2Fcompare%2Fv0.1.0...v0.2.0)%20-%202026-10-28]/section[Other]",
+      "hash": "e74aa44365716dcfa3ed0238d4177614a0790d95421a876e54fa91717173f834"
+    },
+    {
+      "file": "README.md",
+      "item": "section[Habeas%20Codicem]",
+      "hash": "312cb5c31062349f01207fca0e01876d44ead6da4e9295b7d8c86c6220052eeb"
+    },
+    {
+      "file": "README.md",
+      "item": "section[Habeas%20Codicem]/section[Add%20Habeas%20to%20a%20project]",
+      "hash": "738a63c0d42b3e7adc8e900d7a9f131d725590af95876a4c5d636bbb49cbbec6"
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "item": "section[Habeas%20evidence]",
+      "hash": "2e588d3411f5b64b00400973e450d71a01a751b48d60b38079409ee413e174c7"
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "item": "section[Initial%20requirements%20coverage%20audit]/section[Production%20source%20units]",
+      "hash": "043856e38908c1a595f6af2026b12c540a02463f2666a3225124d0e8207321a3"
+    },
+    {
+      "file": "md/getting_started.md",
+      "item": "section[Getting%20started]",
+      "hash": "1a5c8d7677163a9cd7e8e7a911d0e262e3eb50af521eac9327c7ea7e4fef3fb3"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Evidence]",
+      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Checking%20and%20viewing]",
+      "hash": "78f6d6fac080420e55ab3ea05c9051b888a5903388ba0939139e450f1568f82c"
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "item": "section[Command-line%20interface]",
+      "hash": "79cdf2a0a52b677d671cb92662c2eab824959f4f6a0b5e0a13803ff49c7c0d4a"
+    },
+    {
+      "file": "md/requirements/definitions.md",
+      "item": "section[Named%20definitions]",
+      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -341,14 +391,27 @@
       "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
     },
     {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
+    },
+    {
       "file": "src/rust_coverage.rs",
       "item": "fn[rust_files]",
-      "hash": "7c9005e37a4fd497e10ececb8ad7934f20b8d1a103b1f104bcfd990058cc240e"
+      "hash": "6cbf8202921361b48f062ffaa7825cd1cb9306a68da954c426f0b2607d41c26b"
     },
     {
       "file": "src/rust_coverage.rs",
       "item": "fn[validate_rust_functions]",
-      "hash": "a4c576fcbccaf7a0f5c9366f940c67a02d0cc8df5ff046a640fc254d17c34a8a"
+      "hash": "4bd95d73268e586abe5b6ddcf96185aa445459ca307eb4d1b82c445002752922"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "When authoring evidence, the edges defined by\n{cite}`requirements.references.targets` MUST determine the reference\ncontributions to the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`. The target of each edge leaving\nthe assessed subject MUST contribute; sources with only edges into the subject\nMUST NOT contribute and remain discoverable under\n{cite}`requirements.authoring.reference_index`. A `{cite}` made by the subject\ncontributes the cited definition's complete fenced declaration. An anchor under\n{cite}`requirements.references.anchors` contributes the complete anchored file.\nAn in-source `{impl}` or `{test}` reference to the subject contributes the source\ncontaining it: for a reference in a supported language, the smallest enclosing\noutline node under {cite}`requirements.references.outline_comments`; for a reference in a Markdown requirement, example, or\nterminology declaration, that complete declaration; for other references, the\ncomplete containing source file. Literal references, evidence copies, and\ngenerated output MUST remain excluded under the existing reference-discovery\nrules.\n\nThese contribution rules MUST apply only to edges directly leaving the assessed\nsubject. Including another declaration or source MUST NOT by itself recursively\nexpand that source's own edges. Reference links MUST NOT be described as proof\nthat all substantively relevant sources have been found.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.references.authoring_inputs`. I read the code and tests supplied as mandatory inputs. I did not open `collect_references`, `reference_roles` or `anchor.selector()`, so the points below that depend on them rest on how the code and tests read.\n\n**Implementation**\n- `AssessmentSources::prepare` in `src/authoring/inputs.rs` is marked `{impl}`. It builds the mandatory set only from edges that leave the subject:\n  - **Cites:** each `{cite}` in the subject's text adds the cited definition's complete fenced declaration, as an `InputSelector::Requirements`.\n  - **Impl and test:** the code takes `{impl}` and `{test}` references from the project-wide reference collection, keeps only those naming the subject, and adds the source each one points to.\n  - **Anchors:** the subject's `:impl:` and `:test:` anchors are resolved and added.\n  - **Skipped edges:** the subject's own `{impl}` and `{test}` references to other definitions are skipped. Those edges point from the other definition into the subject. Sources that only cite the subject are also skipped.\n- Recursion is avoided. The code reads the subject's own text and the references that name the subject, and it adds nothing else. The only follow-on step is `definition_inputs` for term definitions, which belongs to `requirements.definitions.authoring_inputs`.\n- `reference_selector` is marked `{impl}` for this requirement and covers the three source cases:\n  - A reference in a Markdown requirement, example or term declaration contributes that whole declaration, picking the smallest enclosing one.\n  - A reference in a supported-language source contributes the smallest outline node, found through `Outline::owner_at_line`.\n  - A reference in a plain-text file contributes the complete file (an empty selector).\n- `Outline::owner_at_line` in `src/outline/mod.rs` is marked `{impl}` for both `outline_comments` and this requirement. It resolves a comment's owning node.\n- Evidence output and generated evidence are excluded through the `generated_evidence_selector` filter, which `prepare` applies to every selector. Reference collection also reports errors before inference.\n\n**Tests**\n- `only_edges_leaving_the_subject_contribute_inputs` checks the direction rules:\n  - The subject's cite of `base` contributes.\n  - An example that tests the subject contributes.\n  - An example that only cites the subject does not.\n  - A parent requirement that the subject refines does not contribute to the subject.\n  - Assessing the parent does pull in the refining requirement.\n  - A `{cite}` source node (`helper`) is excluded, and no recursive expansion occurs (`base` is absent from the parent's inputs).\n- `references_contribute_their_owning_outline_nodes` checks the three source cases:\n  - A Markdown section node.\n  - A whole plain-text file.\n  - An anchored Rust `mod` node.\n- `anchored_files_contribute_root_node_inputs` checks that an anchored file contributes.\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` checks that an `impl` inside a method contributes only that `fn` and not the enclosing `impl`. It also checks that distant requirements and old evidence inputs are not carried forward.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` covers the git-staging/read-failure path.\n\n**Minor concern**\nThe requirement text says an anchor \"contributes the complete anchored file\", but the anchors requirement also allows `path#selector`. The implementation contributes the selected node for a `path#selector` anchor and the whole file otherwise. I read \"anchored file\" as covering the anchored file or node, which is consistent with `requirements.references.anchors` and with the test. I do not treat it as a gap.",
+  "rationale": "**Verdict:** the requirement is implemented and tested. I found no unmarked or unspecified behavior.\n\n**Implementation (`src/authoring/inputs.rs`, `src/outline/mod.rs`)**\n- `AssessmentSources::prepare` carries the `{impl}` marker.\n  - It scans the subject's own text for references.\n  - Only `{cite}` edges add the cited definition's declaration, through `InputSelector::Requirements`, which supplies the full fenced declaration. `{impl}` and `{test}` roles in the subject text are skipped, and so are term references.\n  - It collects project references and keeps only those that name the subject and have role `Impl` or `Test`. These are the edges from the subject to its sources, and `{cite}` sites into the subject are left out. Each one goes through `reference_selector`.\n  - It resolves `:impl:` and `:test:` anchors. An anchored file contributes the whole file, and an anchored `path#selector` contributes that node. An unreadable or unresolvable anchor is an error that names the subject and the anchor.\n  - Selectors are deduplicated with `insert_selector`. Generated `evidence/` selectors are filtered out, and earlier evidence inputs are not carried forward.\n- `reference_selector` carries the `{impl}` marker and turns each reference into an input.\n  - For a Markdown file, if the reference lies inside a requirement, example or term declaration, the smallest enclosing declaration is the input.\n  - Otherwise it uses `Outline::owner_at_line`, the smallest outline node the reference belongs to. This covers Rust items and Markdown sections, with comment ownership following the outline-comments rules.\n  - A file without a language outline contributes the complete file.\n- `Outline::owner_at_line` carries the `{impl}` marker.\n- Nothing is expanded recursively. The only extra step is `definition_inputs`, which adds term inputs. That belongs to the definitions requirement, not this one.\n- Literal references and generated output are excluded by `collect_references` and the evidence filter, under the existing discovery rules.\n\n**Tests**\n- `only_edges_leaving_the_subject_contribute_inputs`:\n  - the cited `base` is included;\n  - the `{impl}` and `{test}` sources are included;\n  - a `{cite}` site into the subject (`helper`, `citer`) is excluded;\n  - the `{impl}` target `parent` is not pulled in, and a different assessment (of `parent`) behaves correctly.\n- `references_contribute_their_owning_outline_nodes`:\n  - an anchor's `path#selector` becomes a node input;\n  - a Markdown section input is produced (`section[Usage]`);\n  - a plain-text file contributes the whole file;\n  - a Rust module input is produced.\n- `anchored_files_contribute_root_node_inputs` checks that an anchored file contributes the complete file, and that the exact input set is as expected.\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` checks:\n  - the smallest Rust item is chosen (`fn[run]`, not `impl[Thing]`);\n  - an example declaration with `{test}` is contributed;\n  - the cited `base` is included and the non-cited `distant` is not;\n  - prior evidence is not carried forward.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` covers the project-file and permission paths.\n\nThe design space (cite, impl, test, anchors, Markdown declarations, outline nodes, plain files, non-recursion, and exclusion of inbound edges) is covered.",
   "inputs": [
     {
       "requirements": "requirements.references.authoring_inputs",
@@ -166,7 +166,10 @@
         "containing that line. Any other run MUST belong to the next outline node that",
         "starts after it within the smallest node containing it; when that container has",
         "no such node, the run MUST belong to the container, which is the root node at top",
-        "level. A reference in a comment MUST count for the node its run belongs to under",
+        "level. A profile MAY bind a comment kind to its container",
+        "instead: such a run MUST belong to the smallest node containing it. The Rust",
+        "profile MUST bind inner doc comments (`//!`, `/*!`) to their container, so a",
+        "file-level inner doc comment belongs to the root node. A reference in a comment MUST count for the node its run belongs to under",
         "{cite}`requirements.references.rust_item_coverage` and",
         "{cite}`requirements.references.authoring_inputs`.",
         ":::"
@@ -175,37 +178,37 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "946a4db6e2efc48af190534f77a1ace8cb8edd28284170e8203ff7c12e8d547b"
+      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "fn[reference_selector]",
-      "hash": "efc3b45f9b6aba2f86aa135df79d4dcc1457df3f21f6749e8ee44e585008b2e3"
+      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "c1e6e2be1aedce966332810f1e63bca14af74ee76bdc12f071c5614c3ec5bdb8"
+      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "6a1f95af636730ee450cc36e7847a32e51a288bcadc4af13d0ad5af6d4319516"
+      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
-      "hash": "aeabf0827994edfa97ab6b40fed021428e399383f5a5ee1745f49860c0921d67"
+      "hash": "5c0a6d854b289c25861e9d98f77e5f13ec5bd7583cfb574ca9c25ecd7ab82410"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "b880f9bd3dae69f969181bcae745e7f2a648d67d00fde34d475359fc62f5fdd4"
+      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "1448005ed5fc5aca4f8a18dec1c0b86aa2e878c4ef8508e75abe26e88ed2eb1f"
+      "hash": "dcf7e54a23dcebb99ce3fc2313f72289801e3f03afde66f9e24e01ea8e632d13"
     },
     {
       "file": "src/outline/mod.rs",

@@ -1,7 +1,7 @@
 {
   "requirement": "Saved configuration MUST remain distinct from resolved runtime configuration.\nSerializing and deserializing a valid configuration MUST preserve its semantic\nvalues, including explicit versus omitted settings. Optional fields MAY be\nomitted on serialization; defaults and environment-derived values MUST NOT be\nmaterialized into omitted fields. TOML comments and formatting need not\nround-trip.\n\nLoading configuration or running a configured feature MUST NOT rewrite the user\nor project configuration as a side effect. Resolved credentials and live runtime\nobjects MUST NOT enter the serialized data structures. Explicitly supplied\ncredential values are permitted only in the fields documented by the authoring\nfeature; credentials resolved from a profile or environment MUST NOT be written\nback to configuration.",
   "determination": true,
-  "rationale": "**Verdict: the sources satisfy `requirements.configuration.serialization`.**\n\n**Saved configuration is distinct from resolved runtime configuration**\n- The saved types (`UserConfig`, `WorkspaceConfig`, `AuthoringConfig`, `BackendConfig`, and related types in `src/config.rs`) derive `Serialize` and `Deserialize`.\n- `ResolvedAuthoringConfig` is a separate type. It does not derive `Serialize`, and it carries only the selected saved values and their source (`resolve_authoring_with_workspace_from`, lines 843–924).\n- The only credentials it can hold are values the user explicitly supplied.\n\n**Round trip preserves semantic values, and omitted settings stay omitted**\n- Optional fields use `#[serde(default, skip_serializing_if = \"Option::is_none\")]`. Empty maps and vectors use the corresponding `is_empty` skip.\n- `UserConfig::to_toml` and `WorkspaceConfig::to_toml` (lines 224–230 and 260–272) validate the config and then serialize it. Neither adds defaults.\n- `OllamaConfig::endpoint()` applies its default at read time rather than writing it into the struct.\n- `concurrency` is `None` unless the user set it, and `effective_concurrency` is computed in the resolved type.\n- `OptionValue` is untagged, so integers and floats round-trip. Non-finite floats are rejected.\n- Collapsing an explicit empty `options = {}` or `projects = {}` into an omitted field is the same semantic value, so I do not treat it as a defect.\n\n**Loading and running do not rewrite configuration**\n- `load_user_config`, `load_workspace_config`, `UserConfig::parse`, `WorkspaceConfig::parse` and the resolve functions only read.\n- I found no write to user or workspace configuration anywhere in `src/`.\n- `src/setup.rs` edits `book.toml`, but only through the explicit `habeas setup` command, which is a separate requirement (`requirements.cli.setup`).\n\n**Resolved credentials stay out of serialized data**\n- `OllamaConfig::api_key_from` (lines 522–539) returns an owned `String` read from the environment. It does not store that value in the struct.\n- Bedrock credentials come from the AWS SDK chain, and `bedrock_sdk_config` (in `src/authoring/providers.rs`) does not write them back.\n- Explicit `credentials` and `api_key` values are serialized, and only in their documented fields.\n- `SecretString` redacts itself in `Debug`.\n\n**Tests in `tests/configuration.rs` cover the main points**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` (line 70) checks that an absent file stays absent, that the file contents (comment included) are unchanged after loading, and that the config round-trips.\n- `backend_configuration_round_trips_without_materializing_defaults` (line 104) checks that serializing a config with no `endpoint` or `concurrency` does not add them. It also checks that nested options, floats, integers, booleans and arrays survive the round trip.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` (line 156) checks that the effective concurrency default is not serialized, that an explicit `concurrency = 7` is, and that it round-trips.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values` (line 297) checks that `api_key_env` is serialized but the environment value (\"private-value\") is not.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (line 328) checks that the file is unchanged after loading and that the workspace config round-trips.\n- `workspace_defaults_and_configs_combine_with_existing_user_selections` (line 424) checks that resolving configs with both a user and a workspace file keeps the saved values and their source separate.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` (line 530) checks that explicit credentials round-trip and that `Debug` output and error messages redact them.\n\n**Marking**\n- The `to_toml`, `parse`, load, resolve and `api_key` functions all carry `{impl}` markers for this requirement.\n- The `skip_serializing_if` attributes that implement omission sit on the struct definitions, which have no `{impl}` marker of their own. The marked `to_toml` functions cover them.\n- `resolve_authoring` (line 807) is not marked for this requirement. It only composes marked functions, so this is a minor omission and not a gap in behavior.\n\nI found no unspecified behavior in the marked code. The remaining checks (version, name and credential validation) are tied to other requirements.",
+  "rationale": "**Determination: the requirement is met.** The marked code and the tests cover every obligation. There are two minor leftovers, listed at the end; I judged neither one a gap.\n\n**Saved configuration is distinct from resolved runtime configuration**\n- The serialized types are `UserConfig`, `WorkspaceConfig`, `AuthoringConfig`, `BackendConfig` and `SecretString` (`src/config.rs` 15–174).\n- The resolved type, `ResolvedAuthoringConfig` (182–190), derives only `Clone` and `Debug`. It is not `Serialize`, and its doc comment says it holds saved values \"without resolved secrets\".\n- `resolve_authoring_with_workspace_from` (843–924) only selects and clones saved values. It does no environment lookup and no write, and it is marked `{impl}`.\n\n**Round-trip preserves values and the explicit/omitted distinction**\n- `UserConfig::to_toml` and `WorkspaceConfig::to_toml` (224–230, 260–272) validate, then call `toml::to_string_pretty`.\n- Optional fields use `skip_serializing_if` (for example `endpoint`, `concurrency`, `aws_profile`, `region`, `api_key_env`, `options`). An omitted field stays omitted, and a field that was set stays set.\n- Defaults and environment-derived values are not materialized:\n  - The Ollama endpoint default is applied only in `OllamaConfig::endpoint()` and is never stored.\n  - The effective concurrency default is applied only in `effective_concurrency()` and is never stored.\n- The `parse` functions deserialize with `deny_unknown_fields` and then validate.\n- Tests:\n  - `backend_configuration_round_trips_without_materializing_defaults` checks that `endpoint`, `http://localhost` and `concurrency` are absent from the output, and that the parsed output equals the original config.\n  - `authoring_concurrency_defaults_overrides_and_invalid_values` checks that an omitted `concurrency` stays omitted and an explicit `concurrency = 7` is kept, for both backends.\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` round-trips a workspace config and checks that the empty `configs` table is not emitted.\n- An explicit empty `options`, `projects` or workspace `configs` table is dropped on output. It is semantically identical to the omitted form in the data model, and the requirement allows omitting optional fields.\n\n**Loading or running a feature does not rewrite configuration**\n- No code in `src` writes the user or workspace configuration. `load_user_config`, `load_workspace_config` and `workspace_document` only read. The other `fs::write` calls in `src` target evidence files, usage logs and setup output, not these configuration files.\n- `setup` rewrites `book.toml`, but only as an explicit command, not as a side effect of loading or running.\n- Tests:\n  - `absent_and_minimal_configuration_are_distinct_and_read_only` checks that an absent file is not created and that loading leaves the original bytes and comments intact.\n  - The workspace discovery test checks that the workspace file text is unchanged after loading.\n\n**Credentials**\n- `SecretString` serializes transparently, so an explicitly supplied credential round-trips. This is limited to `BedrockConfig.credentials` and `OllamaConfig.api_key`. Its `Debug` output is redacted.\n- `OllamaConfig::api_key_from` (522–539) returns an explicit `api_key`, or reads the environment variable named by `api_key_env`. It returns the value as a `String` and never stores it back into the struct.\n- `decode` redacts credential values in error messages.\n- Tests:\n  - `ollama_authentication_resolves_separately_and_rejects_missing_values` resolves `private-value` from the environment. It then checks that the serialized TOML contains `MODEL_KEY` but not `private-value`.\n  - `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` checks that Bedrock credentials and an Ollama `api_key` round-trip, that `Debug` output hides them, and that malformed or conflicting credential fields are rejected without leaking the values.\n- A Bedrock `aws_profile` is stored only as a profile name. Credentials resolved from it are not written back.\n\n**Marking and coverage**\n- Every function implementing a part of the requirement carries `{impl}` for it. Each of the seven `{test}` functions listed in the subject's inputs, plus `workspace_defaults_and_configs_combine_with_existing_user_selections`, carries `{test}` for it.\n- `resolve_authoring` and `load_workspace_evidence` are not marked for this requirement. They only read and never write configuration, so this is not a gap.\n- No `{impl}` code adds behavior beyond what this requirement or another requirement specifies.\n\n**Minor leftovers**\n- There is no explicit test for a hand-written empty `[authoring]` or `[evidence]` table.\n- There is no test that `ProjectConfig` round-trips.\n- `ProjectConfig` is an empty struct, and the behavior of an empty table is the same Serde pattern the other tests already exercise.",
   "inputs": [
     {
       "requirements": "requirements.configuration.serialization",
@@ -34,7 +34,7 @@
     {
       "file": "src/config.rs",
       "item": "impl[UserConfig]/fn[to_toml]",
-      "hash": "d24d6428fe23622c699f46683e5e4f95d45eb9038367bd1e8c887396e0fa4a17"
+      "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
     },
     {
       "file": "src/config.rs",
@@ -44,7 +44,7 @@
     {
       "file": "src/config.rs",
       "item": "impl[WorkspaceConfig]/fn[to_toml]",
-      "hash": "f52bccff6e8a199d4284f96b93524fb60a2cb47ee8bafd1ad43f9c5870751b19"
+      "hash": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
     },
     {
       "file": "src/config.rs",
@@ -54,17 +54,17 @@
     {
       "file": "src/config.rs",
       "item": "impl[OllamaConfig]/fn[api_key_from]",
-      "hash": "4cbee2b0d62fff27e91477c4e7dc56ba39a971b22743472dbbbffe0a68eaa4ff"
+      "hash": "5ba74dfd70cff06aeb97d6c95de7432de9eb7024c7882e434fc214c41eb3897b"
     },
     {
       "file": "src/config.rs",
       "item": "fn[load_user_config]",
-      "hash": "236dfdef96283bdd9b206c3ef8d3a8be0bbca71a230a60896100a1d421c1bc12"
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
     },
     {
       "file": "src/config.rs",
       "item": "fn[load_workspace_config]",
-      "hash": "84d954165b76af1a7fda6ce26851b3af3dfc85665c63517732fa9093e0c62528"
+      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
     },
     {
       "file": "src/config.rs",
@@ -74,67 +74,67 @@
     {
       "file": "src/config.rs",
       "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "6e4658d39d846cf2c7aaf0277e2b3436e0623fe22ea5c476208f553ea1547157"
+      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[absent_and_minimal_configuration_are_distinct_and_read_only]",
-      "hash": "2d5aa8112d9f84830c9e24e4df3640659949662f630a09af801f85828c5b426f"
+      "hash": "1a46481d2eb61eb8295e5608911c60ae8a72d664b1fddf0ad127d5f9ec06de08"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[backend_configuration_round_trips_without_materializing_defaults]",
-      "hash": "6969980e5141524751f73f46229e6fd4062d4c0cc7b4ce00e8df843c9644ef53"
+      "hash": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]",
-      "hash": "79aa59bcf016d57237a6aefbcb6d8292c0020dec6b01078c8ac7643173ff7902"
+      "hash": "74416240e60e811474a85bfd6fa78d9c9c5b9b5f44854f8ca70b75116f9e2fb1"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[ollama_authentication_resolves_separately_and_rejects_missing_values]",
-      "hash": "7ce7b1f3433ca1146490cd2a1cba2f1ab7c2b032009924ab83c38bce96c35d67"
+      "hash": "e1cd6e598872faf5273d6c20ebfd83815b715b2ae936f49e4bdeb6bac578862c"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
-      "hash": "3b6f27123cb3ef1c3c8d105945020942d8fc127dc32c723bbce2f4df1a585fb3"
+      "hash": "4a1e5484da50abc6d54cccb531029d25ed1996e173f5eb014ecdfa9e69dcc20f"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]",
-      "hash": "2a394132d159a87151bbd45edc061e8a23000b2f0f048517316e1e03747fea1e"
+      "hash": "2f7d90c5cd6ac721390861eb6e8760d9b35646f1306b8856b5009ca5a3e1b8b2"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]",
-      "hash": "4d46ad3f6772bc43fc9dd4ada134bd43ab2c8c1793b81aa10e19c4ee9d8191eb"
+      "hash": "83d83eed35412090e07521c2c8851864627ee5db7155321e6311b298b30462fc"
     },
     {
       "file": "src/config.rs",
       "item": "",
-      "hash": "c62aea9362413bc33b8da9240c76b0c4a07242e669507132cd440268a7ae1625"
+      "hash": "77c81d1779ee668ffa9a9c872d1e1049bf9c29a69fa39209bb6afcd3cd1b735a"
     },
     {
       "file": "src/config.rs",
       "item": "fn[load_workspace_evidence]",
-      "hash": "0c205d8c0b3d0e266e5397fa9f7b437e6c9442eae21bc6631ba80de6673bc0dc"
+      "hash": "55a4844bf88c98810c76d5486185af127d895626d83a9de141ce59be82bbd93d"
     },
     {
       "file": "src/config.rs",
       "item": "fn[workspace_document]",
-      "hash": "de86873accab7a0e75c706c008b1af5ceefaca741f94b4e503d6cb89248b3f63"
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
     },
     {
       "file": "src/config.rs",
       "item": "fn[validate_workspace_common]",
-      "hash": "b8ff5c3ac11ed8de6ba176188bd36285e9b2cf7e3d9dd18d58ed76dbb1f8baf9"
+      "hash": "7ece2487516745486dfc5e57d408e0ac2dabe0cbc3a56503173e60263743593b"
     },
     {
       "file": "src/config.rs",
       "item": "fn[parse_document]",
-      "hash": "de75f2c6919a55b1b7babc623d074f262cee88392fe8354f6d3ae7c581025b48"
+      "hash": "0287b1717cba7e77c7d4c3f8b5264f202094f1b27303f52f763c36a782efbc70"
     },
     {
       "file": "src/config.rs",
@@ -154,27 +154,7 @@
     {
       "file": "src/add_input.rs",
       "item": "fn[add_definition_inputs]",
-      "hash": "e157233333e4a2e84300324a7e002dc128d0c5473d299153b5ce1676a4293615"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[load]",
-      "hash": "35a027acfa5aabc36215ae643a316ffcef92f7dd33cd4e635b6f1be457564ae3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[check_disallow]",
-      "hash": "0121fb7bd67c7f8739de8db49c44260b3619b14c33fcadd9667cb1c7df85195e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[contains_credentials]",
-      "hash": "327dc4bcd3763398c5b5cfe3c381be68385794695c49371c69b168e7990097d3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "ebfa9dc19aa687ef76409ee994626a84ff34ed0068c5e30d45a72ae896083dde"
+      "hash": "8a2ad3ff040eb1f154a23a55672802210218199361fdfe60f4c11f91c86fc8f4"
     },
     {
       "file": "src/authoring/access.rs",
@@ -184,7 +164,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
-      "hash": "0204d412519a314f94b550b230cc9db238973681adacb42607dd085d7a01539d"
+      "hash": "04e0bb3382ec1ba0982960e6e5a2254e7cacc9ce324a0d46442a9271c9c9e5d8"
     },
     {
       "file": "src/authoring/access.rs",
@@ -194,22 +174,22 @@
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
-      "hash": "2b1244e51b503430ea1ec06d3e7b1b95c81f98655c37057c2b1ef305d55edfa1"
+      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "5dd4b31a80da195e066629fa3a018e4cc553c8ea1ebf488cd2e5d4c20e8a33f7"
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "3f42864619d8f9fd959d3fa3b627e44b009ebc7b9198e54bbc974637185dd4c2"
+      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "9fb2c8f3ea769c3f0c484f58ca639d3180646d22f93c945791eefd9aafbdd211"
+      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
     },
     {
       "file": "src/authoring/access.rs",
@@ -219,67 +199,67 @@
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "dcdb797b2e2df0d2c8e5b5dbe33f5c2c63509aa355e10f7cb6525c4c228e71c7"
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "994728df823b6bbb189812bee219c18daea969a94dd7bce075cf0bb32a47e588"
+      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[project]",
-      "hash": "09df020953ceb5d78de8b726988595556c9826af6babc01c7cb45fbca6fbc5f5"
+      "hash": "fe2cd844de1cb0683bc9efd3c89dbc2d56b8880a80f3235a5dbb4b36ce6c5c80"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "c1e6e2be1aedce966332810f1e63bca14af74ee76bdc12f071c5614c3ec5bdb8"
+      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "a3f87dcf2b9125549fbfd02570ec43ddf209a3429eb38ce1be7d4edac0e7f6f3"
+      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
-      "hash": "1bd97f9ef93ba8fdd423db968cb7c373b4efa3174afd40430062340350a7497f"
+      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "6a1f95af636730ee450cc36e7847a32e51a288bcadc4af13d0ad5af6d4319516"
+      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
-      "hash": "3a9ee653c5385f53cd750a86391efd9126ed8dcfb38fdb9ca38b08b957f17550"
+      "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
-      "hash": "aeabf0827994edfa97ab6b40fed021428e399383f5a5ee1745f49860c0921d67"
+      "hash": "5c0a6d854b289c25861e9d98f77e5f13ec5bd7583cfb574ca9c25ecd7ab82410"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "b880f9bd3dae69f969181bcae745e7f2a648d67d00fde34d475359fc62f5fdd4"
+      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
-      "hash": "87337486950970b7a1cffd04d7157dff8eb897821c33f8d0a491997ca235774f"
+      "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "1448005ed5fc5aca4f8a18dec1c0b86aa2e878c4ef8508e75abe26e88ed2eb1f"
+      "hash": "dcf7e54a23dcebb99ce3fc2313f72289801e3f03afde66f9e24e01ea8e632d13"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "e87ccffa89c54e55ec5a0b636f21d2fda0376ec1c44fabf97600f071b802d13b"
+      "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -287,99 +267,79 @@
       "hash": "cb7f6e696b6ceaf0f121d39f5462a13da962cdc583aac325af9d9f52b607dd3b"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_config]",
-      "hash": "38a0bbfe7210af2eb2866ae68ded2a591096273b580c03b9cedebc2fd636c7fe"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]",
-      "hash": "33d6c45dcaf0ba4afb00364d536ada490de861ad8e6affddeba0757375e7adb1"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
-      "hash": "ee38ffd77dd15035591edec6093565cc2cf54ef5d30db2db390f8ff6de7a216d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "c2dde298701587d1b099c291deef762564ec37a0a75117663ed7f82405d65eb8"
-    },
-    {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
-      "hash": "602e67b123fdb273ff6d87e9bfcc48b49b3c219a43634b7d6ee10cb1f10cd769"
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
-      "hash": "761408446d9007dd3b2b332dec5838741c30a504a73e66a97f2eb78d82b947d1"
+      "hash": "2fa8051cca2d46d6337e91a9309b9dfa14423c3c4a83ad4f363cf70d035f5977"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
-      "hash": "3fe49d33dfa70a2bd10dc815b0ca70992a078a2b6c31e87ced465a9ca0a45bfb"
+      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]",
-      "hash": "e8754c958a18c66c4414729efab8c3ac45565251f583ba1374da0ae019531af9"
+      "hash": "491a76e9184d5955c505c8a55b2593392f8966cf5be5755fab8149ef214fca71"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
-      "hash": "4549912de14c5ee5892c6e602e6c5db4c1ff77d8a9d0260519f5993e637b4803"
+      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
-      "hash": "ffff33cf90ca7fd16eb01f07809e2acd5dcc74587f1aae4281695421464ef2df"
+      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
-      "hash": "80dbfd182a97dc80d12b54e5746789304b2bec10fad355e6dcd4d5bf4d3f14c6"
+      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
-      "hash": "6289c50f6cbbc09d201331f5b4a74218f54ee10e1d5e59d3296e10236f8f3734"
+      "hash": "204a1e1b56a975bbf449d5e38f893f680bc0563c1b4ffcd65c9544c0461b1eff"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]",
-      "hash": "526f20b8fb23911c5f66bf1cc4102d5dd9c92dd7747974e91017b92a12e1c74a"
+      "hash": "c30a886f200ac79ea68db7926a082b6faa0aab61153d92fbf07e12c6e0de75a5"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "87934a098ca24ae34fe86d1562a33b50a9d693f8cc3f08609f7204a2df86be08"
+      "hash": "7c91da83f7607a87fcd5eb61ba7c80008806f4052d704d4616e891001bd70e43"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[parallel_search_orders_results_by_path_and_line]",
-      "hash": "3ce74f45957d516e4ba43f1c332f8105bd592b1923309c20b18f9e6445befc1d"
+      "hash": "7c4b2836cfc2b22f56e6d8a23e39c7c1e9588ae66d23b22716397464baa7077d"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
-      "hash": "a4af827c8e7158a6e50dea2c6f5c8ea3fe99914fb50c111e041be16d93b104ba"
+      "hash": "bd29c2fa110ed2c54197782e38fb1b9cf3db78f2a5e482aa35f907939882ae45"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "4a3e79905506b4ca6253dbb9e74b85e5a5e87ebfd05c6131a708e0d931526359"
+      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "2f0af97fbd766a3b4618f88bf0166b0da92048180c8612fbca9da2a82cad6034"
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]",
-      "hash": "2d3dff72ec38f3c68779f0ca7a1f78e450121f919cbebf82279bc185d418c40b"
+      "hash": "3ccf9af34dbd89804259953f2034d4d0108fc3522e3a28bc4792632d72ac5865"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -412,159 +372,144 @@
       "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[SecretString]",
-      "hash": "a0235bf71399d6481804c2fa60803621ede1fe00b6346ef5c214490497466c6a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]",
-      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "8da8cf7335aa662b4931705a99158f5a5f09614d66e961975f8f1bd434a8a571"
-    },
-    {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[fixture]",
-      "hash": "44577a2ba4e3aea9bdc95b31145840cb09b6aeec1953a2a6ca3e2414b5cc3fe6"
+      "hash": "61c07880cbe6294572e0fbb36f305866e58a558759bd71f7cf2d238fb4c10f56"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
-      "hash": "00ea14f2cf700d2ff28e951c010d28c01dbba07ecb2803b7e88b389ece56b8ec"
+      "hash": "3a95e96496e59dc43099c9706020e030bcea1e25af3006c617f702a65cdf5ae6"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
-      "hash": "bf3cd6ba70bdae480d2c06537c38469802316a9437209eb941a6b0e7b9d2802e"
+      "hash": "01beeb1f859a67450bf04cf20e2aba05971ee91df7a46ff76eab1315fa5035d7"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[book_source_defaults_only_when_absent_and_reports_invalid_configuration]",
-      "hash": "83ee0352ab08ea3604b0961e48fe93d57e0f4604497a0798d4b2b6430da38128"
+      "hash": "94b9c215d71325dd5702a2b7b12b1f360af99f2fd60aca395af6187990c7b118"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
-      "hash": "c7d448066b8eb3c3d0202bd54ccdfae17359219f5579220d31524d4a35d862d1"
+      "hash": "5d0928cbdeb6b36d33988b6bfca1b888ee083a1856d238c6856a16344ef82cc1"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "624ad7a0c13045d4eda64b42208699d0441461f96dfafec3098a06c4dcaf7057"
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[source_references_are_covered_by_evidence_inputs]",
-      "hash": "1111fb441b0ed498667bea7298c4d40efd775ec9270184e9f7e511dd6da4eabe"
+      "hash": "5c13acf27bae72511a78ed897818ed1cca9f03ed4366d424fbabebabb130e4c9"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
-      "hash": "dd64c9df2cf9d95af8db264fbca6897e74ba1c23d1e582957ba074733358055d"
+      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[colon_requirement_span_includes_markdown_and_excludes_following_text]",
-      "hash": "40c3a3c46233f4a233f89fb8104cc1f913ef49a49497f5f4d4fb818cdfc3c3dd"
+      "hash": "ca0ffcd00164e0ebe3d50d787c9605e3db025b6e49d19ccdce46070a0be1a775"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[reports_a_missing_closing_colon_fence]",
-      "hash": "b7e2adc7d731f751c55ca21c1a20f8baa3464119d5d793edaff6c870dc3a41e4"
+      "hash": "19b3ac6850dfc44a2c723659bed481f9b0dd98ade185280faae0563ce5a9ccc5"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[validates_four_or_more_colon_fences_and_longer_closers]",
-      "hash": "b5c19e1f2d4821e16fb288c63282c9a3bbb58b8e44de1d9f526cbd4abf368c92"
+      "hash": "7e492812653aafa4ab5a4f003afc2dd8737981db76d408aa9e1391920a656a2e"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "e2eb073830548f870ecafe333d7614ef5413ddf53a785d00285a1f8615e8a1a8"
+      "hash": "0588470ebd00187b0af8f3ddd82ed1739c36d83a5f9cca355a2837130828c8ba"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are]",
-      "hash": "08ff557fd3e3d191532175090c7af751da78a9fb7cd91495165b69966c8adff5"
+      "hash": "e673f2245f08808625b5f7b92b270fc21e5f458b6eb4d6a6db4537b8b901b2de"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[example_errors_include_duplicates_invalid_bodies_and_missing_tests]",
-      "hash": "135f76586c4f7dbbcf04bef81dd16129cc7ea3a4ee1a3fc05dd793502029d00a"
+      "hash": "9f02ce33a1d46580a920cfca89d4b49954da52eb4092e9dbf1afd16cb6d8def4"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[examples_may_reference_their_requirement_with_cite_or_test]",
-      "hash": "c56c0e9f681d477ba0ec902c795cb19e8d556852f4eabcd0afce4c2107eda54b"
+      "hash": "451412f474cd9b36586be50ad390d80223ce3c473bcc8bb22a6f5d8cde9b6cd2"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
-      "hash": "944b31ac35f84c91c722ef0ec87272e1cfee33867bdc13fae0330b94432fef26"
+      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
-      "hash": "898fbf8b342b14fbc2f5ab050fc1eb708a9af27d583393cc199365aa9d90bf14"
+      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
-      "hash": "8be34437444e3b25500ecf53a25869e46b497671f803090d9366490ec081dd5b"
+      "hash": "f82e8f406792901475f63965518987bf91583e36486e9491ae3bf7af471c127e"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "5f4a7697acc780e3eb0c3a43556339ff402f291c16fe33f830b6ff67df8fcfa1"
+      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
     },
     {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
-      "hash": "cbd43f52db44a62a85959305ad34e9ff7d92e19e4d1ad6e7146fb30d329a7687"
+      "hash": "7c8d01bf4965121af7b3b98692c5407a0a47611448986c92edfce95d33bf5c59"
     },
     {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
-      "hash": "531127fb83e150e3482e96509af73a7103ceda90cf574c75b4284d63db3c6ec3"
+      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
     },
     {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
-      "hash": "2cfb93db5ac479b443f95a6af8e8893f24bb908971f1c7f8650e5cf14fa734bb"
+      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
     },
     {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
-      "hash": "648b95b98ce38b2101522566dc2b02ae17c7c1febe96a3a7dacd20d851d6511c"
+      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
     },
     {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "c041070874afc95b234012840c1f6e85da57a6abc6e6c6802e4cbeea0d90f29a"
+      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
     },
     {
       "file": "src/lib.rs",
       "item": "mod[tests]/fn[book_root]",
-      "hash": "9b760b27a9f48055974dfd7c09928bc02dd5e9a77fdfe4ea28cbfacf182fc735"
+      "hash": "d3f3bc4ab6a8cf07d968b7b0ee95b6a64ebded467e9f792221b1b3fa6038a5ea"
     },
     {
       "file": "src/rust_coverage.rs",
       "item": "mod[tests]/fn[reports_all_files_and_parse_failures]",
-      "hash": "4c4221a1e30090c656edd390413c3b7aef00dadc50fb38a32a43d0fbbfae8e9f"
+      "hash": "7a27e6da1334ee44d7efe3ca2e90af4737bfdf1bd4a91cf28d4f721fe0b24914"
     },
     {
       "file": "src/setup.rs",
       "item": "fn[write_new_or_same]",
-      "hash": "ae465b5f718e239541c369b6e5c5efdaac2537145c6037d7a6a0220369faa189"
+      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
     },
     {
       "file": "src/setup.rs",
       "item": "fn[run]",
-      "hash": "5fd80f901c5078159b68fae8c2bc5f91a59675e245a840d48c40f8d14e22916b"
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "For an outline input, Habeas MUST parse `file` with its language's grammar under\n{cite}`requirements.references.outlines` and resolve `item` to exactly one\noutline node under {cite}`requirements.references.outline_selectors`. It MUST\ncompare `hash` with the node's current structural hash under\n{cite}`requirements.references.structural_hash`. It MUST derive the node's\ninclusive line range, including attached comments and attributes, during\nvalidation for display and reference coverage. Moving the node, editing other\nnodes, or editing comments its profile does not hash MUST NOT invalidate the\ninput. Habeas MUST report a missing file, unsupported language, parse failure,\ninvalid or ambiguous selector, or changed hash.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is satisfied.** I read the marked `{impl}` and `{test}` code. I did not open the outline, parsing or hashing code itself, because that belongs to the cited outline, selector and structural-hash requirements.\n\n**Implementation**\n- `OutlineCache::parse` (src/inputs.rs:69-96) reads the file through the containment check. It parses it with the profile chosen by file extension (`outline::parse`, `profile_for_path`) and caches the result.\n- Missing, unreadable or disallowed files yield \"cannot open/read …\" or containment errors. Parse failures yield `\"{file}: cannot parse {profile} source\"`.\n- `ParsedSource::resolve` (src/inputs.rs:100-120) resolves `item` to exactly one node. It reports invalid selectors, ambiguous selectors (\"add a #N disambiguator\") and selectors that match nothing, each with a distinct message.\n- `InputSelector::resolve` (src/inputs.rs:239-326) returns the node's structural hash, its kind and its current inclusive line range via `node_range`. The range is derived at validation time from the outline node, and per the outlines requirement that node includes its attached comments and attributes.\n- `validate_outline_input` (src/evidence.rs:749-810) checks the key set `{file, item, hash}` and that the hash is a 64-character lowercase hex digest. It resolves the selector and compares `node.hash` with the recorded hash. A mismatch reports \"outline input changed: file item (now lines a-b) no longer has the recorded hash\". This is a structural comparison, so moving nodes, editing other nodes and editing unhashed comments do not invalidate an input.\n- Supporting code is marked correctly: `outline_input` and `outline_inputs_for_lines` build inputs. `to_input` records only the selector and hash, with no line numbers or text. `index.rs` renders the inputs and flags stale hashes.\n- The \"unsupported language\" obligation is met by the plain-text fallback profile. Every text file has a profile, so the only failure left is an unreadable (for example non-UTF-8) file, which is reported as \"cannot read\".\n\n**Tests**\n- `outline_inputs_survive_moves_and_unhashed_comments_but_not_edits` (tests/evidence_boundaries.rs:50) covers most of the design space:\n  - Inputs stay valid after nodes or lines move, code is reflowed, and unhashed comments are edited.\n  - Editing code or a doc comment makes the input stale, and the error names the file, selector and current line range.\n  - An edited plain-text line produces \"no outline node matches\".\n  - It also covers a missing node, an ambiguous selector, an invalid selector, a bad hash format, a missing file, a parse failure (`src/broken.rs`), and unexpected fields.\n- `collects_missing_orphan_format_false_and_changed_line_errors` (src/evidence.rs:1507) covers the changed-hash message and the missing-node, empty-file and bad-hash errors.\n- The symlink, external-path and Cargo-output tests cover the containment, freshness and disallow interplay with outline inputs.\n- `line_range_reads_record_the_innermost_covering_nodes` (src/authoring/tools.rs:1490) covers the line-range-to-outline-node mapping and that recorded inputs omit line numbers and text.\n- `tests/outcomes.rs` covers stale-input reporting through the status output.\n- `selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor` covers selector resolution against anchors.\n\n**Gaps:** none found. No FIXMEs are needed. Attributes and doc comments are covered by the shared outline profile, and the tests exercise the line ranges (`fn[beta]` lines 4-6 include its doc and line comments).",
+  "rationale": "The sources satisfy `requirements.ci.outline_inputs`. Each obligation maps to marked `{impl}` code and is exercised by tests.\n\n**Implementation**\n- **Parse, resolve, hash.** `validate_outline_input` (src/evidence.rs) accepts only `file`, `item` and `hash` and checks that the hash is 64 lowercase hex digits. It resolves the selector through `InputSelector::resolve` (src/inputs.rs), then compares the recorded `hash` with the node's current `structural_hash`.\n- **Parsing.** `OutlineCache::parse` reads the file with the containment and evidence-path checks. It then calls `outline::parse`, which dispatches by extension, and turns a failure into `\"{file}: cannot parse <profile> source\"`.\n- **Exactly one node.** `ParsedSource::resolve` returns an invalid-selector error, an ambiguous-selector error (\"add a #N disambiguator\") or a no-match error. Otherwise it returns a single node index.\n- **Line range.** `ParsedSource::node_range` takes the range from the outline node, so attached comments and attributes are included. The stale-hash error message reports \"now lines X-Y\". Display code in `index.rs` (`InputLocation::resolve`, `render_input`) uses the same resolution for ranges.\n- **Moves and comment edits.** These cannot invalidate an input because the recorded value is only the selector plus the structural hash. `to_input` never stores line numbers or text, and `recorded_input` strips them.\n- **Reported failures.** A missing file comes from `read_project_file`. A parse failure, bad selector and changed hash are reported as described above. \"Unsupported language\" cannot occur, because the plain-text profile in `requirements.references.outlines` covers every other file.\n- **Helpers.** `outline_input`, `outline_inputs_for_lines`, `read_lines` and `record_inputs` are marked and consistent with the requirement.\n\n**Tests**\n- **Main test.** `outline_inputs_survive_moves_and_unhashed_comments_but_not_edits` (tests/evidence_boundaries.rs) covers most of the design space:\n  - Moving nodes, reflowing code and editing non-hashed comments leave the inputs valid.\n  - Editing code or a doc comment produces \"outline input changed: … (now lines 1-2)\", which also checks the attached-comment line range.\n  - An edited plain-text line gives no matching node.\n  - It also checks a missing node, an ambiguous `fn[dup]`, an invalid selector `fn[unclosed`, a malformed hash, a missing file, extra legacy fields, and a Rust parse failure (`src/broken.rs`).\n- **Boundary tests.** Further tests in tests/evidence_boundaries.rs cover symlinks, external allowed paths and Cargo output directories, each with freshness checks.\n- **Unit tests.** src/evidence.rs tests cover the valid root input, error aggregation, and anchor coverage by an input that selects the node or an ancestor. The `read_lines` test (src/authoring/tools.rs) checks that recorded inputs hold only `file`, `item` and `hash`. tests/outcomes.rs checks that stale inputs are reported.\n\nI found no unspecified behaviour in the marked code beyond what other cited requirements (`input_containment`, `schema`, `diagnostics`, `evidence_paths`) cover. I found no partial implementation lacking an `{impl}` marker.",
   "inputs": [
     {
       "requirements": "requirements.ci.outline_inputs",
@@ -42,7 +42,9 @@
         "node, such as Rust attributes and doc comments preceding an item, so the outline",
         "tree need not match the grammar tree exactly; attached siblings are part of that",
         "node for its line range and hash. Every file's outline MUST have a root node",
-        "for the whole file. Comments MUST NOT be outline nodes. Profiles MUST be",
+        "for the whole file, independent of language. Source in no other outline node,",
+        "such as top-level statements no profile maps, MUST belong to the root node;",
+        "profiles MUST NOT invent fallback kinds for it. Comments MUST NOT be outline nodes. Profiles MUST be",
         "documented. Upgrading a grammar or profile MAY change outlines and MUST be",
         "treated as a deliberate change.",
         ":::"
@@ -77,19 +79,18 @@
       "text": [
         ":::{req} structural_hash",
         "A node's structural hash MUST be the SHA-256 digest of an unambiguous encoding of",
-        "its outline-relevant structure: the kinds of its named grammar nodes and the text",
-        "of its leaf tokens, in source order, including siblings its profile attaches to",
-        "it. It MUST exclude whitespace and comments, except comment kinds its profile",
-        "includes; the Rust profile MUST include doc comments. Prose, namely Markdown",
-        "text and the text of hashed comments, MUST be hashed as its ordered list of words,",
-        "where words are separated by whitespace and the whitespace itself, including",
-        "leading and trailing whitespace, is never hashed. Each word MUST be encoded",
-        "separately, so `ab cd` and `abcd` differ. Comment delimiters, such as `//`, `///`, `//!`,",
-        "`/*`, `*/`, and a leading `*` on a continuation line, MUST NOT be part of a",
-        "hashed comment's text, so reflowing a comment run across more or fewer lines",
-        "does not change the hash; code",
-        "string literals MUST be hashed as written. A `line` node's hash MUST be the",
-        "digest of the line's text without leading and trailing whitespace. A node's",
+        "its outline-relevant structure, including siblings its profile attaches to it:",
+        "the kinds of its named grammar nodes and, in source order, its text pieces. A",
+        "text piece MUST be the text of a leaf token, or text inside a node that no child",
+        "token covers. Each text piece MUST be hashed as its ordered list of words, where",
+        "words are separated by whitespace, the whitespace itself, including leading and",
+        "trailing whitespace, is never hashed, and each word is encoded separately, so",
+        "`ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments",
+        "MUST be excluded, except comment kinds the profile includes; the Rust profile",
+        "MUST include doc comments. For an included comment, only its text MUST be hashed,",
+        "not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`,",
+        "so reflowing it across more or fewer lines does not change the hash. A `line`",
+        "node's hash MUST be computed by the same word rule over the line's text. A node's",
         "identity hash MUST be computed the same way but MUST also exclude its outline",
         "descendants and their attached siblings, so editing a descendant does not change",
         "its ancestors' selectors.",
@@ -104,22 +105,22 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "7328154a4a915fd8b891324603a266f043164a3321da08da47f979b2f6fc501e"
+      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "2f0af97fbd766a3b4618f88bf0166b0da92048180c8612fbca9da2a82cad6034"
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_input]",
-      "hash": "7b128a6cc3bd15532a399d8a07e33ddd810d35a3920f9bdf49807b59a7530d03"
+      "hash": "7afcca3fd13ac29d384dfbc8d9c9dff12bb910ee7cb77898015f1eb987ab408d"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_outline_input]",
-      "hash": "2d948a21f1eb6043bfae2122c3ffded4fe7622645f2f8aa39cb1a7b4e7d9ed8a"
+      "hash": "69a294c538429cd1e2d9f1d4274ec9f17a6b7e99c3b5d3c8329c44d6f8d96176"
     },
     {
       "file": "src/evidence.rs",
@@ -129,17 +130,17 @@
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
-      "hash": "c7d448066b8eb3c3d0202bd54ccdfae17359219f5579220d31524d4a35d862d1"
+      "hash": "5d0928cbdeb6b36d33988b6bfca1b888ee083a1856d238c6856a16344ef82cc1"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "624ad7a0c13045d4eda64b42208699d0441461f96dfafec3098a06c4dcaf7057"
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
-      "hash": "898fbf8b342b14fbc2f5ab050fc1eb708a9af27d583393cc199365aa9d90bf14"
+      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
     },
     {
       "file": "src/index.rs",
@@ -149,7 +150,7 @@
     {
       "file": "src/index.rs",
       "item": "fn[render_input]",
-      "hash": "7a83a105c6b3fe0bb5c368fcaa0d0fe9acc7a710866548801e390ed4bd5fe4f6"
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
     },
     {
       "file": "src/inputs.rs",
@@ -174,12 +175,12 @@
     {
       "file": "src/inputs.rs",
       "item": "impl[OutlineCache]/fn[parse]",
-      "hash": "a1a5110e9af1bbd32e3b371f5ddf9369a21d2dfcc01de9c4c94600f1fd746dd6"
+      "hash": "5b613997dffb4c64f83409f4d889c838e51d929b47679119fedf793538c7a48e"
     },
     {
       "file": "src/inputs.rs",
       "item": "impl[ParsedSource]/fn[resolve]",
-      "hash": "5742cbc0685cb8d592ebe06fa3b69c2176eb0644fb07a165c7ce70cd8bf02155"
+      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
     },
     {
       "file": "src/inputs.rs",
@@ -194,7 +195,7 @@
     {
       "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "62ef579a8e3bfa3a76977643723328260e357e2e680735b3b8f2731fbbf90538"
+      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
       "file": "src/inputs.rs",
@@ -209,7 +210,7 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[fixture]",
-      "hash": "2856b14bb44377853f43ff67c79cd21679cc3dbf678ae55fd771ee14a59b58a0"
+      "hash": "4a33bc170ebf4c2eac1c421a2427ca8d1acd72c8772476b61d2bf1a0f3c69949"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -219,57 +220,47 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
-      "hash": "10d7854f57879b7f76d69cedff8a820db13f3d6aebda2d6ed7a4d0fc11a38ed6"
+      "hash": "a798c0a3903164d2f2f1758c0bfddce483826b6137ee6509776efbe71c14f2a6"
     },
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]",
-      "hash": "ba946d407a935b1ba4d88c94fbd18013ac9679b86a1c227348e6501d6f633e2c"
+      "hash": "87cd0850f43eabc90395b43268a523fe6563bcb31a65d2960dad988d77e7aabd"
     },
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]",
-      "hash": "82544e67fff02932d6c8fdcf4e31ad91c128dfb6450049fca99b23cc72fea6ac"
+      "hash": "666c657e7eefe99ac693087326725a1c73db4fadef23e4ad1e85ca58269a8b9a"
     },
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
-      "hash": "49ead01a3f496cf87a26975f1c143f5f44c09d9b87e9e2346a54477907db773a"
+      "hash": "baacb5cc86251bd76c65ad8fec4dc09f9f19043f1c0f74bb881f83ea6b22ac16"
     },
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
-      "hash": "734ba23beaab3e3f66faf951638ffa9bac65c7f9619204b3b23d8c249f5f1ed5"
+      "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
     },
     {
       "file": "tests/outcomes.rs",
       "item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
-      "hash": "fcc6ebdc1a7333b30bd2c119b14803335667565f613603f0615423af41e3890f"
+      "hash": "9c8a9dcfcf208a2befb8dca8b48b8e0b42b78f6af37133dd329d35e1c1101011"
     },
     {
-      "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "cb4d699cb31a9aa1793ad6160b711a3149fe0617a079f4f18d742c83317c7205"
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "e2b73fb5ab3ea089731a8720517490f1ac0891d24210de9fdab90341e075e6ec"
     },
     {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "290e7c1e137a3ff4781614fe1b266f4beca497eb2fbcd3992418ae2a75f7a5f2"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "81ef003048a6bb45f28d136d9644c684a460b86c417ed5cbdeb2d5d51d689789"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
-      "hash": "8be34437444e3b25500ecf53a25869e46b497671f803090d9366490ec081dd5b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "5f4a7697acc780e3eb0c3a43556339ff402f291c16fe33f830b6ff67df8fcfa1"
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "747c8b1b4ad7f80254ca27080bf0b199c6ef1cf0fe663fe6ea44f45765578a02"
     },
     {
       "file": "src/inputs.rs",
@@ -284,17 +275,7 @@
     {
       "file": "src/inputs.rs",
       "item": "fn[read_project_file]",
-      "hash": "749f81cf7f24050c429799fa5b271bca7422847b05e4224ff7bf046925ee72b0"
-    },
-    {
-      "file": "src/outline/profile.rs",
-      "item": "fn[profiles]",
-      "hash": "45ba9cec6cc349790afc5dd1e8d833e6ad757d94d5e3a0822a5788b5eb55e040"
-    },
-    {
-      "file": "src/outline/profile.rs",
-      "item": "fn[profile_for_path]",
-      "hash": "656532174458d0cce5875ee62ebf45fedccb75e1f6a626cba752d804f25723ae"
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
     }
   ]
 }

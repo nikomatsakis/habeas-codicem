@@ -1,7 +1,7 @@
 {
   "requirement": "An mdBook chapter MAY declare a named definition using a fenced `{definition}` directive. Definitions MUST use the same chapter-qualified names, identifier rules, fence rules, and nonempty-body rules as requirements and examples. Names MUST be unique across all three kinds.\n\nEach definition MUST declare exactly one nonempty `:phrase:` option before its explanatory body. The phrase MUST be interpreted as plain text. Definitions MUST NOT require their own evidence records or determinations.",
   "determination": true,
-  "rationale": "**Judgment: the sources satisfy `requirements.definitions.declaration`.** I checked each obligation against the {impl} code and the {test} references. The checks were done by reading the code and tests, not by running them.\n\n**Implementation**\n- **Shared declaration rules.**\n  - `definition_blocks` (src/lib.rs:508) parses `{req}`, `{example}` and `{definition}` fences in one pass. Definitions therefore get the same fence-length matching, closing-fence handling, `valid_name` identifier check and unclosed-fence detection as requirements and examples.\n  - `collect_definitions` (src/evidence.rs:350) qualifies the name with `chapter_namespace` and `full_requirement_name`. It reports invalid names, a missing closing fence and empty text, and applies these to all three kinds.\n- **Uniqueness across kinds.** `collect_definitions` stores every kind in a single `BTreeMap` and reports `duplicate {noun} {name}; first declared at …` on collision.\n- **Exactly one nonempty `:phrase:` before the body.** `terms::declaration` (src/terms.rs:10) rejects each of these cases:\n  - a missing `:phrase:`\n  - an empty phrase\n  - an empty body\n  - a duplicate `:phrase:` line directly after the first\n  \n  `collect_definitions` reports the error as `definition <name>: …`.\n- **Phrase as plain text.** `terms::escaped_phrase` (src/terms.rs:151) escapes Markdown metacharacters and HTML, and `replace_definitions` uses it when rendering. `reference_roles` protects the phrase line from `{term}` and other role parsing.\n- **No evidence or determination required.**\n  - `inspect_repository_with_progress` skips `Term` kinds in the \"missing evidence\" loop.\n  - `validate_references` only builds evidence subjects for non-`Term` definitions.\n  - Evidence-file matching also excludes terms.\n- **Rendering and badges.** `DefinitionKind::noun` and `DefinitionKind::badge`, `preprocess_book` and `replace_definitions` handle the `Term` kind consistently.\n\n**Tests (tests/definitions.rs)**\n- `invalid_declarations_and_reference_targets_are_reported` covers these error cases:\n  - a body with no phrase\n  - an empty phrase\n  - a duplicate phrase\n  - a phrase with no body\n  - a missing closing fence\n  - a requirement and a definition with the same name\n- `phrases_are_plain_links_and_markdown_literals_are_preserved` checks that the phrase renders as escaped plain text (`&#42;alpha&#42; &amp; &lt;beta&gt;`), that the `:phrase:` line is stripped from the output, and that the anchor id is emitted.\n- `fixture` and the cyclic-dependency test run `validate_repository` on a repository with definitions and no evidence files for them. It reports no errors, which shows definitions do not require evidence.\n\n**Minor observations (not gaps)**\n- No definition-specific test covers an invalid name, a different fence length, or an example/definition name collision. These paths share code with requirements and examples, and `requirements.ci.identifiers` and `requirements.ci.fence_lengths` cover them.\n- The helpers `valid_name`, `colon_fence` and `full_requirement_name` carry {impl} marks for the related CI requirements rather than for this one. The declaration requirement points to those rules, so I did not count this as a gap.",
+  "rationale": "**Verdict: the requirement is met.** All obligations are implemented, the implementation is marked, and the tests cover the main cases. I found no acknowledged gaps (no FIXME) and no unmarked or unspecified behaviour.\n\n**Declaration syntax, names, fences and uniqueness**\n- `definition_blocks` (src/lib.rs:508) recognises `{definition}` alongside `{req}` and `{example}`. It uses the same `colon_fence` and `valid_name` checks, the same closing-fence search, and the same code-block protection.\n- `collect_definitions` (src/evidence.rs:350) prefixes names with the chapter namespace through `chapter_namespace` and `full_requirement_name`.\n- All three kinds go into one `definitions` map. A second declaration of the same name, whatever its kind, reports `duplicate {noun} {name}; first declared at …`.\n- An unclosed fence reports \"missing a closing colon fence\".\n- Empty text reports \"has no text\".\n- Names that fail `valid_name` are never recognised as blocks, so they stay literal. That is how requirements and examples are treated too.\n\n**Phrase option and body**\n- `terms::declaration` (src/terms.rs:10) requires exactly one nonempty `:phrase:` line before the body.\n- It rejects a missing, empty or duplicated `:phrase:` and an empty body.\n- `collect_definitions` reports these as `definition {name}: …`.\n- The phrase is treated as plain text:\n  - `escaped_phrase` HTML-escapes it and entity-escapes Markdown characters, so it renders as literal text.\n  - `reference_roles` protects the phrase line from role parsing.\n\n**No evidence records or determinations for definitions**\n- `inspect_repository_with_progress` excludes `DefinitionKind::Term` from the \"missing evidence\" check.\n- It also excludes terms from the expected target of an evidence file.\n- `validate_references` only iterates over non-Term subjects.\n- The other consumers (batch authoring, status, info, input selection) also skip terms.\n\n**Markers**\nThe helpers and rendering code that carry the behaviour all have `{impl}` markers for this requirement:\n- `noun`\n- `badge`\n- `preprocess_book`\n- `replace_definitions`\n- `reference_roles`\n- `escaped_phrase`\n\n**Tests (tests/definitions.rs)**\n- `invalid_declarations_and_reference_targets_are_reported` checks four cases against the `definition bad.bad:` error:\n  - a body with no phrase;\n  - an empty phrase;\n  - a duplicate phrase;\n  - a phrase with no body.\n\n  It also checks the missing closing fence. And it checks a requirement and a definition with the same name, which gives `duplicate definition bad.x`. The chapter-qualified `bad.bad` name is exercised here as well.\n- `phrases_are_plain_links_and_markdown_literals_are_preserved` checks that `*alpha* & <beta>` is escaped to plain text and that the `:phrase:` line is not rendered. It also checks that references to the definition link correctly.\n- `fixture` creates `glossary.a` and `glossary.b` definitions in a chapter-qualified file, with no evidence files for them.\n- `outline_inputs_capture_terms_without_counting_them_as_citations` calls `validate_repository` and asserts `errors.is_empty()` while only `rules.ready.json` exists. That shows definitions need no evidence records. The test is cited for other requirements, but the assertion covers this point.\n\n**Weaker spots**\nThere is no dedicated test of nested or longer fences, or of invalid names, specifically for `{definition}` blocks. That behaviour is shared code, and the `{req}` cases are tested elsewhere (`a_longer_colon_fence_contains_a_shorter_nested_directive`, `invalid_names_remain_literal_and_html_is_escaped`).",
   "inputs": [
     {
       "requirements": "requirements.definitions.declaration",
@@ -24,17 +24,17 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "43f7933cbbf05cb990cdbc13342160ee114f99df21412e2a549350867ffdc1a0"
+      "hash": "1ccc4046a314160559504cfc1042ca910c997e28ae25c5c51c9a0791a5faf6eb"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[collect_definitions]",
-      "hash": "81ef003048a6bb45f28d136d9644c684a460b86c417ed5cbdeb2d5d51d689789"
+      "hash": "6e0d1bcbefe2f48a1562a260a5dd81fc25e54da33c79bd059f85f76df0b5db1e"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
-      "hash": "a53259372c00f283513c7c270465abd264793498385cb24638c11212635fbee8"
+      "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
     },
     {
       "file": "src/lib.rs",
@@ -54,7 +54,7 @@
     {
       "file": "src/lib.rs",
       "item": "fn[replace_definitions]",
-      "hash": "ad160af02e0feb831510c59c1f28c9e660daf60019826d1b5a48ea26bff893ad"
+      "hash": "24059237d9a5bdbfdb3c48f10b6191995590aa8525bdfb1b628a2fe80ed18337"
     },
     {
       "file": "src/lib.rs",
@@ -69,7 +69,7 @@
     {
       "file": "src/terms.rs",
       "item": "fn[declaration]",
-      "hash": "4221523ed17b632b4d932793ed68d41378ce9a14e36522277423a1abe547c205"
+      "hash": "5263149823d66ebe73fd2dbdf0eebb70dab76aea126cb1da175a6c5dc221d290"
     },
     {
       "file": "src/terms.rs",
@@ -79,67 +79,32 @@
     {
       "file": "tests/definitions.rs",
       "item": "fn[fixture]",
-      "hash": "d01ac4e14a2fe896fda71f57f2c2ae4f66ae13194e63bfdb5d580b05040f1e70"
+      "hash": "cf3a1ca69d526c80993146d2df62c3de65c2237e886a1e07f8e5dee78c0d7e46"
     },
     {
       "file": "tests/definitions.rs",
       "item": "fn[invalid_declarations_and_reference_targets_are_reported]",
-      "hash": "6603994ea5a884dc50ca32ed012f33fa69d1303dcdb1345929ebcb54554b6f6b"
+      "hash": "5d4651a4d38d578ac0c08d790248b90adc6c6c2981f131b654780a6eb3d9d1fa"
     },
     {
       "file": "tests/definitions.rs",
       "item": "fn[phrases_are_plain_links_and_markdown_literals_are_preserved]",
-      "hash": "c9cbd1c79a03648663927780ecae2c0311be3e629cd2f1c92f2c8d9d21ee653c"
+      "hash": "6676dec9f409e7e70839a3dcc1bf4ccc2659da1f7127c73f9bc45d900df38b8e"
     },
     {
       "file": "tests/definitions.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+      "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
+      "hash": "f92f368c46a0c959eb5bae0e823c313badde42e78b1e045a5e80421a31db0f02"
     },
     {
       "file": "tests/definitions.rs",
-      "item": "use@e843693d3cbe",
-      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
+      "item": "fn[definition_schema_deletion_and_literal_references_are_checked]",
+      "hash": "8ae4ea21d6333d2f0387bbde69364509558488d4672f0608a66b99709b8188e8"
     },
     {
       "file": "tests/definitions.rs",
-      "item": "use@36f23d77be5e",
-      "hash": "36f23d77be5ea4f1c566b7948bf1997b09a7bd47de9c294e15410b5805a4b15a"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "use@40f517aa6573",
-      "hash": "40f517aa6573fa5a6de363e46dba0920172519cc7335413c653adc0e7c0bcb33"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "use@727a0a270d8a",
-      "hash": "727a0a270d8a2c7e83b62bb0afa524214301ccf32188029a001382c2937eca32"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[capture]",
-      "hash": "a39aa823e2e6f651e5244f8eb37fb3efa24dddb771bac44c968fdf31fa4c2822"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[approve]",
-      "hash": "21f1d929ffeb266212290508583f69fedcd7773e3eb80fda680729f343c763ab"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[cyclic_dependencies_are_captured_once_and_changes_require_review]",
-      "hash": "d0a436f9d3adc0d3a2f1db48e771fd05e56c4f6caff483e47d74615eba643718"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[globs_exclude_terms_but_capture_referenced_terms_outside_the_glob]",
-      "hash": "dbb5f2b886c2204b0232d5cdfe42570ad08e5eb2a84ac084f2edfeba91ee1d58"
+      "item": "fn[example_subject_and_definition_display_use_the_same_dependencies]",
+      "hash": "8837e87dd6d9951838dd5e813079052e350aafc19fb79dca8e6243459e4e53be"
     },
     {
       "file": "src/lib.rs",
@@ -158,18 +123,28 @@
     },
     {
       "file": "src/lib.rs",
-      "item": "fn[option_line]",
-      "hash": "5aef3969b6894cb0c34a891bbc6bd78a532c33f260f49d0a16b6b7d756783d47"
-    },
-    {
-      "file": "src/lib.rs",
       "item": "fn[without_options]",
       "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
     },
     {
       "file": "src/lib.rs",
       "item": "fn[colon_fence]",
-      "hash": "fa9c74112d2152fc4311a87211d376a4ef90d36d448bc5633dce8c07daab08ce"
+      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[overlaps_protected]",
+      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[protected_ranges]",
+      "hash": "60056ec394f43fa5e98c7a5392c306b59e7d5501a9cf183339ef15ce2ff5f82a"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[is_protected]",
+      "hash": "096aa5aeb26e538ce1a69dd6bf447d0b45071fd25e14885f63b4cf7865a98d87"
     },
     {
       "file": "src/lib.rs",
@@ -180,6 +155,71 @@
       "file": "src/lib.rs",
       "item": "fn[valid_name]",
       "hash": "d3113ad1c2701c9b8d3b9b044da3c1fc8d798d3c5628bc382138925bbc970a6e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[escape_html]",
+      "hash": "6957779eaea2a004ad19afb83132699cd61b174640c47ff4aa58e59960bd3653"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]",
+      "hash": "2447489ae6e35bb28dacc7bd41e19c3ffa6b7eb65fd6fe22e8caae3d4a71f3b5"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all_with_options]",
+      "hash": "36deb619e4d6d1e1ec2ae64e7b26678169519fc38ff82e3a7d593fbc8989abae"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[references]",
+      "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown_with_options]",
+      "hash": "ac77fa61b31ea5613c156fd24c5a3def26886c1365f5638b46f3aa11b15dcfd8"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[info_markdown]",
+      "hash": "a9830dc8abda6a1630b308950385476f56d0ff614c9da33c26053edf3b8290f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_references]",
+      "hash": "f6346cb8e4304b6412a888b691430412882f83f2cce6c5916d65b74e3da4e006"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[missing_function_references]",
+      "hash": "d111e2c751c573871d70748ea4ad6ceb354c506408d013246cf531086e84238e"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[dependencies]",
+      "hash": "3c2ddcd06f8a2731215a0c27627369e0f4ac60a2549f1600d0cb7f5ee1c4a213"
     }
   ]
 }

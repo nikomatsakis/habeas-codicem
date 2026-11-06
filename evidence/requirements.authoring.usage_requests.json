@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record each provider request's outcome and available input/output\ntoken counts, including retries, with cached or reasoning-token counts when\nprovided. Missing measurements MUST be recorded as unavailable, not zero.\nRun totals MUST include request and tool-call counts by tool, elapsed time, and\navailable token usage, identifying incomplete totals without double counting\nprovider counters that overlap.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.authoring.usage_requests`. The implementation covers each obligation and is marked `{impl}`. Tests cover the main cases. I could not check how rig fills its `Usage` counters for Bedrock and Ollama (they are in an external crate). The code only copies them and never adds subset counters into the totals.\n\n**Per-request outcome and tokens**\n- `assess` in `src/authoring/mod.rs` calls `usage.begin_request()` before every provider attempt, retries included.\n- It then calls `end_request(index, elapsed, response.ok().map(|r| &r.usage))` after each attempt, whether it succeeded or failed.\n- `end_request` in `src/authoring/usage.rs` records the outcome as `completed` or `failed` and stores the per-request elapsed time.\n- `begin_request` starts each request as `unfinished`, and `finish(\"cancelled\")` marks an in-flight request `cancelled`.\n- `bedrock_sdk_config` disables AWS SDK retries (`RetryConfig::disabled()`), so each provider attempt appears as its own recorded request and none is hidden inside the SDK.\n- `TokenCounts::from_usage` copies input, output, cached-input, cache-creation and reasoning counts as `Option<u64>`. The cached, cache-creation and reasoning counts are recorded only when the provider supplies them.\n\n**Missing means unavailable, not zero**\n- A failed request gets `TokenCounts::default()`, where every counter is `None` and serializes as `null`.\n- `sum_counter` returns `None` when no request measured a counter, and a real `0` stays `0`. The mixed test asserts `cached_input == 0` alongside a null `reasoning`.\n\n**Run totals**\n- `request_count` and `requests[]` hold the request counts.\n- `tool_calls`, `tool_failures` and `tool_skipped` are maps keyed by tool name, with a total `tool_call_count`.\n- `tool` and `skipped_tool` update these counts. Unknown tool names collapse to `\"unknown\"`.\n- `record.elapsed_ms` is refreshed on `begin_request`, `end_request` and `finish`.\n- `TokenCounts::sum` totals the available tokens.\n- It sets `complete = false` when any request lacks input or output counts, or when an optional counter was measured on only some requests. This also covers in-flight, failed and cancelled requests.\n- The comment in `sum` says cache and reasoning counters are subsets and are never added into the input or output totals, so overlapping counters are not double counted.\n\n**Tests**\n- `token_totals_keep_subsets_separate_and_missing_counters_unknown`: input 200 despite cached 60, an in-flight request is incomplete, and a `None` usage is recorded as failed with a null input.\n- `partial_failure_retains_available_totals_and_optional_measurements`: failed requests, partial and mixed optional counters.\n- `cancelled_request_persists_elapsed_time_and_incomplete_totals`: cancelled outcome, elapsed time, incomplete totals.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text`: per-tool counts, failures, skips and the `\"unknown\"` bucket.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` (`src/authoring/mod.rs`): 8 failed attempts plus 1 completed attempt are all recorded, each failed one with `tokens.complete == false`.\n- The CLI and batch tests in `tests/authoring_cli.rs` and `tests/authoring_batch.rs` check end-to-end results:\n  - Ollama gives 22 input and 14 output tokens across 2 requests, with `complete == true` and 6 tool calls.\n  - Bedrock gives 38 input and 10 output tokens.\n  - A denied read gives `request_count == 1`, a tool failure and a `failed` outcome.\n\n**Marking:** I found no stray request-accounting code without an `{impl}` reference. The callers that finalize the log (`finish` in `author_evidence_with_output`, `prepare_assessment` and `PendingAssessment`) are marked for `usage_storage`, which covers persistence. The accounting behaviour in the `{impl}` code is within what this requirement specifies.",
+  "rationale": "**Verdict:** the requirement is implemented and tested. I could not check one assumption about the upstream `rig_core` crate (see the last section).\n\n**Per-request records**\n- `assess` in `src/authoring/mod.rs` brackets every provider attempt with `usage.begin_request()` and `usage.end_request(...)`. Retries after throttling are therefore each recorded, because the retry loop `continue`s back to `begin_request`.\n- `begin_request` in `src/authoring/usage.rs` stores a request with outcome `unfinished` and default (all-`None`) tokens.\n- `end_request` records `completed` when the provider returned usage and `failed` otherwise. It also records the request's elapsed time and its tokens.\n- `finish` marks an active request `cancelled` and records its elapsed time.\n- `bedrock_sdk_config` disables the AWS SDK's internal retries. Without that, retries would be hidden inside a single recorded request.\n- `TokenCounts::from_usage` maps `input`, `output`, `cached_input`, `cache_creation_input` and `reasoning` to `Option<u64>`. Missing measurements stay `None` (serialised as null), never zero. The per-request `complete` flag is true only when both input and output are measured.\n\n**Run totals**\n- `TokenCounts::sum` and `sum_counter` keep measured subtotals and leave a counter `None` when no request measured it.\n- The total's `complete` flag is false if any request lacks input or output, or if an optional counter was measured in only some requests.\n- Cached, cache-creation and reasoning counters are kept as separate subset fields and are never added into input or output, so overlapping provider counters are not double counted. A code comment says this.\n- `tool` and `skipped_tool` keep `tool_calls` per tool and `tool_call_count`, with model-supplied names bucketed through `tool_name`. `record.elapsed_ms` is updated at each begin, end and finish.\n- `request_count` is kept alongside the per-request list.\n\n**Marking**\nAll the relevant code carries `{impl}` for this requirement: `assess`, `begin_request`, `end_request`, `tool`, `skipped_tool`, `finish`, `from_usage`, `sum`, `sum_counter` and `tool_name`. `connect` and `bedrock_sdk_config` carry it for the visibility of each attempt.\n\nThe extra bookkeeping (tool failures, skipped tools, input tracking) is specified by `usage_inputs` and `usage_storage`, which the same code is marked as implementing.\n\n**Tests**\n- **Subsets and missing counters:** `token_totals_keep_subsets_separate_and_missing_counters_unknown` covers separate subset counters, an in-flight request making the total incomplete, a failed request recorded as null rather than zero, and incomplete totals that keep measured sums.\n- **Partial and mixed measurements:** `partial_failure_retains_available_totals_and_optional_measurements` covers an unmeasured optional counter staying null, a counter measured in only some requests (cached input 0 in one request), and a total that stays incomplete.\n- **Cancellation:** `cancelled_request_persists_elapsed_time_and_incomplete_totals` covers the cancelled outcome and elapsed time.\n- **Per-tool counts:** `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` covers counts by tool, failures, skips and the unknown bucket.\n- **Retries:** `throttled_requests_retry_unchanged_and_record_every_attempt` (`src/authoring/mod.rs`) covers 8 failed attempts and one completed attempt, each recorded, with `request_count` 9, `failed` outcomes, `tokens.complete` false per failed attempt, and a `submit_judgment` count of 1.\n- **End to end, Ollama:** `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks `request_count` 2, `tool_call_count` 6, per-tool counts and failures, and token totals 22 in and 14 out with `complete` true.\n- **End to end, Bedrock:** `bedrock_cli_uses_selected_profile_region_and_converse_tools` checks the same style of totals for Bedrock.\n- **Aborted runs:** `explicit_untracked_reads_abort_without_another_request_or_evidence_write` and `denied_read_preserves_in_flight_assessments_and_their_evidence` check usage for aborted runs.\n\n**Unverified assumption**\nReal providers' usage mapping relies on `rig_core`'s `Usage` being `Option`-based. The code supports this, since `from_usage` calls `.is_some()` on the fields. I could not confirm that the Ollama and Bedrock adapters leave unreported counts as `None` rather than 0. The unit tests exercise the missing-measurement path through `Usage::new()` and `None`.",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_requests",
@@ -22,12 +22,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]/fn[complete]",
-      "hash": "07ebb05047db0196f281262b80f9e091d2f605c0d5373e931f875a656d732646"
+      "hash": "4f289871c9861ae8a0cb2312b2afc8d441a0a9e290ea3e966395ee81879c59b7"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -42,7 +42,7 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "fn[bedrock_sdk_config]",
-      "hash": "38a0bbfe7210af2eb2866ae68ded2a591096273b580c03b9cedebc2fd636c7fe"
+      "hash": "c6cd3b29dc1e52be19c7808b21770c700a46510956f3800f3c6acbb4f6262fdc"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -112,32 +112,32 @@
     {
       "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
-      "hash": "178f948a2e46b29fa2239a0454208d63ed86e9acc8ffaee57e354e09c06c48f6"
+      "hash": "37588f8c9898b87e7bf916d29d4e976c7fd477d38b5eadc671dda7e03d866e0e"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[denied_read_preserves_in_flight_assessments_and_their_evidence]",
-      "hash": "a3952466d895309077f421961e415a0525f5df41dfad36e6af986b4612896aee"
+      "hash": "18752ee80ce8a21d0f6c24d417cbe38b44a76f617dae75726f4d3620b691c377"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[reply]",
-      "hash": "3b06483a23bfd69336ae0c01a327500b3532423d9cdf73638d0daff12b6b89c7"
+      "hash": "fa1792b0dad45638c78f23ab0c70b944fc2cd747aad4382c4fcb8d3313797a06"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "7a00d15ac0b7c37acb1ece15dcd419c300c5d0bd775826b1dd2a09eef4fa3f5d"
+      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_untracked_reads_abort_without_another_request_or_evidence_write]",
-      "hash": "c836bf2b50fd992608cfe9b112cc49967d1c264da1ab1a5c49ae26c3ea2e52f5"
+      "hash": "dac087a4dc68c347eedcde7da1f619ed2112a8149a8fa311f3abb3b577facc85"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "9c368a31e112c63a717c79e490de1a0b92151442949336fe52d7fc25aa0aa308"
+      "hash": "7d198562a62e845ab189a2249979c3593b0c0b4692d2caee238c95b74eb32d8a"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -221,93 +221,33 @@
     },
     {
       "file": "src/authoring/providers.rs",
+      "item": "struct[RigProvider]",
+      "hash": "514a07edf3e620d7fc3b2e39eaaad9e7a3dc3240ca2d0d889b1822a07da4c6a0"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider]",
+      "hash": "7a3013d0ca73f65f6499e84a0566193f302e57376276b30d62f03c6c8f870d2d"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[option_type]",
+      "hash": "0654c240bf76e5d922abbfbd0c44b1b149914a0687d7d718899237175aa89b82"
+    },
+    {
+      "file": "src/authoring/providers.rs",
       "item": "mod[tests]",
-      "hash": "04de21d5cdcced88e4c3c21942de73ceca21756e4cabd03056e04cc24a871df0"
+      "hash": "374e9b55ddd97c774762b69b7c916642c1bfff6349cc3c3102916e644e535911"
     },
     {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]",
-      "hash": "55b3fbbdb7ba0309087a5f80478bcba92e55f73a446c4f28fc6a330833225b30"
+      "hash": "6ba74988b38323d56108368477c0f1ff43944a2468c7ac12cff65dff781da84e"
     },
     {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[malformed_typed_client_calls_are_reported]",
       "hash": "4faebe00db5d52ab9d99ceae9a65736a3fd85009a2df98e617e49fab71d87d0b"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all_with_options]",
-      "hash": "323d4bd9f7d3e60816e04cbff316f0db32575c44225a36d81fa72c8e5d561bf8"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[cancel_on_error]",
-      "hash": "5ef06efa77fecf8e7bd8c95c4d2de6d55e09cec956951402b0af25c68aa623da"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[PendingAssessment]",
-      "hash": "b6f2ab4590313519766489b4e40be61fa09dc92c50e1497486410156a4a35f73"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[PendingAssessment]/fn[failed]",
-      "hash": "16fa5320a0e9388601882000e1388e3331faaaa236049e750e61dbd56da6e1b3"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[author_evidence_with_output]",
-      "hash": "4e33e8f7d6e5f1698ef435aca4ada1d096a7de82f043eb7b92bc1f2466eb5a81"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "69eff45f518d3e89fae99b8c5c3edeef1e2c369e4d1fb06cf69a5e47d7628a1d"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "e87ccffa89c54e55ec5a0b636f21d2fda0376ec1c44fabf97600f071b802d13b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "792de4a6e4c3dc00f4e12403f2c953553b710cecae5e954f8167ac9b74c22eba"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[finish]",
-      "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "10ed6d1783f73301693d98dc4307efbfbe8582d686eae3ba424657ab83e49eef"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse_with]",
-      "hash": "f69a9294f853db47bed56ba7250d739713a925e3a693512b91c53b50e7fdd9ab"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[check_errors]",
-      "hash": "40921c3f7c2b23784bd74511d2943f57c3dfaccc6eff8004953c078b2bd9a0b2"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[plain_text]",
-      "hash": "1ed244f60fca7778e1d259fa17db6c28c145bb2ac9b43b53bb17c3b2f958e52e"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[hash]",
-      "hash": "927e095a0fab8a9cd4ec73272582934acf9d2ed13b4596208a17d6c203a4d9ae"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[encode]",
-      "hash": "c16a6aea7f6ec2f5a8c87920beb2cf4312b34f233d924a7a966bd40f22b3727e"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -376,33 +316,18 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "struct[RigProvider]",
-      "hash": "514a07edf3e620d7fc3b2e39eaaad9e7a3dc3240ca2d0d889b1822a07da4c6a0"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "7a3013d0ca73f65f6499e84a0566193f302e57376276b30d62f03c6c8f870d2d"
-    },
-    {
-      "file": "src/authoring/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "7e1029af1d9f593a8965412bc1e8be1d3c1202e5a0e684a6c06ddaf32fd2ad23"
+      "hash": "7fa8c09c4b1265cf99ffcec7c8cc6383704146d860a73d814fe9bc607b8529a1"
     },
     {
       "file": "src/authoring/providers.rs",
       "item": "fn[normalize_bedrock_client_calls]",
-      "hash": "4041448cc93b26b0c5563b71f47f7f56bed74bbcdd11cfc4973920bba386b273"
+      "hash": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
     },
     {
       "file": "src/authoring/providers.rs",
       "item": "fn[apply_bedrock_options]",
-      "hash": "2c00dd3f5ae986e0ee89cb1f85e9a4fbe5ff0b37c9d2a1e19ba1cacc8f3effae"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[option_type]",
-      "hash": "5a071aaeb4e5c1f7f06245975bd14a2bf1df1a623a06a57c5372a49d2b1920c2"
+      "hash": "dad4f93bc7be7a135e932670c9a35592a5244c07057a70e8c2020b36df1345dd"
     }
   ]
 }

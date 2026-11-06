@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:\n\n```text\nsubmit_judgment({ determination: Judgment, rationale: String })\n\nJudgment = Boolean | { FIXME: Array<String> }\n```\n\nThe judgment MUST use the three outcomes and nonempty FIXME entries defined by\n{cite}`requirements.ci.outcomes`.\n`rationale` MUST be nonempty Markdown. This tool call MUST supply the final\nassessment result. The model MUST invoke it exactly once over the entire\nassessment. If the model finishes without invoking it, or invokes it more than\nonce, the harness MUST report an error and leave existing evidence unchanged.\nThe harness MUST check the complete model response for multiple submissions\nbefore accepting one. Invalid submission arguments MUST also fail the assessment.\nA valid single submission MUST finish the assessment; there is no submission\nrepair or resubmission loop. An assessment that fails before accepting a valid\njudgment MUST emit no evidence JSON to stdout.",
   "determination": true,
-  "rationale": "## Assessment of `requirements.authoring.submission`\n\nThe implementation covers each obligation, and the tests cover the main success and failure cases.\n\n### Implementation\n\n**Tool shape**\n- `tool_definitions` (`src/authoring/mod.rs`, ~L396) registers `submit_judgment` with a schema that has exactly two required fields and `additionalProperties:false`.\n- `determination` is `oneOf` boolean or `{FIXME: nonempty array of nonempty strings}`.\n- `rationale` is a string with `minLength` 1.\n\n**Runtime validation** (`submission`, ~L375)\n- Arguments must be an object with exactly the keys `determination` and `rationale`.\n- `Judgment::from_value` (`src/judgment.rs`) accepts `true`, `false`, or a single-key `FIXME` object holding a nonempty array of nonempty strings.\n- The rationale must be a nonblank string. Any validation failure returns an error that fails the assessment.\n\n**Exactly-once handling** (`assess`, ~L412)\n- All tool calls in a response are collected before one is accepted.\n- More than one `submit_judgment` call in a response returns an error.\n- A response with no tool calls returns \"model finished without invoking submit_judgment\".\n- A valid single submission returns immediately, so there is no repair or resubmission loop.\n- `configured_assessment` and `configured_record` propagate errors with `?` before any evidence is written. Success is the only path that writes to the file or stdout, so a failed assessment leaves existing evidence unchanged and prints nothing to stdout.\n\n**Marking**\n- `submission`, `tool_definitions` and `assess` all carry `{impl}` markers.\n- `Judgment::from_value` is marked for `requirements.ci.outcomes`, which this requirement cites for the outcome semantics.\n\n### Tests\n\n**`tests/authoring_cli.rs`: `missing_duplicate_and_invalid_submissions_preserve_existing_evidence`**\n\nThis test runs four cases, each with and without `--stdout`:\n- no tool call;\n- two `submit_judgment` calls in one response;\n- an empty rationale;\n- an empty `FIXME` array.\n\nFor each case it asserts:\n- the process fails;\n- stdout is empty;\n- the evidence file is unchanged;\n- usage records `failed` with `evidence_written` false and a null determination.\n\n**`bedrock_cli_uses_selected_profile_region_and_converse_tools`**\n- Asserts the submit tool schema: the `oneOf` boolean/FIXME structure, `minItems` 1, and string items with `minLength` 1.\n- Checks a valid submission end to end, for both typed and untyped tool-use blocks.\n- Checks that the determination is persisted and that `tool_calls.submit_judgment` is 1.\n\n**Other tests**\n- The `src/authoring/mod.rs` unit-test provider submits both `true` and other judgments through `assess`.\n- The live Bedrock test exercises a real model submission.\n\n### Minor gaps\n\n- Extra or missing top-level keys and non-boolean or non-object determinations are not tested directly.\n- They are straightforward checks in `submission` and `from_value`, and the covered cases exercise the same error path.\n- I found no unmarked implementation of this requirement and no unspecified behaviour. The `skipped_tool` usage bookkeeping belongs to the usage requirements.",
+  "rationale": "The sources support `requirements.authoring.submission`, and the tests cover the main points of its design space. A few edge cases are not covered by a dedicated test (see Tests).\n\n**Implementation**\n- **Tool schema:** `tool_definitions` in `src/authoring/mod.rs` (lines 396–410) exposes `submit_judgment`. The schema has `additionalProperties:false` and requires exactly `determination` and `rationale`. `determination` is `oneOf` a boolean or an object with only `FIXME`, which is a `minItems:1` array of `minLength:1` strings. `rationale` is a string with `minLength:1`.\n- **Argument validation:** `submission` (lines 375–394) rejects non-object arguments, any field set other than exactly `determination` and `rationale`, an invalid judgment, and an empty or whitespace-only rationale.\n- **Judgment shape:** `Judgment::from_value` in `src/judgment.rs`, which also implements `requirements.ci.outcomes`, accepts `true`, `false`, or an object with only `FIXME`. That object must hold a nonempty array of nonempty, non-blank strings.\n- **Submission counting:** `assess` (lines 412–532) filters the whole response's tool calls for `submit_judgment` before accepting any of them. More than one submission returns an error. A response with no tool calls and no submission returns \"model finished without invoking submit_judgment\".\n- **Single submission:** A valid single submission returns immediately with the evidence record. There is no retry or repair loop, because an invalid submission returns its error with `?`.\n- **Failure handling:** `configured_assessment` writes evidence to a file or to stdout only after `configured_record` returns `Ok`. On any error it returns before writing, so stdout stays empty and existing evidence is untouched.\n- **Marking:** All three code sites carry `{impl}` markers. I found no unmarked code implementing part of the requirement.\n\n**Tests**\n- `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` (`tests/authoring_cli.rs`) covers four failure cases: no submission, two submissions in one response, an empty rationale, and `{FIXME: []}`. Each runs in both file and `--stdout` mode. It asserts a failed exit, empty stdout, unchanged evidence file, a `failed` usage outcome, `evidence_written=false`, and a null determination.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts the `submit_judgment` schema, including the boolean/FIXME `oneOf` with `minItems` and `minLength`. It also checks a successful submission end to end through two typed and untyped tool-call variants.\n- `live_bedrock_authoring` checks a real submission when credentials are available.\n- `tests/outcomes.rs` covers the judgment shapes: valid `true`, `false` and FIXME values, and invalid FIXME shapes including empty, blank, non-string, extra-key and wrong-case forms.\n- The unit tests in `src/authoring/mod.rs` exercise a valid single submission through `assess`.\n\n**Minor test gaps**\n- Non-object arguments, an extra argument field, and a missing field are enforced by `submission` but have no dedicated test.\n- A whitespace-only rationale is handled but not tested; only the empty string is tested.\n- I judge these gaps minor because the logic is simple and the schema checks overlap with them.",
   "inputs": [
     {
       "requirements": "requirements.authoring.submission",
@@ -66,22 +66,22 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[submission]",
-      "hash": "0399b4a6cb4665e2c0d3cf700b5aac090be807722f8c47cfacbd37a6c94a2321"
+      "hash": "3f4acd1d1c636179b58366914e69d8b699355c761c96b5b2842314d8d7da1860"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[tool_definitions]",
-      "hash": "901455e822d08b29962d8e4c5816621e93001dec63df4f6b40cfc1ace054eec2"
+      "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]/fn[complete]",
-      "hash": "6e9eb7c4d3f87ed916aeaadb558de5c57a0b5dafe06734e4b281280b1377bb92"
+      "hash": "a6fd62b403a44e80994835bb8e567c5cf017c7d49ff4f1ccfbba2efa5da696db"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -91,87 +91,32 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[missing_duplicate_and_invalid_submissions_preserve_existing_evidence]",
-      "hash": "67f44d189fa7a170b468cc900f352066cb88bd8f347cb9a7ee70fc910e6347b0"
+      "hash": "fbf718b81fa55ebcce30e668587f7eb98190479011e1f6721dbc1a6cb13ed74d"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "9c368a31e112c63a717c79e490de1a0b92151442949336fe52d7fc25aa0aa308"
+      "hash": "7d198562a62e845ab189a2249979c3593b0c0b4692d2caee238c95b74eb32d8a"
     },
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
-      "hash": "334db9087426522bd749ba0bd042005190bc388325543e5f100f7c764f1a4969"
+      "hash": "372d4143227c94e60be30077a9386da7eb61c0791690cc9b8d28686c026fda5d"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "b6ea41e0520a27f287ef5ef9bf0c947105fd047bf9d00f8c549b193159411dae"
+      "file": "src/judgment.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
     },
     {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[completed]",
-      "hash": "4cb6a3a541d7cd011517bf9cd73652642b5b2fe2d6a39f35f054c174146f9dec"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[refresh]",
-      "hash": "b27e2ed67e4325d6b3f30b9473c8f551a0ca9ad4b691d78d865a462854693d7a"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "fn[tool_name]",
-      "hash": "a13e77cf2b4fcda720345a3552362174c591a96353af831fc2caa7fec8762b9f"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "10ed6d1783f73301693d98dc4307efbfbe8582d686eae3ba424657ab83e49eef"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "impl[FixmeSummary]/fn[render]",
-      "hash": "5ae8a98947303c608bb42baa06ff5ec0b4ed2d5d124fd02b4df9b2fd36b08b47"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[EvidenceState]/fn[label]",
-      "hash": "b810d862ea7fcd6f0ec6fe812e979903c3dcc852ae20f6c387960b801ed0e364"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "fn[render_detail_sections]",
-      "hash": "00b91bf2698421444a52bc246c4a7a01d9bfcfb5cb4c613a5a586c350aa0e90b"
+      "file": "src/judgment.rs",
+      "item": "enum[Judgment]",
+      "hash": "a9bfddb68ac7f643edbadb7a2ecea67abe9271b517b1b6f1b98ce706ac05f67b"
     },
     {
       "file": "src/judgment.rs",
       "item": "impl[Judgment]",
-      "hash": "b65e3178fd7a518410b9e16f8001f4ab448cc4d53160714f46c95f57cc4d74c6"
-    },
-    {
-      "file": "src/judgment.rs",
-      "item": "impl[Judgment]/fn[from_value]",
-      "hash": "f1d2c3a3c37d8bacb286c2076e46e54db2338ecfa6ceb09b2dfe3aa6cda155e4"
-    },
-    {
-      "file": "src/judgment.rs",
-      "item": "impl[Judgment]/fn[to_value]",
-      "hash": "cfabdc4ae28bfaadaa3d17e02a6ecf7489cc6022cf51556d9926c8443f30af67"
-    },
-    {
-      "file": "src/judgment.rs",
-      "item": "impl[Judgment]/fn[kind]",
-      "hash": "dd1340d3f714a4983d8227313f47493a13a63bb779139778a0b1cebb44152aea"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "bb3fbedf662fe3d50bd0de88cf6a0f9dd8b9f6d3b9f3d0552be4227d02d7a3f7"
+      "hash": "367df3c41736de6270850797f245f1c018c82f6df9c1facc27709c3acabc252d"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -181,37 +126,92 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "impl[PendingAssessment]",
-      "hash": "b6f2ab4590313519766489b4e40be61fa09dc92c50e1497486410156a4a35f73"
+      "hash": "58eca1f55681587adbff8cf82af2f46a8a8a08c6f6b69db82422cc4520dfdc16"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[author_evidence_with_output]",
-      "hash": "4e33e8f7d6e5f1698ef435aca4ada1d096a7de82f043eb7b92bc1f2466eb5a81"
+      "hash": "6a462d7a3ecd5ded2c069ff64b0748c9cea3e07c6ba401e96764380d12991119"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
-      "hash": "69eff45f518d3e89fae99b8c5c3edeef1e2c369e4d1fb06cf69a5e47d7628a1d"
+      "hash": "79eec9a94a940b053e0424d9dbed70e95173f7897668dba69990894b1a610ae6"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "e87ccffa89c54e55ec5a0b636f21d2fda0376ec1c44fabf97600f071b802d13b"
+      "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "792de4a6e4c3dc00f4e12403f2c953553b710cecae5e954f8167ac9b74c22eba"
+      "hash": "bd02de1eea84805ffdba0b1bc76bb6156b1a2d6436801239dbc54a37865c39f8"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt]",
-      "hash": "e7da3bcb5ee82b6af7ebf8bdcc4d259b8ba733337fec6ae5bf91829858d8a208"
+      "hash": "bfe100b8b43cf49efd6375d462d16f5ec28e447db4d13e7c20be01d72ea07fc5"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "hash": "b6ea41e0520a27f287ef5ef9bf0c947105fd047bf9d00f8c549b193159411dae"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]",
-      "hash": "40911bfe1b482bc514b38b06c3b0886bd393bb22c6983e937f2be6560a36e4f1"
+      "hash": "cd381c4513eb9cd1c0c5e9bf8f6487bd8b6f5cb6f5eb4fee57c375d62dfe3cff"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/use@a0259f98c77e",
+      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[JudgmentProvider]",
+      "hash": "a4d3bcc945e5ff73273efd38fe12c07e22eca04ce1dff12db82626cc57940bcc"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]",
+      "hash": "c9a27e858bb5439c186bc61d4ee26fbd809137f95ebb5a3016e51c3c46e1256d"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]",
+      "hash": "04043e25feb9635df0fe5fbadfcfecc9b84c292bab8c977f7c8be9769cca86b8"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[apply_bedrock_options]",
+      "hash": "dad4f93bc7be7a135e932670c9a35592a5244c07057a70e8c2020b36df1345dd"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "e7333d3e41b95312e527d78ad2e0fd83c91ca74ffb2a6a09e8084dbb2c9e8684"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load]",
+      "hash": "796c6adf330cbdc2dc13569a0f1cb8d08c4548b9651d269809ab83e78eee4169"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[commands_report_invalid_arguments_and_unmatched_selectors]",
+      "hash": "d3e5ef37c8bcb051fba22c0908323dcc2b280d531c816faf752615a2b1349afc"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[judgments_round_trip_and_reject_invalid_fixme_shapes]",
+      "hash": "5e53d5bc17d1c06f4617144b9f2e9c085c86d11acdb183e450f88fde2a8d8530"
     }
   ]
 }
