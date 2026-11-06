@@ -483,3 +483,26 @@ fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {
     }
     assert!(!target.exists(), "metadata must not run a build");
 }
+
+// {test}`requirements.integration.report_api`
+#[test]
+fn inaccessible_project_root_is_an_io_error_not_a_report() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing");
+    let error = validate_repository(&missing).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+
+    // Ordinary invalid evidence in an accessible root is reported instead.
+    let project = fixture();
+    let root = project.path().join("project");
+    fs::write(root.join("evidence/unknown.thing.json"), "{broken").unwrap();
+    let report = validate_repository(&root).unwrap();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("unknown.thing.json")),
+        "{:#?}",
+        report.errors
+    );
+}

@@ -1587,3 +1587,100 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
     assert_eq!(ollama, bedrock);
     assert_eq!(ollama.1.len(), 6);
 }
+
+/// Asserts that authoring failed before or while recording usage history and
+/// did not report a recorded success.
+// {test}`requirements.configuration.state_location`
+fn assert_unrecorded_failure(output: &Output, expected: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains(expected), "{stderr}");
+    assert!(!stdout.contains("Usage:"), "{stdout}");
+    assert!(!stdout.contains("1 authored"), "{stdout}");
+}
+
+// {test}`requirements.configuration.state_location`
+#[cfg(unix)]
+#[test]
+fn undeterminable_unwritable_or_project_state_fails_before_a_model_request() {
+    let server = Server::start(Vec::new());
+    let fixture = Fixture::new(&server.endpoint);
+    for args in [
+        &["author", SUBJECT, "--config", "mock"][..],
+        &["author", "--all", "--config", "mock"][..],
+    ] {
+        let output = fixture
+            .command()
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("HOME")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_unrecorded_failure(&output, "cannot determine Habeas");
+
+        let blocked = fixture.temp.path().join("state-file");
+        fs::write(&blocked, "not a directory").unwrap();
+        let output = fixture
+            .command()
+            .env("XDG_STATE_HOME", &blocked)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_unrecorded_failure(&output, "cannot create authoring state directory");
+        assert_eq!(fs::read_to_string(&blocked).unwrap(), "not a directory");
+
+        let inside = fixture.project.join("state");
+        let output = fixture
+            .command()
+            .env("XDG_STATE_HOME", &inside)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_unrecorded_failure(&output, "must be outside the project repository");
+        assert!(!inside.join("habeas/authoring").exists());
+    }
+    assert!(server.finish().is_empty());
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+}
+
+// {test}`requirements.configuration.state_location`
+#[cfg(unix)]
+#[test]
+fn usage_write_failures_are_reported_without_claiming_recorded_history() {
+    use std::os::unix::fs::PermissionsExt;
+    for args in [&["author", SUBJECT][..], &["author", "--all"][..]] {
+        let fixture = Fixture::new("http://unconfigured");
+        let usage = fixture.state.join("habeas/authoring/usage");
+        let server = Server::start_with(
+            vec![reply(vec![call(
+                "submit",
+                "submit_judgment",
+                json!({"determination":true,"rationale":"The supplied sources support the subject."}),
+            )])],
+            move || {
+                for entry in fs::read_dir(&usage).unwrap() {
+                    let path = entry.unwrap().path();
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+                }
+            },
+        );
+        let config_path = fixture.config.join("habeas/config.toml");
+        let config = fs::read_to_string(&config_path)
+            .unwrap()
+            .replace("http://unconfigured", &server.endpoint);
+        fs::write(config_path, config).unwrap();
+        let output = fixture.command().args(args).output().unwrap();
+        assert_eq!(server.finish().len(), 1);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("cannot record"), "{stderr}");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("Usage:"),
+            "{output:?}"
+        );
+    }
+}

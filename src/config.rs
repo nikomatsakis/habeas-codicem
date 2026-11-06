@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 const CONFIG_EXAMPLES: &str = "see md/requirements/authoring.md#editing-the-file";
 
 // {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.configuration.structure`
+// {impl}`requirements.configuration.feature_sections`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
@@ -26,6 +28,8 @@ pub struct UserConfig {
 pub struct ProjectConfig {}
 
 // {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.feature_sections`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
@@ -38,6 +42,7 @@ pub struct WorkspaceConfig {
 
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.configuration.feature_sections`
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceAuthoringConfig {
@@ -47,6 +52,8 @@ pub struct WorkspaceAuthoringConfig {
     pub configs: BTreeMap<String, AuthoringConfig>,
 }
 
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.configuration.feature_sections`
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceConfig {
@@ -106,6 +113,7 @@ pub struct BedrockCredentials {
 
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.configuration.feature_sections`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserAuthoringConfig {
@@ -249,6 +257,7 @@ impl UserConfig {
         Ok(config)
     }
 
+    // {impl}`requirements.configuration.structure`
     // {impl}`requirements.configuration.serialization`
     // {impl}`requirements.authoring.configuration_serialization`
     pub fn to_toml(&self) -> io::Result<String> {
@@ -345,7 +354,6 @@ impl EvidenceConfig {
 }
 
 impl ProjectConfig {
-    // {impl}`requirements.configuration.structure`
     // {impl}`requirements.configuration.loading`
     // {impl}`requirements.configuration.workspace_structure`
     pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {
@@ -432,6 +440,7 @@ impl BackendConfig {
 
     // {impl}`requirements.authoring.configuration_storage`
     // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.configuration.feature_sections`
     // {impl}`requirements.authoring.credentials`
     fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {
         if self.model_ref().model.is_empty() {
@@ -658,6 +667,7 @@ fn required_directory(
     })
 }
 
+// {impl}`requirements.configuration.structure`
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.configuration.serialization`
 pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {
@@ -699,6 +709,7 @@ pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceCo
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.authoring.deterministic_validation`
+// {impl}`requirements.configuration.feature_sections`
 pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {
     let Some((path, table)) = workspace_document(root)? else {
         return Ok(None);
@@ -731,6 +742,7 @@ pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEviden
 
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
 fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {
     let root = fs::canonicalize(root)?;
     let start = std::env::current_dir()
@@ -763,6 +775,7 @@ fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>>
 
 // {impl}`requirements.configuration.workspace_structure`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.feature_sections`
 fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()> {
     if table.get("version").and_then(toml::Value::as_integer) != Some(1) {
         return Err(invalid(path, "version", "expected version = 1"));
@@ -778,6 +791,7 @@ fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()>
 
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.credentials`
+// {impl}`requirements.configuration.workspace_structure`
 fn parse_document(text: &str, path: &Path) -> io::Result<toml::Table> {
     toml::from_str(text).map_err(|error: toml::de::Error| {
         let position = error
@@ -795,13 +809,14 @@ fn parse_document(text: &str, path: &Path) -> io::Result<toml::Table> {
 
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.credentials`
+// {impl}`requirements.configuration.workspace_structure`
 fn decode<T: DeserializeOwned>(value: toml::Value, path: &Path, setting: &str) -> io::Result<T> {
     let mut secrets = Vec::new();
     credential_values(&value, false, &mut secrets);
     secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     value.try_into().map_err(|mut error: toml::de::Error| {
         error.set_input(None);
-        let mut message = error.to_string();
+        let (mut message, setting) = decoded_setting(&error.to_string(), setting);
         for secret in secrets {
             if !secret.is_empty() {
                 message = message
@@ -809,8 +824,31 @@ fn decode<T: DeserializeOwned>(value: toml::Value, path: &Path, setting: &str) -
                     .replace(&secret, "<redacted>");
             }
         }
-        invalid(path, setting, message)
+        invalid(path, &setting, message)
     })
+}
+
+/// Splits a TOML decoding message into its explanation and the full setting
+/// it concerns: the decoder's trailing "in `key`" location joined to `prefix`,
+/// plus the field name of an unknown-field error.
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
+fn decoded_setting(message: &str, prefix: &str) -> (String, String) {
+    let message = message.trim_end();
+    let (message, location) = match message.rsplit_once("\nin `") {
+        Some((message, location)) => (message, location.strip_suffix('`').unwrap_or(location)),
+        None => (message, ""),
+    };
+    let unknown = message
+        .strip_prefix("unknown field `")
+        .and_then(|rest| rest.split_once('`'))
+        .map_or("", |(field, _)| field);
+    let setting = [prefix, location, unknown]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    (message.trim().to_owned(), setting)
 }
 
 // {impl}`requirements.authoring.credentials`
@@ -983,6 +1021,7 @@ fn validate_name(path: &Path, setting: &str, name: &str) -> io::Result<()> {
 }
 
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
 fn invalid(path: &Path, setting: &str, message: impl std::fmt::Display) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,

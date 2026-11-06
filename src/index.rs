@@ -1681,4 +1681,101 @@ mod tests {
         assert!(content.contains("<code>requirements selection rules.base</code>"));
         assert!(!content.contains("Requirements index"));
     }
+
+    // {test}`requirements.index.detail_format`
+    #[test]
+    fn detail_page_shows_recorded_text_locations_and_first_matching_group() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for dir in ["md", "evidence", "src"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        let source = ":::{req} ready\nReady uses TERM`rules.term`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n"
+            .replace("TERM", "{term}");
+        fs::write(root.join("md/rules.md"), &source).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// IMPL`rules.ready`\n// TEST`rules.ready`\nfn both() {}\n"
+                .replace("IMPL", "{impl}")
+                .replace("TEST", "{test}"),
+        )
+        .unwrap();
+        let inputs = json!([
+            {"requirements": "rules.*", "matches": ["rules.base", "rules.ready"], "text": ["recorded base", "", "recorded ready"]},
+            {"definition": "rules.term", "text": ["recorded term"]},
+            {"requirements": "missing.*", "matches": ["missing.x"], "text": ["recorded missing"]},
+            crate::inputs::outline_input(root, "src/lib.rs", "fn[both]").unwrap(),
+        ]);
+        fs::write(
+            root.join("evidence/rules.ready.json"),
+            json!({
+                "requirement": "Ready uses TERM`rules.term`.".replace("TERM", "{term}"),
+                "determination": true,
+                "rationale": "Checked.",
+                "inputs": inputs,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        preprocess_book(&mut book, root).unwrap();
+        let page = book
+            .chapters()
+            .find(|chapter| chapter.name == "rules.ready")
+            .unwrap();
+        let content = &page.content;
+        let position = |needle: &str| {
+            content
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle:?} in:\n{content}"))
+        };
+
+        // The state badge has alt text naming the state.
+        let badge =
+            position("<img class=\"habeas-shield\" src=\"https://img.shields.io/badge/evidence-");
+        assert!(
+            content[badge..].contains("alt=\"evidence Invalid\""),
+            "{content}"
+        );
+
+        // A requirements input lists each match's name, file, and inclusive
+        // range, then its recorded text.
+        let selection = position("<code>requirements selection rules.*</code>");
+        let base = position("- <code>rules.base</code>: <code>md/rules.md:5–7</code>\n");
+        let ready = position("- <code>rules.ready</code>: <code>md/rules.md:1–3</code>\n");
+        let recorded = position("```markdown\nrecorded base\n\nrecorded ready\n```");
+        assert!(
+            selection < base && base < ready && ready < recorded,
+            "{content}"
+        );
+
+        // A definition input shows its name, location, and recorded text.
+        let definition = position("<code>definition rules.term</code>");
+        let location = position("- <code>rules.term</code>: <code>md/rules.md:9–13</code>\n");
+        let text = position("```markdown\nrecorded term\n```");
+        assert!(definition < location && location < text, "{content}");
+
+        // An unresolved selector is reported and its recorded text kept.
+        let unresolved = position("Unresolved selector: ");
+        let missing = position("```markdown\nrecorded missing\n```");
+        assert!(unresolved < missing, "{content}");
+
+        // A source reached by both an implementation and a test edge appears
+        // once, in the first group that applies.
+        let implementation = position("style=\"display: inline\">Implementation</h3>");
+        let both = position("<code>outline src/lib.rs fn[both]</code>");
+        assert!(implementation < both, "{content}");
+        assert!(
+            !content.contains("style=\"display: inline\">Tests</h3>"),
+            "{content}"
+        );
+        assert_eq!(
+            content.matches("outline src/lib.rs fn[both]").count(),
+            1,
+            "{content}"
+        );
+    }
 }

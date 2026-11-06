@@ -239,6 +239,7 @@ impl LineIndex {
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_selectors`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.cli.add_input_item`
 fn plain_text(profile: &'static Profile, source: &str, lines: &LineIndex) -> Outline {
     let mut root_hash = Encoder::new();
     let mut nodes = vec![root_node(source, lines, String::new(), String::new())];
@@ -399,6 +400,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// Names a mapped node, returning its parts and the byte where the name
     /// is declared.
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.cli.add_input_item`
     fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
         let named = |child: Node<'_>| {
             (
@@ -451,6 +453,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 continue;
             }
             if let Some(rule) = self.profile.rule(child) {
+                // {impl}`requirements.cli.add_input_item`
                 let (name, declaration_byte) = match self.name(rule.name, child) {
                     Some((parts, byte)) => (Some(parts), byte),
                     None => (None, child.start_byte()),
@@ -559,6 +562,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     // {impl}`requirements.references.outlines`
     // {impl}`requirements.references.outline_selectors`
     // {impl}`requirements.references.outline_comments`
+    // {impl}`requirements.cli.add_input_item`
     fn finish(self, lines: &LineIndex) -> Outline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         nodes.push(root_node(

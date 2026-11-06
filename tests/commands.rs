@@ -924,3 +924,313 @@ fn add_input_modes_capture_outline_nodes_and_refresh_idempotently() {
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("matches no requirement or example"));
 }
+
+// {test}`requirements.cli.add_input`
+// {test}`requirements.cli.add_input_item`
+// {test}`requirements.cli.add_input_requirements`
+// {test}`requirements.cli.clap`
+#[test]
+fn add_input_requires_one_target_and_mode_and_resets_changed_records() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("md")).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
+    fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+    let rules = ":::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it works.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n";
+    fs::write(root.join("md/rules.md"), rules).unwrap();
+    let main = "fn main() {}\n";
+    fs::write(root.join("src/main.rs"), main).unwrap();
+    let path = root.join("evidence/rules.ready.json");
+    let run = |args: &[&str]| {
+        let mut full = vec!["add-input"];
+        full.extend_from_slice(args);
+        habeas(root, &full)
+    };
+
+    // Exactly one target and exactly one mode.
+    for args in [
+        [
+            "--for-requirement",
+            "rules.ready",
+            "--for-example",
+            "rules.case",
+            "--item",
+            "src/main.rs:1",
+        ]
+        .as_slice(),
+        [
+            "--for-requirement",
+            "rules.ready",
+            "--item",
+            "src/main.rs:1",
+            "--requirements",
+            "rules.ready",
+        ]
+        .as_slice(),
+        ["--item", "src/main.rs:1"].as_slice(),
+        ["--for-requirement", "rules.ready"].as_slice(),
+    ] {
+        let output = run(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: habeas add-input"));
+        assert!(!root.join("evidence").exists(), "{args:?}");
+    }
+
+    // Unknown and wrong-kind targets are rejected before anything is written.
+    for (args, expected) in [
+        (
+            ["--for-requirement", "rules.missing"],
+            "unknown requirement",
+        ),
+        (
+            ["--for-requirement", "rules.case"],
+            "is an example, not a requirement",
+        ),
+        (
+            ["--for-example", "rules.ready"],
+            "is a requirement, not an example",
+        ),
+        (
+            ["--for-requirement", "rules.term"],
+            "is a definition, not a requirement",
+        ),
+    ] {
+        let mut full = args.to_vec();
+        full.extend(["--item", "src/main.rs:1"]);
+        let output = run(&full);
+        assert!(!output.status.success(), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(expected) && error.contains(args[1]),
+            "{args:?}: {error}"
+        );
+        assert!(!root.join("evidence").exists(), "{args:?}");
+    }
+
+    // An exact name selects one declaration and stores its raw source.
+    let output = run(&[
+        "--for-requirement",
+        "rules.ready",
+        "--requirements",
+        "rules.ready",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("- added: ") && stdout.contains("matching rules.ready\n"),
+        "{stdout}"
+    );
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(record["determination"], false);
+    assert!(
+        record["rationale"]
+            .as_str()
+            .unwrap()
+            .starts_with("Review pending")
+    );
+    assert_eq!(
+        record["inputs"],
+        json!([{"requirements": "rules.ready", "matches": ["rules.ready"], "text": [":::{req} ready", "Ready.", ":::"]}])
+    );
+
+    // A glob stores matches in full-name order, separated by a blank line,
+    // and never selects named definitions.
+    let output = run(&[
+        "--for-requirement",
+        "rules.ready",
+        "--requirements",
+        "rules.*",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("matching rules.case, rules.ready\n"),
+        "{stdout}"
+    );
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        record["inputs"][1],
+        json!({
+            "requirements": "rules.*",
+            "matches": ["rules.case", "rules.ready"],
+            "text": [":::{example} case", "Given ready, it works.", ":::", "", ":::{req} ready", "Ready.", ":::"]
+        })
+    );
+    assert_eq!(fs::read_to_string(root.join("md/rules.md")).unwrap(), rules);
+
+    let output = run(&[
+        "--for-requirement",
+        "rules.ready",
+        "--item",
+        "src/main.rs:1",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("- added: "));
+
+    // Approve the record; unchanged inputs leave it untouched.
+    let approve = || {
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["determination"] = json!(true);
+        record["rationale"] = json!("Reviewed.");
+        fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+        fs::read(&path).unwrap()
+    };
+    let approved = approve();
+    for args in [
+        [
+            "--for-requirement",
+            "rules.ready",
+            "--requirements",
+            "rules.*",
+        ],
+        [
+            "--for-requirement",
+            "rules.ready",
+            "--item",
+            "src/main.rs:1",
+        ],
+    ] {
+        let output = run(&args);
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("- unchanged: "));
+        assert_eq!(fs::read(&path).unwrap(), approved);
+    }
+
+    // A rejected selection leaves the record unchanged.
+    let output = run(&[
+        "--for-requirement",
+        "rules.ready",
+        "--requirements",
+        "missing.*",
+    ]);
+    assert!(!output.status.success());
+    assert_eq!(fs::read(&path).unwrap(), approved);
+
+    // Changed sources refresh the existing inputs in place and reset review.
+    fs::write(
+        root.join("md/rules.md"),
+        rules.replace("Given ready, it works.", "Given ready, it still works."),
+    )
+    .unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() { let _ = 1; }\n").unwrap();
+    for (args, position) in [
+        (
+            [
+                "--for-requirement",
+                "rules.ready",
+                "--requirements",
+                "rules.*",
+            ],
+            1,
+        ),
+        (
+            [
+                "--for-requirement",
+                "rules.ready",
+                "--item",
+                "src/main.rs:1",
+            ],
+            2,
+        ),
+    ] {
+        approve();
+        let output = run(&args);
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("- refreshed: "),
+            "{output:?}"
+        );
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(record["inputs"].as_array().unwrap().len(), 3, "{record}");
+        assert_eq!(record["determination"], false);
+        assert!(
+            record["rationale"]
+                .as_str()
+                .unwrap()
+                .starts_with("Review pending"),
+            "{record}"
+        );
+        if position == 1 {
+            assert_eq!(
+                record["inputs"][1]["text"][1],
+                "Given ready, it still works."
+            );
+        } else {
+            assert_eq!(
+                record["inputs"][2],
+                habeas::outline_input(root, "src/main.rs", "fn[main]").unwrap()
+            );
+        }
+    }
+}
+
+// {test}`requirements.cli.definition_glob_search`
+#[test]
+fn definition_glob_lists_a_requirement_and_an_example_in_info_and_status() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("md")).unwrap();
+    fs::create_dir_all(root.join("evidence")).unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
+    fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+    fs::write(
+        root.join("md/foo.md"),
+        ":::{req} ready\nReady MUST work.\n:::\n\n:::{example} case\nGiven ready, it works.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/bar.md"),
+        ":::{req} other\nOther MUST work.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("evidence/foo.ready.json"),
+        json!({
+            "requirement": "Ready MUST work.",
+            "determination": false,
+            "rationale": "Not yet.",
+            "inputs": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let info = habeas(root, &["info", "foo.*"]);
+    assert!(info.status.success(), "{info:?}");
+    let info = String::from_utf8(info.stdout).unwrap();
+    assert!(info.starts_with("# `foo.case`\n"), "{info}");
+    assert!(
+        info.contains("## Example\n\n> Given ready, it works."),
+        "{info}"
+    );
+    assert!(info.contains("# `foo.ready`\n"), "{info}");
+    assert!(
+        info.contains("## Requirement\n\n> Ready MUST work."),
+        "{info}"
+    );
+    assert!(!info.contains("bar.other"), "{info}");
+
+    let status = habeas(root, &["status", "foo.*", "--all"]);
+    assert!(status.status.success(), "{status:?}");
+    let status = String::from_utf8(status.stdout).unwrap();
+    let row = |name: &str| {
+        status
+            .lines()
+            .find(|line| line.starts_with(&format!("| `{name}`")))
+            .unwrap_or_else(|| panic!("{name} missing: {status}"))
+            .to_owned()
+    };
+    let case = row("foo.case");
+    assert!(
+        case.contains("(example)") && case.contains("| Missing"),
+        "{case}"
+    );
+    let ready = row("foo.ready");
+    assert!(
+        ready.contains("(requirement)") && ready.contains("| Determination false"),
+        "{ready}"
+    );
+    assert!(!status.contains("`bar.other`"), "{status}");
+}

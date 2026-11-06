@@ -89,6 +89,7 @@ The bundled requirements skill MUST direct agents adding or changing user-visibl
 :::{req} behavior_review_guidance
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
+:impl: assets/skills/habeas-evidence/SKILL.md
 Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark code that implements part of a requirement with `{impl}` and tests that verify it with `{test}`, using `{cite}` only for related code that does neither, under {cite}`requirements.references.targets`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
 :::
 

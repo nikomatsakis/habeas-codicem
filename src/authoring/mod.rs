@@ -190,7 +190,15 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
             state.display()
         )));
     }
-    fs::create_dir_all(&state)?;
+    fs::create_dir_all(&state).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot create authoring state directory {}: {error}",
+                state.display()
+            ),
+        )
+    })?;
     Ok(state)
 }
 
@@ -288,6 +296,7 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.persistence`
+// {impl}`requirements.configuration.loading`
 async fn configured_assessment(
     root: &Path,
     subject: &str,

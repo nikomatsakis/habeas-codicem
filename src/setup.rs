@@ -189,8 +189,8 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
 }
 
 // {impl}`requirements.integration.symposium_setup_hook`
-// {cite}`requirements.cli.setup`
-// {cite}`requirements.cli.setup_project`
+// {impl}`requirements.cli.setup`
+// {impl}`requirements.cli.setup_project`
 // {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
     let manifest = match fs::read_to_string(root.join("Cargo.toml"))
@@ -243,12 +243,22 @@ pub(crate) fn is_configured(root: &Path) -> bool {
         return false;
     }
 
-    let css_relative = css_relative(source_path);
-    let css_list = book
+    let html = book
         .get("output")
         .and_then(Item::as_table_like)
         .and_then(|table| table.get("html"))
+        .and_then(Item::as_table_like);
+    // Setup leaves an existing `enable` value alone, so any value counts.
+    if !html
+        .and_then(|table| table.get("fold"))
         .and_then(Item::as_table_like)
+        .is_some_and(|fold| fold.get("enable").is_some())
+    {
+        return false;
+    }
+
+    let css_relative = css_relative(source_path);
+    let css_list = html
         .and_then(|table| table.get("additional-css"))
         .and_then(Item::as_array);
     if !css_list.is_some_and(|css| {

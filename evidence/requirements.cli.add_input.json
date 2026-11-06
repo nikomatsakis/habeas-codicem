@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input` MUST accept exactly one evidence target: `--for-requirement <full-name>` or `--for-example <full-name>`. It MUST accept exactly one input mode: `--item` or `--requirements`. It MUST use the same input schema and resolution rules as validation. Repeating a selector for a target MUST refresh its existing input rather than add a duplicate; an unchanged input MUST leave the record unchanged. The command MUST report every input it adds or refreshes. It MUST create a missing target record with a pending determination. Whenever it changes a record, it MUST leave `determination` false with a nonempty rationale indicating that review is pending.",
-  "determination": false,
-  "rationale": "The implementation looks mostly correct, but the tests miss important parts of the requirement and part of the implementation is not marked `{impl}`. I found no FIXME acknowledging either gap, so the answer is false.\n\n**Implemented correctly**\n- `src/add_input.rs` (`add_input`, `selectors_for_mode`, `add_definition_inputs`, `update_inputs`, `read_or_new`) and `InputSelector::to_input` and `resolve` in `src/inputs.rs` use the same selector, resolution and input schema as validation.\n- A repeated selector is matched by `InputSelector::from_input`. An identical input reports \"unchanged\" and does not mark the record changed, so the file is not rewritten. A differing input is replaced and reported as \"refreshed\". A new input is reported as \"added\".\n- A missing record is created from a fallback with `determination: false` and a \"Review pending\" rationale.\n- Whenever the record changes, `determination` is set to `false` and the rationale is overwritten with a \"Review pending\" text.\n- Unknown or wrong-kind targets, bad `file:line` values and globs that match nothing all return errors before anything is written.\n\n**Gaps**\n1. **Exclusivity not marked.** The \"exactly one target\" and \"exactly one mode\" obligations are enforced by the clap `ArgGroup`s on `Command::AddInput`. That is in `enum[Command]` in `src/main.rs`, which has no `{impl}` marker. Only the `main` match arm is marked. This is part of the requirement implemented without an `{impl}` reference.\n2. **Exclusivity not tested.** I found no test that passes two targets, two modes, no target or no mode. `add_input_rejects_function_targets_without_creating_evidence` only checks that the obsolete `--for-rust-item` flag is rejected and that `--help` lists the right flags.\n3. **Refresh not tested.** `add_input_modes_capture_outline_nodes_and_refresh_idempotently` only tests re-adding an unchanged selector, which reports \"unchanged\" and leaves the file byte-identical. No test changes the underlying source or definition and then re-runs `add-input`. The \"refreshed\" path, which replaces the input instead of duplicating it, is therefore never exercised.\n4. **Determination reset not tested.** No test sets an existing record's `determination` to `true` (or gives it a custom rationale), changes it via `add-input`, and checks that it returns to `false` with a pending rationale. The only check, at the end of the main test, reads a record whose determination was already `false`. The `approve` helper in `tests/definitions.rs` is never followed by another `add_input`.\n5. **Error cases partly untested.** Unknown target names, and a requirement name passed to `--for-example` or the reverse, have no tests.\n\nThe tests that do exist cover the main flows: creation, multiple outline nodes on one line, plain-text lines, the `--requirements` mode for both target kinds, no write on invalid locations, the external allow/disallow check, and reporting.",
+  "determination": true,
+  "rationale": "The implementation covers every obligation in `requirements.cli.add_input`, it is marked `{impl}`, and the tests exercise the main cases. I found no FIXME or TODO notes in the sources I searched.\n\n**Implementation**\n- **Exactly one target and one mode:** `Command::AddInput` in `src/main.rs` uses two required, non-multiple clap `ArgGroup`s. One covers `for_requirement` / `for_example` and the other covers `item` / `requirements`. `main` maps them to `InputTarget` and `InputMode`. Both are marked `{impl}`.\n- **Same schema and resolution as validation:** `add_input` in `src/add_input.rs` calls `InputSelector::resolve` and `to_input` from `src/inputs.rs`, the shared input machinery. It uses `inspect_repository` for the definitions and `OutlineCache` for outlines. `main` also loads the workspace evidence path policy first.\n- **Refresh instead of duplicate; unchanged leaves the record alone:**\n  - `update_inputs` finds an existing input by `InputSelector::from_input(old) == selector`.\n  - An identical input yields `\"unchanged\"`. A different one is replaced in place and yields `\"refreshed\"`. Otherwise the input is appended and yields `\"added\"`.\n  - `add_definition_inputs` writes the file only when `output.1` (changed) is true.\n- **Reporting:** Each input produces a line (`- added|refreshed|unchanged: selector matching …`). Captured definition dependencies are reported too.\n- **Missing record creation:** `read_or_new` falls back to a new record. It has the definition text under the `requirement` or `example` key, `determination: false`, a \"Review pending…\" rationale, and empty `inputs`. Unknown targets and wrong-kind targets are rejected before any write.\n- **Reset on change:** When `changed` is true, `update_inputs` sets `determination` to `false` and the rationale to a nonempty \"Review pending: …\" string.\n- **Extra behavior:** The dependency capture in `update_inputs` goes beyond this requirement. It is specified by `requirements.definitions.dependencies` and `requirements.definitions.capture`, and the code is marked with both, so it is not a gap.\n\n**Tests** (`tests/commands.rs`)\n- `add_input_requires_one_target_and_mode_and_resets_changed_records` checks:\n  - Exit code 2 and a usage message for conflicting or missing target or mode, with no evidence directory created.\n  - Rejection of unknown and wrong-kind targets, with nothing written.\n  - Record creation with a pending determination and rationale.\n  - The exact-name and glob requirement inputs.\n  - Unchanged inputs leaving the approved record byte-identical.\n  - A rejected selection leaving the record unchanged.\n  - Refresh in place after the sources change: the input count stays at 3, `determination` goes back to false, and the rationale starts with \"Review pending\".\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently` checks:\n  - Multiple nodes on one line, and plain-text line nodes.\n  - Idempotent re-adds, reported as \"unchanged\".\n  - Invalid locations leaving the record unchanged.\n  - Example targets.\n  - The pending state after a change.\n  - Use of the recorded inputs by `habeas info`.\n- `add_input_external_sources_respect_allow_and_disallow` checks that the same path policy as validation applies.\n- `add_input_rejects_function_targets_without_creating_evidence` checks that the removed `--for-rust-item` flag is rejected and that the help text shows only the current flags.\n\nThe tests cover the design space well. One small point: the pending-rationale check uses `starts_with(\"Review pending\")`, which matches the implemented text and satisfies \"nonempty rationale indicating review is pending\".",
   "inputs": [
     {
       "requirements": "requirements.cli.add_input",
@@ -37,7 +37,7 @@
     {
       "file": "src/add_input.rs",
       "item": "fn[add_definition_inputs]",
-      "hash": "8a2ad3ff040eb1f154a23a55672802210218199361fdfe60f4c11f91c86fc8f4"
+      "hash": "6bb48b108821fa5a7e69bfc11db67f51a55bab9622a6979b2eb34d9f1ab8dfa3"
     },
     {
       "file": "src/add_input.rs",
@@ -61,8 +61,13 @@
     },
     {
       "file": "src/main.rs",
+      "item": "enum[Command]",
+      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
+    },
+    {
+      "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "209601c59434068ecff945202b701ec4cd80c8208b01012a83ee35625c7f0f94"
+      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
     },
     {
       "file": "tests/commands.rs",
@@ -80,49 +85,59 @@
       "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
     },
     {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
+      "hash": "481e3d75bfef6134f7c6435db78acd1a683a5264afe57bff61afabaf466d1254"
     },
     {
-      "file": "src/main.rs",
-      "item": "enum[MdbookCommand]",
-      "hash": "2973fd86c33327be28b8968df636a3960387c3afa8b1b65f2f2d4eacac39c8f0"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[tool_definitions]",
+      "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "use@36f23d77be5e",
-      "hash": "36f23d77be5ea4f1c566b7948bf1997b09a7bd47de9c294e15410b5805a4b15a"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[completed]",
+      "hash": "4419037b895202f6e034f1ce1cf77060cb31b4d394cc22d59692bea42f4fe91a"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[capture]",
-      "hash": "a39aa823e2e6f651e5244f8eb37fb3efa24dddb771bac44c968fdf31fa4c2822"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[refresh]",
+      "hash": "b9622df9d0cc13daa1a7097000baf9f960c647559e1caea910c2bba1fd592094"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
-      "hash": "f92f368c46a0c959eb5bae0e823c313badde42e78b1e045a5e80421a31db0f02"
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[example_subject_and_definition_display_use_the_same_dependencies]",
-      "hash": "8837e87dd6d9951838dd5e813079052e350aafc19fb79dca8e6243459e4e53be"
+      "file": "src/fixme.rs",
+      "item": "impl[FixmeSummary]/fn[render]",
+      "hash": "00c57ac6eff00ba6181349d768dfdb8c96b93e0fbba63039aeba705430242268"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
+      "file": "src/index.rs",
+      "item": "impl[EvidenceState]/fn[label]",
+      "hash": "d568034062ef30c855cc79d307099362bbd5882d3fb785b928fe854bb83528d9"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[add_input]",
-      "hash": "3002f31015d450b28bd63d702fa14c6ba70f52646f168ae774dafc87df8cee0b"
+      "file": "src/index.rs",
+      "item": "fn[render_detail_sections]",
+      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
     },
     {
-      "file": "src/lib.rs",
-      "item": "use@bc85dd3c96fa",
-      "hash": "bc85dd3c96fa928f0146f9c0bd49b447f117e6e0d0f9c7827bf65e1be79cf90d"
+      "file": "src/judgment.rs",
+      "item": "impl[Judgment]/fn[from_value]",
+      "hash": "b749b3da092ab2708647e3d7e4795f607382a61cf090d4488c6073c896432b0b"
+    },
+    {
+      "file": "src/judgment.rs",
+      "item": "impl[Judgment]/fn[to_value]",
+      "hash": "cfabdc4ae28bfaadaa3d17e02a6ecf7489cc6022cf51556d9926c8443f30af67"
+    },
+    {
+      "file": "src/judgment.rs",
+      "item": "impl[Judgment]/fn[kind]",
+      "hash": "dd1340d3f714a4983d8227313f47493a13a63bb779139778a0b1cebb44152aea"
     }
   ]
 }
