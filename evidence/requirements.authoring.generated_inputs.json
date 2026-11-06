@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST permit existing Cargo build-script output directories as an exception\nto default Git tracking and containment restrictions. It MUST discover the Cargo\nbuild directory using metadata and inspect existing build-script output records,\nwithout running a build or executing build scripts. It MUST NOT treat its own\ninherited `OUT_DIR` environment variable as the workspace's output directory.\nOnly discovered output directories and their contents MUST receive this default\npermission; unrelated build artifacts MUST remain subject to ordinary rules.\nWorkspace disallow entries MUST override this permission.\n\nDiscovery MUST tolerate missing builds or unavailable metadata; callers MUST be\nable to allow undiscovered outputs explicitly using `habeas.toml`. The model's\nroot directory listing MUST expose available generated-output directories,\nincluding external ones. Generated inputs MUST use outline inputs and receive\nordinary freshness checks. Validation MUST NOT\ninvoke a build to materialize an input.",
   "determination": true,
-  "rationale": "**Judgment:** the implementation covers every obligation in `requirements.authoring.generated_inputs`, it is marked `{impl}` throughout, and the tests cover the main cases. I found no unacknowledged gaps.\n\n**Implementation, by obligation**\n- **Discovery by metadata, no build.**\n  - `generated_roots` (`src/authoring/access.rs`) runs `cargo metadata --offline --locked --no-deps` in the workspace root.\n  - It reads `build_directory`, falling back to `target_directory`, and canonicalizes it.\n  - `discover_generated_roots` then walks only Cargo's `profile[/triple]/build/<pkg>` layout and reads existing `root-output` records.\n  - It accepts a record only when the recorded path canonicalizes to the sibling `out` directory, lies under the build root, and is a directory.\n  - Nothing is built and no build script runs.\n- **Inherited `OUT_DIR` ignored.** The code never reads `OUT_DIR`. The test `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` runs a subprocess with `OUT_DIR` set to an unrelated directory and asserts it is denied.\n- **Exception to Git tracking and containment, limited to discovered roots.** `SourceAccess::path` returns early only when both the requested and resolved paths lie under a discovered `generated` directory. Other files in the target directory, such as `root-output` itself, still go through ordinary rules. The `tools.rs` test asserts `root-output` is `PermissionDenied`. The discovery test rejects a fake `root-output` that points at an unrelated directory.\n- **Workspace `disallow` overrides.** `check_disallow` runs before the generated check in `path()` and in `resolve_evidence_file`. The `tools.rs` test asserts that read, list and search of a disallowed `out` directory fail with \"disallowed\". The `tests/evidence_boundaries.rs` test asserts the same during validation.\n- **Tolerates missing builds or metadata.** Every failure branch in `generated_roots` returns an empty list. The `OUT_DIR` test uses an invalid `Cargo.toml` and asserts `generated` is empty while ordinary tracked reads still work. Callers can allow undiscovered outputs through the `habeas.toml` allow list, which is handled by `extra_roots` and `PathPolicy`.\n- **Root listing exposes generated directories, including external ones.**\n  - `extra_roots()` chains the policy's allowed paths with the generated roots.\n  - `list_files` appends them when listing the root, and `relative_path` leaves external paths absolute.\n  - The `tools.rs` test asserts the in-project `target/debug/build/fixture-hash/out` appears in the root listing.\n  - No test lists an external *generated* root. The external-allow case reaches the same code path, so I treat this as minor.\n- **Outline inputs and ordinary freshness checks, without a build.** `resolve_evidence_file` permits discovered roots when validating. In `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`, an outline input on an external build-dir file (set through `.cargo/config.toml`) validates. After the file is modified, the error contains \"outline input changed\". A disallow rule on `../external-build` produces \"disallowed\". The test also asserts the external target directory was never created, so no build ran.\n\n**Tests**\n- Discovery unit test: valid `out` directories, a cross-triple layout, and a bogus `root-output` target.\n- The `OUT_DIR` and metadata-failure subprocess test.\n- Tool-level end-to-end test: unbuilt project, then a built one, covering listing, search, outline read, denial of `root-output`, and disallow.\n- External build-dir validation test: freshness, disallow, and no build.\n\n**Marking.** `load`, `path`, `has_source_under`, `extra_roots`, `generated_roots`, `discover_generated_roots` and `resolve_evidence_file` in `access.rs` carry `{impl}`. The tool definitions, `list_files` and `search` in `tools.rs` carry `{impl}` too. I found no behavior in the `{impl}` code that this or another referenced requirement leaves unspecified.",
+  "rationale": "**Judgment: true.** The marked code covers each obligation in the requirement, and the tests cover the main cases. I did not run the tests; this is from reading the code and test sources.\n\n**Implementation**\n- **Discovery by metadata, without a build.**\n  - `generated_roots` (`src/authoring/access.rs`) runs `cargo metadata --offline --locked --no-deps` in the project root.\n  - It reads `build_directory`, falling back to `target_directory`, and canonicalizes it.\n  - `discover_generated_roots` then walks only Cargo's `profile[/triple]/build/<pkg>` layout. It accepts a directory only when `root-output` points at the sibling `out` directory and that directory lies inside the build root.\n  - No build or build script is run. Any failure (missing cargo, bad metadata, no build directory) returns an empty list, which is the required tolerance.\n- **Inherited `OUT_DIR` is ignored.** The code never reads `OUT_DIR`.\n- **Default permission and its limits.**\n  - `SourceAccess::path` checks `policy.check_disallow` first, so workspace disallow entries override the permission.\n  - It then accepts a path only if both the requested path and its resolved target are under a discovered root. That bypasses the Git-index and containment checks for those directories only.\n  - Other build artifacts, such as `root-output`, fall through to the ordinary rules and are denied.\n- **Root listing, including external directories.**\n  - `list_files` appends `extra_roots()` (allow entries plus generated roots) to a root listing, filtered through `access.path`. `relative_path` yields an absolute path for directories outside the project.\n  - `search` also walks these roots, including Git-ignored files.\n  - `has_source_under` lets ancestor directories be listed.\n- **Outline inputs, freshness, and no build during validation.** `resolve_evidence_file` (called through `check_project_file`) permits discovered roots and obeys disallow. Generated files are therefore ordinary outline inputs with the usual hash checks, and validation only calls `cargo metadata`.\n- **Marking.** All of the functions above carry `{impl}` references. The model-facing descriptions in `definitions()` also mention generated outputs.\n\n**Tests**\n- `generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets` covers discovery for a plain profile layout and a triple-qualified layout. It also checks that a `root-output` pointing at an unrelated directory is rejected.\n- `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` runs with an invalid `Cargo.toml` and an unrelated `OUT_DIR`. It confirms discovery is empty, ordinary reads still work, and the inherited `OUT_DIR` is not permitted.\n- `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` (`src/authoring/tools.rs`) covers these points:\n  - Unbuilt project: reads work and no `target/` is created.\n  - After a fake build record appears: the directory is listed, searched, and read as an outline node.\n  - A sibling `root-output` file is denied.\n  - A workspace disallow removes the directory from the listing and the search, and aborts explicit reads with a \"disallowed\" error.\n- `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` (`tests/evidence_boundaries.rs`) puts the build and target directories outside the project via `.cargo/config.toml`. It checks that:\n  - an outline input in the external output validates;\n  - editing the file produces \"outline input changed\";\n  - a disallow entry produces a \"disallowed\" error;\n  - the external target directory is never created.\n\n**Minor observations (not enough to fail)**\n- `relative_path`, which formats external listing paths, is marked for `file_discovery`, `text_search`, and `evidence_paths`, not `generated_inputs`. It is a generic helper whose behavior is the same for allowed external roots.\n- Listing an external generated root is not asserted directly. It shares the `extra_roots` path with the external allow case, which `allowed_ignored_and_external_sources_are_discoverable_…` does assert.\n- The `root-output` layout is Cargo-internal. The requirement's explanatory text acknowledges this and names an explicit allow as the fallback.",
   "inputs": [
     {
       "requirements": "requirements.authoring.generated_inputs",
@@ -36,7 +36,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "633e94e0bfaf8edbc4e4892768672ffa57410694e16bbfc774a7a1bba3079cf4"
+      "hash": "6e0a0e59238c31798ac3e76fa0a480691a52dfd3f961d9761ec56830b0948d9b"
     },
     {
       "file": "src/authoring/access.rs",
@@ -76,7 +76,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
+      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -99,9 +99,106 @@
       "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
     },
     {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "a46db785c17834f4143ef3305332d7f7f1dbb0fbdf8f1e176b8aded2e8667f34"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Request%20evidence%20inputs:%20`habeas`]",
+      "hash": "0f74eb362f5674000bf1f7d946c4ffa165e33639f9bc760e4c7a46dbe20a54d4"
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "e689db052a2284b2e18e71cd062b6ea2a0a24902071328561e1a2b1183d7e619"
+    },
+    {
       "file": "src/authoring/tools.rs",
-      "item": "fn[optional_path]",
-      "hash": "de2e7874adc2941687a0d48a28262b7b63d7b9a4f8f8ce9c40c84c4fea5c0750"
+      "item": "fn[relative_path]",
+      "hash": "d11bb66e10aa0c2adb18a9611df876050061c2e445729f63c04b260bb89f7c00"
+    },
+    {
+      "definition": "requirements.ci.validation_error",
+      "text": [
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@ef65439d8cc7",
+      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[SourceAccess]",
+      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
+      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_path]",
+      "hash": "df1f61c7b3a4bd67529fce5edc8c58f199c3183a6fa85569da97539acef0c39a"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
+      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_references_are_omitted_by_default]",
+      "hash": "ea1f47438ed79131e5835a50a8dbb99ce9a857b91958a6629036e6bf78fd3687"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -110,13 +207,53 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[relative_path]",
-      "hash": "d11bb66e10aa0c2adb18a9611df876050061c2e445729f63c04b260bb89f7c00"
+      "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
+      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]",
-      "hash": "267ef9f16c60619253021aed906f2ab4339e9135828921e849b26c346c893342"
+      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
+      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[DetailPlan]",
+      "hash": "623f0c00e5b03b242755c47d2ee7cde1d5d589b656c4795bff1d93181dc14096"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]/fn[find]",
+      "hash": "b7efaaa513bd5bf680e2216370f5f03ce6443bc4b9dce687e5eeff41eb57fc78"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[detail_path]",
+      "hash": "13ee7d439e325226aaa1c2591c24e9b6561b40c63675b4484d2af4a0784eab66"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
+      "hash": "7c8d01bf4965121af7b3b98692c5407a0a47611448986c92edfce95d33bf5c59"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[generated_detail_path_cannot_replace_a_chapter]",
+      "hash": "3202b1717afc420b649ce2c1abbaee8200fa7df46d02176794a81add5d890595"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[chapter_href]",
+      "hash": "2ba7dbb9d51a4b685ada2f2724fa9edefbc76dd53b6224537378950681c20429"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[reports_all_files_and_parse_failures]",
+      "hash": "8f3a0961f2d0bec2bebd32c254694af124a1643d8aa1d79767765a3700e9b206"
     }
   ]
 }

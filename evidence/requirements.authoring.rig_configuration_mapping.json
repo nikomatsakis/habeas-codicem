@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST resolve its saved configuration before constructing Rig provider\nclients and completion models. The Habeas data structures MUST remain the saved\nformat. Rig model references MAY be reused internally without discarding the\nconnection settings they do not represent.\n\nThe Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK\nconfiguration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,\nand optional authentication; the server MAY be local or remote. Both adapters\nMUST supply the same tools and initial prompt.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The {impl} code covers each obligation, and the tests cover the main points in the design space.\n\n**Resolve the saved configuration before building Rig clients**\n- `configured_assessment` calls `config::resolve_authoring` (src/config.rs:844) before anything else.\n- `configured_record` then builds the provider with `RigProvider::connect(&config.backend)` (src/authoring/mod.rs:318-354).\n- Nothing constructs a Rig client before the configuration is resolved.\n\n**Habeas data structures stay the saved format**\n- `BedrockConfig` and `OllamaConfig` (src/config.rs:145-177) keep their own serde types with `deny_unknown_fields`.\n- `model_ref()` and `options_json()` derive the Rig-facing model reference and options from them. The saved connection settings (profile, region, credentials, endpoint, API key) are not discarded.\n\n**Bedrock**\n- `bedrock_sdk_config` (src/authoring/providers.rs:126-155) passes `aws_profile` through `profile_name`. It passes `region` through `Region::new`. It uses `credentials_provider` only when explicit credentials are configured.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` (tests/authoring_cli.rs:824) checks that the selected profile's key is used and the default profile's key is not. It also checks that the configured region (`us-west-2`) is signed, overriding the profile's `eu-west-1`.\n- `explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain` (providers.rs:374) checks the explicit-credential path.\n- `both_adapters_send_the_same_prompt_and_tools_with_default_connections` (tests/authoring_cli.rs:1155) checks the default-chain path.\n\n**Ollama**\n- `connect` uses `config.endpoint()` and `config.model` unchanged, with the key from `api_key()`. A literal `api_key` takes precedence over `api_key_env`.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (tests/authoring_cli.rs:232) asserts the request path, the model ID, the bearer header and the options.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (tests/authoring_cli.rs:431) covers a literal key from workspace configuration.\n- `both_adapters_send_the_same_prompt_and_tools_with_default_connections` covers the no-authentication case: no `authorization:` header is sent.\n- The server can be local or remote because the endpoint is a configurable URL with a localhost default. The tests use a fixture server at a configured URL.\n\n**Same tools and initial prompt for both adapters**\n- `assess` builds a single `CompletionRequest` from `initial_prompt` and `tool_definitions`. It sends that request through the `CompletionProvider` trait for both backends.\n- The test at tests/authoring_cli.rs:1155 asserts that the prompt and the sorted tool names and descriptions are identical for Ollama and Bedrock, and that there are six tools.\n\n**Other behavior in the {impl} code**\n- The Bedrock option checks and the typed tool-call normalization are not specified by this requirement.\n- Each is also marked with another requirement: `apply_bedrock_options` with `configuration_storage`, and `normalize_bedrock_client_calls` with `provider`. They have unit tests.\n- The retry-disabled SDK setting is marked `provider_backoff`.\n\n**Gaps**\n- Explicit Bedrock credentials are tested at the SDK-config level rather than through the full CLI. I do not count that as a gap.\n- I found no unmarked implementation and no FIXME markers.",
+  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation, it is marked `{impl}`, and the tests cover the main cases.\n\n**Configuration is resolved before any Rig client is built.**\n- `configured_assessment` calls `config::resolve_authoring`. `configured_record` then calls `RigProvider::connect(&config.backend)`, so the saved Habeas configuration exists before any client or completion model is constructed.\n- The saved structures (`BedrockConfig`, `OllamaConfig`, `BackendConfig`, `ModelRef`) remain the stored format.\n- Rig types are only built inside `RigProvider::connect`. `ModelRef` is reused internally in `model_ref` and `configured_record`, and the connection settings are still read from `BackendConfig`, so nothing is discarded.\n\n**Bedrock.**\n- `bedrock_sdk_config` passes `aws_profile` and `region` through `aws_config::defaults(..)` (`profile_name`, `region`).\n- It uses explicit credentials (`access_key_id`, `secret_access_key`, optional `session_token`) when they are configured.\n- The model ID goes to `.completion(&config.model)`.\n- Options map onto the Converse fields in `apply_bedrock_options`.\n- `normalize_bedrock_client_calls` is an adapter fix for Rig 0.44. It is marked `{impl}` for this requirement and for `provider`, so it is not unmarked behavior.\n\n**Ollama.**\n- `connect` uses `config.endpoint()`, which can be local or remote. It uses the exact `config.model`.\n- It sets the optional key from `config.api_key()`. That function reads either a literal key or an environment variable named by `api_key_env`, and it errors when the variable is missing or empty.\n- These config helpers all carry `{impl}` markers for this requirement.\n\n**Same tools and prompt for both adapters.** `assess` builds one `CompletionRequest` from `initial_prompt` and `tool_definitions` for whichever provider is in use.\n\n**Tests.**\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` runs the CLI against a fake Bedrock endpoint, for both untyped and typed tool-use responses.\n  - The explicit region overrides the profile's region (`us-west-2` appears in the signing scope).\n  - The profile credentials are used, and the default profile's key is not.\n  - The model path, inference options, extra request fields, Converse tool schemas and tool-call history are checked.\n- `explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain` checks explicit credentials and region on the SDK config.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` and `authoring_uses_nearest_workspace_configuration_without_a_user_file` check the following against a fake server:\n  - The endpoint and exact model are used.\n  - The bearer key is sent, whether it comes from an environment variable or a literal workspace key.\n  - Options reach the request.\n  - The key does not leak into the request body, usage record or output.\n- `both_adapters_send_the_same_prompt_and_tools_with_default_connections` covers Ollama with no authentication (no `authorization` header) and Bedrock using the SDK default chain. It asserts that the prompt and the six tools are identical across the two adapters.\n- `bedrock_native_option_types_are_checked_without_supplying_defaults` and the typed-call normalization tests cover option handling and malformed responses.\n- `explicit_project_and_default_selections_choose_whole_configs` covers selection of whole configurations.\n\n**Gaps.** I found no unmarked implementation and no unspecified behavior, and no FIXMEs are needed. The only thing not tested end to end is explicit Bedrock credentials through a real signed request. The SDK-config unit test covers them, and that is adequate.",
   "inputs": [
     {
       "requirements": "requirements.authoring.rig_configuration_mapping",
@@ -50,7 +50,7 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "8035a48677f3ac9d9f40784814e5d4e6475f97f78bc3308f21d9f95d635fb504"
+      "hash": "b42c72a2c67dff0921cbf94b97faec5fd6f78f21b9addf21946abc0dc6c901e6"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -158,81 +158,6 @@
       "hash": "eae9d7ae7e419e4c87f6d4f1cd77a36df6e6a94d7fa839eac97846478aa578c0"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@7d949f3dd9b8",
-      "hash": "7d949f3dd9b8f004dc89a84c71fe59a62b5f5ca0e84320f27245e882f1d23189"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@835bc5929e6d",
-      "hash": "835bc5929e6d97de26c368f72d95325f6d7399dad7d665fdcdace0d2d19d0a71"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@36004768e609",
-      "hash": "36004768e609c764cdec317e08fe2e411f75a96c197839308024bff4d7c951a8"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@fafb3a0aec25",
-      "hash": "fafb3a0aec25cddf8ec4d346f92f03126df2fce1b33c779de5ad2aa5866794b4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@bd1b5107617c",
-      "hash": "bd1b5107617c0609840c71d2ae9c53a0c9e99ea8d688d0bc0518063a8cf292a2"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4e5e9454aa1a",
-      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4b4262645144",
-      "hash": "4b426264514446318af5d7118fad8cce9bdae44294b7d3e84d4ce1d90aab12af"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "trait[CompletionProvider]",
-      "hash": "8620761019b85df2703ec5a986f1fba64c3ec480849bcc25d9e2240092528164"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "struct[ProviderBackoff]",
-      "hash": "c47de749676284131db513d04d0958e226a545276a080ec1ecb8375a298cfe94"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff/Default]",
-      "hash": "efd5a0d411191c5a5cd2788e1ef275a16f9ca4f940f564173c3b77905988c782"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff]",
-      "hash": "faf06168d71a938cffc17bfcd093abe4813f973bf8cb9da10612acfeb2ee8004"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[retry_after]",
-      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "struct[RigProvider]",
-      "hash": "514a07edf3e620d7fc3b2e39eaaad9e7a3dc3240ca2d0d889b1822a07da4c6a0"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "7a3013d0ca73f65f6499e84a0566193f302e57376276b30d62f03c6c8f870d2d"
-    },
-    {
       "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt]",
       "hash": "bfe100b8b43cf49efd6375d462d16f5ec28e447db4d13e7c20be01d72ea07fc5"
@@ -246,6 +171,41 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[tool_definitions]",
       "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendKind]",
+      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ModelRef]",
+      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ResolvedAuthoringConfig]",
+      "hash": "75bdbf9fba8779579c42bb2ae80184f6652737689884a1a3336bee278ecb911c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]",
+      "hash": "21ee902d70fce92016589b493f2d0d2bf808661d27dbe0d4aee1ffc3b4c41cda"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]",
+      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]",
+      "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]",
+      "hash": "a436e51ccb4fe213290a40ac0af45e0175a792038893d08e534cef2dd0138006"
     }
   ]
 }
