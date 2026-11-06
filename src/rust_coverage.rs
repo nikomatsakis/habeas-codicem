@@ -296,9 +296,68 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{missing_function_references, validate_rust_functions};
+    use super::{comments, missing_function_references, validate_rust_functions};
     use crate::DefinitionKind;
     use crate::evidence::Declaration;
+
+    /// The text of each comment `comments` finds in `source`.
+    // {test}`requirements.definitions.dependencies`
+    fn comment_texts(source: &str) -> Vec<&str> {
+        comments(source)
+            .into_iter()
+            .map(|range| &source[range])
+            .collect()
+    }
+
+    // {test}`requirements.definitions.dependencies`
+    #[test]
+    fn comment_scan_skips_string_and_character_literals() {
+        for (source, expected) in [
+            // Strings, including escaped quotes and comment markers inside them.
+            (r#"let s = "// no"; // yes"#, vec!["// yes"]),
+            (r#"let s = "a \" // no"; /* yes */"#, vec!["/* yes */"]),
+            (r#"let s = b"// no"; // yes"#, vec!["// yes"]),
+            (r#"let s = c"/* no */"; // yes"#, vec!["// yes"]),
+            // Raw strings, with and without hashes, may contain quotes.
+            (r#"let s = r"// no"; // yes"#, vec!["// yes"]),
+            (r##"let s = r#"" // no "#; // yes"##, vec!["// yes"]),
+            (r###"let s = br##"#" // no"##; // yes"###, vec!["// yes"]),
+            (r#"let s = cr"// no"; // yes"#, vec!["// yes"]),
+            // Character literals, including quote characters and escapes.
+            (r#"let c = '"'; // yes"#, vec!["// yes"]),
+            (r"let c = '\''; // yes", vec!["// yes"]),
+            (r#"let c = ('\\', "// no"); // yes"#, vec!["// yes"]),
+            (
+                r#"let c = ('\u{1F600}', '\x41', "// no"); // yes"#,
+                vec!["// yes"],
+            ),
+            (r#"let c = ('é', "// no"); // yes"#, vec!["// yes"]),
+            // A lifetime is not a character literal.
+            (
+                r#"fn f<'a>(x: &'a str) -> &'a str { "// no" } // yes"#,
+                vec!["// yes"],
+            ),
+            // Block comments nest, and line comments end at the newline.
+            (
+                "/* a /* b */ c */ d // e\nf",
+                vec!["/* a /* b */ c */", "// e"],
+            ),
+            (
+                "/** doc */ //! inner\n/// outer",
+                vec!["/** doc */", "//! inner", "/// outer"],
+            ),
+            // Unterminated literals and comments extend to the end of the source.
+            (r#"let s = "// no"#, vec![]),
+            (r##"let s = r#"// no"##, vec![]),
+            (
+                "/* open /* nested */ still",
+                vec!["/* open /* nested */ still"],
+            ),
+            ("let c = '", vec![]),
+        ] {
+            assert_eq!(comment_texts(source), expected, "{source}");
+        }
+    }
 
     // {test}`requirements.references.rust_item_coverage`
     fn definitions() -> BTreeMap<String, Declaration> {

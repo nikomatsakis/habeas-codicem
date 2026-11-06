@@ -423,6 +423,7 @@ fn reference_selector(
 }
 
 // {impl}`requirements.definitions.authoring_inputs`
+// {impl}`requirements.definitions.selection`
 // {impl}`requirements.authoring.mandatory_inputs`
 fn definition_inputs(
     root: &Path,

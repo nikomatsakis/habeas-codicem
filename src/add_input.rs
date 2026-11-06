@@ -166,6 +166,7 @@ fn add_definition_inputs(
 // {impl}`requirements.definitions.capture`
 // {impl}`requirements.cli.add_input_requirements`
 // {impl}`requirements.definitions.dependencies`
+// {impl}`requirements.definitions.selection`
 // {impl}`requirements.cli.add_input_item`
 fn update_inputs(
     record: &mut Value,

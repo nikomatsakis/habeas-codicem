@@ -18,6 +18,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 pub(crate) static PROFILE: Profile = Profile {
     name: "python",
     extensions: &["py", "pyi"],

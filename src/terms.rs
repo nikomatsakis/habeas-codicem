@@ -152,6 +152,7 @@ fn close_dependencies(
     (required, problems)
 }
 
+// {impl}`requirements.definitions.selection`
 // {impl}`requirements.definitions.dependencies`
 pub(crate) fn validate_dependencies(
     root: &Path,

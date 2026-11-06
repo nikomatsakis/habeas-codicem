@@ -1504,6 +1504,203 @@ mod tests {
         assert!(missing.contains("No inputs recorded."));
     }
 
+    // {test}`requirements.index.state`
+    #[test]
+    fn findings_make_false_and_fixme_records_invalid() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for dir in ["md", "evidence", "src"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        let names = [
+            "false_clean",
+            "false_stale",
+            "false_malformed",
+            "false_uncovered",
+            "fixme_clean",
+            "fixme_stale",
+        ];
+        let mut source = String::new();
+        for name in names {
+            source.push_str(&format!(":::{{req}} {name}\nThe {name} rule.\n:::\n\n"));
+        }
+        fs::write(root.join("md/rules.md"), &source).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// IMPL`rules.false_uncovered`\nfn uncovered() {}\n".replace("IMPL", "{impl}"),
+        )
+        .unwrap();
+        for name in names {
+            let determination = if name.starts_with("fixme") {
+                json!({"FIXME": ["#9"]})
+            } else {
+                json!(false)
+            };
+            let text = if name.ends_with("stale") {
+                "An older rule.".to_owned()
+            } else {
+                format!("The {name} rule.")
+            };
+            let mut record = json!({
+                "requirement": text,
+                "determination": determination,
+                "rationale": format!("The {name} fixture."),
+                "inputs": [],
+            });
+            if name == "false_malformed" {
+                record["unexpected"] = json!(true);
+            }
+            fs::write(
+                root.join(format!("evidence/rules.{name}.json")),
+                record.to_string(),
+            )
+            .unwrap();
+        }
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".to_owned(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
+        preprocess_book(&mut book, root).unwrap();
+        let index = book
+            .chapters()
+            .find(|chapter| chapter.name == "Index")
+            .unwrap();
+        let rules = book.chapters().next().unwrap();
+        for (name, state) in [
+            ("false_clean", "Determination false"),
+            ("false_stale", "Invalid"),
+            ("false_malformed", "Invalid"),
+            ("false_uncovered", "Invalid"),
+            ("fixme_clean", "FIXME"),
+            ("fixme_stale", "Invalid"),
+        ] {
+            let link = format!("| [`rules.{name}`](rules/rules.{name}.html)");
+            let row = index
+                .content
+                .lines()
+                .find(|line| line.starts_with(&link))
+                .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
+            assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{row}");
+            let page = rules
+                .sub_items
+                .iter()
+                .find_map(|item| match item {
+                    BookItem::Chapter(chapter) if chapter.name == format!("rules.{name}") => {
+                        Some(chapter)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            // Every page with findings shows them, whatever the determination.
+            assert_eq!(
+                page.content.contains("Validation findings"),
+                state != "FIXME",
+                "{name}: {}",
+                page.content
+            );
+        }
+    }
+
+    // {test}`requirements.examples.index`
+    #[test]
+    fn index_and_detail_pages_show_each_example_evidence_state() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for dir in ["md", "evidence", "src"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        let body =
+            |name: &str| format!("The {name} case. CITE`rules.ready`").replace("CITE", "{cite}");
+        let names = ["valid", "pending", "fixme", "changed", "missing"];
+        let mut source = ":::{req} ready\nReady.\n:::\n".to_owned();
+        for name in names {
+            source.push_str(&format!("\n:::{{example}} {name}\n{}\n:::\n", body(name)));
+        }
+        fs::write(root.join("md/rules.md"), &source).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// TEST`rules.valid`\nfn valid_case() {}\n".replace("TEST", "{test}"),
+        )
+        .unwrap();
+        let test_input =
+            crate::inputs::outline_input(root, "src/lib.rs", "fn[valid_case]").unwrap();
+        for (name, determination, text, inputs) in [
+            ("valid", json!(true), body("valid"), json!([test_input])),
+            ("pending", json!(false), body("pending"), json!([])),
+            ("fixme", json!({"FIXME": ["#7"]}), body("fixme"), json!([])),
+            (
+                "changed",
+                json!(true),
+                "An older case text.".to_owned(),
+                json!([]),
+            ),
+        ] {
+            fs::write(
+                root.join(format!("evidence/rules.{name}.json")),
+                json!({
+                    "example": text,
+                    "determination": determination,
+                    "rationale": format!("The {name} fixture."),
+                    "inputs": inputs,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".to_owned(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
+        preprocess_book(&mut book, root).unwrap();
+        let index = book
+            .chapters()
+            .find(|chapter| chapter.name == "Index")
+            .unwrap();
+        let rules = book.chapters().next().unwrap();
+        for (name, state) in [
+            ("valid", "Valid"),
+            ("pending", "Determination false"),
+            ("fixme", "FIXME"),
+            ("changed", "Invalid"),
+            ("missing", "Missing"),
+        ] {
+            let link = format!("| [`rules.{name}`](rules/rules.{name}.html) (example)");
+            let row = index
+                .content
+                .lines()
+                .find(|line| line.starts_with(&link))
+                .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
+            assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{row}");
+            let page = rules
+                .sub_items
+                .iter()
+                .find_map(|item| match item {
+                    BookItem::Chapter(chapter) if chapter.name == format!("rules.{name}") => {
+                        Some(chapter)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                page.content.contains(&format!("alt=\"evidence {state}\"")),
+                "{name}: {}",
+                page.content
+            );
+        }
+    }
+
     // {test}`requirements.examples.index`
     // {test}`requirements.index.detail_format`
     // {test}`requirements.index.invalid_detail`
@@ -1686,6 +1883,7 @@ mod tests {
     }
 
     // {test}`requirements.index.detail_format`
+    // {test}`requirements.definitions.inputs`
     #[test]
     fn detail_page_shows_recorded_text_locations_and_first_matching_group() {
         let temp = TempDir::new().unwrap();

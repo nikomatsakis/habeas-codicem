@@ -170,6 +170,68 @@ fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
     );
 }
 
+// {test}`requirements.definitions.selection`
+#[test]
+fn selections_match_requirements_and_examples_but_never_named_definitions() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(
+        root.join("md/rules.md"),
+        ":::{req} ready\nUse TERM`glossary.a`.\n:::\n\n\
+         :::{example} case\nA ready case. CITE`rules.ready`\n:::\n\n\
+         :::{definition} used\n:phrase: used\n\nNot referenced by the selection.\n:::\n"
+            .replace("TERM", "{term}")
+            .replace("CITE", "{cite}"),
+    )
+    .unwrap();
+    capture(root);
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.ready.json")).unwrap())
+            .unwrap();
+    let inputs = record["inputs"].as_array().unwrap();
+    // The glob selects the requirement and the example, not the definition
+    // whose name it also matches, and that definition is not a dependency.
+    assert_eq!(inputs[0]["matches"], json!(["rules.case", "rules.ready"]));
+    assert!(
+        inputs
+            .iter()
+            .all(|input| input["definition"] != "rules.used"),
+        "{inputs:?}"
+    );
+
+    // A named definition's exact name selects nothing.
+    let error = add_input(
+        root,
+        InputTarget::Requirement("rules.ready".into()),
+        InputMode::Requirements("rules.used".into()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("matches no requirement or example"),
+        "{error}"
+    );
+
+    // The CLI selection paths apply the same rule.
+    for args in [["status", "rules.*"], ["info", "rules.*"]] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .current_dir(root)
+            .args(args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("rules.ready"), "{args:?}: {stdout}");
+        assert!(stdout.contains("rules.case"), "{args:?}: {stdout}");
+        assert!(!stdout.contains("rules.used"), "{args:?}: {stdout}");
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .current_dir(root)
+        .args(["info", "rules.used"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+}
+
 // {test}`requirements.definitions.declaration`
 // {test}`requirements.definitions.references`
 #[test]
@@ -261,6 +323,121 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
             .content
             .contains("&#42;alpha&#42; &amp; &lt;beta&gt;")
     );
+}
+
+// {test}`requirements.definitions.inputs`
+#[test]
+fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
+    let temp = fixture();
+    let root = temp.path();
+    capture(root);
+    let path = root.join("evidence/rules.ready.json");
+    approve(&path);
+    assert!(validate_repository(root).unwrap().errors.is_empty());
+    let glossary = root.join("md/glossary.md");
+    let original = fs::read_to_string(&glossary).unwrap();
+    fs::write(
+        &glossary,
+        original.replace("See {term}`glossary.b`.", "See {term}`glossary.b` again."),
+    )
+    .unwrap();
+    let errors = validate_repository(root).unwrap().errors;
+    let changed = errors
+        .iter()
+        .find(|error| error.contains("input text changed") && error.contains("glossary.a"))
+        .unwrap_or_else(|| panic!("{errors:?}"));
+    // Only the changed body line is shown, as a removal and an addition.
+    let diff: Vec<_> = changed.lines().skip(1).collect();
+    assert_eq!(
+        diff,
+        [
+            "- See {term}`glossary.b`.",
+            "+ See {term}`glossary.b` again."
+        ],
+        "{changed}"
+    );
+    fs::write(&glossary, &original).unwrap();
+
+    // A definition input must carry a nonempty text array.
+    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    for text in [None, Some(json!([])), Some(json!("not lines"))] {
+        let mut broken = record.clone();
+        let input = broken["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|input| input["definition"] == "glossary.a")
+            .unwrap();
+        match &text {
+            None => {
+                input.as_object_mut().unwrap().remove("text");
+            }
+            Some(text) => input["text"] = text.clone(),
+        }
+        fs::write(&path, broken.to_string()).unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with("evidence/rules.ready.json")
+                    && error.contains("text")),
+            "{text:?}: {errors:?}"
+        );
+    }
+}
+
+// {test}`requirements.definitions.dependencies`
+#[test]
+fn markdown_and_plain_text_inputs_contribute_their_term_references() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(
+        root.join("md/more.md"),
+        ":::{definition} prose\n:phrase: prose\n\nProse.\n:::\n\n\
+         :::{definition} line\n:phrase: line\n\nA line.\n:::\n\n\
+         :::{definition} literal\n:phrase: literal\n\nLiteral.\n:::\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("docs/notes.md"),
+        "# Notes\n\nThis uses TERM`more.prose` in prose.\n\n```text\nTERM`more.literal`\n```\n"
+            .replace("TERM", "{term}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("notes.txt"),
+        "plain TERM`more.line` text\n".replace("TERM", "{term}"),
+    )
+    .unwrap();
+    // The heading's section covers both the paragraph and the code block.
+    for at in ["docs/notes.md:1", "notes.txt:1"] {
+        add_input(
+            root,
+            InputTarget::Requirement("rules.ready".into()),
+            InputMode::ItemsAtLine(at.into()),
+        )
+        .unwrap_or_else(|error| panic!("{at}: {error}"));
+    }
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.ready.json")).unwrap())
+            .unwrap();
+    let mut definitions: Vec<_> = record["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|input| input["definition"].as_str())
+        .collect();
+    definitions.sort();
+    // The fixture's requirement text needs the glossary cycle; the Markdown
+    // paragraph and the text line add their terms, and the code block does not.
+    assert_eq!(
+        definitions,
+        ["glossary.a", "glossary.b", "more.line", "more.prose"],
+        "{record}"
+    );
+    approve(&root.join("evidence/rules.ready.json"));
+    assert!(validate_repository(root).unwrap().errors.is_empty());
 }
 
 // {test}`requirements.definitions.transitive_cycle`

@@ -144,6 +144,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.rust_item_selectors`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 pub(crate) static PROFILE: Profile = Profile {
     name: "rust",
     extensions: &["rs"],

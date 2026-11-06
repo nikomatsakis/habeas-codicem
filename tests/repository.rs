@@ -36,7 +36,10 @@ fn repository_toml(path: &str) -> toml::Table {
 // {test}`requirements.integration.release`
 fn workflow_job(workflow: &str, name: &str) -> String {
     let header = format!("  {name}:");
-    let mut lines = workflow.lines().skip_while(|line| *line != header);
+    // The header may carry a trailing comment, such as a reference.
+    let mut lines = workflow
+        .lines()
+        .skip_while(|line| *line != header && !line.starts_with(&format!("{header} #")));
     let first = lines
         .next()
         .unwrap_or_else(|| panic!("job {name} missing:\n{workflow}"));
@@ -137,6 +140,17 @@ fn project_book_uses_the_repository_local_preprocessor_alias() {
     assert!(root.join("md/SUMMARY.md").is_file());
     assert!(root.join("src/lib.rs").is_file());
     assert!(root.join("src/main.rs").is_file());
+}
+
+// {test}`requirements.layout.project`
+#[test]
+fn crate_targets_are_declared_in_src() {
+    let manifest = repository_toml("Cargo.toml");
+    assert_eq!(manifest["lib"]["path"].as_str(), Some("src/lib.rs"));
+    let bins = manifest["bin"].as_array().unwrap();
+    assert_eq!(bins.len(), 1);
+    assert_eq!(bins[0]["name"].as_str(), Some("habeas"));
+    assert_eq!(bins[0]["path"].as_str(), Some("src/main.rs"));
 }
 
 // {test}`requirements.layout.repository_links`

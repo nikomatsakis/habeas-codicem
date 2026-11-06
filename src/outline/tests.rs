@@ -99,6 +99,49 @@ extern crate core;
     assert!(outline.resolve("fn[missing]").is_err());
 }
 
+// {test}`requirements.references.structural_hash`
+#[test]
+fn identity_hashes_include_own_attached_siblings_but_not_descendants() {
+    let hashes = |source: &str, selector: &str| {
+        let outline = outline("src/lib.rs", source);
+        let node = &outline.nodes[outline
+            .resolve(selector)
+            .unwrap_or_else(|error| panic!("{selector}: {error:?}"))];
+        (node.structural_hash.clone(), node.identity_hash.clone())
+    };
+
+    // A descendant's attached doc comment and attribute are outside its
+    // ancestor's identity hash, though inside its structural hash.
+    let base = "mod m {\n    /// Doc.\n    #[inline]\n    fn a() {}\n}\n";
+    let (structural, identity) = hashes(base, "mod[m]");
+    for edited in [
+        base.replace("Doc.", "Changed doc."),
+        base.replace("inline", "cold"),
+        base.replace("    /// Doc.\n", ""),
+    ] {
+        let (edited_structural, edited_identity) = hashes(&edited, "mod[m]");
+        assert_ne!(edited_structural, structural, "{edited}");
+        assert_eq!(edited_identity, identity, "{edited}");
+    }
+
+    // A node's own attached doc comment and attribute are part of its identity
+    // hash, so they distinguish otherwise identical anonymous nodes.
+    let own = |source: &str| {
+        let outline = outline("src/lib.rs", source);
+        outline.nodes[1].identity_hash.clone()
+    };
+    let plain = own("use a::A;\n");
+    let documented = own("/// Doc.\nuse a::A;\n");
+    let attributed = own("#[cfg(test)]\nuse a::A;\n");
+    assert_ne!(plain, documented);
+    assert_ne!(plain, attributed);
+    assert_ne!(own("/// Other.\nuse a::A;\n"), documented);
+    assert_ne!(own("#[cfg(not(test))]\nuse a::A;\n"), attributed);
+    // The identity hash of a node without descendants is its structural hash.
+    let (structural, identity) = hashes("#[cfg(test)]\nfn b() {}\n", "fn[b]");
+    assert_eq!(structural, identity);
+}
+
 // {test}`requirements.references.selector_use`
 // {test}`requirements.references.outline_selectors`
 // {test}`requirements.references.structural_hash`

@@ -3,6 +3,7 @@
 use super::profile::{Profile, kind_is_comment, never};
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.structural_hash`
 pub(crate) static PROFILE: Profile = Profile {
     name: "plain-text",
     extensions: &[],

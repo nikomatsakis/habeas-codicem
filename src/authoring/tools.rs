@@ -756,6 +756,49 @@ mod tests {
         assert!(dispatch(&sources, "habeas", &json!({"definition":"terms.value"})).is_ok());
     }
 
+    // {test}`requirements.definitions.selection`
+    #[test]
+    fn requirements_reads_select_requirements_and_examples_but_not_definitions() {
+        let root = project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\nThe project MUST be ready.\n:::\n\n\
+                 :::{{example}} case\nA ready case. {}\n:::\n\n\
+                 :::{{definition}} unused\n:phrase: unused\n\nNot referenced.\n:::\n",
+                role("cite", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let delivery = dispatch(
+            &sources,
+            "habeas",
+            &json!({"requirements": "requirements.*"}),
+        )
+        .unwrap();
+        assert_eq!(
+            delivery.result["input"]["matches"],
+            json!(["requirements.case", "requirements.ready"]),
+            "{}",
+            delivery.result
+        );
+        assert_eq!(delivery.result["definitions"], json!([]));
+        let error = dispatch(
+            &sources,
+            "habeas",
+            &json!({"requirements": "requirements.unused"}),
+        )
+        .err()
+        .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("matches no requirement or example"),
+            "{error}"
+        );
+    }
+
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.file_discovery`

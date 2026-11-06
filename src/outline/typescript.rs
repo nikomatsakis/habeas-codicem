@@ -37,6 +37,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 const TYPESCRIPT: Profile = Profile {
     name: "typescript",
     extensions: &["ts", "mts", "cts"],
