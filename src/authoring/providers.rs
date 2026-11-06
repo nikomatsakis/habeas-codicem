@@ -152,6 +152,7 @@ async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
 // {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.authoring.provider_backoff`
+// {impl}`requirements.authoring.usage_requests`
 /// Applies a Bedrock record to an SDK loader, leaving every omitted value to
 /// the loader's standard resolution.
 fn bedrock_sdk_loader(
@@ -426,6 +427,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.provider_backoff`
+    // {test}`requirements.authoring.usage_requests`
     #[tokio::test]
     async fn bedrock_sdk_retries_are_disabled() {
         let config: BedrockConfig =
