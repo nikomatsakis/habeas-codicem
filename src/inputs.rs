@@ -243,6 +243,7 @@ impl InputSelector {
     // {impl}`requirements.cli.add_input_item`
     // {impl}`requirements.cli.add_input_requirements`
     // {impl}`requirements.references.definition_globs`
+    // {impl}`requirements.ci.input_containment`
     pub(crate) fn resolve(
         &self,
         root: &Path,

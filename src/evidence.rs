@@ -356,6 +356,7 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.ci.requirements_inputs`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -609,7 +610,7 @@ fn validate_evidence_file(
             && text != expected.text
         {
             errors.push(format!(
-                "{label}: {text_field} text changed at {}{}",
+                "{label}: {text_field} text changed ({}){}",
                 expected.source,
                 compact_diff(
                     &text.split('\n').collect::<Vec<_>>(),
@@ -754,6 +755,7 @@ fn validate_input(
 // {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.ci.diagnostics`
+// {impl}`requirements.ci.input_containment`
 fn validate_outline_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -838,6 +840,7 @@ fn text_field(
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.definitions.inputs`
 // {impl}`requirements.ci.diagnostics`
+// {impl}`requirements.ci.input_containment`
 #[allow(clippy::too_many_arguments)]
 fn validate_resolved_input(
     root: &Path,
@@ -870,15 +873,40 @@ fn validate_resolved_input(
             .filter(|name| !resolved.matches.contains(name))
             .cloned()
             .collect::<Vec<_>>();
+        let glob = match selector {
+            InputSelector::Requirements { requirements } => requirements.as_str(),
+            _ => "",
+        };
         errors.push(format!(
-            "{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}"
+            "{label}: requirements glob {glob:?} matches changed; added {missing:?}, removed {removed:?}"
         ));
     }
     if text != resolved.text {
+        // For a requirements input, name the still-matched definitions whose
+        // current declaration no longer appears in the recorded text.
+        let changed = matches.map_or_else(Vec::new, |matches| {
+            matches
+                .iter()
+                .filter(|name| {
+                    definitions.get(*name).is_some_and(|definition| {
+                        resolved.matches.contains(name)
+                            && !text
+                                .windows(definition.raw_lines.len().max(1))
+                                .any(|window| window == definition.raw_lines.as_slice())
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
         let old = text.iter().map(String::as_str).collect::<Vec<_>>();
         let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();
         errors.push(format!(
-            "{label}: input text changed for {selector:?}{}",
+            "{label}: input text changed for {selector:?}{}{}",
+            if changed.is_empty() {
+                String::new()
+            } else {
+                format!("; changed definitions {changed:?}")
+            },
             compact_diff(&old, &new)
         ));
     }
@@ -1180,11 +1208,12 @@ fn collect_references_with_progress(
                 }
             };
             if kind.is_dir() {
-                let excluded = directory == root
-                    && matches!(
-                        entry.file_name().to_str(),
-                        Some(".git" | "target" | "book" | "evidence")
-                    );
+                // Repository metadata and Cargo build output are skipped at
+                // any depth; the book build and evidence snapshots at the
+                // project root.
+                let name = entry.file_name();
+                let excluded = matches!(name.to_str(), Some(".git" | "target"))
+                    || (directory == root && matches!(name.to_str(), Some("book" | "evidence")));
                 if !excluded {
                     stack.push(path);
                 }
@@ -1695,6 +1724,409 @@ mod tests {
         );
     }
 
+    // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.references.definition_glob_cases`
+    #[test]
+    fn requirements_inputs_track_matched_declarations_in_full_name_order() {
+        let temp = fixture();
+        let bar = ":::{req} a.bar\nBar.\n:::\n";
+        let nested =
+            ":::{example} a.b.bar\nNested. CITE`foo.a.bar`\n:::\n".replace("CITE", "{cite}");
+        let other = ":::{req} other\nOther.\n:::\n";
+        let write = |declarations: &[&str]| {
+            fs::write(
+                temp.path().join("md/foo.md"),
+                format!("# Foo\n\n{}", declarations.join("\n")),
+            )
+            .unwrap();
+        };
+        let lines = |declaration: &str| declaration.lines().map(str::to_owned).collect::<Vec<_>>();
+        let mut text = lines(&nested);
+        text.push(String::new());
+        text.extend(lines(bar));
+        let record = |glob: &str| {
+            json!({
+                "requirement": "Other.",
+                "determination": true,
+                "rationale": "Both matches were examined.",
+                "inputs": [{
+                    "requirements": glob,
+                    "matches": ["foo.a.b.bar", "foo.a.bar"],
+                    "text": text,
+                }]
+            })
+            .to_string()
+        };
+        fs::write(
+            temp.path().join("evidence/foo.other.json"),
+            record("foo.*.bar"),
+        )
+        .unwrap();
+        let errors = || {
+            validate_repository(temp.path())
+                .unwrap()
+                .errors
+                .into_iter()
+                .filter(|error| error.starts_with("evidence/foo.other.json"))
+                .collect::<Vec<_>>()
+        };
+
+        // `*` crosses dots, the example sorts before the requirement by full
+        // name, and the stored text is both complete fenced declarations.
+        write(&[bar, &nested, other]);
+        assert!(errors().is_empty(), "{:?}", errors());
+        // Moving unchanged declarations does not invalidate the input.
+        write(&[other, "Some prose.\n", &nested, "More prose.\n", bar]);
+        assert!(errors().is_empty(), "{:?}", errors());
+
+        write(&[&bar.replace("Bar.", "Changed."), &nested, other]);
+        let changed = errors().join("\n");
+        assert!(
+            changed.contains(
+                "inputs[0]: input text changed for Requirements { requirements: \"foo.*.bar\" }; changed definitions [\"foo.a.bar\"]\n- Bar.\n+ Changed."
+            ),
+            "{changed}"
+        );
+
+        let added = ":::{req} z.bar\nAdded.\n:::\n";
+        write(&[bar, &nested, other, added]);
+        assert!(
+            errors().join("\n").contains(
+                "inputs[0]: requirements glob \"foo.*.bar\" matches changed; added [\"foo.z.bar\"], removed []"
+            ),
+            "{:?}",
+            errors()
+        );
+        write(&[bar, other]);
+        assert!(
+            errors().join("\n").contains(
+                "requirements glob \"foo.*.bar\" matches changed; added [], removed [\"foo.a.b.bar\"]"
+            ),
+            "{:?}",
+            errors()
+        );
+        write(&[&bar.replace("a.bar", "c.bar"), &nested, other]);
+        assert!(
+            errors().join("\n").contains(
+                "requirements glob \"foo.*.bar\" matches changed; added [\"foo.c.bar\"], removed [\"foo.a.bar\"]"
+            ),
+            "{:?}",
+            errors()
+        );
+
+        write(&[bar, &nested, other]);
+        fs::write(
+            temp.path().join("evidence/foo.other.json"),
+            record("foo.*.none"),
+        )
+        .unwrap();
+        assert_eq!(
+            errors(),
+            [
+                "evidence/foo.other.json: inputs[0]: requirements glob \"foo.*.none\" matches no requirement or example"
+            ]
+        );
+    }
+
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn configuration_and_dependency_failures_do_not_stop_later_checks() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/rules.md"),
+            ":::{req} ready\nUse TERM`rules.missing` and TERM`rules.absent`.\n:::\n\n:::{req} other\nOther.\n:::\n"
+                .replace("TERM", "{term}"),
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("evidence/rules.ready.json"),
+            json!({
+                "requirement": "Use TERM`rules.missing` and TERM`rules.absent`.".replace("TERM", "{term}"),
+                "determination": true,
+                "rationale": "Examined.",
+                "inputs": [{"definition": "rules.gone", "text": ["x"]}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Every unresolvable term is reported, and the record's other checks
+        // and other records' checks still run.
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        for detail in [
+            "evidence/rules.ready.json: definition dependencies: term rules.absent: no matching named definition",
+            "evidence/rules.ready.json: definition dependencies: term rules.missing: no matching named definition",
+            "evidence/rules.ready.json: inputs[0]: rules.gone: no matching named definition",
+            "evidence/rules.other.json: missing for requirement",
+        ] {
+            assert!(errors.contains(detail), "missing {detail:?} in:\n{errors}");
+        }
+
+        // Invalid workspace and book configuration are each reported, and
+        // checks that do not depend on them still run.
+        fs::write(temp.path().join("habeas.toml"), "version = 2\n").unwrap();
+        fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n[").unwrap();
+        fs::write(temp.path().join("evidence/ghost.json"), "{").unwrap();
+        let unknown = ["{", "impl}`missing.name`"].concat();
+        fs::write(temp.path().join("src/main.rs"), format!("// {unknown}\n")).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        for detail in [
+            "habeas.toml: version: expected version = 1".to_owned(),
+            "book.toml: invalid TOML".to_owned(),
+            "evidence/ghost.json: invalid JSON".to_owned(),
+            format!("src/main.rs:1: {unknown} has no matching requirement"),
+        ] {
+            assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
+        }
+    }
+
+    // {test}`requirements.ci.schema`
+    #[test]
+    fn schema_rejects_each_malformed_field_and_input_form() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/rules.md"),
+            "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n",
+        )
+        .unwrap();
+        let term = [
+            ":::{definition} term",
+            ":phrase: term",
+            "",
+            "A term.",
+            ":::",
+        ];
+        fs::write(
+            temp.path().join("evidence/rules.ready.json"),
+            json!({
+                "requirement": "Ready.",
+                "determination": true,
+                "rationale": " \n",
+                "inputs": [
+                    {"definition": "rules.term", "text": term},
+                    {"definition": 7, "text": term},
+                    {"definition": "rules.term", "text": []},
+                    {"definition": "rules.term", "requirements": "rules.*", "text": term},
+                    {"requirements": "rules.ready", "matches": ["rules.ready", "rules.ready"], "text": ["x"]},
+                    {"requirements": "rules.ready", "matches": [1], "text": ["x"]},
+                    "src/main.rs",
+                    {"file": "src/main.rs", "item": "", "hash": "a".repeat(63)},
+                    {"file": "src/main.rs", "item": "", "hash": "g".repeat(64)},
+                    {"file": "src/main.rs", "item": "", "hash": "0".repeat(64), "text": ["// first line"]}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        let errors = report.errors.join("\n");
+        let label = "evidence/rules.ready.json";
+        for detail in [
+            format!("{label}: rationale must not be empty"),
+            format!("{label}: inputs[1]: definition must be a string"),
+            format!("{label}: inputs[2]: text must be a nonempty array"),
+            format!("{label}: inputs[3]: unexpected field \"requirements\""),
+            format!("{label}: inputs[4]: matches must have distinct definition names"),
+            format!("{label}: inputs[5]: matches[0] must be a string"),
+            format!("{label}: inputs[6]: expected a JSON object"),
+            format!("{label}: inputs[7]: hash must be a lowercase hexadecimal SHA-256 digest"),
+            format!("{label}: inputs[8]: hash must be a lowercase hexadecimal SHA-256 digest"),
+            format!("{label}: inputs[9]: unexpected field \"text\""),
+        ] {
+            assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
+        }
+        // The well-formed definition input is accepted.
+        assert!(!errors.contains("inputs[0]"), "{errors}");
+    }
+
+    // {test}`requirements.ci.determination`
+    #[test]
+    fn a_false_determination_fails_only_its_own_record_with_its_rationale() {
+        let temp = fixture();
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines IMPL`rules.ready` and CITE`rules.ready`.\n:::\n"
+            .replace("IMPL", "{impl}")
+            .replace("CITE", "{cite}");
+        fs::write(temp.path().join("md/rules.md"), &chapter).unwrap();
+        fs::write(
+            temp.path().join("evidence/rules.ready.json"),
+            json!({
+                "requirement": "Ready.",
+                "determination": true,
+                "rationale": "The refining requirement was examined.",
+                "inputs": crate::inputs::outline_inputs_for_lines(temp.path(), "md/rules.md", 8, 8)
+                    .unwrap()
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("evidence/rules.refined.json"),
+            json!({
+                "requirement": chapter.lines().nth(7).unwrap(),
+                "determination": false,
+                "rationale": "  Work remains: the refinement is untested.  ",
+                "inputs": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        assert_eq!(
+            report.errors,
+            [
+                "evidence/rules.refined.json: determination is false: Work remains: the refinement is untested."
+            ],
+            "the implemented and cited requirement is unaffected"
+        );
+    }
+
+    // {test}`requirements.ci.diagnostics`
+    #[test]
+    fn changed_requirement_text_names_the_record_and_location_with_a_diff() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/requirements.md"),
+            "# Requirements\n\n:::{req} one\nHabeas MUST check input lines.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("evidence/requirements.one.json"),
+            json!({
+                "requirement": "Habeas SHOULD check input lines.",
+                "determination": true,
+                "rationale": "Examined.",
+                "inputs": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        assert_eq!(
+            report.errors,
+            [
+                "evidence/requirements.one.json: requirement text changed (md/requirements.md:3)\n- Habeas SHOULD check input lines.\n+ Habeas MUST check input lines."
+            ]
+        );
+    }
+
+    // {test}`requirements.ci.diagnostics`
+    #[test]
+    fn compact_diffs_elide_common_lines_and_truncate_long_runs() {
+        let diff = |old: &[&str], new: &[&str]| super::compact_diff(old, new);
+        assert_eq!(
+            diff(&["a", "b", "c", "d"], &["a", "B", "C", "d"]),
+            "\n- b\n- c\n+ B\n+ C"
+        );
+        assert_eq!(diff(&["a", "c"], &["a", "b", "c"]), "\n+ b");
+        assert_eq!(diff(&["a", "b", "c"], &["a", "c"]), "\n- b");
+        assert_eq!(diff(&["same"], &["same"]), "");
+        let old = (0..10).map(|n| format!("old {n}")).collect::<Vec<_>>();
+        let old = old.iter().map(String::as_str).collect::<Vec<_>>();
+        let truncated = diff(&old, &["new"]);
+        assert_eq!(truncated.matches("\n- old").count(), 8, "{truncated}");
+        assert!(
+            truncated.contains("\n- old 7\n- ... 2 more lines\n+ new"),
+            "{truncated}"
+        );
+        assert!(!truncated.contains("old 8"), "{truncated}");
+    }
+
+    // {test}`requirements.ci.span`
+    #[test]
+    fn requirement_bodies_are_compared_without_surrounding_whitespace() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/requirements.md"),
+            "# Requirements\n\n:::{req} one\n\n   Body MUST hold.  \n\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("evidence/requirements.one.json"),
+            json!({
+                "requirement": "Body MUST hold.",
+                "determination": true,
+                "rationale": "Examined.",
+                "inputs": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    // {test}`requirements.ci.identifiers`
+    #[test]
+    fn invalid_full_names_from_chapter_paths_are_reported_and_not_defined() {
+        let temp = fixture();
+        fs::create_dir_all(temp.path().join("md/bad dir")).unwrap();
+        fs::write(
+            temp.path().join("md/bad dir/rules.md"),
+            "# Rules\n\n:::{req} good\nGood.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("md/reqs/index.md"),
+            "# Top\n\n:::{req} top\nTop.\n:::\n",
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        let errors = report.errors.join("\n");
+        assert!(
+            errors
+                .contains("md/bad dir/rules.md:3: invalid requirement name \"bad dir.rules.good\""),
+            "{errors}"
+        );
+        // The invalid name is not defined, so no evidence is expected for it,
+        // while `reqs/index.md` contributes an empty namespace.
+        assert!(!errors.contains("evidence/bad dir"), "{errors}");
+        assert!(
+            errors.contains("evidence/top.json: missing for requirement at md/reqs/index.md:3"),
+            "{errors}"
+        );
+        assert_eq!(report.errors.len(), 2, "{errors}");
+    }
+
+    // {test}`requirements.references.targets`
+    #[test]
+    fn reference_discovery_skips_evidence_snapshots_and_build_output() {
+        let temp = fixture();
+        let reference = ["{", "impl}`foo.bar.ready`"].concat();
+        let line = format!("// {reference}\n");
+        for file in [
+            "src/counted.rs",
+            "nested/book/counted.txt",
+            "nested/evidence/counted.txt",
+            "evidence/copy.json",
+            "book/chapter.html",
+            "target/debug/out.rs",
+            "crates/sub/target/out.rs",
+            ".git/info/notes",
+        ] {
+            let path = temp.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, &line).unwrap();
+        }
+        fs::write(temp.path().join("src/binary.dat"), b"\0\0{impl}").unwrap();
+        let mut errors = Vec::new();
+        let mut found = super::collect_references(temp.path(), &mut errors)
+            .into_iter()
+            .map(|reference| {
+                let file = reference.file.strip_prefix(temp.path()).unwrap();
+                format!("{}:{}", file.display(), reference.line)
+            })
+            .collect::<Vec<_>>();
+        found.sort();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            found,
+            [
+                "nested/book/counted.txt:1",
+                "nested/evidence/counted.txt:1",
+                "src/counted.rs:1",
+            ]
+        );
+    }
+
     // {test}`requirements.ci.span`
     // {test}`requirements.ci.fence_lengths`
     #[test]
@@ -1884,7 +2316,9 @@ mod tests {
         .unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
-            errors.contains("requirements glob matches changed"),
+            errors.contains(
+                "requirements glob \"rules.*\" matches changed; added [\"rules.added\"], removed []"
+            ),
             "{errors}"
         );
 

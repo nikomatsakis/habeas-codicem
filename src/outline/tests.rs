@@ -454,6 +454,29 @@ fn reports_parse_failures_with_lines() {
     let error = parse(Path::new("src/lib.rs"), "fn ok() {}\nfn broken( {\n").unwrap_err();
     assert_eq!(error.line, 2, "{error}");
     assert!(parse(Path::new("a.py"), "def f(:\n").is_err());
+    let late = parse(Path::new("a.toml"), "a = 1\nb = 2\nc = = 3\nd = [\n").unwrap_err();
+    assert_eq!(late.line, 3, "the first error is reported: {late}");
+    assert!(late.to_string().starts_with("line 3: "), "{late}");
+}
+
+// {test}`requirements.references.outlines`
+#[test]
+fn profiles_are_selected_by_extension_case_insensitively() {
+    for (path, profile) in [
+        ("src/LIB.RS", "rust"),
+        ("a.Py", "python"),
+        ("a.TSX", "tsx"),
+        ("README.MD", "markdown"),
+        ("Cargo.TOML", "toml"),
+        ("notes", "plain-text"),
+        ("notes.rs.txt", "plain-text"),
+    ] {
+        assert_eq!(
+            super::profile_for_path(Path::new(path)).name,
+            profile,
+            "{path}"
+        );
+    }
 }
 
 // {test}`requirements.references.outlines`
@@ -696,4 +719,202 @@ fn no_profile_invents_fallback_kinds() {
     assert_eq!(outline("a.py", "x = 1\n").nodes.len(), 1);
     assert_eq!(outline("a.ts", "const h = 1;\n").nodes.len(), 1);
     assert_eq!(outline("a.yml", "plain scalar\n").nodes.len(), 1);
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn comment_runs_follow_the_same_rules_in_every_language() {
+    // Each case: path, source, and (needle, expected owner selector) pairs.
+    // Every language has a run before a node, a trailing comment, a comment
+    // after its container's last node, and a top-level tail comment that
+    // belongs to the root.
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let cases: &[Case] = &[
+        (
+            "a.py",
+            "# lead one\n# lead two\ndef f():\n    pass  # trailing f\nclass C:\n    def m(self):\n        pass\n    # before n\n    def n(self):\n        pass\n# tail\n",
+            &[
+                ("lead one", "def[f]"),
+                ("lead two", "def[f]"),
+                ("trailing f", "def[f]"),
+                ("before n", "class[C]/def[n]"),
+                ("tail", ""),
+            ],
+        ),
+        (
+            "a.ts",
+            "// lead\nfunction f() {} // trailing f\nclass C {\n  m() {}\n  // after m\n}\n/* tail */\n",
+            &[
+                ("lead", "function[f]"),
+                ("trailing f", "function[f]"),
+                ("after m", "class[C]"),
+                ("tail", ""),
+            ],
+        ),
+        (
+            "a.tsx",
+            "// lead\nfunction App() { return <div/>; } // trailing\n// tail\n",
+            &[
+                ("lead", "function[App]"),
+                ("trailing", "function[App]"),
+                ("tail", ""),
+            ],
+        ),
+        (
+            "a.css",
+            "/* lead */\na { color: red; } /* trailing a */\n@media print {\n  b { x: y }\n  /* after b */\n}\n/* tail */\n",
+            &[
+                ("lead", "rule[a]"),
+                ("trailing a", "rule[a]"),
+                ("after b", "media[print]"),
+                ("tail", ""),
+            ],
+        ),
+        (
+            "a.toml",
+            "# lead\na = 1 # trailing a\n[t]\nb = 2\n# after b\n",
+            &[
+                ("lead", "pair[a]"),
+                ("trailing a", "pair[a]"),
+                ("after b", "table[t]"),
+            ],
+        ),
+        (
+            "a.yml",
+            "# lead\na: 1 # trailing a\n# before b\nb:\n  c: 1\n  # inner\n  d: 2\n",
+            &[
+                ("lead", "pair[a]"),
+                ("trailing a", "pair[a]"),
+                ("before b", "pair[b]"),
+                ("inner", "pair[b]/pair[d]"),
+            ],
+        ),
+        (
+            "a.md",
+            "# H\npara\n<!-- before Sub -->\n## Sub\ntext\n\n<!-- end of Sub -->\n",
+            &[
+                ("before Sub", "section[H]/section[Sub]"),
+                ("end of Sub", "section[H]/section[Sub]"),
+            ],
+        ),
+    ];
+    for (path, source, expected) in cases {
+        let outline = outline(path, source);
+        for (needle, owner) in *expected {
+            assert_eq!(
+                comment_owner(&outline, source, needle),
+                *owner,
+                "{path}: owner of {needle:?}"
+            );
+        }
+    }
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn markdown_comments_are_html_comment_blocks_not_inline_comments() {
+    let source = "# H\nText <!-- inline --> more.\n\n<!-- block -->\n## Sub\n";
+    let outline = outline("a.md", source);
+    assert_eq!(outline.comments.len(), 1, "only the block is a comment");
+    assert_eq!(
+        comment_owner(&outline, source, "block"),
+        "section[H]/section[Sub]"
+    );
+    let inline = source.find("inline").unwrap();
+    assert!(
+        outline
+            .comments
+            .iter()
+            .all(|comment| !(comment.byte_start <= inline && inline < comment.byte_end))
+    );
+    assert_eq!(
+        outline.nodes[outline.owner_at_line(2)].selector,
+        "section[H]",
+        "an inline HTML comment is paragraph text of its section"
+    );
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn a_comment_after_another_comment_on_its_line_forms_its_own_run() {
+    let source = "fn a() {}\n/* first */ /* second */\nfn b() {}\n";
+    let outline = outline("src/lib.rs", source);
+    assert_eq!(comment_owner(&outline, source, "first"), "fn[b]");
+    // The second comment follows other text on its line, so it forms a run
+    // by itself and belongs to the innermost node containing that line; no
+    // item contains line 2, so that is the root.
+    assert_eq!(comment_owner(&outline, source, "second"), "");
+}
+
+// {test}`requirements.references.selector_duplicate_names`
+#[test]
+fn duplicate_names_are_numbered_in_source_order_without_line_numbers() {
+    let source = "#[cfg(a)]\nfn run() { a() }\n#[cfg(b)]\nfn run() { b() }\n";
+    let first = outline("src/lib.rs", source);
+    assert_eq!(selectors(&first), ["fn[run]#1", "fn[run]#2"]);
+    let node = |outline: &Outline, selector: &str| {
+        outline.nodes[outline.resolve(selector).unwrap()].clone()
+    };
+    assert_eq!(node(&first, "fn[run]#1").line_start, 1);
+    assert_eq!(node(&first, "fn[run]#2").line_start, 3);
+    assert!(
+        source[node(&first, "fn[run]#1").byte_start..].starts_with("fn run() { a() }"),
+        "#1 is the first declaration in the file"
+    );
+    let swapped = outline(
+        "src/lib.rs",
+        "#[cfg(b)]\nfn run() { b() }\n#[cfg(a)]\nfn run() { a() }\n",
+    );
+    assert_eq!(
+        node(&swapped, "fn[run]#1").structural_hash,
+        node(&first, "fn[run]#2").structural_hash,
+        "swapping the declarations swaps their ordinals"
+    );
+    let moved = outline("src/lib.rs", &format!("\n\n\n{source}"));
+    assert_eq!(selectors(&moved), ["fn[run]#1", "fn[run]#2"]);
+    assert_eq!(node(&moved, "fn[run]#1").line_start, 4);
+    assert_eq!(
+        node(&moved, "fn[run]#1").structural_hash,
+        node(&first, "fn[run]#1").structural_hash,
+        "moving the declarations changes neither selector"
+    );
+}
+
+// {test}`requirements.references.rust_item_selectors`
+#[test]
+fn item_macros_are_anonymous_nodes_and_expression_macros_are_not() {
+    let source = "\
+thread_local! { static X: u8 = 1; }
+println!();
+impl<T> Trait for Wrapper<T> {
+    m!();
+    fn run() { inner!(); let x = vec![1]; }
+}
+mod local { other! {} }
+";
+    let outline = outline("src/lib.rs", source);
+    let selectors = selectors(&outline);
+    let anonymous = regex::Regex::new("^macro@[0-9a-f]{12}$").unwrap();
+    assert!(anonymous.is_match(&selectors[0]), "{selectors:?}");
+    assert!(anonymous.is_match(&selectors[1]), "{selectors:?}");
+    assert_ne!(selectors[0], selectors[1]);
+    assert_eq!(selectors[2], "impl[Wrapper<T>/Trait]");
+    assert!(
+        selectors[3].starts_with("impl[Wrapper<T>/Trait]/macro@"),
+        "{selectors:?}"
+    );
+    assert_eq!(selectors[4], "impl[Wrapper<T>/Trait]/fn[run]");
+    assert!(
+        selectors[5].starts_with("mod[local]") && selectors[6].starts_with("mod[local]/macro@"),
+        "{selectors:?}"
+    );
+    assert_eq!(
+        selectors.len(),
+        7,
+        "macros inside a function body are expressions, not nodes: {selectors:?}"
+    );
 }

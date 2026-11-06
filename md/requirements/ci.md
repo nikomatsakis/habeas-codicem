@@ -104,7 +104,10 @@ primary readers.
 Repository validation MUST continue after a failed check and report every failed
 check it finds in one run, each as a {term}`requirements.ci.validation_error`.
 This is a convention for every validation error; the requirement for each check
-states which conditions that check reports.
+states which conditions that check reports. A file that cannot be parsed, such as
+a malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:
+its error MAY report only the first parse or decoding problem in that file, and
+checks that do not depend on its contents MUST still run.
 :::
 
 :::{req} diagnostics
@@ -122,7 +125,7 @@ evidence/requirements.ci.outline_inputs.json: requirement text changed (md/requi
 :::
 
 :::{req} span
-A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.
+A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence and nothing else on its line except whitespace. As in CommonMark fences, an opening or closing fence MAY be indented by up to three spaces; a line indented by four or more spaces MUST NOT be a fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.
 :::
 
 :::{req} fence_lengths
@@ -134,7 +137,7 @@ Validation MUST read the mdBook source directory from `[book].src` in `book.toml
 :::
 
 :::{req} identifiers
-Requirement and reference names MUST have nonempty dot-separated segments containing only ASCII letters, digits, underscores, or hyphens. An invalid `{req}` directive or role MUST remain literal and MUST NOT define or reference a requirement. For nested chapter paths, a leading `reqs/` and a final `index` or `README` segment MUST be omitted from the requirement namespace.
+Requirement and reference names MUST have nonempty dot-separated segments containing only ASCII letters, digits, underscores, or hyphens. A `{req}` directive whose full name is invalid, including one whose chapter path gives an invalid namespace, and a role with an invalid name MUST remain literal and MUST NOT define or reference a requirement. For nested chapter paths, a leading `reqs/` and a final `index` or `README` segment MUST be omitted from the requirement namespace.
 :::
 
 :::{req} definition_errors

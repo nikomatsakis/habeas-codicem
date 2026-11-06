@@ -166,6 +166,7 @@ pub(crate) struct ReferenceMatch<'a> {
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.index.detail_pages`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.ci.identifiers`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
     let mut order = Vec::new();
@@ -183,7 +184,9 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
                 continue;
             }
             let name = full_requirement_name(&namespace, &block.name);
-            if definitions.contains_key(&name) {
+            // A directive whose full name is invalid, such as one in a
+            // chapter whose path gives an invalid namespace, defines nothing.
+            if !valid_name(&name) || definitions.contains_key(&name) {
                 continue;
             }
             if block.kind != DefinitionKind::Term {
@@ -265,10 +268,11 @@ fn chapter_namespace(path: &Path) -> String {
         })
         .collect();
 
-    if parts.len() > 1 && parts[0] == "reqs" {
+    let nested = parts.len() > 1;
+    if nested && parts[0] == "reqs" {
         parts.remove(0);
     }
-    if parts.len() > 1 && matches!(parts.last().map(String::as_str), Some("index" | "README")) {
+    if nested && matches!(parts.last().map(String::as_str), Some("index" | "README")) {
         parts.pop();
     }
 
@@ -282,6 +286,7 @@ fn chapter_namespace(path: &Path) -> String {
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.examples.index`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.ci.identifiers`
 fn replace_definitions(
     content: &str,
     namespace: &str,
@@ -291,15 +296,18 @@ fn replace_definitions(
     let mut result = String::with_capacity(content.len());
     let mut cursor = 0;
 
+    // A directive whose full name is invalid remains literal.
     for block in definition_blocks(content)
         .into_iter()
-        .filter(|block| block.closed)
+        .filter(|block| block.closed && valid_name(&full_requirement_name(namespace, &block.name)))
     {
         if block.start < cursor {
             continue;
         }
         result.push_str(&content[cursor..block.start]);
         let full_name = full_requirement_name(namespace, &block.name);
+        // Valid names contain no HTML-special characters, so this escaping
+        // only guards the inserted HTML against future name rules.
         // {impl}`requirements.references.safe_badges`
         let escaped_name = escape_html(&full_name);
         if block.kind == DefinitionKind::Term {
@@ -728,6 +736,7 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
 }
 
 // {impl}`requirements.references.markdown_literals`
+// {impl}`requirements.references.targets`
 fn protected_ranges(content: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
 
@@ -743,6 +752,7 @@ fn protected_ranges(content: &str) -> Vec<Range<usize>> {
 }
 
 // {impl}`requirements.references.markdown_literals`
+// {impl}`requirements.references.targets`
 fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
@@ -936,6 +946,16 @@ mod tests {
         assert_eq!(chapter_namespace(Path::new("reqs/foo/bar.md")), "foo.bar");
         assert_eq!(chapter_namespace(Path::new("reqs/foo/README.md")), "foo");
         assert_eq!(chapter_namespace(Path::new("reqs/foo/index.md")), "foo");
+        assert_eq!(chapter_namespace(Path::new("foo/index.md")), "foo");
+        assert_eq!(chapter_namespace(Path::new("reqs/index.md")), "");
+        assert_eq!(chapter_namespace(Path::new("reqs/bar.md")), "bar");
+        // Only nested paths drop these segments.
+        assert_eq!(chapter_namespace(Path::new("index.md")), "index");
+        assert_eq!(chapter_namespace(Path::new("reqs.md")), "reqs");
+        assert_eq!(
+            chapter_namespace(Path::new("other/reqs/a.md")),
+            "other.reqs.a"
+        );
 
         let rendered = replace_definitions(
             ":::{req} tui.table\nThe table MUST be visible.\n:::",
@@ -981,18 +1001,129 @@ mod tests {
     }
 
     // {test}`requirements.ci.identifiers`
+    #[test]
+    fn invalid_names_remain_literal() {
+        let source = ":::{req} bad name\nInvalid.\n:::\n\n:::{req} good\nGood.\n:::";
+        let rendered = replace_definitions(source, "rules", None, None);
+        assert!(rendered.contains(":::{req} bad name"));
+        assert!(rendered.contains("alt=\"req rules.good\""));
+        // A valid local name in a chapter whose namespace is invalid gives an
+        // invalid full name, so the directive stays literal too.
+        let rendered = replace_definitions(source, "a&b", None, None);
+        assert_eq!(rendered, source);
+
+        for name in [
+            "",
+            "a..b",
+            ".a",
+            "a.",
+            "a b",
+            "caf\u{e9}",
+            "a/b",
+            "a&b",
+            "a`b",
+        ] {
+            assert!(!super::valid_name(name), "{name:?} is invalid");
+        }
+        for name in ["a", "a_b.c-d", "A1.b2", "x.-_.y"] {
+            assert!(super::valid_name(name), "{name:?} is valid");
+        }
+        for role in ["impl", "cite", "test", "term"] {
+            for name in ["bad name", "a..b", "", "a."] {
+                let text = format!("{{{role}}}`{name}`");
+                assert!(reference_roles(&text, false).is_empty(), "{text}");
+                assert!(reference_roles(&text, true).is_empty(), "{text}");
+            }
+            assert_eq!(
+                reference_roles(&format!("{{{role}}}`a_b.c-d`"), false).len(),
+                1
+            );
+        }
+        for opener in [":::{req} a..b", ":::{example} .x", ":::{definition} a b"] {
+            let source = format!("{opener}\n:phrase: p\n\nBody.\n:::\n");
+            assert!(definition_blocks(&source).is_empty(), "{opener}");
+        }
+    }
+
+    // {test}`requirements.ci.identifiers`
+    #[test]
+    fn chapters_with_invalid_namespaces_define_nothing_in_the_book() {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Bad",
+            ":::{req} good\nGood.\n:::".to_owned(),
+            "bad dir/rules.md",
+            Vec::new(),
+        ));
+        book.push_item(Chapter::new(
+            "Guide",
+            "See {impl}`bad dir.rules.good`.".to_owned(),
+            "guide.md",
+            Vec::new(),
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let chapters = book.chapters().collect::<Vec<_>>();
+        assert_eq!(chapters.len(), 2, "no detail page is generated");
+        assert_eq!(chapters[0].content, ":::{req} good\nGood.\n:::");
+        assert!(!chapters[0].content.contains("habeas-req-badge"));
+        assert_eq!(chapters[1].content, "See {impl}`bad dir.rules.good`.");
+    }
+
     // {test}`requirements.references.safe_badges`
     #[test]
-    fn invalid_names_remain_literal_and_html_is_escaped() {
-        let rendered = replace_definitions(
-            ":::{req} bad name\nInvalid.\n:::\n\n:::{req} good\nGood.\n:::",
-            "a&b",
-            None,
-            None,
+    fn badge_urls_percent_encode_punctuation_and_html_is_escaped() {
+        let badge = shield_badge("a/b?c", "x#y%z&w<v>\"u' caf\u{e9}", "006ba8");
+        let url = badge
+            .split("src=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://img.shields.io/badge/a%2Fb%3Fc-x%23y%25z%26w%3Cv%3E%22u%27_caf%C3%A9-006ba8?style=flat-square&amp;labelColor=555"
         );
-        assert!(rendered.contains(":::{req} bad name"));
-        assert!(rendered.contains("alt=\"req a&amp;b.good\""));
-        assert!(reference_roles("{impl}`bad name`", false).is_empty());
+        assert!(
+            badge.contains("alt=\"a/b?c x#y%z&amp;w&lt;v&gt;&quot;u&#39; caf\u{e9}\""),
+            "{badge}"
+        );
+    }
+
+    // {test}`requirements.references.safe_badges`
+    #[test]
+    fn reference_link_targets_are_escaped() {
+        let mut book = Book::new();
+        let mut target = Chapter::new(
+            "Rules",
+            ":::{req} ready\nReady.\n:::".to_owned(),
+            "rules.md",
+            Vec::new(),
+        );
+        // The rendered path, unlike the source path, may contain characters
+        // that are special in HTML.
+        target.path = Some("a&b \"q\" <x>.md".into());
+        book.push_item(target);
+        book.push_item(Chapter::new(
+            "Guide",
+            "See {cite}`rules.ready`.".to_owned(),
+            "guide.md",
+            Vec::new(),
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let guide = book
+            .chapters()
+            .find(|chapter| chapter.name == "Guide")
+            .unwrap();
+        assert!(
+            guide
+                .content
+                .contains("href=\"a&amp;b &quot;q&quot; &lt;x&gt;.html#habeas-req-rules.ready\""),
+            "{}",
+            guide.content
+        );
+        assert!(!guide.content.contains("\"q\""), "{}", guide.content);
+        assert!(!guide.content.contains("<x>"), "{}", guide.content);
     }
 
     // {test}`requirements.references.book_badges`
@@ -1078,6 +1209,21 @@ mod tests {
         assert!(!guide.content.contains("habeas-req-ref-impl"));
     }
 
+    // {test}`requirements.references.markdown_literals`
+    #[test]
+    fn roles_in_raw_html_stay_literal() {
+        let marker = ["{", "impl}`requirements.ready`"].concat();
+        let content = format!(
+            "<div>\n{marker}\n</div>\n\n<!-- {marker} -->\n\nText <!-- {marker} --> and <span title=\"{marker}\">tag</span>.\n\nBetween <em>{marker}</em> tags.\n"
+        );
+        let references = reference_roles(&content, true);
+        // Only the role between inline tags is ordinary Markdown text.
+        assert_eq!(references.len(), 1, "{content}");
+        assert!(content[references[0].start..].starts_with(&format!("{marker}</em>")));
+        // Outside Markdown, HTML-looking text does not protect roles.
+        assert_eq!(reference_roles(&content, false).len(), 5);
+    }
+
     // {test}`requirements.references.book_badges`
     // {test}`requirements.references.markdown_literals`
     #[test]
@@ -1119,6 +1265,37 @@ mod tests {
             "Intro.\n\n:::{note}\nNested.\n:::\n"
         );
         assert!(content[blocks[0].end..].contains("Outside."));
+    }
+
+    // {test}`requirements.ci.span`
+    #[test]
+    fn closing_fences_allow_no_trailing_text_and_fences_allow_three_spaces_of_indent() {
+        let content = ":::{req} ready\nBody.\n:::foo\nStill body.\n::: \n\nAfter.";
+        let blocks = definition_blocks(content);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].closed);
+        assert_eq!(
+            &content[blocks[0].body_start..blocks[0].body_end],
+            "Body.\n:::foo\nStill body.\n",
+            "a colon line with trailing text does not close the body; trailing whitespace may"
+        );
+
+        let indented = "   :::{req} ready\nBody.\n   :::\n";
+        let blocks = definition_blocks(indented);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].closed);
+        assert_eq!(
+            &indented[blocks[0].body_start..blocks[0].body_end],
+            "Body.\n"
+        );
+        assert!(definition_blocks("    :::{req} ready\nBody.\n:::\n").is_empty());
+        let unclosed = definition_blocks(":::{req} ready\nBody.\n    :::\n");
+        assert_eq!(unclosed.len(), 1);
+        assert!(
+            !unclosed[0].closed,
+            "a four-space-indented fence does not close"
+        );
+        assert!(definition_blocks(":::{req}ready\nBody.\n:::\n").is_empty());
     }
 
     // {test}`requirements.examples.definition`

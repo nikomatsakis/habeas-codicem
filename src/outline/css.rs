@@ -18,6 +18,7 @@ fn prelude_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
 }
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 fn is_comment(node: Node<'_>, source: &str) -> bool {
     kind_is_comment(node, source) || node.kind() == "js_comment"
 }
@@ -49,6 +50,7 @@ const KINDS: &[KindRule] = &[
 ];
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 pub(crate) static PROFILE: Profile = Profile {
     name: "css",
     extensions: &["css"],

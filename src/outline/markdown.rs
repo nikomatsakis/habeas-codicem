@@ -31,6 +31,7 @@ const KINDS: &[KindRule] = &[KindRule::new(
 )];
 
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.outline_comments`
 pub(crate) static PROFILE: Profile = Profile {
     name: "markdown",
     extensions: &["md", "markdown"],

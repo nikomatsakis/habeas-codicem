@@ -448,6 +448,7 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.authoring.rig_configuration_mapping`
+// {impl}`requirements.definitions.authoring_inputs`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -615,6 +616,116 @@ mod tests {
                 ));
             }
             JudgmentProvider(json!(true)).complete(request).await
+        }
+    }
+
+    /// Reads one source on the first turn, then submits.
+    struct ReadingProvider {
+        read: Value,
+        requests: RefCell<Vec<Value>>,
+    }
+
+    impl CompletionProvider for ReadingProvider {
+        // {test}`requirements.definitions.authoring_inputs`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            self.requests
+                .borrow_mut()
+                .push(serde_json::to_value(&request).unwrap());
+            if self.requests.borrow().len() > 1 {
+                return JudgmentProvider(json!(true)).complete(request).await;
+            }
+            Ok(CompletionResponse::new(
+                vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                    "read",
+                    ToolFunction::new(ToolName::new("habeas").unwrap(), self.read.clone()),
+                ))],
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.definitions.authoring_inputs`
+    #[tokio::test]
+    async fn definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("md/terms.md"),
+            format!(
+                ":::{{definition}} value\n:phrase: value\nA {}.\n:::\n\n:::{{definition}} unit\n:phrase: unit\nA unit of {}.\n:::\n",
+                inputs::tests::role("term", "terms.unit"),
+                inputs::tests::role("term", "terms.value"),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn work() {{}}\n",
+                inputs::tests::role("term", "terms.value")
+            ),
+        )
+        .unwrap();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = ReadingProvider {
+            read: json!({"file": "src/lib.rs", "item": "fn[work]"}),
+            requests: RefCell::default(),
+        };
+        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+
+        let definitions = evidence["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|input| input.get("definition").is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|input| input["definition"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["terms.unit", "terms.value"],
+            "the transitive set, once each: {evidence}"
+        );
+        for input in &definitions {
+            let text = input["text"].as_array().unwrap();
+            assert!(text[0].as_str().unwrap().starts_with(":::{definition}"));
+            assert!(text[1].as_str().unwrap().starts_with(":phrase: "));
+        }
+        // The submission came after the definitions were delivered.
+        let requests = provider.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        let delivered = requests[1].to_string();
+        assert!(delivered.contains("A unit of"), "{delivered}");
+        assert!(!requests[0].to_string().contains("A unit of"));
+    }
+
+    // {test}`requirements.ci.review_criteria`
+    #[test]
+    fn initial_prompt_carries_the_review_criteria() {
+        let project = inputs::tests::project();
+        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let prompt = initial_prompt(&sources).unwrap();
+        for criterion in [
+            "Subject: requirement requirements.ready",
+            "Assess only the named subject, using cited requirements and definitions as context.",
+            "implements every obligation\ncompletely and exactly as stated",
+            "tests cover the interesting points in the design space",
+            "without an {impl} reference to it, including code that refers to it\nonly with {cite}, is a gap",
+            "behavior in the {impl} code that this\nrequirement does not specify, unless another definition that code implements\nspecifies it",
+            "If there are no tests,\nassess whether simplicity or impracticality justifies their absence, and explain.",
+            "For an example, assess whether test setup and assertions cover its scenario and\nexpected outcomes.",
+            "with source locations",
+        ] {
+            assert!(
+                prompt.contains(criterion),
+                "missing {criterion:?} in:\n{prompt}"
+            );
         }
     }
 

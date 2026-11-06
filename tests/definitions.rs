@@ -129,20 +129,45 @@ fn cyclic_dependencies_are_captured_once_and_changes_require_review() {
 #[test]
 fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
     let temp = fixture();
-    let path = temp.path().join("md/rules.md");
-    let mut text = fs::read_to_string(&path).unwrap();
-    text.push_str("\n:::{definition} unrelated\n:phrase: unrelated\n\nNot referenced.\n:::\n");
-    fs::write(path, text).unwrap();
+    // `rules.used` matches the glob and is referenced; `rules.unrelated`
+    // matches the glob and shares its prefix but is not referenced.
+    fs::write(
+        temp.path().join("md/rules.md"),
+        ":::{req} ready\nUse TERM`glossary.a` and TERM`rules.used`.\n:::\n\n:::{definition} used\n:phrase: used\n\nReferenced.\n:::\n\n:::{definition} unrelated\n:phrase: unrelated\n\nNot referenced.\n:::\n".replace("TERM", "{term}"),
+    )
+    .unwrap();
     capture(temp.path());
     let record: Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join("evidence/rules.ready.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(record["inputs"][0]["matches"], json!(["rules.ready"]));
-    assert_eq!(record["inputs"][1]["definition"], "glossary.a");
-    assert_eq!(record["inputs"][2]["definition"], "glossary.b");
-    let status = habeas::status_markdown(temp.path(), true).unwrap();
-    assert!(!status.contains("rules.unrelated"));
+    let inputs = record["inputs"].as_array().unwrap();
+    assert_eq!(inputs[0]["requirements"], "rules.*");
+    assert_eq!(inputs[0]["matches"], json!(["rules.ready"]));
+    assert!(
+        inputs[0]["text"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|line| !line.as_str().unwrap().contains("{definition}")),
+        "definitions are not part of the selected text: {inputs:?}"
+    );
+    let definitions = inputs[1..]
+        .iter()
+        .map(|input| input["definition"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        definitions,
+        ["glossary.a", "glossary.b", "rules.used"],
+        "exactly the referenced definitions, captured separately"
+    );
+    assert!(
+        validate_repository(temp.path())
+            .unwrap()
+            .errors
+            .iter()
+            .all(|error| !error.contains("rules.unrelated")),
+    );
 }
 
 // {test}`requirements.definitions.declaration`
