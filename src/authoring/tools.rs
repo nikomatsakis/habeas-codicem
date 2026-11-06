@@ -2122,7 +2122,7 @@ mod tests {
         assert_eq!(search.result["inputs"][1]["line_end"], 4);
         assert_eq!(
             search.result["inputs"][1]["text"],
-            json!(["// {term}`terms.value`", "fn needle() {}"])
+            json!([concat!("// {", "term}`terms.value`"), "fn needle() {}"])
         );
         // Terminology the matched sources use is supplied and recorded.
         assert_eq!(search.result["definitions"][0]["definition"], "terms.value");

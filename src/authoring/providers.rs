@@ -498,6 +498,7 @@ mod tests {
             let config: BedrockConfig = toml::from_str(text).unwrap();
             bedrock_sdk_loader(&config, standard()).load()
         };
+        // {test}`requirements.authoring.configuration_precedence`
         async fn resolved(sdk: aws_config::SdkConfig) -> (Option<String>, String) {
             let key = sdk
                 .credentials_provider()

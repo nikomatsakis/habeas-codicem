@@ -370,7 +370,10 @@ fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
     let original = fs::read_to_string(&glossary).unwrap();
     fs::write(
         &glossary,
-        original.replace("See {term}`glossary.b`.", "See {term}`glossary.b` again."),
+        original.replace(
+            concat!("See {", "term}`glossary.b`."),
+            concat!("See {", "term}`glossary.b` again."),
+        ),
     )
     .unwrap();
     let errors = validate_repository(root).unwrap().errors;
@@ -383,8 +386,8 @@ fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
     assert_eq!(
         diff,
         [
-            "- See {term}`glossary.b`.",
-            "+ See {term}`glossary.b` again."
+            concat!("- See {", "term}`glossary.b`."),
+            concat!("+ See {", "term}`glossary.b` again.")
         ],
         "{changed}"
     );
