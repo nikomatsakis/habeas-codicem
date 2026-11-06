@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST store persistent per-user activity state under\n`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,\notherwise under `$HOME/.local/state/habeas`. On Windows it MUST use\n`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that\nstate root and document their record formats and locations.\n\nState MUST persist across invocations and MUST NOT be stored in the project\nrepository, the configuration file, or a disposable cache directory. Habeas MUST\ncreate the required directories when recording state. If it cannot determine or\nwrite the state location, the operation requiring that state MUST report the\nfailure and MUST NOT claim that its history was recorded.",
-  "determination": false,
-  "rationale": "**Verdict: mostly satisfied, but there are marking and test gaps.**\n\n**What the code does well**\n- **Location resolution.** `config::state_root` and `state_root_from` (src/config.rs:631-650) match the text.\n  - Unix uses an absolute XDG_STATE_HOME, giving `$XDG_STATE_HOME/habeas`.\n  - Otherwise Unix falls back to an absolute `$HOME/.local/state/habeas`.\n  - Windows uses `%LOCALAPPDATA%/habeas/state`.\n  - An unset, empty or relative variable gives an error (\"cannot determine Habeas directory\").\n- **Feature subdirectory.** `UsageLog::start` (src/authoring/usage.rs:83) uses the named subdirectory `authoring/usage` under the state root.\n- **Directory creation and error reporting.**\n  - `usage_state_root` (src/authoring/mod.rs:186) rejects a state root inside the project, then creates the directory. It reports \"cannot create authoring state directory\" on failure.\n  - `UsageLog::start` creates the usage directory and the file, and reports \"cannot record usage\".\n  - `persisted`, `failed`, `author_evidence_with_output` and `prepare_assessment` report finish or save failures (\"cannot record usage ... (evidence written: ...)\").\n  - None of them print a recorded-usage success line when this fails.\n- **Documentation.** `md/reference.md` documents the locations. The `usage_storage` requirement in `md/requirements/authoring.md` documents the record format.\n- **Exclusions.** State is not written to the config file or a cache directory, and the project check blocks the repository.\n\n**Tests**\n- `tests/configuration.rs::locations_use_absolute_xdg_values_and_platform_fallbacks` covers:\n  - the XDG value;\n  - empty and relative XDG values falling back to HOME;\n  - the Windows path;\n  - missing variables.\n- `tests/authoring_cli.rs::undeterminable_unwritable_or_project_state_fails_before_a_model_request` covers:\n  - an undeterminable root;\n  - a state path blocked by a file;\n  - a state path inside the project;\n  - for both single and `--all` runs.\n- `usage_write_failures_are_reported_without_claiming_recorded_history` covers a write failure after the model call. It checks for a nonzero exit, \"cannot record\" in stderr, and no \"Usage:\" line on stdout.\n\n**Gaps**\n1. **Incomplete {impl} marking.**\n   - `resolved_location` (src/authoring/mod.rs:210-223) carries only `{impl}requirements.authoring.usage_storage`.\n   - It implements the \"MUST NOT be stored in the project repository\" part of this requirement. It does so by resolving symlinks in the nearest existing ancestor.\n   - It has no `{impl}` reference to `state_location`.\n   - `UsageLog::save` and `finish` (src/authoring/usage.rs) write the state and surface its write failures. They are also marked only with `usage_storage`.\n   - The task treats partial implementation without an `{impl}` reference as a gap.\n2. **Missing test for the symlink case.**\n   - No test covers a state root that reaches the project through a symlink, or a state path whose existing ancestor resolves into the project.\n   - That is the main boundary `resolved_location` exists for.\n   - The inside-project test only uses a plain, not-yet-existing subdirectory.\n\nNo FIXME or other acknowledged-gap comments mark these gaps, so the result is false rather than FIXME.",
+  "determination": true,
+  "rationale": "**Judgment: the requirement is satisfied.** Every obligation has marked implementation and test coverage. The only caveat is that Windows is tested at the path-resolution level only.\n\n**Implementation**\n- **State root:** `config::state_root_from` (src/config.rs:636) returns `$XDG_STATE_HOME/habeas` on Unix when the variable is absolute and nonempty.\n  - Otherwise it returns `$HOME/.local/state/habeas`.\n  - On Windows it returns `%LOCALAPPDATA%/habeas/state`.\n  - `absolute_directory` treats empty and relative values as unset. `required_directory` returns a \"cannot determine Habeas directory\" error when neither variable is usable. `state_root` and `ConfigPlatform::current` supply the real environment and platform.\n- **Named subdirectory:** the only state consumer is authoring, and `UsageLog::start` (src/authoring/usage.rs) writes under `<state>/authoring/usage/<run-id>.json`. A search of `src` found no other state, cache or temp-directory use.\n- **Documentation:** the usage record format is specified in `md/requirements/authoring.md` (`usage_storage`). The locations, including the Windows path, are documented in `md/reference.md`.\n- **Not in the project, config or a cache:** `usage_state_root` (src/authoring/mod.rs:186) resolves symlinks via `resolved_location`.\n  - It refuses a state root inside the canonical project root before creating anything.\n  - The state is a dedicated directory, not the configuration file and not a cache directory.\n- **Directory creation:** `usage_state_root` creates the state root with `create_dir_all`. `UsageLog::start` creates `authoring/usage`.\n- **Persistence:** records are written to files, are updated by `save` and `finish`, and survive across invocations.\n- **Failure reporting:**\n  - An undeterminable or uncreatable state location fails before any model request, with a clear error.\n  - A `start`, `save` or `finish` failure surfaces as \"cannot record usage at …\" through `persisted`, `failed`, `prepare_assessment` and `author_evidence_with_output`.\n  - Those error messages include \"evidence written: …\" when evidence exists, and the success summary is not printed.\n- **Marking:** all functions that implement these parts carry `{impl}` markers.\n- **Unspecified behaviour:** I found none. The project-containment refusal follows from \"MUST NOT be stored in the project repository\".\n\n**Tests**\n- `tests/configuration.rs::locations_use_absolute_xdg_values_and_platform_fallbacks` covers:\n  - the XDG path;\n  - the empty and relative XDG fallbacks to `HOME`;\n  - the Windows `LOCALAPPDATA` path;\n  - the error when `LOCALAPPDATA` is unavailable.\n- `undeterminable_unwritable_or_project_state_fails_before_a_model_request` runs for both a single subject and `--all`. It covers:\n  - no `XDG_STATE_HOME` and no `HOME`;\n  - a state path blocked by a regular file;\n  - a state path inside the project.\n\n  In every case no model request is made and the evidence file is untouched. Each case asserts failure, the expected message, and the absence of \"Usage:\" and \"1 authored\" in stdout.\n- `state_reaching_the_project_through_a_symlink_is_refused` covers symlink aliases, both direct and through a nonexistent suffix.\n- `usage_write_failures_are_reported_without_claiming_recorded_history` makes the usage file read-only mid-run. It checks that the command fails with \"cannot record\" and that stdout has no \"Usage:\" line, for both single and batch runs.\n- The related `usage_storage` tests in tests/authoring_cli.rs and tests/authoring_batch.rs check the directory layout and persistence on file-based runs.\n- The Windows branch is exercised only by the pure `state_root_from` unit test, because the CLI tests are `cfg(unix)`. That is reasonable for a pure path function.",
   "inputs": [
     {
       "requirements": "requirements.configuration.state_location",
@@ -46,6 +46,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
       "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
     },
@@ -53,6 +58,16 @@
       "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[start]",
       "hash": "cd20e8dedb70eb0dcd2819c9047ae13cd38bce7f08b9f3f1f7959bb1a9a165cf"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[finish]",
+      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[save]",
+      "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
     },
     {
       "file": "src/config.rs",
@@ -91,6 +106,11 @@
     },
     {
       "file": "tests/authoring_cli.rs",
+      "item": "fn[state_reaching_the_project_through_a_symlink_is_refused]",
+      "hash": "bf047d3c8de43b23f9a423ca34718ff8da263027b16bb7eb6ef7cdd10768d80e"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
       "item": "fn[usage_write_failures_are_reported_without_claiming_recorded_history]",
       "hash": "a0e296f00ce3e32a4d98eff078a9155779bf4c0f5f7e4741166ec24c389a54b6"
     },
@@ -102,7 +122,7 @@
     {
       "file": "md/reference.md",
       "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
-      "hash": "04beca975a77e6b070e128c5ffb41fe2f45429f74f2ace3f14ff672ad6372cca"
+      "hash": "7831c5c754d1d5c4e9c4caab0d56d16c899fdc67761e9e775651a18e347274a3"
     },
     {
       "file": "md/requirements/authoring.md",
@@ -163,96 +183,6 @@
       "file": "tests/validate.rs",
       "item": "fn[validate_in]",
       "hash": "e37156e8469099a62c4c1207226306e2fcc0c1361ea09c634c39c96e5e35e181"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[resolved_location]",
-      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "bd02de1eea84805ffdba0b1bc76bb6156b1a2d6436801239dbc54a37865c39f8"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "f8340e9a96b5dad7f636316ee5cc43e0ba60b76f46521d79b3bdc6e253306d04"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]",
-      "hash": "72df1338ac52c0edbc0722c019068bd974865780828fe079cf0f37a9b5cce7c0"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[println]",
-      "hash": "af52d26510d1062d13ad4fd96217dd3ca253b0f04493d7f1cd38476e0669d5fd"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[finish]",
-      "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[prepared]",
-      "hash": "8e5bed403e6901175d1262a63c8961cc3fc3449eeffba81f88ca15ddedc44745"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[begin_request]",
-      "hash": "b8fda53efe81ae7f8eefa5a83482a89bab71e2871480b183a7a7476fd98377fc"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[end_request]",
-      "hash": "d9c2e3d64af15bc7e9a3166e69d0ecbb0787b3531240ae510969c4d0df9d090b"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[tool]",
-      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]",
-      "hash": "cdda383a8e8779839f1f53fa1969bd7794111e9e37f5b46cd9a6cfec4935c515"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[TokenCounts]",
-      "hash": "28ad3197404ef55ddad58da22007328feb6b47ffd483b15a7018a00fd34e37d8"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
-    },
-    {
-      "file": "src/outline/hash.rs",
-      "item": "impl[Encoder]",
-      "hash": "4f19eff1a57440b5e30e1ea825e6d7f343ed64e9595010f3785afabc027f0ec4"
-    },
-    {
-      "file": "src/outline/hash.rs",
-      "item": "fn[line]",
-      "hash": "9d2d7cf4430cf3ef76dad85fa7cef2bebef8b50d1706b0c3422e35b6f3abdff0"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[encode]",
-      "hash": "4596826ed11aa6757e772cf8d3505de4aaa7c7b8acba93882a1a7215c3b1b715"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
-      "hash": "56d485a1631eacba50fdbca88128d77fa25f44a99979e74b92a556820ec6c4a5"
     }
   ]
 }

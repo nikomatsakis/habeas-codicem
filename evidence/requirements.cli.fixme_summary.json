@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas status` MUST group the selected requirement and example judgments marked\nFIXME by issue reference and report how many distinct judgments each issue\naffects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME\nstrings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as\n`https://github.com/owner/repo/issues/123` MUST identify the same issue as\n`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with\nleading zeros normalized; repository spelling MUST remain case-sensitive, and\nunqualified and qualified references MUST remain distinct.\n\nA judgment MUST count at most once for each issue, even when that issue occurs\nrepeatedly or in several FIXME strings. A judgment naming several issues MUST\ncount in each corresponding group. Judgments with no recognized issue in any\nFIXME string MUST be counted once in a separate \"FIXME without an issue\" group.\nIssue groups MUST be ordered by decreasing affected-judgment count, then by\nnormalized reference; the group without an issue MUST follow them. A supplied\nselection MUST restrict these counts to the selected subjects.\n\n`--verbose` MUST list the full name and kind of every judgment in each issue\ngroup and in the group without an issue, along with its original FIXME strings.\nThe summary MUST include valid FIXME determinations even when other evidence\nchecks fail; grouping MUST NOT hide their validation findings. Malformed\ndeterminations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
-  "determination": false,
-  "rationale": "**Implementation: sound.** I found no mismatch with the requirement text.\n\n- `status_markdown_with_options` (src/commands.rs:25-122) calls `fixmes.add(...)` for every selected non-term definition.\n  - This happens before any state-based skipping, so selection restricts the counts.\n  - `LoadedDetailEvidence::load` (src/index.rs) takes FIXME entries from the parsed determination independently of validation errors. Valid FIXME determinations therefore stay in the summary when the record is Invalid, for example because of a stale input. Their validation findings are still printed.\n  - A malformed `FIXME` fails `Judgment::from_value` (src/judgment.rs), so it contributes no entries. It stays a validation error and is never grouped.\n- `issue_references` (src/fixme.rs:100-129) covers the matching rules in the requirement:\n  - It handles `#N`, `owner/repo#N`, and the `https://github.com/owner/repo/issues/N` form.\n  - It rejects incomplete tokens such as `#12abc` and `##123`.\n  - It trims leading zeros and drops `#000`.\n  - Repository spelling is kept as written, and unqualified and qualified references are kept distinct.\n  - Results are held in a `BTreeSet`, so a judgment counts once per issue.\n- `FixmeSummary::render` handles grouping and output:\n  - A judgment with several issues lands in each group.\n  - A judgment with none goes into one \"without an issue\" group, placed after the issue groups.\n  - Issue groups sort by descending count, then by normalized reference string.\n  - `--verbose` prints each judgment's full name, kind, and escaped original FIXME strings under every group.\n- All implementing pieces carry `{impl}` markers (src/commands.rs, src/fixme.rs, src/main.rs). The `{cite}` on the `FixmeSummary` and `FixmeJudgment` structs is only a data-holder cite.\n\n**Tests: good coverage with two gaps.**\n\nCovered points:\n- Leading-zero normalization.\n- Repeated and multi-string dedup.\n- Case-sensitive repository spelling (`Rust-Lang/rust#456` is separate from `rust-lang/rust#456`).\n- Unqualified versus qualified references.\n- Rejection of `#000`, `#12abc`, and `##123`.\n- Multi-issue judgments counted in each group.\n- Ordering by count, then by reference, with the no-issue group last.\n- Selection scoping to `rules.case` and `rules.unlinked`.\n- HTML escaping.\n- Malformed FIXME produces no summary (tests/outcomes.rs:175-198).\n- A valid FIXME stays summarized alongside stale-input errors (tests/outcomes.rs:200-237).\n\nGaps:\n1. **The GitHub-URL equivalence MUST is not independently tested.**\n   - In `fixme_fixture`, alpha contains `https://github.com/rust-lang/rust/issues/456` alongside `rust-lang/rust#000456`.\n   - If URL recognition were removed, alpha would still count once under `rust-lang/rust#456`, and every assertion would still pass.\n   - No other test uses an issue URL.\n2. **Verbose group membership is not asserted.** The verbose test (tests/commands.rs:301-356) only checks that names, kinds, and strings appear somewhere in the output. It does not check that each judgment is listed under the correct group, including the no-issue group, or under every issue it names.\n\nNeither gap is acknowledged by a FIXME comment or test note, so FIXME is not available. The judgment is false.",
+  "determination": true,
+  "rationale": "**Judgment: true.** The implementation meets every obligation in `requirements.cli.fixme_summary`, and the tests cover the design space, including boundary and failure cases. I found one marking nuance, described at the end, which I did not treat as a gap.\n\n## Implementation\n\n**Wiring**\n- `status_markdown_with_options` (src/commands.rs:25-122) carries `{impl}` for the requirement.\n- It skips terms and applies the definition glob before calling `fixmes.add(name, kind, evidence.fixme_entries())`, so selection restricts the counts.\n- It calls `fixmes.render(verbose)` and appends the result.\n- `main` passes `--verbose` and the selection through to it.\n\n**Issue recognition** (`issue_references`, src/fixme.rs:100-129)\n- It matches `#N`, `owner/repo#N` and `https://github.com/owner/repo/issues/N` anywhere inside a FIXME string, so `FIXME(...)` wrappers and explanatory text are handled.\n- Boundary checks reject incomplete tokens such as `#12abc`, `##123` and `x#1`.\n- Number zero is rejected, and leading zeros are stripped (`0042` becomes `42`).\n- The URL form normalizes to `owner/repo#N`.\n- Repository spelling is kept as written, so it stays case-sensitive.\n- Unqualified (`#7`) and qualified (`owner/repo#7`) references produce different keys.\n- Results go into a `BTreeSet`, so each judgment counts at most once per issue, however often the issue repeats or across however many strings.\n\n**Grouping and ordering** (`FixmeSummary::render`, src/fixme.rs:33-82)\n- A judgment naming several issues is pushed into each issue's group.\n- A judgment with no recognized issue goes into the separate \"FIXME without an issue\" group.\n- Groups are sorted by decreasing count, then by normalized reference, and the no-issue group is printed after them.\n- With `--verbose`, `render_judgments` lists each judgment's full name, its kind, and its original FIXME strings, HTML-escaped. This is done for every issue group and for the no-issue group.\n\n**Validation findings and malformed determinations**\n- `LoadedDetailEvidence::load` (src/index.rs) parses the determination from the raw record independently of the validation errors. A valid FIXME with stale inputs therefore stays in the summary.\n- Its row and findings are still emitted, because its state becomes `Invalid`.\n- A malformed determination fails `Judgment::from_value` (src/judgment.rs), which is `requirements.ci.outcomes`. It contributes no entries and remains a validation error.\n\n## Tests\n\n**Unit tests** (src/fixme.rs)\n- `a_github_issue_url_alone_identifies_the_qualified_issue` covers URL normalization, leading zeros, URL and short form merging, and qualified versus unqualified references staying distinct.\n- `verbose_output_lists_each_judgment_under_every_group_it_belongs_to` covers multi-issue membership, once-only counting, `#0` and no-issue judgments, group ordering, the no-issue group following, verbose-only listing, and the original strings.\n\n**Integration tests** (tests/commands.rs)\n- `status_groups_fixme_judgments_by_distinct_normalized_issue` uses a fixture with `#00123`, `rust-lang/rust#000456`, a URL, repeated mentions, `Rust-Lang/rust#456` differing in case, and invalid tokens (`#000`, `#12abc`, `##123`). It checks counts, tie ordering and the no-issue group last. It also checks that individual subjects are hidden without `--all` and that `--all` shows the same summary.\n- `verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups` covers verbose listing with names, kinds and original strings, HTML escaping, and selections restricting the counts to `rules.case` and to `rules.unlinked`.\n\n**Outcomes tests** (tests/outcomes.rs)\n- `malformed_fixme_is_invalid_and_reports_the_required_shape` checks that a malformed FIXME gives an Invalid state, an error, and no group.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` checks that a stale FIXME still appears in the summary with its validation findings.\n- `valid_fixme_remains_visible_in_status_info_and_book` covers a valid FIXME in status with and without `--all`.\n\n## Marking nuance\n\nThe thin accessors `LoadedDetailEvidence::fixme_entries` and `Judgment::fixme_entries` are marked `{impl}` for `requirements.cli.status`, not for `fixme_summary`. `cli.status` expressly delegates FIXME summarization to this requirement, so I consider the marking adequate. All the substantive logic carries `{impl}` for `fixme_summary`.\n\nThere are no FIXME or gap acknowledgments in the relevant sources.",
   "inputs": [
     {
       "requirements": "requirements.cli.fixme_summary",
@@ -107,6 +107,26 @@
       "hash": "20f9a8716e6c53cc7f6d75358ac2db097b6b9acdeb696278641872227f1666ce"
     },
     {
+      "file": "src/fixme.rs",
+      "item": "mod[tests]/fn[strings]",
+      "hash": "f919b2b31dfc954aa970d26013ba00e7a43ba2cb3e35621502f7dfcb865b3222"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "mod[tests]/fn[verbose_groups]",
+      "hash": "6d6b22200cae6ce84618b4a88a14fbd4e40763cf2db444cca57fee8b9bfc41fc"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "mod[tests]/fn[a_github_issue_url_alone_identifies_the_qualified_issue]",
+      "hash": "434a89a5dde19e144c967be1ef2f4a73cc3f512dd073051d76b68397f19d0923"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "mod[tests]/fn[verbose_output_lists_each_judgment_under_every_group_it_belongs_to]",
+      "hash": "a8a7d4b2fd68ce8c8efce71b94a56c390abb3676423724c29b536e2ff3515c59"
+    },
+    {
       "file": "src/main.rs",
       "item": "fn[main]",
       "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
@@ -190,21 +210,6 @@
       "file": "src/commands.rs",
       "item": "use@518d6db5a70c",
       "hash": "518d6db5a70c61c9160c76fb7954a648bec171f3e85c3b748ad47fe8ca50c961"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[user_config_path_from]",
-      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root]",
-      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root_from]",
-      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
     },
     {
       "file": "src/fixme.rs",
@@ -294,7 +299,7 @@
     {
       "file": "md/requirements/cli.md",
       "item": "section[Command-line%20interface]",
-      "hash": "968b4f78bac752b49945b38775a30c095cd007dc7e402db559dc6cb78d604cd0"
+      "hash": "20f0e4eb45d79545a468d19cdbb84557c8b2878454965802efe9013a07cd88a2"
     },
     {
       "definition": "requirements.references.definition_selection",
@@ -308,36 +313,6 @@
         "exactly that definition.",
         ":::"
       ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/mem.h",
-      "item": "line@6cddfa6cd682",
-      "hash": "6cddfa6cd68234a33e8c16776769079c8ba70470b4c611721333708196e23a15"
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
-      "item": "line@712dc5a31fa8",
-      "hash": "712dc5a31fa85d844a201204d7f8629037e52f3886c6e4b237e3157157b67df7"
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/mem.h",
-      "item": "line@6cddfa6cd682",
-      "hash": "6cddfa6cd68234a33e8c16776769079c8ba70470b4c611721333708196e23a15"
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
-      "item": "line@712dc5a31fa8",
-      "hash": "712dc5a31fa85d844a201204d7f8629037e52f3886c6e4b237e3157157b67df7"
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/mem.h",
-      "item": "line@6cddfa6cd682",
-      "hash": "6cddfa6cd68234a33e8c16776769079c8ba70470b4c611721333708196e23a15"
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
-      "item": "line@712dc5a31fa8",
-      "hash": "712dc5a31fa85d844a201204d7f8629037e52f3886c6e4b237e3157157b67df7"
     }
   ]
 }
