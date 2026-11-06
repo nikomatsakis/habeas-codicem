@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST locate its per-user configuration at\n`$XDG_CONFIG_HOME/habeas/config.toml` on Unix when XDG_CONFIG_HOME is an absolute,\nnonempty path, otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST\nuse `%APPDATA%/habeas/config.toml`. If the required base directory cannot be\ndetermined, an operation requiring user configuration MUST fail with an\nexplanatory diagnostic.\n\nThe same user configuration MUST be usable across projects. Its location MUST\nNOT be selected relative to the current project or changed by project settings.\nUser-local preferences for a project MAY remain in the user configuration;\nworkspace settings MUST use `habeas.toml` under\n{cite}`requirements.configuration.workspace_location`.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.configuration.user_location`.\n\n**Implementation (`src/config.rs`)**\n- `user_config_path_from` (about lines 566–580) does what the requirement says on each platform:\n  - On Unix, an absolute `XDG_CONFIG_HOME` gives `$XDG_CONFIG_HOME/habeas/config.toml`.\n  - If `XDG_CONFIG_HOME` is absent, empty or relative, it falls back to `$HOME/.config/habeas/config.toml`. An empty path is not absolute, so the `absolute_directory` filter covers the \"nonempty\" condition.\n  - On Windows, it uses `%APPDATA%/habeas/config.toml`.\n- `required_directory` returns an `io::Error` of kind `NotFound` when the base directory can't be determined. Its message names the variable and says it \"must be an absolute, nonempty path\". This covers the \"fail with an explanatory diagnostic\" obligation.\n- `user_config_path` uses `ConfigPlatform::current()` with the real environment.\n- Nothing else in `src` derives a user config path or reads `HOME`, `XDG_*` or `APPDATA` except the state-root code. That code is separately marked as an implementation of `state_location`.\n- The location depends only on the platform and environment, never on the current project or on project settings. The one real caller, `resolve_authoring_from` (about line 817), gets the path from `user_config_path()?`. A failure there propagates as an error.\n- All the relevant helpers (`ConfigPlatform::current`, `user_config_path`, `user_config_path_from`, `absolute_directory`, `required_directory`) carry `{impl}` markers.\n- The extra behavior in these helpers is that a relative `HOME` or `APPDATA` is rejected. That is a conservative reading of \"cannot be determined\" and doesn't conflict with the requirement.\n\n**Tests (`tests/configuration.rs`, `locations_use_absolute_xdg_values_and_platform_fallbacks`)**\n- Absolute `XDG_CONFIG_HOME` is used as the base.\n- An empty or relative `XDG_CONFIG_HOME` falls back to `$HOME/.config/habeas/config.toml`.\n- Windows with `APPDATA` gives `<APPDATA>/habeas/config.toml`.\n- With no environment variables, Unix returns an error.\n- The test does not cover a relative `HOME` or `APPDATA`, or the error message text. These are minor gaps.\n- The test doesn't need to check that the location is independent of the project. The path function takes no project argument, so that property follows from its signature.\n- The tests inject a lookup function, so they run on any platform.\n\n**Other points**\n- The rest of the requirement is about workspace settings living in `habeas.toml`. That belongs to `workspace_location`, which the requirement only cites.\n- `md/reference.md` documents the same location behavior.",
+  "rationale": "**Verdict: the requirement is met.** The implementation is complete and marked with `{impl}`. A test covers the location rules, with minor gaps noted below.\n\n**Implementation (`src/config.rs`)**\n- `user_config_path_from` (lines 566–579) does the following:\n  - On Unix it uses `XDG_CONFIG_HOME` only when `absolute_directory` accepts it. An empty value (`PathBuf::from(\"\")` is not absolute) and a relative value both fall through.\n  - Otherwise it uses `$HOME/.config`.\n  - On Windows it uses `%APPDATA%`.\n  - In every case it appends `habeas/config.toml`.\n- `required_directory` returns an `io::Error` of kind `NotFound` when a needed base variable is missing or invalid. The message says why: \"cannot determine Habeas directory: {name} must be an absolute, nonempty path\". This is the explanatory failure the requirement asks for.\n- `user_config_path` (line 561) calls `user_config_path_from` with `ConfigPlatform::current()` and the process environment. `ConfigPlatform::current` selects Windows or Unix.\n- `resolve_authoring` (line 807) takes the path from `user_config_path()`. The path depends only on the platform and environment, never on the project root or on workspace settings. That satisfies \"not selected relative to the current project or changed by project settings\".\n- Workspace settings are loaded separately through `load_workspace_config`. User-local per-project preferences stay in the user config under `authoring.projects`. This matches the requirement's split between user and workspace settings.\n- The `{impl}` markers cover all the code involved: `current`, `user_config_path`, `user_config_path_from`, `absolute_directory` and `required_directory`. I found no other code that computes the user config path.\n\n**Tests (`tests/configuration.rs`, `locations_use_absolute_xdg_values_and_platform_fallbacks`)**\n- Absolute `XDG_CONFIG_HOME` is used.\n- An empty or relative `XDG_CONFIG_HOME` falls back to `$HOME/.config/habeas/config.toml`.\n- On Windows, `APPDATA` gives `…/habeas/config.toml`.\n- With no environment variables on Unix, the call returns an error.\n- The CLI tests (`authoring_cli.rs`, `authoring_batch.rs`) set `XDG_CONFIG_HOME` and `APPDATA` and check that the user config is found from the project directory. This gives indirect end-to-end coverage.\n\n**Minor observations (not blocking)**\n- The failure test only checks `is_err()`. It does not check the diagnostic text.\n- `APPDATA` and `HOME` must also be absolute. The requirement does not say so explicitly, but a relative base cannot sensibly be called \"determined\", so I treat this as consistent with the requirement.\n- The Windows branch is exercised only through the injected-platform function, because `cfg!(windows)` cannot be exercised on a Unix host. This is acceptable.",
   "inputs": [
     {
       "requirements": "requirements.configuration.user_location",
@@ -44,449 +44,114 @@
       ]
     },
     {
-      "rust_file": "src/config.rs",
-      "rust_item": "impl[ConfigPlatform]/fn[current]",
-      "text": [
-        "    // {impl}`requirements.configuration.user_location`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub fn current() -> Self {",
-        "        if cfg!(windows) {",
-        "            Self::Windows",
-        "        } else {",
-        "            Self::Unix",
-        "        }",
-        "    }"
-      ]
+      "file": "src/config.rs",
+      "item": "impl[ConfigPlatform]/fn[current]",
+      "hash": "5bfa8548bd5559ec166ddbb9e111c070fed9784132a346dfc55f8c6cca54281b"
     },
     {
-      "rust_file": "src/config.rs",
-      "rust_item": "fn[user_config_path]",
-      "text": [
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path() -> io::Result<PathBuf> {",
-        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}"
-      ]
+      "file": "src/config.rs",
+      "item": "fn[user_config_path]",
+      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
     },
     {
-      "rust_file": "src/config.rs",
-      "rust_item": "fn[user_config_path_from]",
-      "text": [
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path_from(",
-        "    platform: ConfigPlatform,",
-        "    lookup: impl Fn(&str) -> Option<OsString>,",
-        ") -> io::Result<PathBuf> {",
-        "    let base = match platform {",
-        "        ConfigPlatform::Windows => required_directory(&lookup, \"APPDATA\")?,",
-        "        ConfigPlatform::Unix => match absolute_directory(&lookup, \"XDG_CONFIG_HOME\") {",
-        "            Some(path) => path,",
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".config\"),",
-        "        },",
-        "    };",
-        "    Ok(base.join(\"habeas/config.toml\"))",
-        "}"
-      ]
+      "file": "src/config.rs",
+      "item": "fn[user_config_path_from]",
+      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
     },
     {
-      "rust_file": "src/config.rs",
-      "rust_item": "fn[absolute_directory]",
-      "text": [
-        "// {impl}`requirements.configuration.user_location`",
-        "// {impl}`requirements.configuration.state_location`",
-        "fn absolute_directory(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {",
-        "    lookup(name)",
-        "        .map(PathBuf::from)",
-        "        .filter(|path| path.is_absolute())",
-        "}"
-      ]
+      "file": "src/config.rs",
+      "item": "fn[absolute_directory]",
+      "hash": "82024e470bc377bbc0fc64f0702e8c445d30df5022d152673e1130e82fb5d222"
     },
     {
-      "rust_file": "src/config.rs",
-      "rust_item": "fn[required_directory]",
-      "text": [
-        "// {impl}`requirements.configuration.user_location`",
-        "// {impl}`requirements.configuration.state_location`",
-        "fn required_directory(",
-        "    lookup: &impl Fn(&str) -> Option<OsString>,",
-        "    name: &str,",
-        ") -> io::Result<PathBuf> {",
-        "    absolute_directory(lookup, name).ok_or_else(|| {",
-        "        io::Error::new(",
-        "            io::ErrorKind::NotFound,",
-        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
-        "        )",
-        "    })",
-        "}"
-      ]
+      "file": "src/config.rs",
+      "item": "fn[required_directory]",
+      "hash": "104cb645df826b0825808695454101b82949f094c2503b404af9e3ffec41d300"
     },
     {
-      "rust_file": "tests/configuration.rs",
-      "rust_item": "fn[locations_use_absolute_xdg_values_and_platform_fallbacks]",
-      "text": [
-        "// {test}`requirements.configuration.user_location`",
-        "// {test}`requirements.configuration.state_location`",
-        "#[test]",
-        "fn locations_use_absolute_xdg_values_and_platform_fallbacks() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let home = dir.path().join(\"home\");",
-        "    let config = dir.path().join(\"config\");",
-        "    let state = dir.path().join(\"state\");",
-        "    let vars = BTreeMap::from([",
-        "        (\"HOME\", home.as_os_str().to_owned()),",
-        "        (\"XDG_CONFIG_HOME\", config.as_os_str().to_owned()),",
-        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),",
-        "    ]);",
-        "    let lookup = |name: &str| vars.get(name).cloned();",
-        "    assert_eq!(",
-        "        user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        state.join(\"habeas\")",
-        "    );",
-        "    for invalid_xdg in [\"\", \"relative\"] {",
-        "        let lookup = |name: &str| {",
-        "            Some(if name == \"HOME\" {",
-        "                home.as_os_str().to_owned()",
-        "            } else {",
-        "                OsString::from(invalid_xdg)",
-        "            })",
-        "        };",
-        "        assert_eq!(",
-        "            user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".config/habeas/config.toml\")",
-        "        );",
-        "        assert_eq!(",
-        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".local/state/habeas\")",
-        "        );",
-        "    }",
-        "    let windows = |name: &str| match name {",
-        "        \"APPDATA\" => Some(config.as_os_str().to_owned()),",
-        "        \"LOCALAPPDATA\" => Some(state.as_os_str().to_owned()),",
-        "        _ => None,",
-        "    };",
-        "    assert_eq!(",
-        "        user_config_path_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}"
-      ]
+      "file": "tests/configuration.rs",
+      "item": "fn[locations_use_absolute_xdg_values_and_platform_fallbacks]",
+      "hash": "d74719353ea80d5e405a2afc88374e109d7bd64a0b8b768da97dcf6e6a3573d6"
     },
     {
       "file": "md/reference.md",
-      "line_start": 190,
-      "line_end": 196,
-      "text": [
-        "`$HOME/.config/habeas/config.toml` when XDG_CONFIG_HOME is absent, empty, or",
-        "relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local",
-        "and is not part of the project. Here is a complete configuration with two choices:",
-        "{cite}`requirements.configuration.user_location`",
-        "{impl}`requirements.configuration.documentation`",
-        "{impl}`requirements.authoring.configuration_documentation`",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 445,
-      "line_end": 451,
-      "text": [
-        ":::{req} configuration",
-        "Authoring MUST use the `[authoring]` sections of the shared user configuration",
-        "and the selected workspace's `habeas.toml`.",
-        "{cite}`requirements.configuration.user_location`",
-        "{cite}`requirements.configuration.structure`",
-        "{cite}`requirements.configuration.feature_sections`",
-        "It MUST support named configurations, workspace defaults, and a user-local"
-      ]
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "a46db785c17834f4143ef3305332d7f7f1dbb0fbdf8f1e176b8aded2e8667f34"
     },
     {
       "file": "md/requirements/configuration.md",
-      "line_start": 11,
-      "line_end": 17,
-      "text": [
-        "",
-        "## Locations and scope",
-        "",
-        ":::{req} user_location",
-        "Habeas MUST locate its per-user configuration at",
-        "`$XDG_CONFIG_HOME/habeas/config.toml` on Unix when XDG_CONFIG_HOME is an absolute,",
-        "nonempty path, otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST"
-      ]
+      "item": "section[Configuration]/section[Locations%20and%20scope]",
+      "hash": "b25c6835572d7932f63e8735e317edcdf849d3e984ec4623846b717629f16e62"
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "item": "section[Configuration]/section[Locations%20and%20scope]/section[Persistent%20state]",
+      "hash": "4278eeff75b687315a55d004bbcbc1bab2149bb6bbc6306e2db3f73ccf3da2d8"
     },
     {
       "file": "src/config.rs",
-      "line_start": 190,
-      "line_end": 202,
-      "text": [
-        "}",
-        "",
-        "#[derive(Clone, Copy, Debug)]",
-        "pub enum ConfigPlatform {",
-        "    Unix,",
-        "    Windows,",
-        "}",
-        "",
-        "impl ConfigPlatform {",
-        "    // {impl}`requirements.configuration.user_location`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub fn current() -> Self {",
-        "        if cfg!(windows) {"
-      ]
+      "item": "fn[state_root_from]",
+      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
     },
     {
       "file": "src/config.rs",
-      "line_start": 558,
-      "line_end": 576,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path() -> io::Result<PathBuf> {",
-        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path_from(",
-        "    platform: ConfigPlatform,",
-        "    lookup: impl Fn(&str) -> Option<OsString>,",
-        ") -> io::Result<PathBuf> {",
-        "    let base = match platform {",
-        "        ConfigPlatform::Windows => required_directory(&lookup, \"APPDATA\")?,",
-        "        ConfigPlatform::Unix => match absolute_directory(&lookup, \"XDG_CONFIG_HOME\") {",
-        "            Some(path) => path,",
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".config\"),",
-        "        },"
-      ]
+      "item": "fn[resolve_authoring]",
+      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 580,
-      "line_end": 605,
-      "text": [
-        "",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root() -> io::Result<PathBuf> {",
-        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root_from(",
-        "    platform: ConfigPlatform,",
-        "    lookup: impl Fn(&str) -> Option<OsString>,",
-        ") -> io::Result<PathBuf> {",
-        "    match platform {",
-        "        ConfigPlatform::Windows => {",
-        "            Ok(required_directory(&lookup, \"LOCALAPPDATA\")?.join(\"habeas/state\"))",
-        "        }",
-        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
-        "            Some(path) => path.join(\"habeas\"),",
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),",
-        "        }),",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "// {impl}`requirements.configuration.state_location`",
-        "fn absolute_directory(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {",
-        "    lookup(name)"
-      ]
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[command]",
+      "hash": "7967ba5df4f15dee0bdf3a56316dcc57f0e244f27c56dce5022a52c3c213844a"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 607,
-      "line_end": 613,
-      "text": [
-        "        .filter(|path| path.is_absolute())",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "// {impl}`requirements.configuration.state_location`",
-        "fn required_directory(",
-        "    lookup: &impl Fn(&str) -> Option<OsString>,"
-      ]
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run_in_pty_with_args]",
+      "hash": "8afdb740434cd9f439ba5930d5b007ce11c3c4ae7353bb8a841be84fabea2eff"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 814,
-      "line_end": 820,
-      "text": [
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let workspace = load_workspace_config(root)?;",
-        "    let path = user_config_path()?;",
-        "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_with_workspace_from(",
-        "        &path,"
-      ]
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[command]",
+      "hash": "9395ba6ec9b28a157a0e132ccb2fc742834727f35629cb6d37db6c072168cbcd"
     },
     {
       "file": "tests/configuration.rs",
-      "line_start": 4,
-      "line_end": 15,
-      "text": [
-        "use std::path::Path;",
-        "",
-        "use habeas::config::{",
-        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,",
-        "    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,",
-        "    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,",
-        "};",
-        "",
-        "// {test}`requirements.configuration.user_location`",
-        "// {test}`requirements.configuration.state_location`",
-        "#[test]",
-        "fn locations_use_absolute_xdg_values_and_platform_fallbacks() {"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 24,
-      "line_end": 34,
-      "text": [
-        "    ]);",
-        "    let lookup = |name: &str| vars.get(name).cloned();",
-        "    assert_eq!(",
-        "        user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        state.join(\"habeas\")",
-        "    );",
-        "    for invalid_xdg in [\"\", \"relative\"] {"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 40,
-      "line_end": 50,
-      "text": [
-        "            })",
-        "        };",
-        "        assert_eq!(",
-        "            user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".config/habeas/config.toml\")",
-        "        );",
-        "        assert_eq!(",
-        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".local/state/habeas\")",
-        "        );",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 54,
-      "line_end": 68,
-      "text": [
-        "        _ => None,",
-        "    };",
-        "    assert_eq!(",
-        "        user_config_path_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.configuration.structure`"
-      ]
+      "item": "use@ec3f2c37f86c",
+      "hash": "ec3f2c37f86c9ab66a39b1503bfbdfa2e740d1f22ddde13f9fab2a4f8bfdfa74"
     },
     {
       "file": "tests/live_bedrock.rs",
-      "line_start": 21,
-      "line_end": 27,
-      "text": [
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "fn selected_config() -> Result<Option<ResolvedAuthoringConfig>, Box<dyn Error>> {",
-        "    let root = fs::canonicalize(env!(\"CARGO_MANIFEST_DIR\"))?;",
-        "    let path = config::user_config_path()?;",
-        "    let user = config::load_user_config(&path)?;",
-        "    let explicit = match std::env::var(\"HABEAS_LIVE_CONFIG\") {",
-        "        Ok(name) => Some(name),"
-      ]
+      "item": "fn[selected_config]",
+      "hash": "f7bd785cf23b34054f759501e9cd2219d128738edbfc7ae0e9d2eb1f40d9fb2e"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[skip_probe]",
+      "hash": "7e6f75f88c16fa516c68950b99cb10bca1df3bfae0f737439241ce3e90200532"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
+      "hash": "994728df823b6bbb189812bee219c18daea969a94dd7bce075cf0bb32a47e588"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[new]",
+      "hash": "19fb1f537887c546d49d222a0e4d903949921697960cccfc7abb18a29b3b6a0c"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "fn[progress_style]",
+      "hash": "2772e5a76026d9880dcd1bb92dc42f2ff840fa058384f3a5c2a4feb6a862f6f9"
     },
     {
       "file": "src/config.rs",
-      "line_start": 571,
-      "line_end": 579,
-      "text": [
-        "    let base = match platform {",
-        "        ConfigPlatform::Windows => required_directory(&lookup, \"APPDATA\")?,",
-        "        ConfigPlatform::Unix => match absolute_directory(&lookup, \"XDG_CONFIG_HOME\") {",
-        "            Some(path) => path,",
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".config\"),",
-        "        },",
-        "    };",
-        "    Ok(base.join(\"habeas/config.toml\"))",
-        "}"
-      ]
+      "item": "impl[OllamaConfig]/fn[api_key]",
+      "hash": "5228ff96233c473974cb95a01d0d0dff8815da735dd6d667287a1fc5293176ee"
     },
     {
       "file": "src/config.rs",
-      "line_start": 592,
-      "line_end": 598,
-      "text": [
-        "        ConfigPlatform::Windows => {",
-        "            Ok(required_directory(&lookup, \"LOCALAPPDATA\")?.join(\"habeas/state\"))",
-        "        }",
-        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
-        "            Some(path) => path.join(\"habeas\"),",
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),",
-        "        }),"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 560,
-      "line_end": 564,
-      "text": [
-        "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path() -> io::Result<PathBuf> {",
-        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 624,
-      "line_end": 628,
-      "text": [
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(text) => UserConfig::parse(&text, path).map(Some),"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 815,
-      "line_end": 820,
-      "text": [
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let workspace = load_workspace_config(root)?;",
-        "    let path = user_config_path()?;",
-        "    let config = load_user_config(&path)?;",
-        "    resolve_authoring_with_workspace_from(",
-        "        &path,"
-      ]
+      "item": "fn[state_root]",
+      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "Validation MUST read the mdBook source directory from `[book].src` in `book.toml`, using `src` when the setting is absent. It MUST report an unreadable or malformed book configuration and reject an empty, absolute, or parent-traversing source path.",
-  "determination": false,
-  "rationale": "**Verdict:** The helper logic is correct and well tested. The marking is incomplete, so I am judging the requirement not yet met.\n\n**What is correct**\n- `book_source_dir` (src/evidence.rs ~L244–297) reads `book.toml`. It takes `[book].src` when present and falls back to `\"src\"` only when the key or the `[book]` table is absent.\n- It reports an unreadable file (\"cannot read book configuration\"), invalid TOML, a non-table `book`, and a non-string `book.src`.\n- It rejects an empty path. It also rejects any path whose components are not `Normal` or `CurDir`, which covers absolute paths, Windows prefixes and `..` anywhere in the path.\n- The unit test `book_source_defaults_only_when_absent_and_reports_invalid_configuration` (L1427) covers these cases:\n  - the default when the file is empty, when `[book]` has no `src`, and for the inline-table form;\n  - an explicit `src`;\n  - a missing file and invalid TOML;\n  - a non-table `book` and `src` set to an integer, a boolean, an array or a table;\n  - an empty, absolute, `../` or embedded `md/../` path.\n- `validates_full_names_requirement_text_and_input_lines` (L1481) exercises the end-to-end validation path with `src = \"md\"`.\n\n**Gap: incomplete {impl} marking**\n- `inspect_repository_with_progress` (src/evidence.rs ~L128–195) is the main validation entry point. `validate_repository` and `inspect_repository` both go through it.\n- It calls `book_source_dir(&root, &mut errors)`, feeds the result into `collect_definitions`, and surfaces the errors in the report. That is the \"Validation MUST read the mdBook source directory … MUST report …\" behavior.\n- It carries a long list of `{impl}` markers but no `{impl}` for `requirements.ci.book_source`.\n- The other caller, `load_definitions`, is marked. The marking is therefore inconsistent, and the principal validation path that implements part of the requirement is unmarked.\n\n**Minor note**\n- After any configuration error the helper returns `root.join(\"md\")` as a fallback, so discovery continues against a directory the requirement does not name. This is not specified, but it is a harmless recovery after an error has been recorded.\n\nThe required fix is to add `{impl}` markers for `requirements.ci.book_source` to `inspect_repository_with_progress`. If the project decides that callers need not carry the marker, remove it from `load_definitions` as well. No FIXME comments acknowledge this gap.",
+  "determination": true,
+  "rationale": "**Verdict: true.** The implementation covers every obligation in `requirements.ci.book_source`, and the unit test covers the interesting cases. I found two minor points that I did not treat as gaps.\n\n**Implementation.** `book_source_dir` in `src/evidence.rs` (lines 297–348) is marked `{impl}` for this requirement.\n- **Read and default:** it reads `book.toml` and takes `[book].src`. It uses `\"src\"` only when `[book]` or `src` is absent. It accepts both `[book]` tables and inline `book = { ... }` tables through `as_table_like`.\n- **Unreadable or malformed configuration:** it reports \"cannot read book configuration\", \"invalid TOML\", \"book must be a table\", and \"book.src must be a string\" as errors.\n- **Path rejection:** it rejects an empty source, and any source whose components are not all `Normal` or `CurDir`. That rejects absolute paths, Windows prefixes, and `..` anywhere in the path, including `md/../outside`.\n- **Where errors surface:** `load_definitions` (marked `{impl}`, line 139) and `inspect_repository_with_progress` (line 170) both call it. The validation report built by `validate_repository` and the status and index paths therefore include these errors.\n\n**Tests.** `book_source_defaults_only_when_absent_and_reports_invalid_configuration` (line 1421) is marked `{test}` and covers these cases:\n- **Default and explicit source:** an empty file, `[book]` without `src`, `src='docs'`, and an inline `book = {src=...}` table.\n- **Missing file:** `book.toml` removed.\n- **Malformed TOML:** `[book` is reported as invalid TOML.\n- **Wrong types:** a non-table `book` is reported, and so are integer, boolean, array and table values for `src`.\n- **Rejected paths:** empty, absolute, `../outside`, and `md/../outside`.\n\n`validates_full_names_requirement_text_and_input_lines` (line 1474) exercises the whole validation path with a valid configuration. Nearly all other fixtures also set `src = 'md'`.\n\n**Minor observations, not treated as gaps.**\n- The call site in `inspect_repository_with_progress` is not marked `{impl}` for this requirement, although `load_definitions` is. It is only plumbing around the marked function, so I do not count it as unmarked implementation.\n- After a configuration error the function returns `root.join(\"md\")` as a fallback so that discovery can continue. This is not stated in the requirement, but it is consistent with `requirements.ci.errors` (continue after a failed check) and it does not change which errors are reported.\n- No test drives an invalid `book.toml` through `validate_repository` end to end. The unit test on `book_source_dir` covers the logic, and the wiring is a direct call that pushes into the shared error list.",
   "inputs": [
     {
       "requirements": "requirements.ci.book_source",
@@ -15,1223 +15,311 @@
       ]
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "fn[load_definitions]",
-      "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.ci.definition_errors`",
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    if errors.is_empty() {",
-        "        Ok(definitions)",
-        "    } else {",
-        "        Err(io::Error::new(",
-        "            io::ErrorKind::InvalidData,",
-        "            errors.join(\"\\n\"),",
-        "        ))",
-        "    }",
-        "}"
-      ]
+      "file": "src/evidence.rs",
+      "item": "fn[load_definitions]",
+      "hash": "24dc7fffbb047826b4573df44f1a77addba9ea3c729332e80f7d487ae92c90ff"
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "fn[book_source_dir]",
-      "text": [
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
-        "    let path = root.join(\"book.toml\");",
-        "    let source = match fs::read_to_string(&path) {",
-        "        Ok(content) => match content.parse::<DocumentMut>() {",
-        "            Ok(book) => {",
-        "                let table = match book.get(\"book\") {",
-        "                    Some(item) => match item.as_table_like() {",
-        "                        Some(table) => Some(table),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }",
-        "                    },",
-        "                    None => None,",
-        "                };",
-        "                match table.and_then(|table| table.get(\"src\")) {",
-        "                    Some(item) => match item.as_str() {",
-        "                        Some(source) => source.to_owned(),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }",
-        "                    },",
-        "                    None => \"src\".to_owned(),",
-        "                }",
-        "            }",
-        "            Err(error) => {",
-        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
-        "                return root.join(\"md\");",
-        "            }",
-        "        },",
-        "        Err(error) => {",
-        "            errors.push(format!(",
-        "                \"book.toml: cannot read book configuration: {error}\"",
-        "            ));",
-        "            return root.join(\"md\");",
-        "        }",
-        "    };",
-        "    let relative = Path::new(&source);",
-        "    if source.is_empty()",
-        "        || !relative",
-        "            .components()",
-        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
-        "    {",
-        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
-        "        return root.join(\"md\");",
-        "    }",
-        "    root.join(relative)",
-        "}"
-      ]
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "70a7e2c811b0413e77088a5ece959f02506b2b56862674bdcc908b09d1ca7739"
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "mod[tests]/fn[book_source_defaults_only_when_absent_and_reports_invalid_configuration]",
-      "text": [
-        "    // {test}`requirements.ci.book_source`",
-        "    #[test]",
-        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
-        "        let temp = TempDir::new().unwrap();",
-        "        let root = temp.path();",
-        "        let path = root.join(\"book.toml\");",
-        "        for (configuration, expected) in [",
-        "            (\"\", \"src\"),",
-        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),",
-        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),",
-        "            (\"book = { src = 'docs' }\\n\", \"docs\"),",
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            assert_eq!(",
-        "                super::book_source_dir(root, &mut errors),",
-        "                root.join(expected)",
-        "            );",
-        "            assert!(errors.is_empty(), \"{errors:?}\");",
-        "        }",
-        "        fs::remove_file(&path).unwrap();",
-        "        let mut errors = Vec::new();",
-        "        super::book_source_dir(root, &mut errors);",
-        "        assert!(",
-        "            errors",
-        "                .iter()",
-        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
-        "        );",
-        "        for (configuration, expected) in [",
-        "            (\"[book\", \"invalid TOML\"),",
-        "            (\"book = 'wrong'\", \"book must be a table\"),",
-        "            (\"[book]\\nsrc = 7\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = false\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = []\", \"book.src must be a string\"),",
-        "            (\"[book.src]\", \"book.src must be a string\"),",
-        "            (\"[book]\\nsrc = ''\", \"book.src must be a directory\"),",
-        "            (\"[book]\\nsrc = '/outside'\", \"book.src must be a directory\"),",
-        "            (\"[book]\\nsrc = '../outside'\", \"book.src must be a directory\"),",
-        "            (",
-        "                \"[book]\\nsrc = 'md/../outside'\",",
-        "                \"book.src must be a directory\",",
-        "            ),",
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!(",
-        "                errors.iter().any(|error| error.contains(expected)),",
-        "                \"{configuration:?}: {errors:?}\"",
-        "            );",
-        "        }",
-        "    }"
-      ]
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[book_source_defaults_only_when_absent_and_reports_invalid_configuration]",
+      "hash": "83ee0352ab08ea3604b0961e48fe93d57e0f4604497a0798d4b2b6430da38128"
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
-      "text": [
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.requirement_text`",
-        "    // {test}`requirements.ci.inputs`",
-        "    // {test}`requirements.ci.identifiers`",
-        "    // {test}`requirements.ci.span`",
-        "    #[test]",
-        "    fn validates_full_names_requirement_text_and_input_lines() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
-        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
-        "            json!({",
-        "                \"requirement\": \"The check MUST pass.\\n\\n```text\\n{req}`example`\\n```\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"The inspected file has the expected lines.\",",
-        "                \"inputs\": [{",
-        "                    \"file\": \"src/main.rs\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 2,",
-        "                    \"text\": [\"// first line\", \"// second line\"]",
-        "                }]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        assert_eq!(report.requirements, 1);",
-        "        assert_eq!(report.evidence_files, 1);",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }"
-      ]
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
+      "hash": "c7d448066b8eb3c3d0202bd54ccdfae17359219f5579220d31524d4a35d862d1"
     },
     {
       "file": "README.md",
-      "line_start": 14,
-      "line_end": 18,
-      "text": [
-        "## Add Habeas to a project",
-        "",
-        "Run these commands from a Cargo project that already has `book.toml` and a mdBook `SUMMARY.md`:",
-        "",
-        "```sh"
-      ]
+      "item": "section[Habeas%20Codicem]/section[Add%20Habeas%20to%20a%20project]",
+      "hash": "738a63c0d42b3e7adc8e900d7a9f131d725590af95876a4c5d636bbb49cbbec6"
     },
     {
       "file": "audits/initial-requirements-coverage.md",
-      "line_start": 34,
-      "line_end": 38,
-      "text": [
-        "| `src/lib.rs:497` `escape_html` | `requirements.references.safe_badges` |",
-        "| `src/evidence.rs:28` `validate_repository` | `requirements.integration.report_api`, `requirements.ci.coverage`, `requirements.ci.orphans`, `requirements.references.targets`, `requirements.references.evidence_coverage` |",
-        "| `src/evidence.rs:85` `book_source_dir` | `requirements.ci.book_source` |",
-        "| `src/evidence.rs:116` `collect_requirements` | `requirements.ci.definition_errors`, `requirements.ci.identifiers`, `requirements.ci.span` |",
-        "| `src/evidence.rs:180` `files_with_extension` | `requirements.ci.coverage` |"
-      ]
+      "item": "section[Initial%20requirements%20coverage%20audit]/section[Production%20source%20units]",
+      "hash": "043856e38908c1a595f6af2026b12c540a02463f2666a3225124d0e8207321a3"
     },
     {
       "file": "audits/initial-requirements-coverage.md",
-      "line_start": 79,
-      "line_end": 83,
-      "text": [
-        "| Test | Requirement IDs |",
-        "| --- | --- |",
-        "| `src/evidence.rs:755` `validates_full_names_requirement_text_and_input_lines` | `requirements.integration.report_api`, `requirements.ci.book_source`, `requirements.ci.coverage`, `requirements.ci.requirement_text`, `requirements.ci.inputs` |",
-        "| `src/evidence.rs:791` `collects_missing_orphan_format_false_and_changed_line_errors` | `requirements.integration.report_api`, `requirements.ci.errors`, `requirements.ci.diagnostics`, `requirements.ci.input_containment`, `requirements.ci.definition_errors` |",
-        "| `src/evidence.rs:868` `source_references_are_covered_by_evidence_inputs` | `requirements.references.evidence_coverage` |"
-      ]
+      "item": "section[Initial%20requirements%20coverage%20audit]/section[Runnable%20tests]",
+      "hash": "40336d8815340b51168acc955c9fcb85ad7a481f867a51755fe4b7934d6471e0"
     },
     {
       "file": "audits/initial-requirements-coverage.md",
-      "line_start": 119,
-      "line_end": 123,
-      "text": [
-        "| `src/evidence.rs:41` | orphan evidence file | `requirements.ci.orphans` |",
-        "| `src/evidence.rs:65` | missing evidence file | `requirements.ci.coverage` |",
-        "| `src/evidence.rs:84` | invalid book configuration or source path | `requirements.ci.book_source` |",
-        "| `src/evidence.rs:141` | unclosed, empty, or duplicate definition | `requirements.ci.definition_errors` |",
-        "| `src/evidence.rs:233` | unreadable, malformed, or wrong-shaped evidence | `requirements.ci.schema` |"
-      ]
+      "item": "section[Initial%20requirements%20coverage%20audit]/section[Observable%20branch%20groups]",
+      "hash": "b3d31d1d500fd9fd5aba430cbe9aebd18f49a4ad4430bdf4abee3c2327225ec6"
     },
     {
       "file": "md/getting_started.md",
-      "line_start": 3,
-      "line_end": 7,
-      "text": [
-        "{impl}`requirements.install.symposium`",
-        "",
-        "Start with a Cargo project that already has an mdBook (`book.toml` and a `SUMMARY.md` in the book source directory).",
-        "",
-        "Install [Symposium](https://github.com/symposium-dev/symposium) and select your agents once on this machine:"
-      ]
+      "item": "section[Getting%20started]",
+      "hash": "1a5c8d7677163a9cd7e8e7a911d0e262e3eb50af521eac9327c7ea7e4fef3fb3"
     },
     {
       "file": "md/requirements/ci.md",
-      "line_start": 124,
-      "line_end": 129,
-      "text": [
-        ":::",
-        "",
-        ":::{req} book_source",
-        "Validation MUST read the mdBook source directory from `[book].src` in `book.toml`, using `src` when the setting is absent. It MUST report an unreadable or malformed book configuration and reject an empty, absolute, or parent-traversing source path.",
-        ":::",
-        ""
-      ]
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "db37ec0d37fdb96ee6ea622c36c2f2ff26c734eb78f2c7ee172bad12ef15f0d7"
     },
     {
       "file": "md/requirements/cli.md",
-      "line_start": 6,
-      "line_end": 10,
-      "text": [
-        "",
-        ":::{req} mdbook",
-        "The `mdbook` subcommand MUST act as the mdBook preprocessor for HTML books, rendering requirement definitions and linked reference badges. This project's `book.toml` MUST configure `cargo habeas mdbook` as the `habeas` preprocessor, using a repository-local Cargo alias for `cargo run --release -p habeas --`. Consumer books MUST continue to invoke the installed `habeas mdbook` CLI directly.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 102,
-      "line_end": 106,
-      "text": [
-        "",
-        ":::{req} setup_project",
-        "`habeas setup` MUST find an ancestor containing both `Cargo.toml` and `book.toml`, require a nonempty relative mdBook source path without parent components and a `SUMMARY.md` at that path, and report an error when these prerequisites are absent or invalid.",
-        ":::",
-        ""
-      ]
+      "item": "section[Command-line%20interface]",
+      "hash": "79cdf2a0a52b677d671cb92662c2eab824959f4f6a0b5e0a13803ff49c7c0d4a"
     },
     {
       "file": "md/requirements/configuration.md",
-      "line_start": 82,
-      "line_end": 86,
-      "text": [
-        "",
-        "`UserConfig` is the root of the user file. `WorkspaceConfig` is the root of",
-        "`habeas.toml`; `book.toml` remains mdBook configuration. Adding a configurable",
-        "feature adds a named, typed optional field to the",
-        "applicable structure. These are explicitly defined fields, not an unrestricted"
-      ]
+      "item": "section[Configuration]/section[Common%20data%20structures]",
+      "hash": "73ac1ba97d179d10d16c0b589d8a88bb8f94efd1cb4aadb6f0557f457471774a"
     },
     {
       "file": "md/requirements/configuration.md",
-      "line_start": 108,
-      "line_end": 112,
-      "text": [
-        "{cite}`requirements.configuration.feature_sections`. A file containing only",
-        "`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table",
-        "inside `book.toml`.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 209,
-      "line_end": 213,
-      "text": [
-        "feature it does not use. This isolation MUST NOT suppress TOML syntax errors in",
-        "a shared file that the operation otherwise needs to parse. In particular,",
-        "ordinary validation still requires a parseable `book.toml` while remaining",
-        "independent of authoring settings and the user configuration file. It MUST apply",
-        "the selected workspace's evidence path policy without loading its model clients"
-      ]
+      "item": "section[Configuration]/section[Loading%20and%20diagnostics]",
+      "hash": "6d6d6af5b3452cf40fafeb1bbc357d3225590b0f50ad56f228fd3297b3491f56"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "line_start": 394,
-      "line_end": 398,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(root.path().join(\"book.toml\"), \"[book]\\nsrc='md'\\n\").unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"md/requirements.md\"),"
-      ]
+      "item": "mod[tests]/fn[project]",
+      "hash": "09df020953ceb5d78de8b726988595556c9826af6babc01c7cb45fbca6fbc5f5"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "line_start": 567,
-      "line_end": 571,
-      "text": [
-        "        let root = project();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \"Cargo.toml\", \"book.toml\"]);",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()"
-      ]
+      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
+      "hash": "6a1f95af636730ee450cc36e7847a32e51a288bcadc4af13d0ad5af6d4319516"
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 852,
-      "line_end": 856,
-      "text": [
-        "                .map(|entry| entry[\"path\"].as_str().unwrap())",
-        "                .collect::<Vec<_>>(),",
-        "            vec![\"Cargo.toml\", \"book.toml\", \"md\", \"staged.txt\", \"tracked-dir\"]",
-        "        );",
-        "        for (path, text) in ["
-      ]
+      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
+      "hash": "4549912de14c5ee5892c6e602e6c5db4c1ff77d8a9d0260519f5993e637b4803"
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 912,
-      "line_end": 916,
-      "text": [
-        "                \"add\",",
-        "                \"Cargo.toml\",",
-        "                \"book.toml\",",
-        "                \"md\",",
-        "                \"tracked.txt\","
-      ]
+      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
+      "hash": "ffff33cf90ca7fd16eb01f07809e2acd5dcc74587f1aae4281695421464ef2df"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 93,
-      "line_end": 102,
-      "text": [
-        "",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.ci.definition_errors`",
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    if errors.is_empty() {"
-      ]
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "43f7933cbbf05cb990cdbc13342160ee114f99df21412e2a549350867ffdc1a0"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 147,
-      "line_end": 151,
-      "text": [
-        "        errors.push(error.to_string());",
-        "    }",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    let mut discovery_errors = errors.clone();"
-      ]
+      "item": "mod[tests]/fn[fixture]",
+      "hash": "44577a2ba4e3aea9bdc95b31145840cb09b6aeec1953a2a6ca3e2414b5cc3fe6"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 242,
-      "line_end": 250,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
-        "    let path = root.join(\"book.toml\");",
-        "    let source = match fs::read_to_string(&path) {",
-        "        Ok(content) => match content.parse::<DocumentMut>() {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 254,
-      "line_end": 258,
-      "text": [
-        "                        Some(table) => Some(table),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 264,
-      "line_end": 268,
-      "text": [
-        "                        Some(source) => source.to_owned(),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 272,
-      "line_end": 276,
-      "text": [
-        "            }",
-        "            Err(error) => {",
-        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
-        "                return root.join(\"md\");",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 278,
-      "line_end": 282,
-      "text": [
-        "        Err(error) => {",
-        "            errors.push(format!(",
-        "                \"book.toml: cannot read book configuration: {error}\"",
-        "            ));",
-        "            return root.join(\"md\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 289,
-      "line_end": 293,
-      "text": [
-        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
-        "    {",
-        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
-        "        return root.join(\"md\");",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1294,
-      "line_end": 1298,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1407,
-      "line_end": 1411,
-      "text": [
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        let mut updates = Vec::new();",
-        "        let inspected ="
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1425,
-      "line_end": 1434,
-      "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.ci.book_source`",
-        "    #[test]",
-        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
-        "        let temp = TempDir::new().unwrap();",
-        "        let root = temp.path();",
-        "        let path = root.join(\"book.toml\");",
-        "        for (configuration, expected) in [",
-        "            (\"\", \"src\"),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1440,
-      "line_end": 1444,
-      "text": [
-        "            let mut errors = Vec::new();",
-        "            assert_eq!(",
-        "                super::book_source_dir(root, &mut errors),",
-        "                root.join(expected)",
-        "            );"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1447,
-      "line_end": 1455,
-      "text": [
-        "        fs::remove_file(&path).unwrap();",
-        "        let mut errors = Vec::new();",
-        "        super::book_source_dir(root, &mut errors);",
-        "        assert!(",
-        "            errors",
-        "                .iter()",
-        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
-        "        );",
-        "        for (configuration, expected) in ["
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1470,
-      "line_end": 1474,
-      "text": [
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!(",
-        "                errors.iter().any(|error| error.contains(expected)),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1479,
-      "line_end": 1483,
-      "text": [
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.requirement_text`"
-      ]
+      "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
+      "hash": "bf3cd6ba70bdae480d2c06537c38469802316a9437209eb941a6b0e7b9d2802e"
     },
     {
       "file": "src/index.rs",
-      "line_start": 337,
-      "line_end": 341,
-      "text": [
-        "            return Ok(());",
-        "        }",
-        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
-        "        let source_links = SourceLinks::from_config(&config)?;",
-        "        let inspection = inspect_repository(root)?;"
-      ]
+      "item": "impl[DetailPlan]/fn[populate]",
+      "hash": "c9d0d9c600288b582e5b1d36242c6a33a325ab660449e74b0ff0bbeab14d3c19"
     },
     {
       "file": "src/index.rs",
-      "line_start": 1022,
-      "line_end": 1026,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let requirements = [",
-        "            (\"ready\", \"Ready MUST work.\"),"
-      ]
+      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
+      "hash": "cbd43f52db44a62a85959305ad34e9ff7d92e19e4d1ad6e7146fb30d329a7687"
     },
     {
       "file": "src/index.rs",
-      "line_start": 1210,
-      "line_end": 1214,
-      "text": [
-        "                },",
-        "                {",
-        "                    \"file\": \"book.toml\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 1,"
-      ]
+      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
+      "hash": "531127fb83e150e3482e96509af73a7103ceda90cf574c75b4284d63db3c6ec3"
     },
     {
       "file": "src/index.rs",
-      "line_start": 1323,
-      "line_end": 1327,
-      "text": [
-        "            (\"readme.md\", \"markdown\"),",
-        "            (\"record.json\", \"json\"),",
-        "            (\"book.toml\", \"ini\"),",
-        "            (\"Main.java\", \"java\"),",
-        "            (\"app.js\", \"javascript\"),"
-      ]
+      "item": "mod[tests]/fn[common_input_extensions_select_highlighting_languages]",
+      "hash": "0aa970689b9c3680b597a49dd946891fa06fd1aaa03858e2d4b56731e5df98a7"
     },
     {
       "file": "src/index.rs",
-      "line_start": 1450,
-      "line_end": 1454,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let source = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} pending\\nPending case. CITE`rules.ready`\\n:::\\n\\n:::{example} missing\\nMissing case. CITE`rules.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\");"
-      ]
+      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
+      "hash": "648b95b98ce38b2101522566dc2b02ae17c7c1febe96a3a7dacd20d851d6511c"
     },
     {
       "file": "src/index.rs",
-      "line_start": 1540,
-      "line_end": 1544,
-      "text": [
-        "            fs::create_dir_all(root.join(dir)).unwrap();",
-        "        }",
-        "        fs::write(root.join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let source = \":::{req} ready\\n:impl: skills/ready.md\\nReady relies on CITE`rules.base`.\\n:::\\n\\n:::{req} base\\nBase.\\n:::\\n\\n:::{example} case\\nA case. TEST`rules.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\")"
-      ]
+      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
+      "hash": "c041070874afc95b234012840c1f6e85da57a6abc6e6c6802e4cbeea0d90f29a"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 33,
-      "line_end": 37,
-      "text": [
-        "    let root = cwd",
-        "        .ancestors()",
-        "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
-        "        .expect(\"cannot find Cargo and mdBook project root\");",
-        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");"
-      ]
+      "item": "fn[validate]",
+      "hash": "62f383517488d65ae57e20c9f0c9b6412facf81abe971e211563061b65ec6699"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 801,
-      "line_end": 805,
-      "text": [
-        "        let root = tempfile::TempDir::new().unwrap();",
-        "        std::fs::create_dir(root.path().join(\"md\")).unwrap();",
-        "        std::fs::write(root.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        root",
-        "    }"
-      ]
+      "item": "mod[tests]/fn[book_root]",
+      "hash": "9b760b27a9f48055974dfd7c09928bc02dd5e9a77fdfe4ea28cbfacf182fc735"
     },
     {
       "file": "src/setup.rs",
-      "line_start": 35,
-      "line_end": 39,
-      "text": [
-        "// {impl}`requirements.cli.setup_project`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {",
-        "    let table = book",
-        "        .get(\"book\")"
-      ]
+      "item": "fn[book_source]",
+      "hash": "f19be5f658778214d101332e20585276db8176dbb09a1423737d1ab5789ecce5"
     },
     {
       "file": "src/setup.rs",
-      "line_start": 59,
-      "line_end": 63,
-      "text": [
-        "    cwd.ancestors()",
-        "        .find(|directory| {",
-        "            directory.join(\"Cargo.toml\").is_file() && directory.join(\"book.toml\").is_file()",
-        "        })",
-        "        .map(Path::to_path_buf)"
-      ]
+      "item": "fn[find_project_root]",
+      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
     },
     {
       "file": "src/setup.rs",
-      "line_start": 68,
-      "line_end": 72,
-      "text": [
-        "    let cwd = std::env::current_dir()?;",
-        "    find_project_root(&cwd)",
-        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
-        "}",
-        ""
-      ]
+      "item": "fn[project_root]",
+      "hash": "2b1f247a9f78b07e3c137a9100df265109ed561c32364bf863cf38274b48753d"
     },
     {
       "file": "src/setup.rs",
-      "line_start": 93,
-      "line_end": 100,
-      "text": [
-        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
-        "    let root = project_root()?;",
-        "    let book_path = root.join(\"book.toml\");",
-        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_project`",
-        "    let source = book_source(&book)?.to_owned();",
-        "    let source_path = Path::new(&source);",
-        "    if source.is_empty()"
-      ]
+      "item": "fn[run]",
+      "hash": "5fd80f901c5078159b68fae8c2bc5f91a59675e245a840d48c40f8d14e22916b"
     },
     {
       "file": "src/setup.rs",
-      "line_start": 205,
-      "line_end": 209,
-      "text": [
-        "    }",
-        "",
-        "    let book = match fs::read_to_string(root.join(\"book.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 212,
-      "line_end": 216,
-      "text": [
-        "        None => return false,",
-        "    };",
-        "    let Ok(source) = book_source(&book) else {",
-        "        return false;",
-        "    };"
-      ]
+      "item": "fn[is_configured]",
+      "hash": "5e8644ceec1ef070e547f4e0debf1ec218292a3f6f7b2ad17dbb86585864e84f"
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 276,
-      "line_end": 280,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),"
-      ]
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "90413fb63da64b3d29b502fe8220b13060be35bf2fb1d11ac0e9df5ddb4808e5"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 131,
-      "line_end": 135,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),"
-      ]
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "6b7b36f30f716b7fab15ec0ee64feab0ffe765cd251ea0b9fecf660b2faf169b"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 18,
-      "line_end": 22,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "    let requirements = ["
-      ]
+      "item": "fn[fixture]",
+      "hash": "a27389364fe17bf75465becdd9110a9638da73502dcff1f5988aed4b11e34284"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 129,
-      "line_end": 133,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    let example = \"A concrete case. CITE`rules.alpha`.\".replace(\"CITE\", \"{cite}\");",
-        "    let declarations = ["
-      ]
+      "item": "fn[fixme_fixture]",
+      "hash": "777c5d7c731b3ef17579671a72be9dfb38eab88720f8a579b1e6b158866fe5e3"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 575,
-      "line_end": 579,
-      "text": [
-        "    assert!(",
-        "        String::from_utf8_lossy(&status.stderr)",
-        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
-        "        \"{status:?}\"",
-        "    );"
-      ]
+      "item": "fn[commands_report_invalid_arguments_and_unmatched_selectors]",
+      "hash": "22ae022fbcc395b4ced202777d280483767fa26709a83a318609f2c72f912271"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 789,
-      "line_end": 793,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"md/rules.md\"),"
-      ]
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "c66bf3ceb1fb830ced7559dfeb069ca089e613906742006cd898c2bbfdd07a5c"
     },
     {
       "file": "tests/definitions.rs",
-      "line_start": 14,
-      "line_end": 18,
-      "text": [
-        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),"
-      ]
+      "item": "fn[fixture]",
+      "hash": "d01ac4e14a2fe896fda71f57f2c2ae4f66ae13194e63bfdb5d580b05040f1e70"
     },
     {
       "file": "tests/evidence_boundaries.rs",
-      "line_start": 16,
-      "line_end": 20,
-      "text": [
-        "    }",
-        "    fs::write(root.join(\"Cargo.toml\"), \"[package]\\nname = 'fixture'\\n\").unwrap();",
-        "    fs::write(root.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write(",
-        "        root.join(\"md/rules.md\"),"
-      ]
+      "item": "fn[fixture]",
+      "hash": "2856b14bb44377853f43ff67c79cd21679cc3dbf678ae55fd771ee14a59b58a0"
     },
     {
       "file": "tests/live_bedrock.rs",
-      "line_start": 144,
-      "line_end": 148,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write(",
-        "        project.join(\"md/SUMMARY.md\"),"
-      ]
+      "item": "fn[live_bedrock_authoring]",
+      "hash": "334db9087426522bd749ba0bd042005190bc388325543e5f100f7c764f1a4969"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 18,
-      "line_end": 22,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    let example = \"Timeout handling retries. CITE`requirements.ready`\".replace(\"CITE\", \"{cite}\");",
-        "    let example_lines = vec!["
-      ]
+      "item": "fn[fixture]",
+      "hash": "1edd6096485b1a1db0a61120d957ba2f26c544f467762055170d2e1c6ee7f786"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 20,
-      "line_end": 24,
-      "text": [
-        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"book.toml\"),",
-        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
-        "    )"
-      ]
+      "item": "fn[fixture]",
+      "hash": "1f22810c13df2bba597a2f4fdb5e34d231f6d615dd785dd8c28e9de8f2a4131d"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 92,
-      "line_end": 96,
-      "text": [
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));"
-      ]
+      "item": "fn[setup_is_repeatable]",
+      "hash": "60c6580a293010591c594e1e37c279509990bb4bb934bd4f83079c6cf1408fd1"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 126,
-      "line_end": 135,
-      "text": [
-        "        let project = temp.path();",
-        "        fs::write(",
-        "            project.join(\"book.toml\"),",
-        "            format!(\"[book]\\nsrc = \\\"md\\\"\\n\\n{configuration}\"),",
-        "        )",
-        "        .unwrap();",
-        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "        let book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
-        "            .unwrap()",
-        "            .parse()"
-      ]
+      "item": "fn[setup_keeps_an_existing_fold_setting]",
+      "hash": "beecd255ceb24ff0fc7814fd8ed041a1f15e9f42a79bf1a865a8d9801959a520"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 171,
-      "line_end": 185,
-      "text": [
-        "        let temp = fixture();",
-        "        let project = temp.path();",
-        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
-        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "        assert!(project.join(\"src/habeas.css\").is_file());",
-        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
-        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
-        "            .unwrap()",
-        "            .parse()",
-        "            .unwrap();",
-        "        book[\"book\"][\"src\"] = toml_edit::value(7);",
-        "        fs::write(project.join(\"book.toml\"), book.to_string()).unwrap();",
-        "        assert!(session_start(project, project)[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "    }"
-      ]
+      "item": "fn[setup_uses_src_when_book_table_or_source_setting_is_absent]",
+      "hash": "fe82214c7f8685da837c29f51fc624a88092f94a1c1fe8f454cc5995fb95d373"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 213,
-      "line_end": 217,
-      "text": [
-        "        ),",
-        "    ] {",
-        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
-        "        let output = Command::new(binary)",
-        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])"
-      ]
+      "item": "fn[setup_rejects_invalid_book_configuration]",
+      "hash": "cefc292abf0d12cad7c93f8ec6953c4807fcc52c11da4fafd8e7ab593eda2252"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 229,
-      "line_end": 233,
-      "text": [
-        "    }",
-        "",
-        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "    fs::remove_file(project.join(\"md/SUMMARY.md\")).unwrap();",
-        "    let output = Command::new(binary)"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 259,
-      "line_end": 263,
-      "text": [
-        "    let css = project.join(\"md/habeas.css\");",
-        "    fs::remove_file(&css).unwrap();",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    let response = session_start(project, &nested);",
-        "    let context = response[\"SessionStart\"][\"additionalContext\"]"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 267,
-      "line_end": 275,
-      "text": [
-        "    assert!(context.contains(\"habeas setup\"));",
-        "    assert!(!css.exists(), \"the hook must not recreate the stylesheet\");",
-        "    assert_eq!(fs::read_to_string(project.join(\"book.toml\")).unwrap(), book);",
-        "",
-        "    fs::write(&css, include_str!(\"../md/habeas.css\")).unwrap();",
-        "    fs::write(",
-        "        project.join(\"book.toml\"),",
-        "        book.replace(\"habeas mdbook\", \"wrong-preprocessor\"),",
-        "    )"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 278,
-      "line_end": 282,
-      "text": [
-        "    assert!(response[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "",
-        "    fs::remove_file(project.join(\"book.toml\")).unwrap();",
-        "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
-        "}"
-      ]
+      "item": "fn[session_start_advises_only_when_setup_is_incomplete]",
+      "hash": "0b794a7e27cad93c7204cbdf9de8bc929147210f9264ef5f38c60fe3b45cd4e2"
     },
     {
       "file": "tests/symposium_hook_smoke.py",
-      "line_start": 115,
-      "line_end": 119,
+      "item": "def[main]",
+      "hash": "c9a012dba8d24d3497b7bbde3328e32932c4b2f690993b56295a962d20bf98e6"
+    },
+    {
+      "definition": "requirements.ci.validation_error",
       "text": [
-        "        )",
-        "        (project / \"Cargo.lock\").write_bytes((repo / \"Cargo.lock\").read_bytes())",
-        "        (project / \"book.toml\").write_text('[book]\\nsrc = \"md\"\\n')",
-        "        (project / \"md\" / \"SUMMARY.md\").write_text(\"# Summary\\n\")",
-        "        (project / \"src\" / \"lib.rs\").write_text(\"\")"
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 20,
-      "line_end": 240,
-      "text": [
-        "    pub examples: usize,",
-        "    pub evidence_files: usize,",
-        "    pub errors: Vec<String>,",
-        "}",
-        "",
-        "// {impl}`requirements.references.anchors`",
-        "pub(crate) struct Declaration {",
-        "    pub(crate) kind: DefinitionKind,",
-        "    pub(crate) text: String,",
-        "    pub(crate) source: String,",
-        "    pub(crate) file: String,",
-        "    pub(crate) line_start: usize,",
-        "    pub(crate) line_end: usize,",
-        "    pub(crate) raw_lines: Vec<String>,",
-        "    pub(crate) anchors: Vec<Anchor>,",
-        "}",
-        "",
-        "/// An `:impl:` or `:test:` option naming a complete project file.",
-        "// {impl}`requirements.references.anchors`",
-        "#[derive(Clone, Debug, PartialEq, Eq)]",
-        "pub(crate) struct Anchor {",
-        "    pub(crate) kind: ReferenceKind,",
-        "    pub(crate) file: String,",
-        "}",
-        "",
-        "impl Anchor {",
-        "    /// Resolve the anchored file, returning its canonical path and line count.",
-        "    // {impl}`requirements.references.anchors`",
-        "    pub(crate) fn complete_file(&self, root: &Path) -> Result<(PathBuf, usize), String> {",
-        "        if self.file.is_empty() {",
-        "            return Err(\"anchor path must be nonempty\".to_owned());",
-        "        }",
-        "        let (path, content) = crate::inputs::read_project_file(root, &self.file)?;",
-        "        let line_count = content.lines().count();",
-        "        if line_count == 0 {",
-        "            return Err(format!(",
-        "                \"{} is empty, so no input can contain it\",",
-        "                self.file",
-        "            ));",
-        "        }",
-        "        Ok((fs::canonicalize(&path).unwrap_or(path), line_count))",
-        "    }",
-        "",
-        "    /// The file-range selector containing the complete anchored file.",
-        "    // {impl}`requirements.references.anchors`",
-        "    pub(crate) fn selector(&self, line_count: usize) -> InputSelector {",
-        "        InputSelector::FileRange {",
-        "            file: self.file.clone(),",
-        "            line_start: 1,",
-        "            line_end: line_count,",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
-        "    Ok(inspect_repository(root)?.report)",
-        "}",
-        "",
-        "pub(crate) struct RepositoryInspection {",
-        "    pub(crate) definitions: BTreeMap<String, Declaration>,",
-        "    pub(crate) references: Vec<SourceReference>,",
-        "    pub(crate) report: EvidenceReport,",
-        "    pub(crate) discovery_errors: Vec<String>,",
-        "}",
-        "",
-        "/// Progress within one inspection phase; discovery has no known total.",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]",
-        "pub(crate) struct InspectionProgress {",
-        "    pub(crate) stage: &'static str,",
-        "    pub(crate) completed: usize,",
-        "    pub(crate) total: Option<usize>,",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.ci.definition_errors`",
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    if errors.is_empty() {",
-        "        Ok(definitions)",
-        "    } else {",
-        "        Err(io::Error::new(",
-        "            io::ErrorKind::InvalidData,",
-        "            errors.join(\"\\n\"),",
-        "        ))",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
-        "    inspect_repository_with_progress(root, |_| {})",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.authoring.progress`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository_with_progress(",
-        "    root: &Path,",
-        "    mut progress: impl FnMut(InspectionProgress),",
-        ") -> io::Result<RepositoryInspection> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    progress(InspectionProgress {",
-        "        stage: \"discovering requirements\",",
-        "        completed: 0,",
-        "        total: None,",
-        "    });",
-        "    let mut errors = Vec::new();",
-        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
-        "        errors.push(error.to_string());",
-        "    }",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    let mut discovery_errors = errors.clone();",
-        "    let evidence_root = root.join(\"evidence\");",
-        "    let evidence_files = if evidence_root.is_dir() {",
-        "        files_with_extension(&root, &evidence_root, \"json\", &mut errors)",
-        "    } else {",
-        "        Vec::new()",
-        "    };",
-        "    let mut present = BTreeSet::new();",
-        "    let ordinary_files: Vec<_> = evidence_files.iter().collect();",
-        "",
-        "    // {impl}`requirements.ci.orphans`",
-        "    for (completed, file) in ordinary_files.iter().enumerate() {",
-        "        progress(InspectionProgress {",
-        "            stage: \"evidence files\",",
-        "            completed,",
-        "            total: Some(ordinary_files.len()),",
-        "        });",
-        "        let relative = file",
-        "            .strip_prefix(&evidence_root)",
-        "            .expect(\"evidence file is inside evidence directory\");",
-        "        let label = display_path(&root, file);",
-        "        let name = if relative.components().count() == 1 {",
-        "            relative",
-        "                .file_name()",
-        "                .and_then(|part| part.to_str())",
-        "                .and_then(|part| part.strip_suffix(\".json\"))",
-        "        } else {",
-        "            None",
-        "        };",
-        "        let expected = name",
-        "            .and_then(|name| definitions.get(name))",
-        "            .filter(|d| d.kind != DefinitionKind::Term);",
-        "",
-        "        if let Some(name) = name.filter(|_| expected.is_some()) {",
-        "            present.insert(name.to_owned());",
-        "        } else {",
-        "            errors.push(format!(\"{label}: no matching requirement or example\"));",
-        "        }",
-        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
-        "    }",
-        "    progress(InspectionProgress {",
-        "        stage: \"evidence files\",",
-        "        completed: ordinary_files.len(),",
-        "        total: Some(ordinary_files.len()),",
-        "    });",
-        "",
-        "    // {impl}`requirements.ci.coverage`",
-        "    for (name, definition) in &definitions {",
-        "        if definition.kind != DefinitionKind::Term && !present.contains(name) {",
-        "            errors.push(format!(",
-        "                \"evidence/{name}.json: missing for {} at {}\",",
-        "                definition.kind.noun(),",
-        "                definition.source",
-        "            ));",
-        "        }",
-        "    }",
-        "",
-        "    let references = collect_references_with_progress(&root, &mut errors, &mut progress);",
-        "    validate_references(&root, &definitions, &references, &mut errors, &mut progress);",
-        "    // {impl}`requirements.references.rust_item_coverage`",
-        "    progress(InspectionProgress {",
-        "        stage: \"Rust citations\",",
-        "        completed: 0,",
-        "        total: None,",
-        "    });",
-        "    crate::rust_coverage::validate_rust_functions(",
-        "        &root,",
-        "        &definitions,",
-        "        &mut errors,",
-        "        &mut discovery_errors,",
-        "    );",
-        "",
-        "    let examples = definitions",
-        "        .values()",
-        "        .filter(|definition| definition.kind == DefinitionKind::Example)",
-        "        .count();",
-        "    let requirements = definitions",
-        "        .values()",
-        "        .filter(|definition| definition.kind == DefinitionKind::Requirement)",
-        "        .count();",
-        "    Ok(RepositoryInspection {",
-        "        report: EvidenceReport {",
-        "            requirements,",
-        "            examples,",
-        "            evidence_files: evidence_files.len(),",
-        "            errors,",
-        "        },",
-        "        definitions,",
-        "        references,",
-        "        discovery_errors,"
-      ]
+      "item": "impl[Anchor]",
+      "hash": "8f6790fc1f75fe2f6d46a2013ab58cca4d1c09a09ca43a218b2a248f6a57db40"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_repository]",
+      "hash": "f2052cf4a6e46c972d3d01cb902f0b784a9701ea210a47fd574690be652b4df7"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[RepositoryInspection]",
+      "hash": "800607c371b41426f2bd4e9fe2d864020dc805bdc4efda5ea0627d7978eecbe5"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[InspectionProgress]",
+      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository]",
+      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
+      "hash": "2cfb93db5ac479b443f95a6af8e8893f24bb908971f1c7f8650e5cf14fa734bb"
     }
   ]
 }

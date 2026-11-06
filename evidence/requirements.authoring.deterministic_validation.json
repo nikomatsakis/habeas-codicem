@@ -1,7 +1,7 @@
 {
   "requirement": "Ordinary evidence validation, status inspection, and book rendering MUST continue\nto check evidence using the existing rules without invoking models, contacting\nproviders, or requiring authoring configuration or credentials. Missing or stale\nevidence MUST remain a validation failure rather than trigger authoring.",
   "determination": false,
-  "rationale": "**Implementation: sound, but with small gaps.**\n- `load_workspace_evidence` (`src/config.rs:662`) is marked `{impl}`. It reads only the nearest workspace `habeas.toml`. It checks the common structure and evidence paths and merely records whether authoring credentials are present. It does not validate the `[authoring]` settings, load user configuration, or read credentials from the environment.\n- `inspect_repository` (`src/evidence.rs`) calls it, as do `src/main.rs` (all commands except `mdbook supports`) and `src/authoring/access.rs`. Those call sites cite other configuration requirements rather than this one.\n- The ordinary validation, status and preprocess code paths never call into `authoring`. Only the `Author` command in `src/main.rs` does.\n- Missing and stale evidence are still reported as errors by `inspect_repository`, for example \"missing for requirement…\".\n- Some of the obligation (no model or provider use) holds only because no such code exists on those paths. That is hard to mark with `{impl}`, and it is acceptable.\n\n**Tests: partial coverage.**\n- `ordinary_status_ignores_invalid_user_authoring_configuration` (`tests/authoring_cli.rs:790`) has a malformed user config and an unreachable provider endpoint. `status` still succeeds, no state directory is created, and the evidence file is unchanged.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs`) shows an invalid unused `[authoring]` section does not affect `status`.\n- `status_applies_workspace_disallow_to_existing_evidence` (`tests/commands.rs`) checks workspace evidence rules during status.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs:244`) shows `validate_repository` ignores invalid authoring settings.\n\n**Gaps against the requirement text.**\n1. **Book rendering is untested.** The requirement names validation, status and book rendering. No test tagged with this requirement exercises `preprocess_book` or `habeas mdbook` with an authoring config that is invalid, absent or has credentials.\n2. **No test pairs missing or stale evidence with a configured provider.** Nothing tagged with this requirement shows that such evidence stays a validation failure and does not trigger a model request. The authoring-CLI fixture's evidence is a present `false` judgment, not missing or stale. Missing and stale failures are tested in `tests/commands.rs` and `tests/outcomes.rs`, but without this requirement tag and without any authoring configuration or provider in play.\n3. **No FIXME acknowledges either gap.** The determination is therefore `false`, not a FIXME.",
+  "rationale": "**Verdict: the requirement is mostly met in behavior, but the implementation marking and the test coverage both have gaps.**\n\n**What is covered**\n- `load_workspace_evidence` (`src/config.rs:657-691`) is marked `{impl}` for this requirement. It checks only the common workspace structure and the `[evidence]` table, and it detects credential-bearing files. It does not validate or resolve `[authoring]` settings.\n- Authoring configuration is resolved only in `config::resolve_authoring`, which is reached only from the `author` paths in `src/authoring`. Nothing on the status, validate or mdbook paths calls it, so those paths never need authoring configuration or credentials.\n- `ordinary_status_ignores_invalid_user_authoring_configuration` (`tests/authoring_cli.rs:800`) corrupts the user config and points the model at a dead endpoint. It checks that `status --all` succeeds, no authoring state directory is created, and the existing stale false-judgment evidence file is unchanged. That is real evidence for \"no authoring, no provider, no config needed, stale evidence not rewritten\".\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs:189`) and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs:316`) show that invalid authoring settings in `habeas.toml` are ignored. Structural errors in the common config still fail. Both cover the status and `validate_repository` paths.\n\n**Gaps**\n1. **Incomplete `{impl}` marking.** Other code that implements parts of this requirement carries no `{impl}` for it:\n   - `src/main.rs:88-103` is the gate that runs only `load_workspace_evidence` for every ordinary command, including `mdbook`. It is marked only for the configuration requirements.\n   - `inspect_repository` and `inspect_repository_with_progress` (`src/evidence.rs:157-295`) turn missing or stale evidence into validation errors rather than authoring. They are not marked for this requirement.\n   - `validate()` in `src/lib.rs:26-49` reports failures and only tells the user to run `habeas author`. It is not marked either.\n2. **No test for book rendering.** The requirement names book rendering explicitly. No test marked for it runs `habeas mdbook` or `preprocess_book` with absent or invalid authoring configuration or credentials, or checks that no provider is contacted.\n3. **\"Missing … evidence MUST remain a validation failure rather than trigger authoring\" has no marked test.** The status test covers stale evidence only. No test marked for this requirement shows that missing evidence fails validation without authoring, or that `validate_repository` does not invoke authoring.\n4. **Misplaced test marker.** One `{test}` marker sits on the `Fixture::run` helper (`tests/authoring_cli.rs:181`) rather than on a test.\n\nNo FIXME comments acknowledge these gaps, so the determination is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.authoring.deterministic_validation",
@@ -18,1163 +18,1299 @@
       ]
     },
     {
-      "rust_file": "src/config.rs",
-      "rust_item": "fn[load_workspace_evidence]",
-      "text": [
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.authoring.credentials`",
-        "// {impl}`requirements.authoring.deterministic_validation`",
-        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
-        "    let Some((path, table)) = workspace_document(root)? else {",
-        "        return Ok(None);",
-        "    };",
-        "    let evidence: EvidenceConfig = table",
-        "        .get(\"evidence\")",
-        "        .map(|value| decode(value.clone(), &path, \"evidence\"))",
-        "        .transpose()?",
-        "        .unwrap_or_default();",
-        "    evidence.validate(&path)?;",
-        "    let contains_credentials = table",
-        "        .get(\"authoring\")",
-        "        .and_then(|value| value.get(\"configs\"))",
-        "        .and_then(toml::Value::as_table)",
-        "        .is_some_and(|configs| {",
-        "            configs.values().any(|config| {",
-        "                config.get(\"credentials\").is_some() || config.get(\"api_key\").is_some()",
-        "            })",
-        "        });",
-        "    Ok(Some(WorkspaceEvidenceConfig {",
-        "        root: path",
-        "            .parent()",
-        "            .expect(\"configuration has a parent\")",
-        "            .to_owned(),",
-        "        path,",
-        "        evidence,",
-        "        contains_credentials,",
-        "    }))",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/authoring_cli.rs",
-      "rust_item": "impl[Fixture]/fn[run]",
-      "text": [
-        "    // {test}`requirements.authoring.invocation`",
-        "    // {test}`requirements.authoring.configuration_precedence`",
-        "    // {test}`requirements.authoring.deterministic_validation`",
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        self.command().args(args).output().unwrap()",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "tests/authoring_cli.rs",
-      "rust_item": "fn[ordinary_status_ignores_invalid_user_authoring_configuration]",
-      "text": [
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(SUBJECT));",
-        "    assert!(!fixture.state.exists());",
-        "    assert_eq!(",
-        "        fs::read_to_string(&fixture.evidence).unwrap(),",
-        "        fixture.original",
-        "    );",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/commands.rs",
-      "rust_item": "fn[status_loads_nearest_workspace_file_without_validating_authoring]",
-      "text": [
-        "// {test}`requirements.configuration.workspace_location`",
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.configuration.workspace_structure`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.cli.status`",
-        "#[test]",
-        "fn status_loads_nearest_workspace_file_without_validating_authoring() {",
-        "    let temp = fixture();",
-        "    let nested = temp.path().join(\"src/nested\");",
-        "    fs::write(temp.path().join(\"habeas.toml\"), \"version = 99\\n\").unwrap();",
-        "    fs::write(",
-        "        nested.join(\"habeas.toml\"),",
-        "        \"version = 1\\n[authoring]\\nconfigs = 'invalid but unused'\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = habeas(&nested, &[\"status\"]);",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "",
-        "    let output = habeas(temp.path(), &[\"status\"]);",
-        "    assert!(!output.status.success(), \"{output:?}\");",
-        "    let error = String::from_utf8_lossy(&output.stderr);",
-        "    assert!(",
-        "        error.contains(\"habeas.toml\") && error.contains(\"version\"),",
-        "        \"{error}\"",
-        "    );",
-        "",
-        "    fs::write(temp.path().join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
-        "    fs::write(nested.join(\"habeas.toml\"), \"version = [\\n\").unwrap();",
-        "    let output = habeas(&nested, &[\"status\"]);",
-        "    assert!(!output.status.success(), \"{output:?}\");",
-        "    assert!(",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "            .contains(&nested.join(\"habeas.toml\").display().to_string()),",
-        "        \"{output:?}\"",
-        "    );",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/commands.rs",
-      "rust_item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
-      "text": [
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.ci.input_containment`",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "#[test]",
-        "fn status_applies_workspace_disallow_to_existing_evidence() {",
-        "    let temp = fixture();",
-        "    fs::write(",
-        "        temp.path().join(\"habeas.toml\"),",
-        "        \"version = 1\\n[evidence]\\nallow = ['src']\\ndisallow = ['src/main.rs']\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = habeas(temp.path(), &[\"status\", \"requirements.ready\"]);",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let text = String::from_utf8(output.stdout).unwrap();",
-        "    assert!(",
-        "        text.contains(\"Invalid\") && text.contains(\"disallowed\"),",
-        "        \"{text}\"",
-        "    );",
-        "    assert!(text.contains(\"src/main.rs\"), \"{text}\");",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/evidence_boundaries.rs",
-      "rust_item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
-      "text": [
-        "// {test}`requirements.configuration.workspace_location`",
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.configuration.workspace_structure`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "#[test]",
-        "fn validation_checks_workspace_common_config_without_loading_unused_authoring_settings() {",
-        "    let temp = fixture();",
-        "    let root = temp.path().join(\"project\");",
-        "    for text in [",
-        "        \"version = 2\\n\",",
-        "        \"version = 1\\nunknown = true\\n\",",
-        "        \"version = [\\n\",",
-        "    ] {",
-        "        fs::write(root.join(\"habeas.toml\"), text).unwrap();",
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"habeas.toml\"), \"{text:?}: {errors}\");",
-        "    }",
-        "    fs::write(",
-        "        root.join(\"habeas.toml\"),",
-        "        \"version = 1\\n[authoring]\\nconfigs = 'invalid unused authoring settings'\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    let report = validate_repository(&root).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 19,
-      "line_end": 23,
-      "text": [
-        "    // {impl}`requirements.authoring.credentials`",
-        "    pub(crate) fn load(root: &Path) -> io::Result<Self> {",
-        "        let Some(config) = crate::config::load_workspace_evidence(root)? else {",
-        "            return Ok(Self::default());",
-        "        };"
-      ]
-    },
-    {
       "file": "src/config.rs",
-      "line_start": 661,
-      "line_end": 665,
-      "text": [
-        "// {impl}`requirements.authoring.credentials`",
-        "// {impl}`requirements.authoring.deterministic_validation`",
-        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
-        "    let Some((path, table)) = workspace_document(root)? else {",
-        "        return Ok(None);"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 693,
-      "line_end": 697,
-      "text": [
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.loading`",
-        "fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let start = std::env::current_dir()"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 144,
-      "line_end": 148,
-      "text": [
-        "    });",
-        "    let mut errors = Vec::new();",
-        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
-        "        errors.push(error.to_string());",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 99,
-      "line_end": 103,
-      "text": [
-        "        }",
-        "    ) {",
-        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
-        "    }",
-        "    match cli.command {"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 60,
-      "line_end": 200,
-      "text": [
-        "    },",
-        "    #[command(",
-        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\"])),",
-        "        group(ArgGroup::new(\"mode\").required(true).multiple(false).args([\"file_range\", \"rust_item\", \"requirements\"]))",
-        "    )]",
-        "    AddInput {",
-        "        #[arg(long)]",
-        "        for_requirement: Option<String>,",
-        "        #[arg(long)]",
-        "        for_example: Option<String>,",
-        "        #[arg(long)]",
-        "        file_range: Option<String>,",
-        "        #[arg(long)]",
-        "        rust_item: Option<String>,",
-        "        #[arg(long, value_name = \"selection\")]",
-        "        requirements: Option<String>,",
-        "    },",
-        "}",
-        "",
-        "#[derive(Subcommand)]",
-        "enum MdbookCommand {",
-        "    Supports { renderer: String },",
-        "}",
-        "",
-        "#[derive(Subcommand)]",
-        "enum HookCommand {",
-        "    SessionStart,",
-        "}",
-        "",
-        "fn main() -> Result<(), Box<dyn Error>> {",
-        "    // {impl}`requirements.cli.clap`",
-        "    let cli = Cli::parse();",
-        "    // {impl}`requirements.configuration.workspace_location`",
-        "    // {impl}`requirements.configuration.workspace_structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    if !matches!(",
-        "        cli.command,",
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { .. })",
-        "        }",
-        "    ) {",
-        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
-        "    }",
-        "    match cli.command {",
-        "        // {impl}`requirements.cli.mdbook`",
-        "        Command::Mdbook { command: None } => {",
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
-        "            habeas::preprocess_book(&mut book, &context.root)?;",
-        "            serde_json::to_writer(io::stdout().lock(), &book)?;",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.cli.invocation`",
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { renderer }),",
-        "        } => {",
-        "            if renderer == \"html\" {",
-        "                Ok(())",
-        "            } else {",
-        "                std::process::exit(1)",
-        "            }",
-        "        }",
-        "        // {impl}`requirements.cli.setup`",
-        "        Command::Setup { path } => setup::run(path.as_deref()),",
-        "        // {impl}`requirements.cli.status`",
-        "        // {impl}`requirements.cli.fixme_summary`",
-        "        Command::Status {",
-        "            all,",
-        "            selection,",
-        "            verbose,",
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?",
-        "                    .as_bytes(),",
-        "            )?;",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.cli.info`",
-        "        Command::Info { selection } => {",
-        "            let root = setup::project_root()?;",
-        "            io::stdout()",
-        "                .lock()",
-        "                .write_all(habeas::info_markdown(&root, &selection)?.as_bytes())?;",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.authoring.invocation`",
-        "        // {impl}`requirements.authoring.batch`",
-        "        // {impl}`requirements.authoring.concurrency`",
-        "        // {impl}`requirements.authoring.reporting`",
-        "        // {impl}`requirements.authoring.read_denial`",
-        "        Command::Author {",
-        "            subject,",
-        "            all,",
-        "            config,",
-        "            stdout,",
-        "            verbose,",
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            // Tokio's fixed worker pool is shared by all async assessments.",
-        "            let runtime = tokio::runtime::Runtime::new()?;",
-        "            if all {",
-        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
-        "                    &root,",
-        "                    config.as_deref(),",
-        "                    habeas::authoring::AuthoringOptions { verbose },",
-        "                ))?;",
-        "                println!(",
-        "                    \"{} authored; {} unchanged; {} failed\",",
-        "                    outcome.completed.len(),",
-        "                    outcome.unchanged,",
-        "                    outcome.failures.len()",
-        "                );",
-        "                if !outcome.failures.is_empty() {",
-        "                    return Err(io::Error::other(",
-        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
-        "                    )",
-        "                    .into());",
-        "                }",
-        "                return Ok(());",
-        "            }",
-        "            let output = if stdout {",
-        "                habeas::authoring::EvidenceOutput::Stdout",
-        "            } else {",
-        "                habeas::authoring::EvidenceOutput::File",
-        "            };",
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
-        "                &root,",
-        "                &subject.expect(\"clap requires a subject or --all\"),",
-        "                config.as_deref(),",
-        "                output,",
-        "            ))?;",
-        "            let mut summary = format!(",
-        "                \"{}: {} / {}\",",
-        "                outcome.subject, outcome.backend, outcome.model,",
-        "            );",
-        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
-        "                summary.push_str(\" — FIXME\");",
-        "            }",
-        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
-        "                eprintln!(\"{}: false\", outcome.subject);",
-        "                if verbose {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 100,
-      "line_end": 260,
-      "text": [
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    if errors.is_empty() {",
-        "        Ok(definitions)",
-        "    } else {",
-        "        Err(io::Error::new(",
-        "            io::ErrorKind::InvalidData,",
-        "            errors.join(\"\\n\"),",
-        "        ))",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
-        "    inspect_repository_with_progress(root, |_| {})",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.authoring.progress`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository_with_progress(",
-        "    root: &Path,",
-        "    mut progress: impl FnMut(InspectionProgress),",
-        ") -> io::Result<RepositoryInspection> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    progress(InspectionProgress {",
-        "        stage: \"discovering requirements\",",
-        "        completed: 0,",
-        "        total: None,",
-        "    });",
-        "    let mut errors = Vec::new();",
-        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
-        "        errors.push(error.to_string());",
-        "    }",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    let mut discovery_errors = errors.clone();",
-        "    let evidence_root = root.join(\"evidence\");",
-        "    let evidence_files = if evidence_root.is_dir() {",
-        "        files_with_extension(&root, &evidence_root, \"json\", &mut errors)",
-        "    } else {",
-        "        Vec::new()",
-        "    };",
-        "    let mut present = BTreeSet::new();",
-        "    let ordinary_files: Vec<_> = evidence_files.iter().collect();",
-        "",
-        "    // {impl}`requirements.ci.orphans`",
-        "    for (completed, file) in ordinary_files.iter().enumerate() {",
-        "        progress(InspectionProgress {",
-        "            stage: \"evidence files\",",
-        "            completed,",
-        "            total: Some(ordinary_files.len()),",
-        "        });",
-        "        let relative = file",
-        "            .strip_prefix(&evidence_root)",
-        "            .expect(\"evidence file is inside evidence directory\");",
-        "        let label = display_path(&root, file);",
-        "        let name = if relative.components().count() == 1 {",
-        "            relative",
-        "                .file_name()",
-        "                .and_then(|part| part.to_str())",
-        "                .and_then(|part| part.strip_suffix(\".json\"))",
-        "        } else {",
-        "            None",
-        "        };",
-        "        let expected = name",
-        "            .and_then(|name| definitions.get(name))",
-        "            .filter(|d| d.kind != DefinitionKind::Term);",
-        "",
-        "        if let Some(name) = name.filter(|_| expected.is_some()) {",
-        "            present.insert(name.to_owned());",
-        "        } else {",
-        "            errors.push(format!(\"{label}: no matching requirement or example\"));",
-        "        }",
-        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
-        "    }",
-        "    progress(InspectionProgress {",
-        "        stage: \"evidence files\",",
-        "        completed: ordinary_files.len(),",
-        "        total: Some(ordinary_files.len()),",
-        "    });",
-        "",
-        "    // {impl}`requirements.ci.coverage`",
-        "    for (name, definition) in &definitions {",
-        "        if definition.kind != DefinitionKind::Term && !present.contains(name) {",
-        "            errors.push(format!(",
-        "                \"evidence/{name}.json: missing for {} at {}\",",
-        "                definition.kind.noun(),",
-        "                definition.source",
-        "            ));",
-        "        }",
-        "    }",
-        "",
-        "    let references = collect_references_with_progress(&root, &mut errors, &mut progress);",
-        "    validate_references(&root, &definitions, &references, &mut errors, &mut progress);",
-        "    // {impl}`requirements.references.rust_item_coverage`",
-        "    progress(InspectionProgress {",
-        "        stage: \"Rust citations\",",
-        "        completed: 0,",
-        "        total: None,",
-        "    });",
-        "    crate::rust_coverage::validate_rust_functions(",
-        "        &root,",
-        "        &definitions,",
-        "        &mut errors,",
-        "        &mut discovery_errors,",
-        "    );",
-        "",
-        "    let examples = definitions",
-        "        .values()",
-        "        .filter(|definition| definition.kind == DefinitionKind::Example)",
-        "        .count();",
-        "    let requirements = definitions",
-        "        .values()",
-        "        .filter(|definition| definition.kind == DefinitionKind::Requirement)",
-        "        .count();",
-        "    Ok(RepositoryInspection {",
-        "        report: EvidenceReport {",
-        "            requirements,",
-        "            examples,",
-        "            evidence_files: evidence_files.len(),",
-        "            errors,",
-        "        },",
-        "        definitions,",
-        "        references,",
-        "        discovery_errors,",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
-        "    let path = root.join(\"book.toml\");",
-        "    let source = match fs::read_to_string(&path) {",
-        "        Ok(content) => match content.parse::<DocumentMut>() {",
-        "            Ok(book) => {",
-        "                let table = match book.get(\"book\") {",
-        "                    Some(item) => match item.as_table_like() {",
-        "                        Some(table) => Some(table),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }",
-        "                    },",
-        "                    None => None,"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 776,
-      "line_end": 776,
-      "text": [
-        "            .args([\"--exact\", \"authoring::access::tests::inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads\", \"--nocapture\"])"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 379,
-      "line_end": 379,
-      "text": [
-        "    use crate::authoring::access::tests::git;"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 522,
-      "line_end": 523,
-      "text": [
-        "    use crate::authoring::access::tests::git;",
-        "    use crate::authoring::inputs::tests::{project, role};"
-      ]
-    },
-    {
-      "file": "src/inputs.rs",
-      "line_start": 240,
-      "line_end": 240,
-      "text": [
-        "    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 161,
-      "line_end": 161,
-      "text": [
-        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options("
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 164,
-      "line_end": 164,
-      "text": [
-        "                    habeas::authoring::AuthoringOptions { verbose },"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 181,
-      "line_end": 181,
-      "text": [
-        "                habeas::authoring::EvidenceOutput::Stdout"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 183,
-      "line_end": 183,
-      "text": [
-        "                habeas::authoring::EvidenceOutput::File"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 185,
-      "line_end": 185,
-      "text": [
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output("
-      ]
+      "item": "fn[load_workspace_evidence]",
+      "hash": "0c205d8c0b3d0e266e5397fa9f7b437e6c9442eae21bc6631ba80de6673bc0dc"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 130,
-      "line_end": 200,
-      "text": [
-        "            \"[package]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/SUMMARY.md\"),",
-        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n- [Terms](terms.md)\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/requirements.md\"),",
-        "            format!(\":::{{req}} ready\\n{REQUIREMENT}\\n:::\\n\"),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/terms.md\"),",
-        "            \":::{definition} readiness\\n:phrase: readiness\\n\\nSECRET_DEFINITION_TEXT.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();",
-        "        fs::write(",
-        "            project.join(\"extra.txt\"),",
-        "            (1..=12)",
-        "                .map(|line| {",
-        "                    if line == 6 {",
-        "                        \"SECRET_SOURCE_PAYLOAD needle\".to_owned()",
-        "                    } else {",
-        "                        format!(\"context line {line}\")",
-        "                    }",
-        "                })",
-        "                .collect::<Vec<_>>()",
-        "                .join(\"\\n\"),",
-        "        )",
-        "        .unwrap();",
-        "        let original = json!({\"requirement\":REQUIREMENT,\"determination\":false,",
-        "            \"rationale\":\"OLD_RATIONALE_MUST_NOT_REACH_MODEL\", \"inputs\":[]})",
-        "        .to_string();",
-        "        let evidence = project.join(format!(\"evidence/{SUBJECT}.json\"));",
-        "        fs::write(&evidence, &original).unwrap();",
-        "        fs::write(config.join(\"habeas/config.toml\"), format!(",
-        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = '{MODEL}'\\nendpoint = '{endpoint}'\\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\\n[authoring.configs.mock.options]\\ntemperature = 0.25\\nnum_ctx = 4096\\nthink = false\\n\")).unwrap();",
-        "        Self {",
-        "            temp,",
-        "            project,",
-        "            config,",
-        "            state,",
-        "            evidence,",
-        "            original,",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.invocation`",
-        "    // {test}`requirements.authoring.configuration_precedence`",
-        "    // {test}`requirements.authoring.deterministic_validation`",
-        "    fn run(&self, args: &[&str]) -> Output {",
-        "        self.command().args(args).output().unwrap()",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.invocation`",
-        "    // {test}`requirements.authoring.configuration_precedence`",
-        "    fn command(&self) -> Command {",
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"APPDATA\", &self.config)",
-        "            .env(\"LOCALAPPDATA\", &self.state)",
-        "            .env(\"HOME\", self.temp.path())",
-        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);",
-        "        command"
-      ]
+      "item": "impl[Fixture]/fn[run]",
+      "hash": "66f433dbce2d00c2fd405a27da5c1a672f55c4fb796f2fca3780a69e57eac54e"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 780,
-      "line_end": 830,
-      "text": [
-        "                usage[\"evidence_output\"],",
-        "                if stdout { \"stdout\" } else { \"file\" }",
-        "            );",
-        "            assert_eq!(usage[\"evidence_written\"], false);",
-        "            assert_eq!(usage[\"request_count\"], 1);",
-        "            assert!(usage[\"determination\"].is_null());",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.authoring.deterministic_validation`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(SUBJECT));",
-        "    assert!(!fixture.state.exists());",
-        "    assert_eq!(",
-        "        fs::read_to_string(&fixture.evidence).unwrap(),",
-        "        fixture.original",
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.authoring.provider`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "// {test}`requirements.authoring.rig_configuration_mapping`",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.initial_prompt`",
-        "// {test}`requirements.authoring.usage_requests`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.authoring.source_tools`",
-        "// {test}`requirements.authoring.submission`",
-        "// {test}`requirements.authoring.delivered_inputs`",
-        "#[test]",
-        "fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {",
-        "    for typed in [false, true] {",
-        "        let mut read_call = json!({\"toolUseId\":\"bedrock-read\",\"name\":\"habeas\",",
-        "        \"input\":{\"file\":\"extra.txt\",\"line_start\":1,\"line_end\":2}});",
-        "        let mut submit_call = json!({\"toolUseId\":\"bedrock-submit\",\"name\":\"submit_judgment\",",
-        "        \"input\":{\"determination\":true,\"rationale\":\"The supplied sources support the subject.\"}});"
-      ]
+      "item": "fn[ordinary_status_ignores_invalid_user_authoring_configuration]",
+      "hash": "3502e3dfa64be155d2ea8b41b2cbd1ee0034ac7c26b69a2b7a599df705b98de9"
     },
     {
-      "file": "md/reference.md",
-      "line_start": 313,
-      "line_end": 325,
-      "text": [
-        "The command reports the evidence destination and usage-record path. Usage",
-        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
-        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
-        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
-        "book rendering remain deterministic and do not require model configuration or",
-        "credentials. {cite}`requirements.authoring.usage_storage`",
-        "{cite}`requirements.authoring.deterministic_validation`",
-        "",
-        "### Live Bedrock tests",
-        "",
-        "`cargo test` includes a live Bedrock integration test. It skips with a visible",
-        "warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing",
-        "Bedrock authoring configuration fails the test. A skip returns successfully, so"
-      ]
+      "file": "tests/commands.rs",
+      "item": "fn[status_loads_nearest_workspace_file_without_validating_authoring]",
+      "hash": "40c7ab50cacccdd48e75d7469f0806f163a152aef104a6903579bc7deb2dfcae"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "line_start": 835,
-      "line_end": 847,
-      "text": [
-        "available token usage, identifying incomplete totals without double counting",
-        "provider counters that overlap.",
-        ":::",
-        "",
-        "### CI without inference",
-        "",
-        ":::{req} deterministic_validation",
-        "Ordinary evidence validation, status inspection, and book rendering MUST continue",
-        "to check evidence using the existing rules without invoking models, contacting",
-        "providers, or requiring authoring configuration or credentials. Missing or stale",
-        "evidence MUST remain a validation failure rather than trigger authoring.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 2,
-      "line_end": 14,
-      "text": [
-        "",
-        ":::{req} validate",
-        "`habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.",
-        "Its failure message MUST instruct the agent to run `habeas author --all`, address",
-        "the reported gaps, and rerun tests. Validation MUST remain deterministic and MUST",
-        "NOT invoke authoring itself. {cite}`requirements.authoring.batch`",
-        "{cite}`requirements.authoring.deterministic_validation`",
-        ":::",
-        "",
-        ":::{req} self_test",
-        "The Habeas crate MUST have a Cargo integration test that invokes `habeas::validate()` against its own project, so its own requirements and evidence are checked recursively by `cargo test`.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 1005,
-      "line_end": 1005,
-      "text": [
-        "fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 742,
-      "line_end": 742,
-      "text": [
-        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 299,
-      "line_end": 299,
-      "text": [
-        "fn ollama_authentication_resolves_separately_and_rejects_missing_values() {"
-      ]
+      "file": "tests/commands.rs",
+      "item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
+      "hash": "b80112e424b64cd43fc7cd4f8381382620faff6cfab8b7916a9af2c01957f715"
     },
     {
       "file": "tests/evidence_boundaries.rs",
-      "line_start": 47,
-      "line_end": 47,
-      "text": [
-        "fn file_ranges_report_order_eof_length_and_missing_file_errors() {"
-      ]
+      "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
+      "hash": "cc8eb9ce145cadfe4754e60019750583e54463c4c917a280494247df166aa70b"
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 208,
-      "line_end": 208,
-      "text": [
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[load]",
+      "hash": "35a027acfa5aabc36215ae643a316ffcef92f7dd33cd4e635b6f1be457564ae3"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 1002,
-      "line_end": 1008,
-      "text": [
-        "// {test}`requirements.authoring.batch`",
-        "// {test}`requirements.ci.determination`",
-        "#[test]",
-        "fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {",
-        "    let server = Server::start(false, None);",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[check_disallow]",
+      "hash": "0121fb7bd67c7f8739de8db49c44260b3619b14c33fcadd9667cb1c7df85195e"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 1051,
-      "line_end": 1067,
-      "text": [
-        "            .replace(\"-> u8 { 3 }\", \"-> u8 { 3_u8 }\"),",
-        "    )",
-        "    .unwrap();",
-        "    let stale = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        stale.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&stale.stderr)",
-        "    );",
-        "    let subjects = server.subjects();",
-        "    assert_eq!(subjects.len(), 7, \"{subjects:?}\");",
-        "    assert_eq!(subjects[6], \"requirement requirements.gamma\");",
-        "    assert_eq!(",
-        "        String::from_utf8_lossy(&stale.stdout).trim(),",
-        "        \"1 authored; 5 unchanged; 0 failed\"",
-        "    );",
-        "    assert_eq!("
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[contains_credentials]",
+      "hash": "327dc4bcd3763398c5b5cfe3c381be68385794695c49371c69b168e7990097d3"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 23,
-      "line_end": 30,
-      "text": [
-        "        (\"ready\", \"Ready MUST work.\"),",
-        "        (\"xready\", \"Xready MUST work.\"),",
-        "        (\"pending\", \"Pending MUST work.\"),",
-        "        (\"stale\", \"Stale MUST work.\"),",
-        "        (\"stale_input\", \"Stale input MUST work.\"),",
-        "        (\"absent\", \"Absent MUST work.\"),",
-        "        (\"malformed\", \"Malformed MUST work.\"),",
-        "        (\"uncovered\", \"Uncovered MUST work.\"),"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[load]",
+      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 53,
-      "line_end": 60,
-      "text": [
-        "        (\"ready\", \"Ready MUST work.\", true),",
-        "        (\"xready\", \"Xready MUST work.\", true),",
-        "        (\"pending\", \"Pending MUST work.\", false),",
-        "        (\"stale\", \"Old requirement.\", true),",
-        "        (\"stale_input\", \"Stale input MUST work.\", true),",
-        "        (\"uncovered\", \"Uncovered MUST work.\", true),",
-        "    ] {",
-        "        let inputs = if name == \"ready\" {"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "ebfa9dc19aa687ef76409ee994626a84ff34ed0068c5e30d45a72ae896083dde"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 72,
-      "line_end": 78,
-      "text": [
-        "                    \"text\": [case_text]",
-        "                }),",
-        "            ]",
-        "        } else if name == \"stale_input\" {",
-        "            vec![json!({",
-        "                \"file\": \"src/main.rs\",",
-        "                \"line_start\": 1,"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[file]",
+      "hash": "7e85bb9094d2b811599bd03756aa339f9a72bc26953f41f6a3f8890ab1aa3fae"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 375,
-      "line_end": 382,
-      "text": [
-        "        (\"absent\", \"Missing\"),",
-        "        (\"malformed\", \"Invalid\"),",
-        "        (\"pending\", \"Determination false\"),",
-        "        (\"stale\", \"Invalid\"),",
-        "        (\"stale_input\", \"Invalid\"),",
-        "        (\"uncovered\", \"Invalid\"),",
-        "    ] {",
-        "        assert!("
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
+      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 389,
-      "line_end": 395,
-      "text": [
-        "    }",
-        "    assert!(!text.contains(\"| `requirements.ready`\"), \"{text}\");",
-        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
-        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
-        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
-        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"input text changed\"), \"{text}\");"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[has_source_under]",
+      "hash": "5cd20bff921efc9e95b0522656f46f470541445339c2724d6622135be35168a6"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 405,
-      "line_end": 412,
-      "text": [
-        "        \"malformed\",",
-        "        \"pending\",",
-        "        \"ready\",",
-        "        \"stale\",",
-        "        \"stale_input\",",
-        "        \"uncovered\",",
-        "        \"xready\",",
-        "    ];"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[extra_roots]",
+      "hash": "dd2943dd0a21f08f25c0a2dfb3540b5d18e0ee1415ae6efdba20e34c62a21ad2"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 506,
-      "line_end": 512,
-      "text": [
-        "    assert!(missing.status.success(), \"{:?}\", missing);",
-        "    let missing = String::from_utf8(missing.stdout).unwrap();",
-        "    assert!(missing.contains(\"## Validation findings\"), \"{missing}\");",
-        "    assert!(missing.contains(\"missing for requirement\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No rationale recorded.\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");",
-        ""
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 201,
-      "line_end": 211,
-      "text": [
-        "// {test}`requirements.ci.inputs`",
-        "// {test}`requirements.ci.determination`",
-        "// {test}`requirements.references.evidence_coverage`",
-        "// {test}`requirements.ci.fixme_stale_input`",
-        "// {test}`requirements.index.state`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "dbe084fd64501fdfe06de9c8b0062d2983df9a49e315b6c4c49e1b960dca50c4"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[tracked_sources]",
+      "hash": "a629ef21d9cc7a83823a7ff1dd592d4e82716cf06276183c82cd25cc958da178"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[generated_roots]",
+      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "314f4a13e25bb7b095891560d6a2a0adaa06a12f63bf74e626ba95409c77f8d1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[git]",
+      "hash": "be60a77e3a05ecb44a7e864d117cb37bb649975fcbf5e7b0f46df7d289c62772"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[nested_project_uses_only_its_part_of_the_git_index]",
+      "hash": "dea11d109c0202e1b5b6a7f89fc5e0b4864ee3a773393d4d2cb7f52f55a48595"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
+      "hash": "0204d412519a314f94b550b230cc9db238973681adacb42607dd085d7a01539d"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree]",
+      "hash": "db8bdfdbb6c83a98321c48f79a8adb3c376b8e26b0df2e9b5fba12f8e3f46d83"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
+      "hash": "2b1244e51b503430ea1ec06d3e7b1b95c81f98655c37057c2b1ef305d55edfa1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
+      "hash": "5dd4b31a80da195e066629fa3a018e4cc553c8ea1ebf488cd2e5d4c20e8a33f7"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
+      "hash": "3f42864619d8f9fd959d3fa3b627e44b009ebc7b9198e54bbc974637185dd4c2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
+      "hash": "9fb2c8f3ea769c3f0c484f58ca639d3180646d22f93c945791eefd9aafbdd211"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]",
+      "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "dcdb797b2e2df0d2c8e5b5dbe33f5c2c63509aa355e10f7cb6525c4c228e71c7"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
+      "hash": "994728df823b6bbb189812bee219c18daea969a94dd7bce075cf0bb32a47e588"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all]",
+      "hash": "04085915b6e2a6c34a2f30d39b22a3bb7286cc3beae8edbf5062489ae157f017"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all_with_options]",
+      "hash": "323d4bd9f7d3e60816e04cbff316f0db32575c44225a36d81fa72c8e5d561bf8"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[cancel_on_error]",
+      "hash": "5ef06efa77fecf8e7bd8c95c4d2de6d55e09cec956951402b0af25c68aa623da"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[write_record]",
+      "hash": "c9fcba0772240e31124d9d34d181e11e74ebb7fae00ab55a7c9e5217ddad9fe1"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentKind]/fn[noun]",
+      "hash": "a60447ced52b62c2393ceb69cd67f6e82fd6b67b63f9b6787102089b52f16864"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "struct[AssessmentSources]",
+      "hash": "9c5d8ba90a9b834e29500213852a01ff2bee426f13f73ed4d335d359cd2b76f3"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "946a4db6e2efc48af190534f77a1ace8cb8edd28284170e8203ff7c12e8d547b"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
+      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
+      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[record_inputs]",
+      "hash": "2b4b1c437218feacfb819597643fe1a6ab99035b71b6001fd0a5cc1751ffbe50"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_selector]",
+      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[parse_file]",
+      "hash": "60bcb250ef0b20cccfac78923540d1637b80fbea9c68d624ec1f775aca96cb29"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_lines]",
+      "hash": "7328154a4a915fd8b891324603a266f043164a3321da08da47f979b2f6fc501e"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[additional_definitions]",
+      "hash": "e3388ed319591fc0df5b8e46fb83dff637a95befa4eff8d8e597d4410c6b963c"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_path]",
+      "hash": "df1f61c7b3a4bd67529fce5edc8c58f199c3183a6fa85569da97539acef0c39a"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[insert_selector]",
+      "hash": "54d9a173878107f95099d460a21bc217892ddadd5bab92477695cfd3f3b84496"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "efc3b45f9b6aba2f86aa135df79d4dcc1457df3f21f6749e8ee44e585008b2e3"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[definition_inputs]",
+      "hash": "cd3f67cdd56cbd6d5733e8033921f0c837d23f6bd725097b44171ffe48a317ba"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/use@334e509f877e",
+      "hash": "334e509f877e4614c2d7521b8f8575039cb1c196118a6e234a1c29c5caaf7494"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[role]",
+      "hash": "39312c7f6d599126d9e9206de44cde0cac6f9c368ec09c7ed789b75dd5221f94"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[project]",
+      "hash": "09df020953ceb5d78de8b726988595556c9826af6babc01c7cb45fbca6fbc5f5"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
+      "hash": "c1e6e2be1aedce966332810f1e63bca14af74ee76bdc12f071c5614c3ec5bdb8"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
+      "hash": "a3f87dcf2b9125549fbfd02570ec43ddf209a3429eb38ce1be7d4edac0e7f6f3"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
+      "hash": "1bd97f9ef93ba8fdd423db968cb7c373b4efa3174afd40430062340350a7497f"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
+      "hash": "6a1f95af636730ee450cc36e7847a32e51a288bcadc4af13d0ad5af6d4319516"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
+      "hash": "3a9ee653c5385f53cd750a86391efd9126ed8dcfb38fdb9ca38b08b957f17550"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
+      "hash": "aeabf0827994edfa97ab6b40fed021428e399383f5a5ee1745f49860c0921d67"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
+      "hash": "b880f9bd3dae69f969181bcae745e7f2a648d67d00fde34d475359fc62f5fdd4"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
+      "hash": "87337486950970b7a1cffd04d7157dff8eb897821c33f8d0a491997ca235774f"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
+      "hash": "1448005ed5fc5aca4f8a18dec1c0b86aa2e878c4ef8508e75abe26e88ed2eb1f"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "",
+      "hash": "6d30815dce9425a16fa9d9f504003ad9b073cc7b32bbe56273e3e7aea44fbf59"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[AuthoringSubject]/fn[label]",
+      "hash": "f9d7ad823631d4936baca032802c5e5f27c6487eb9982c87d6c534f376fbc8e4"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]/fn[persisted]",
+      "hash": "d53b2309ae382adbbe4d8544a9086812faf85935714d0a98f08590a8fe3c7093"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]/fn[failed]",
+      "hash": "16fa5320a0e9388601882000e1388e3331faaaa236049e750e61dbd56da6e1b3"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence]",
+      "hash": "f6bba8aa9a5bb04e6b600c81cdb9ff1f13f7a7044b0605bcc8e12867dbaef5ca"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_output]",
+      "hash": "4e33e8f7d6e5f1698ef435aca4ada1d096a7de82f043eb7b92bc1f2466eb5a81"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "69eff45f518d3e89fae99b8c5c3edeef1e2c369e4d1fb06cf69a5e47d7628a1d"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_assessment]",
+      "hash": "e87ccffa89c54e55ec5a0b636f21d2fda0376ec1c44fabf97600f071b802d13b"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_record]",
+      "hash": "792de4a6e4c3dc00f4e12403f2c953553b710cecae5e954f8167ac9b74c22eba"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[initial_prompt]",
+      "hash": "e7da3bcb5ee82b6af7ebf8bdcc4d259b8ba733337fec6ae5bf91829858d8a208"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[submission]",
+      "hash": "0399b4a6cb4665e2c0d3cf700b5aac090be807722f8c47cfacbd37a6c94a2321"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[tool_definitions]",
+      "hash": "901455e822d08b29962d8e4c5816621e93001dec63df4f6b40cfc1ace054eec2"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess]",
+      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]/fn[complete]",
+      "hash": "6e9eb7c4d3f87ed916aeaadb558de5c57a0b5dafe06734e4b281280b1377bb92"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]/fn[complete]",
+      "hash": "07ebb05047db0196f281262b80f9e091d2f605c0d5373e931f875a656d732646"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[retry_fixture]",
+      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "hash": "b6ea41e0520a27f287ef5ef9bf0c947105fd047bf9d00f8c549b193159411dae"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]",
+      "hash": "f1e09269887f07baa42ec31d4a77026ed8fd6f57267ffb853b5f6daf0c0068da"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]",
+      "hash": "035a746b5d4bc5ef6fadfdb528065812f0d554534df0d7103a5b312980813022"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[new]",
+      "hash": "19fb1f537887c546d49d222a0e4d903949921697960cccfc7abb18a29b3b6a0c"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[inspect]",
+      "hash": "3cec87078a9bbc7396846ed73192fb10ef1bcd0e575361bc9e752d69afc8231e"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[start]",
+      "hash": "c7a9aebca86efb21f4a092b254ce5bee931aa0eb0e309c9b924232d4d45b4c36"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[completed]",
+      "hash": "4cb6a3a541d7cd011517bf9cd73652642b5b2fe2d6a39f35f054c174146f9dec"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[failed]",
+      "hash": "3e7ce2857e1e131a5310f70d692079778faafeb4fea379cff47c70d5133da144"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[refresh]",
+      "hash": "b27e2ed67e4325d6b3f30b9473c8f551a0ca9ad4b691d78d865a462854693d7a"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[println]",
+      "hash": "af52d26510d1062d13ad4fd96217dd3ca253b0f04493d7f1cd38476e0669d5fd"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[finish]",
+      "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "fn[progress_style]",
+      "hash": "2772e5a76026d9880dcd1bb92dc42f2ff840fa058384f3a5c2a4feb6a862f6f9"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "fn[write_percentage]",
+      "hash": "698f0c188a77905c2944c74f40e8de00cb791ef11407d995ff5c34f606044eb4"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress/Drop]/fn[drop]",
+      "hash": "8d147d58b0e1db9d729aef9acf4fd1563ab980394b7bd941b36a777f3fc8c187"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[width]",
+      "hash": "ea77bd26362284281715f3e395b56044e07f4b23963c9f63ee21f3c113ee52a8"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[move_cursor_up]",
+      "hash": "a9022db599b3b114655cb3e440f786b16563ba9ecd116505fe94458b49c801e4"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[move_cursor_down]",
+      "hash": "da8f65054e082318ee3dc6d26ac87894e47b345cb0a23dfc5f3cf153b49f867e"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[move_cursor_right]",
+      "hash": "0c3cd5491996d1b26999355b0f846676ec2b0ff6a2f7baf5dc91147c5e75a929"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[move_cursor_left]",
+      "hash": "40c5454ffbc6f7ac3efbf425ccc049b107ca95afa143d0ea60314a29d156819e"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[write_line]",
+      "hash": "8e90f1ed52c8c07e971ac03dc2632da053b04ede0ebb7832ba5ade4eae1f3468"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[write_str]",
+      "hash": "0e7507acfacbc39f6b2c4d17f4fac948ef921268decd56e41cad794a20c327cf"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[clear_line]",
+      "hash": "e3ce6bd2c8179055e874ec7d9e96abf7f2454d8770f51d836ad6db8bd2bd940a"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]/fn[flush]",
+      "hash": "5a96501f1a2610eff2178bf0ff3a10729f7e244926af7f933abe1da36045f7c9"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/fn[inspection_displays_counts_when_same_phase_discovers_its_total]",
+      "hash": "69f2d1806102d1e27af3cd60d1bea0af7ba453073931823736a13babff876962"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/fn[percentage_does_not_round_unfinished_work_up_to_one_hundred]",
+      "hash": "1dba4c60b026d1e8df09420f33f03f70935169ef5902054d06134c8b2a3d5e75"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "trait[CompletionProvider]/fn[complete]",
+      "hash": "8b9ed24ff83178d8af066b3a7f080e2871473c64337084a57de5e9e7bc8e4a08"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff/Default]/fn[default]",
+      "hash": "97cef4260065faa01281383c6c626c9f87afb8561b8ef76827146b3d8771ae9a"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff]/fn[next_delay]",
+      "hash": "0100bce4c9082904e406bf5b2bc18294d236fd76786a1911e2732914338fa159"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[retry_after]",
+      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "cb7f6e696b6ceaf0f121d39f5462a13da962cdc583aac325af9d9f52b607dd3b"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_config]",
+      "hash": "38a0bbfe7210af2eb2866ae68ded2a591096273b580c03b9cedebc2fd636c7fe"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
+      "hash": "c63b2862cdeafda1766fad4cb06ef9f2b38589c0819007c378f89b2ae4edf6a6"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[normalize_bedrock_client_calls]",
+      "hash": "4041448cc93b26b0c5563b71f47f7f56bed74bbcdd11cfc4973920bba386b273"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[apply_bedrock_options]",
+      "hash": "2c00dd3f5ae986e0ee89cb1f85e9a4fbe5ff0b37c9d2a1e19ba1cacc8f3effae"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[option_type]",
+      "hash": "5a071aaeb4e5c1f7f06245975bd14a2bf1df1a623a06a57c5372a49d2b1920c2"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[provider_error]",
+      "hash": "fde239b3c7745da98fa1beeb05ff2618b024cc97a2a33a76add2e40cba3d349d"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[with_retry_after]",
+      "hash": "73d4f9618ef5754c6c1b02c3f472ed1b96a5faa2cd165303208a9a7321530e89"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[retries_typed_throttling_but_not_permanent_token_errors]",
+      "hash": "61d044553cf6350296ee143a22fdfa6f68f8da860c0d23c30e78e8bfd1f0dbcc"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling_without_limiting_attempts]",
+      "hash": "4d430da06b420519dc4ea8bc09eabed41c82049517585923bee21bab11fc1275"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]",
+      "hash": "33d6c45dcaf0ba4afb00364d536ada490de861ad8e6affddeba0757375e7adb1"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
+      "hash": "ee38ffd77dd15035591edec6093565cc2cf54ef5d30db2db390f8ff6de7a216d"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[bedrock_native_option_types_are_checked_without_supplying_defaults]",
+      "hash": "95dfba63238700fed1839482c85629b64e280a8002799ab8dbeae05ffa39b916"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]",
+      "hash": "55b3fbbdb7ba0309087a5f80478bcba92e55f73a446c4f28fc6a330833225b30"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[malformed_typed_client_calls_are_reported]",
+      "hash": "4faebe00db5d52ab9d99ceae9a65736a3fd85009a2df98e617e49fab71d87d0b"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "c2dde298701587d1b099c291deef762564ec37a0a75117663ed7f82405d65eb8"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "df614bcb78331da093225474a109dfe520f116711ab415ee635c700f5612f22e"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[outline]",
+      "hash": "151c20d5b37092813567720eafdd02d281a0720b261fd626ee9491c7d93507d9"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[outline_entries]",
+      "hash": "3b22131310e880e9df837e973cd3c32d83ed76e77452e17b9239f0fb25da675d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[list_files]",
+      "hash": "7844d1967f9cdcd36ffef4d92faea6b035b7a6dfd34d4a94ac4afd558c2b54ad"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[references]",
+      "hash": "d238429c4ca5f83d7c33098d882a98eb06e3fac94de1c49d4b57ff55774af343"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[search]",
+      "hash": "801b0b45cf5c944b85dff7f8662a7af6a4ec40d35ded8f2bddd960a83dfe9c09"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[check_keys]",
+      "hash": "fe6d6607863064a361539ba73bca18b7d60b3712b2f9f0a7a5bf8f0fa51acb9e"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[string]",
+      "hash": "a2705c0ece0985f6fed7cb4b47fd816fe1d4c44eab6e28f0bd51ee94bfc7110d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[integer]",
+      "hash": "6b9229a5cbdf54d9050c817e7bf6610f35be92169ef210a4d75422b27506e0c9"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[optional_path]",
+      "hash": "de2e7874adc2941687a0d48a28262b7b63d7b9a4f8f8ce9c40c84c4fea5c0750"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[project_path]",
+      "hash": "e406a07f376df81c7ac469398fa5821e601355d1d7db20819318fe99be7f5bb6"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[relative_path]",
+      "hash": "97f199c7eb041535301584e6c4a91a55650a11a07b0074687b9f4ffc68a1b847"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/use@334e509f877e",
+      "hash": "334e509f877e4614c2d7521b8f8575039cb1c196118a6e234a1c29c5caaf7494"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/use@2533b98cb1d8",
+      "hash": "2533b98cb1d881e7702bd2c8134d9b24b3a03d18e47f24c482e3726996c71fa2"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
+      "hash": "602e67b123fdb273ff6d87e9bfcc48b49b3c219a43634b7d6ee10cb1f10cd769"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
+      "hash": "761408446d9007dd3b2b332dec5838741c30a504a73e66a97f2eb78d82b947d1"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
+      "hash": "3fe49d33dfa70a2bd10dc815b0ca70992a078a2b6c31e87ced465a9ca0a45bfb"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]",
+      "hash": "e8754c958a18c66c4414729efab8c3ac45565251f583ba1374da0ae019531af9"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
+      "hash": "4549912de14c5ee5892c6e602e6c5db4c1ff77d8a9d0260519f5993e637b4803"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
+      "hash": "ffff33cf90ca7fd16eb01f07809e2acd5dcc74587f1aae4281695421464ef2df"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
+      "hash": "80dbfd182a97dc80d12b54e5746789304b2bec10fad355e6dcd4d5bf4d3f14c6"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
+      "hash": "6289c50f6cbbc09d201331f5b4a74218f54ee10e1d5e59d3296e10236f8f3734"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]",
+      "hash": "526f20b8fb23911c5f66bf1cc4102d5dd9c92dd7747974e91017b92a12e1c74a"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
+      "hash": "87934a098ca24ae34fe86d1562a33b50a9d693f8cc3f08609f7204a2df86be08"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[parallel_search_orders_results_by_path_and_line]",
+      "hash": "3ce74f45957d516e4ba43f1c332f8105bd592b1923309c20b18f9e6445befc1d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
+      "hash": "a4af827c8e7158a6e50dea2c6f5c8ea3fe99914fb50c111e041be16d93b104ba"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
+      "hash": "4a3e79905506b4ca6253dbb9e74b85e5a5e87ebfd05c6131a708e0d931526359"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
+      "hash": "2f0af97fbd766a3b4618f88bf0166b0da92048180c8612fbca9da2a82cad6034"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]",
+      "hash": "2d3dff72ec38f3c68779f0ca7a1f78e450121f919cbebf82279bc185d418c40b"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[start]",
+      "hash": "c17a45260649764a47ed1f355267f8c78a83539022b722a81fd76971409cc394"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[prepared]",
+      "hash": "8e5bed403e6901175d1262a63c8961cc3fc3449eeffba81f88ca15ddedc44745"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[begin_request]",
+      "hash": "b8fda53efe81ae7f8eefa5a83482a89bab71e2871480b183a7a7476fd98377fc"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[end_request]",
+      "hash": "d9c2e3d64af15bc7e9a3166e69d0ecbb0787b3531240ae510969c4d0df9d090b"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[tool]",
+      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[skipped_tool]",
+      "hash": "b75aa1847cab3fc7573d68ed6e4d3c7f29417a61e17d8c51ee756d3d88de8cdb"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[finish]",
+      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[save]",
+      "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]/fn[from_usage]",
+      "hash": "944822d33bc2724d78e3e264225baa12f1eadc8f7e19412f98bff33e1a710481"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]/fn[sum]",
+      "hash": "8453341618c4bba571b16e2163dfea6c32a735b591b805b4137d9dace78cb034"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]/fn[sum_counter]",
+      "hash": "b32787c28a8e66db4390bc9d0552d9b294dfb99df1bf50485fd37171517006f7"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "fn[tool_name]",
+      "hash": "a13e77cf2b4fcda720345a3552362174c591a96353af831fc2caa7fec8762b9f"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "fn[timestamp]",
+      "hash": "8d0368ffdb114254659644baf14666d13a8329fa838df00ac45aa73bd88edfdb"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[persisted]",
+      "hash": "d0caafefaaa93e51e0657841bd7d4abb7c8ac441d6ae928209760b9378831d82"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "10ed6d1783f73301693d98dc4307efbfbe8582d686eae3ba424657ab83e49eef"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]",
+      "hash": "effa7e378d3894b50e1d7961873579a030801077ba1d1e500d6d0c2d768b3b9d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]",
+      "hash": "ca4c66b03ccee76bdf4e29484650d1f71de21c2c45eac7b944a537aaddd2a39c"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]",
+      "hash": "2c080f3d1db000b36fa9454392742bf9efc9775d599eb54cee3ebd87e7c99977"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
+      "hash": "178f948a2e46b29fa2239a0454208d63ed86e9acc8ffaee57e354e09c06c48f6"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "",
+      "hash": "c62aea9362413bc33b8da9240c76b0c4a07242e669507132cd440268a7ae1625"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "const[CONFIG_EXAMPLES]",
+      "hash": "e59958252fc1734029a9ccce7507469be885a81989f0e21a675cd2d0327b3509"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[UserConfig]",
+      "hash": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceConfig]",
+      "hash": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[SecretString]/fn[expose_secret]",
+      "hash": "c59e21f16c756328a27b1ef698ca9aacf1afd4fe4ce4776e91ee34737a2a296c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
+      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]/fn[parse]",
+      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]/fn[to_toml]",
+      "hash": "d24d6428fe23622c699f46683e5e4f95d45eb9038367bd1e8c887396e0fa4a17"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]/fn[validate]",
+      "hash": "3361c597e1f2e607ada65eaf00552bb48c2e2ac71ed70b8d66d7145e4fd3e320"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[parse]",
+      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[to_toml]",
+      "hash": "f52bccff6e8a199d4284f96b93524fb60a2cb47ee8bafd1ad43f9c5870751b19"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[validate]",
+      "hash": "56a5e390cc270f0b647b45d9b65d2af71ee3a7d0e0f692a86fb73fcf2bbdff78"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]/fn[validate]",
+      "hash": "9c180c075806e5c6018434ce8bb012885c2612b5be7685d3784da811a97ba4a1"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[model_ref]",
+      "hash": "08850ef1baf39ed65e13526a9d8d96e20a2e11a66b6033ffac04b58119c63ee9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[options]",
+      "hash": "8ce0d90f10ed65ab98d87a32e12e29b8f8740a99ca0d5626b652b192e9c1ca3c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[options_json]",
+      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[validate]",
+      "hash": "8da8cf7335aa662b4931705a99158f5a5f09614d66e961975f8f1bd434a8a571"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OptionValue]/fn[validate]",
+      "hash": "85e023195287b75ab3ef36edbd4537b7ee0fbacf5e3c858b864267ca2ccb2484"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[endpoint]",
+      "hash": "c415f1dc83d441fc82a14831a6748729838d6249d7b6bb4dffe78b73f305610b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key]",
+      "hash": "5228ff96233c473974cb95a01d0d0dff8815da735dd6d667287a1fc5293176ee"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key_from]",
+      "hash": "4cbee2b0d62fff27e91477c4e7dc56ba39a971b22743472dbbbffe0a68eaa4ff"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]/fn[model_ref]",
+      "hash": "ba39e0c3fba8e179a3f196296995e9c83d9a2e635529c978684d03d345962237"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]/fn[effective_concurrency]",
+      "hash": "8379185dedc15d5caec74e7062d97dd212b9e463425f44c3e770169f17dffd2c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_workspace_config]",
+      "hash": "84d954165b76af1a7fda6ce26851b3af3dfc85665c63517732fa9093e0c62528"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[validate_workspace_common]",
+      "hash": "b8ff5c3ac11ed8de6ba176188bd36285e9b2cf7e3d9dd18d58ed76dbb1f8baf9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[parse_document]",
+      "hash": "de75f2c6919a55b1b7babc623d074f262cee88392fe8354f6d3ae7c581025b48"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[decode]",
+      "hash": "005923d17d0fd4b8e477414f29167ffa160e88ac377510da79ef03f33503b937"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[credential_values]",
+      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring]",
+      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_from]",
+      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "6e4658d39d846cf2c7aaf0277e2b3436e0623fe22ea5c476208f553ea1547157"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[validate_name]",
+      "hash": "fefc28308cf3fbbc456f4487611283feb80795bcb86170f38d4ce0e268c7eed4"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[load_definitions]",
+      "hash": "24dc7fffbb047826b4573df44f1a77addba9ea3c729332e80f7d487ae92c90ff"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository]",
+      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "43f7933cbbf05cb990cdbc13342160ee114f99df21412e2a549350867ffdc1a0"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "a53259372c00f283513c7c270465abd264793498385cb24638c11212635fbee8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references_with_progress]",
+      "hash": "ec3a77f1f4c1ada2cad0a45d77ee5f5a98327909a221077df87b1c4cfadf82ce"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
+      "hash": "00ea14f2cf700d2ff28e951c010d28c01dbba07ecb2803b7e88b389ece56b8ec"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
+      "hash": "bf3cd6ba70bdae480d2c06537c38469802316a9437209eb941a6b0e7b9d2802e"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]/fn[nodes_for_range]",
+      "hash": "f7e912b83a6bfedf37bfb1070d2605d97964a8c14beb8fd1138e38455e2fb044"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_model_input]",
+      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_inputs_for_lines]",
+      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
+    },
+    {
+      "file": "src/judgment.rs",
+      "item": "impl[Judgment]/fn[to_value]",
+      "hash": "cfabdc4ae28bfaadaa3d17e02a6ecf7489cc6022cf51556d9926c8443f30af67"
+    },
+    {
+      "file": "src/judgment.rs",
+      "item": "impl[Judgment]/fn[kind]",
+      "hash": "dd1340d3f714a4983d8227313f47493a13a63bb779139778a0b1cebb44152aea"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 22,
-      "line_end": 38,
-      "text": [
-        "pub use add_input::{InputMode, InputTarget, add_input};",
-        "pub use evidence::{EvidenceReport, validate_repository};",
-        "",
-        "/// Validate the current Cargo and mdBook project for use in a Cargo test.",
-        "///",
-        "/// Panics with all validation errors so an integration test can simply call",
-        "/// `habeas::validate()`.",
-        "#[track_caller]",
-        "pub fn validate() {",
-        "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd",
-        "        .ancestors()",
-        "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
-        "        .expect(\"cannot find Cargo and mdBook project root\");",
-        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
-        "    if !report.errors.is_empty() {"
-      ]
+      "item": "mod[authoring]",
+      "hash": "931cc87bcdd845c866365bfecf12600762b2a35858e471116fa35285e8614c8c"
     },
     {
-      "file": "tests/cli.rs",
-      "line_start": 6,
-      "line_end": 10,
-      "text": [
-        "    let binary = env!(\"CARGO_BIN_EXE_habeas\");",
-        "    let supported = Command::new(binary)",
-        "        .args([\"mdbook\", \"supports\", \"html\"])",
-        "        .output()",
-        "        .unwrap();"
-      ]
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "bb3fbedf662fe3d50bd0de88cf6a0f9dd8b9f6d3b9f3d0552be4227d02d7a3f7"
     },
     {
-      "file": "tests/cli.rs",
-      "line_start": 12,
-      "line_end": 16,
-      "text": [
-        "",
-        "    let unsupported = Command::new(binary)",
-        "        .args([\"mdbook\", \"supports\", \"epub\"])",
-        "        .output()",
-        "        .unwrap();"
-      ]
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[owner_at_line]",
+      "hash": "d8452a18a0e4184beb2070d2cd3a61abc9735a76035d440478bca922336e0030"
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 3,
-      "line_end": 7,
-      "text": [
-        "",
-        "use habeas::{InputMode, InputTarget, add_input, validate_repository};",
-        "use mdbook_preprocessor::book::{Book, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;"
-      ]
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[nodes_for_lines]",
+      "hash": "247f3246871a13189002a690d858b7143488fe089e07a758c80ae7a45cde9108"
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 216,
-      "line_end": 220,
-      "text": [
-        "    let source = \"Use TERM`glossary.a`.\\n\\n`TERM`glossary.a``\\n\\n```text\\nTERM`glossary.a`\\n```\\n\\n\\\\TERM`glossary.a`\".replace(\"TERM\", \"{term}\");",
-        "    book.push_item(Chapter::new(\"Guide\", source, \"guide/deep.md\", Vec::new()));",
-        "    habeas::preprocess_book(&mut book, Path::new(\".\")).unwrap();",
-        "    let chapters: Vec<_> = book.chapters().collect();",
-        "    assert!("
-      ]
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "a46db785c17834f4143ef3305332d7f7f1dbb0fbdf8f1e176b8aded2e8667f34"
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 3,
-      "line_end": 7,
-      "text": [
-        "",
-        "use habeas::judgment::Judgment;",
-        "use mdbook_preprocessor::book::{Book, BookItem, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;"
-      ]
+      "file": "tests/authoring_cli.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 276,
-      "line_end": 280,
-      "text": [
-        "        Vec::new(),",
-        "    ));",
-        "    habeas::preprocess_book(&mut book, temp.path()).unwrap();",
-        "    let index = book",
-        "        .chapters()"
-      ]
+      "file": "tests/authoring_cli.rs",
+      "item": "use@bd833e5aa7c8",
+      "hash": "bd833e5aa7c89fc9b0569df679b610b5ce0d94c10b214b1eba63b21df00685eb"
     },
     {
-      "file": "tests/setup.rs",
-      "line_start": 77,
-      "line_end": 81,
-      "text": [
-        "// {test}`requirements.cli.setup_css`",
-        "// {test}`requirements.cli.setup_local_path`",
-        "// {test}`requirements.cli.mdbook`",
-        "#[test]",
-        "fn setup_is_repeatable() {"
-      ]
+      "file": "tests/authoring_cli.rs",
+      "item": "use@1ffaaa9be802",
+      "hash": "1ffaaa9be802362f58311c90c5d73a997f2c185b0cfdae33a33f257c62180f8a"
     },
     {
-      "file": "tests/setup.rs",
-      "line_start": 93,
-      "line_end": 97,
-      "text": [
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));",
-        "    assert!(book.contains(\"md/custom.css\"));"
-      ]
+      "file": "tests/authoring_cli.rs",
+      "item": "use@e541c3c3861e",
+      "hash": "e541c3c3861e7c1594bf75ec5191b6113f47de7801bba4a0f6ecce16c22ae2f9"
     },
     {
-      "file": "tests/setup.rs",
-      "line_start": 272,
-      "line_end": 276,
-      "text": [
-        "    fs::write(",
-        "        project.join(\"book.toml\"),",
-        "        book.replace(\"habeas mdbook\", \"wrong-preprocessor\"),",
-        "    )",
-        "    .unwrap();"
-      ]
+      "file": "tests/authoring_cli.rs",
+      "item": "use@452bcbdeacad",
+      "hash": "452bcbdeacad4042d491f5c3a1a2220e4e21e757efdbb9bc0ba20b679c7b5b8c"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "use@a5e04c664ceb",
+      "hash": "a5e04c664ceb061561458e8d3ff109ebd6e703896c3fd396ffedfc069b3e5792"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "use@dd7ea94ecf58",
+      "hash": "dd7ea94ecf583cf1c547491538f4b8bd2237e99c35442f75a42a19e1f807a53b"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "use@727a0a270d8a",
+      "hash": "727a0a270d8a2c7e83b62bb0afa524214301ccf32188029a001382c2937eca32"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "const[SUBJECT]",
+      "hash": "608fd4ace99f1d6b9b51d48ae9a0d0ee0ead21c66f63d42cab7ecf467fd3dc01"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "const[REQUIREMENT]",
+      "hash": "40cd19fe46f1ea99b0213216ef2b4da4e129884ae48336b29a3a154698ac04b7"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "const[MODEL]",
+      "hash": "5832572b3f0439b94f05f02e8fbda50f62c0a2fdac6ce6672e141bff91256884"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "const[AUTH]",
+      "hash": "73eea3a57cff56031e635f2b208e8edb6396aa80c0bb77799b597aa6dc4285a4"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "struct[Request]",
+      "hash": "97493ace97fc5d64f190219bc81e1dc8150bd4fb65543c6ffdf9f79ebf8fa694"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "struct[Server]",
+      "hash": "c516a293681fe2e40ae26f3fa57605cc1af366e0b33494729afa099756efa7fc"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Server]",
+      "hash": "b91838497c45c115ed2ac7b9919ba0f37603192691cb010b3615453bced070ae"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "struct[Fixture]",
+      "hash": "30b4dacea90999653acff61528042add1f83e6e63babb6d9dde97a092e0bdbcf"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]",
+      "hash": "601d0c2cba48602f84cf6900c43bf6ea70005ddb13dae51d67b10b9675b00c95"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[add_input]",
+      "hash": "3002f31015d450b28bd63d702fa14c6ba70f52646f168ae774dafc87df8cee0b"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[config]",
+      "hash": "e879b80085b71e7ff6548c87f8009794996fa037e3ce6cae5dd809ee8d8d3130"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[definition_glob]",
+      "hash": "62708327e7e6f6ffb3b66787eda4a6b124a30d8372f3bc8247b3bf5d935b53e4"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[validate]",
+      "hash": "62f383517488d65ae57e20c9f0c9b6412facf81abe971e211563061b65ec6699"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[preprocess_book]",
+      "hash": "eae1658741308bc6473dd5a7d45f9b1af8ebb159827de93edb7965e1e81c79bb"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
+      "hash": "baf298107691f3efb4f54b082b22051a9a864d19fbadfd3c5372359113b6023a"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_external_sources_respect_allow_and_disallow]",
+      "hash": "5e39fc5750d26e40b1a5ca2d217608472a7e8a52b6aed99242ff274e569285cf"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
+      "hash": "3b6f27123cb3ef1c3c8d105945020942d8fc127dc32c723bbce2f4df1a585fb3"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
+      "hash": "e509f65a7c6bc6deecc1c8631e4999422cb27197f19daa0bea95534fed76a082"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]",
+      "hash": "2a394132d159a87151bbd45edc061e8a23000b2f0f048517316e1e03747fea1e"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]",
+      "hash": "4d46ad3f6772bc43fc9dd4ada134bd43ab2c8c1793b81aa10e19c4ee9d8191eb"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]",
+      "hash": "82544e67fff02932d6c8fdcf4e31ad91c128dfb6450049fca99b23cc72fea6ac"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
+      "hash": "49ead01a3f496cf87a26975f1c143f5f44c09d9b87e9e2346a54477907db773a"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
+      "hash": "734ba23beaab3e3f66faf951638ffa9bac65c7f9619204b3b23d8c249f5f1ed5"
     }
   ]
 }

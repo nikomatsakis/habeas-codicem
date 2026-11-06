@@ -1,7 +1,7 @@
 {
   "requirement": "The book preprocessor MUST escape requirement names and link targets when inserting badge HTML. It MUST encode badge label and message text in Shields.io URL path components so punctuation cannot change the badge URL structure.",
-  "determination": true,
-  "rationale": "The sources meet `requirements.references.safe_badges`. The tests are a little thin on punctuation, as noted at the end.\n\n**Implementation**\n- `shield_path_component` (src/lib.rs:448, `{impl}`) encodes every byte outside `A-Za-z0-9.` for the Shields.io path.\n  - A space becomes `_`, `_` becomes `__`, and `-` becomes `--`, which are the Shields.io escapes.\n  - Every other byte, including non-ASCII, becomes `%XX`. Characters such as `/`, `?`, `#`, `%` and `&` therefore cannot change the URL structure.\n- `shield_badge` (src/lib.rs:433, `{impl}`) encodes both the label and the message with that function. It then HTML-escapes the full URL for `src` and the label and message for `alt`. The `color` argument comes from fixed constants.\n- `escape_html` (src/lib.rs:774, `{impl}`) escapes `& < > \" '`.\n- `replace_definitions` (`{impl}` at line 302) escapes the full name used in the badge `id`. It also escapes the detail `href` for the badge anchor and the \"See evidence\" link.\n- `replace_references` (`{impl}` at line 409) escapes the `href` for reference badges. The badge image goes through `shield_badge`.\n- The only other badge HTML is `render_detail_sections` in src/index.rs:653. It calls `shield_badge` with fixed state labels and colors, so it is safe through the marked helper and needs no extra marker.\n- The other uses of `escape_html` (commands.rs, fixme.rs, index.rs) sit behind the shared helper. They are not badge-specific behavior added outside the requirement.\n\n**Tests**\n- `shields_badge_urls_escape_requirement_names` (src/lib.rs:998) checks that `_` becomes `__` and `-` becomes `--`, and that spaces become `_`. It also checks that `&` in the query string is rendered as `&amp;`, and that `alt` text is correct.\n- `invalid_names_remain_literal_and_html_is_escaped` (src/lib.rs:983) uses the namespace `a&b` and checks that the rendered `alt` is `req a&amp;b.good`.\n- No test feeds `/`, `?`, `#`, `%` or non-ASCII through the percent-encoding path. No test feeds quotes through the href path. The encoder is a simple, total byte match, so I judge this acceptable.",
+  "determination": false,
+  "rationale": "**Verdict: false.** The implementation looks correct and complete, but the tests leave the central behaviour unchecked.\n\n**Implementation (looks sound)**\n- `shield_path_component` (src/lib.rs:449) encodes every byte except `[A-Za-z0-9.]`.\n  - A space becomes `_`, `_` becomes `__`, and `-` becomes `--`, which are the Shields.io escapes.\n  - Every other byte, including `/ ? # % & \" < >` and UTF-8 bytes, becomes `%XX`. Punctuation therefore cannot change the badge URL's path structure.\n- `shield_badge` (src/lib.rs:433) builds the URL from the encoded label and message. It then HTML-escapes the URL for `src` and escapes the label and message for `alt`.\n- `replace_definitions` (src/lib.rs:278) escapes the full name for the `id` attribute and escapes the detail `href` and its repeated \"See evidence\" link.\n- `replace_references` (src/lib.rs:373) escapes the chapter `href`, which includes the anchor built from the name.\n- `escape_html` (src/lib.rs:775) escapes `& < > \" '`.\n- I found no other place that builds badge HTML with unescaped names or targets.\n  - Other callers of `shield_badge`, such as `render_detail_sections` in src/index.rs, pass through it.\n  - The other `escape_html` uses in commands.rs, fixme.rs and index.rs are outside this requirement's scope.\n\n**Tests (thin for the stated obligation)**\n- `shields_badge_urls_escape_requirement_names` (src/lib.rs:998) covers `_`→`__`, `-`→`--`, the space→`_` case, `&`→`&amp;` in the URL query, and `alt` text.\n- `invalid_names_remain_literal_and_html_is_escaped` (src/lib.rs:983) checks only that a namespace containing `&` yields `alt=\"req a&amp;b.good\"`.\n- Nothing asserts percent-encoding of the characters that could actually alter URL structure (`/`, `?`, `#`, `%`, `&`, quotes, `<`, `>`, non-ASCII). The requirement is specifically about punctuation not changing the URL.\n- Nothing asserts that the `id` and `href` attributes are HTML-escaped when a name or namespace contains special characters. In the `a&b` test, the `id=\"habeas-req-a&amp;b.good\"` and the `%26` in the URL are never checked.\n- The `href` escaping in `replace_references` is also untested for special characters.\n\nThere are no FIXME comments acknowledging these gaps, so the determination is false rather than FIXME. Tests covering punctuation percent-encoding and `id`/`href` escaping would close it.",
   "inputs": [
     {
       "requirements": "requirements.references.safe_badges",
@@ -15,951 +15,179 @@
       ]
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "fn[replace_definitions]",
-      "text": [
-        "// {impl}`requirements.index.navigation`",
-        "// {impl}`requirements.references.book_badges`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.definitions.references`",
-        "// {impl}`requirements.examples.index`",
-        "// {impl}`requirements.references.anchors`",
-        "fn replace_definitions(",
-        "    content: &str,",
-        "    namespace: &str,",
-        "    current_path: Option<&Path>,",
-        "    plan: Option<&index::DetailPlan>,",
-        ") -> String {",
-        "    let mut result = String::with_capacity(content.len());",
-        "    let mut cursor = 0;",
-        "",
-        "    for block in definition_blocks(content)",
-        "        .into_iter()",
-        "        .filter(|block| block.closed)",
-        "    {",
-        "        if block.start < cursor {",
-        "            continue;",
-        "        }",
-        "        result.push_str(&content[cursor..block.start]);",
-        "        let full_name = full_requirement_name(namespace, &block.name);",
-        "        // {impl}`requirements.references.safe_badges`",
-        "        let escaped_name = escape_html(&full_name);",
-        "        if block.kind == DefinitionKind::Term {",
-        "            if let Ok((phrase, body)) =",
-        "                terms::declaration(&content[block.body_start..block.body_end])",
-        "            {",
-        "                result.push_str(&format!(",
-        "                    \"<strong id=\\\"{}\\\">{}</strong>\\n\\n\",",
-        "                    escape_html(&block.kind.anchor(&full_name)),",
-        "                    terms::escaped_phrase(phrase)",
-        "                ));",
-        "                result.push_str(body);",
-        "                result.push('\\n');",
-        "            } else {",
-        "                result.push_str(&content[block.start..block.end]);",
-        "            }",
-        "            cursor = block.end;",
-        "            continue;",
-        "        }",
-        "        let badge = shield_badge(",
-        "            block.kind.badge(),",
-        "            &full_name,",
-        "            if block.kind == DefinitionKind::Example {",
-        "                \"5b62a8\"",
-        "            } else {",
-        "                \"006ba8\"",
-        "            },",
-        "        );",
-        "        let detail_href = current_path",
-        "            .zip(plan)",
-        "            .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))",
-        "            .map(|(current, path)| escape_html(&chapter_href(current, path, None)));",
-        "        let tag = if detail_href.is_some() { \"a\" } else { \"span\" };",
-        "        result.push('<');",
-        "        result.push_str(tag);",
-        "        result.push_str(\" class=\\\"habeas-req-badge\\\" id=\\\"habeas-\");",
-        "        result.push_str(block.kind.badge());",
-        "        result.push('-');",
-        "        result.push_str(&escaped_name);",
-        "        result.push('\"');",
-        "        if let Some(href) = &detail_href {",
-        "            result.push_str(\" href=\\\"\");",
-        "            result.push_str(href);",
-        "            result.push('\"');",
-        "        }",
-        "        result.push('>');",
-        "        result.push_str(&badge);",
-        "        result.push_str(\"</\");",
-        "        result.push_str(tag);",
-        "        result.push_str(\">\\n\\n\");",
-        "        // Option lines such as anchors are metadata, not body text.",
-        "        result.push_str(&replace_definitions(",
-        "            &content[block.text_start..block.body_end],",
-        "            namespace,",
-        "            current_path,",
-        "            plan,",
-        "        ));",
-        "        if let Some(href) = &detail_href {",
-        "            result.push_str(\"\\n<p class=\\\"habeas-see-evidence\\\"><a href=\\\"\");",
-        "            result.push_str(href);",
-        "            result.push_str(\"\\\">See evidence</a></p>\\n\");",
-        "        }",
-        "        result.push('\\n');",
-        "        cursor = block.end;",
-        "    }",
-        "",
-        "    result.push_str(&content[cursor..]);",
-        "    result",
-        "}"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[replace_definitions]",
+      "hash": "ad160af02e0feb831510c59c1f28c9e660daf60019826d1b5a48ea26bff893ad"
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "fn[replace_references]",
-      "text": [
-        "// {impl}`requirements.references.book_badges`",
-        "// {impl}`requirements.definitions.references`",
-        "// {impl}`requirements.index.navigation`",
-        "// {impl}`requirements.examples.index`",
-        "fn replace_references(",
-        "    content: &str,",
-        "    current_path: &Path,",
-        "    definitions: &BTreeMap<String, Definition>,",
-        ") -> String {",
-        "    let mut result = String::with_capacity(content.len());",
-        "    let mut cursor = 0;",
-        "",
-        "    for reference in reference_roles(content, true) {",
-        "        result.push_str(&content[cursor..reference.start]);",
-        "        if let Some(target) = definitions.get(reference.name) {",
-        "            if reference.kind == ReferenceKind::Term {",
-        "                if target.kind == DefinitionKind::Term",
-        "                    && let Ok((phrase, _)) = terms::declaration(&target.text)",
-        "                {",
-        "                    let href = chapter_href(",
-        "                        current_path,",
-        "                        &target.path,",
-        "                        Some(&target.kind.anchor(reference.name)),",
-        "                    );",
-        "                    result.push_str(&format!(",
-        "                        \"<a href=\\\"{}\\\">{}</a>\",",
-        "                        escape_html(&href),",
-        "                        terms::escaped_phrase(phrase)",
-        "                    ));",
-        "                } else {",
-        "                    result.push_str(&content[reference.start..reference.end]);",
-        "                }",
-        "                cursor = reference.end;",
-        "                continue;",
-        "            }",
-        "            let kind = reference.kind.label();",
-        "            let badge = shield_badge(kind, reference.name, reference.kind.color());",
-        "            // {impl}`requirements.references.safe_badges`",
-        "            let href = escape_html(&chapter_href(",
-        "                current_path,",
-        "                &target.path,",
-        "                Some(&target.kind.anchor(reference.name)),",
-        "            ));",
-        "            result.push_str(\"<a class=\\\"habeas-req-badge habeas-req-ref-\");",
-        "            result.push_str(kind);",
-        "            result.push_str(\"\\\" href=\\\"\");",
-        "            result.push_str(&href);",
-        "            result.push_str(\"\\\">\");",
-        "            result.push_str(&badge);",
-        "            result.push_str(\"</a>\");",
-        "        } else {",
-        "            result.push_str(&content[reference.start..reference.end]);",
-        "        }",
-        "        cursor = reference.end;",
-        "    }",
-        "",
-        "    result.push_str(&content[cursor..]);",
-        "    result",
-        "}"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[replace_references]",
+      "hash": "468a289bf4500903167e9a812c77f84d5e3bcc5f9035feb778a95d70a9d37909"
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "fn[shield_badge]",
-      "text": [
-        "// {impl}`requirements.references.book_badges`",
-        "// {impl}`requirements.references.safe_badges`",
-        "pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {",
-        "    let url = format!(",
-        "        \"https://img.shields.io/badge/{}-{}-{color}?style=flat-square&labelColor=555\",",
-        "        shield_path_component(label),",
-        "        shield_path_component(message)",
-        "    );",
-        "    format!(",
-        "        \"<img class=\\\"habeas-shield\\\" src=\\\"{}\\\" alt=\\\"{} {}\\\" loading=\\\"lazy\\\">\",",
-        "        escape_html(&url),",
-        "        escape_html(label),",
-        "        escape_html(message)",
-        "    )",
-        "}"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[shield_badge]",
+      "hash": "1f3d9dfacb38f533a3dbee49b6c8a56a18bad38d5feb9a9a23eccbe3029563a7"
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "fn[shield_path_component]",
-      "text": [
-        "// {impl}`requirements.references.safe_badges`",
-        "fn shield_path_component(value: &str) -> String {",
-        "    let mut encoded = String::with_capacity(value.len());",
-        "    for byte in value.bytes() {",
-        "        match byte {",
-        "            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' => encoded.push(char::from(byte)),",
-        "            b' ' => encoded.push('_'),",
-        "            b'_' => encoded.push_str(\"__\"),",
-        "            b'-' => encoded.push_str(\"--\"),",
-        "            _ => encoded.push_str(&format!(\"%{byte:02X}\")),",
-        "        }",
-        "    }",
-        "    encoded",
-        "}"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[shield_path_component]",
+      "hash": "3ae10e5767e56fbf26668d0cacab6c3317f4cbc5a6ccbba43c24f4e6daa3ded3"
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "fn[escape_html]",
-      "text": [
-        "// {impl}`requirements.references.safe_badges`",
-        "fn escape_html(value: &str) -> String {",
-        "    let mut escaped = String::with_capacity(value.len());",
-        "    for character in value.chars() {",
-        "        match character {",
-        "            '&' => escaped.push_str(\"&amp;\"),",
-        "            '<' => escaped.push_str(\"&lt;\"),",
-        "            '>' => escaped.push_str(\"&gt;\"),",
-        "            '\"' => escaped.push_str(\"&quot;\"),",
-        "            '\\'' => escaped.push_str(\"&#39;\"),",
-        "            _ => escaped.push(character),",
-        "        }",
-        "    }",
-        "    escaped",
-        "}"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[escape_html]",
+      "hash": "6957779eaea2a004ad19afb83132699cd61b174640c47ff4aa58e59960bd3653"
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "mod[tests]/fn[invalid_names_remain_literal_and_html_is_escaped]",
-      "text": [
-        "    // {test}`requirements.ci.identifiers`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn invalid_names_remain_literal_and_html_is_escaped() {",
-        "        let rendered = replace_definitions(",
-        "            \":::{req} bad name\\nInvalid.\\n:::\\n\\n:::{req} good\\nGood.\\n:::\",",
-        "            \"a&b\",",
-        "            None,",
-        "            None,",
-        "        );",
-        "        assert!(rendered.contains(\":::{req} bad name\"));",
-        "        assert!(rendered.contains(\"alt=\\\"req a&amp;b.good\\\"\"));",
-        "        assert!(reference_roles(\"{impl}`bad name`\", false).is_empty());",
-        "    }"
-      ]
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[invalid_names_remain_literal_and_html_is_escaped]",
+      "hash": "1cc6b4794484f34e97ff5f0f9066203c24b4da46ef1e259babc1f66bf5b1deee"
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "mod[tests]/fn[shields_badge_urls_escape_requirement_names]",
-      "text": [
-        "    // {test}`requirements.references.book_badges`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn shields_badge_urls_escape_requirement_names() {",
-        "        let badge = shield_badge(\"req\", \"requirements.foo_bar-baz\", \"006ba8\");",
-        "        assert!(badge.contains(",
-        "            \"https://img.shields.io/badge/req-requirements.foo__bar--baz-006ba8?style=flat-square&amp;labelColor=555\"",
-        "        ));",
-        "        assert!(badge.contains(\"alt=\\\"req requirements.foo_bar-baz\\\"\"));",
-        "",
-        "        let status = shield_badge(\"evidence\", \"Determination false\", \"ae5d14\");",
-        "        assert!(status.contains(\"badge/evidence-Determination_false-ae5d14\"));",
-        "    }"
-      ]
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[shields_badge_urls_escape_requirement_names]",
+      "hash": "40a62857d51133043f91da0860780084dcad726dc5cf1216f1d807746cbd0bd5"
     },
     {
       "file": "audits/initial-requirements-coverage.md",
-      "line_start": 18,
-      "line_end": 25,
-      "text": [
-        "| `src/lib.rs:86` `preprocess_book` | `requirements.cli.mdbook`, `requirements.index.source_links` |",
-        "| `src/lib.rs:144` `chapter_namespace` | `requirements.ci.identifiers` |",
-        "| `src/lib.rs:166` `replace_requirements` | `requirements.index.navigation`, `requirements.references.book_badges`, `requirements.references.safe_badges` |",
-        "| `src/lib.rs:214` `replace_references` | `requirements.references.book_badges`, `requirements.references.safe_badges` |",
-        "| `src/lib.rs:252` `shield_badge` | `requirements.references.book_badges`, `requirements.references.safe_badges` |",
-        "| `src/lib.rs:267` `shield_path_component` | `requirements.references.safe_badges` |",
-        "| `src/lib.rs:282` `chapter_href` | `requirements.index.navigation` |",
-        "| `src/lib.rs:316` `full_requirement_name` | `requirements.ci.identifiers` |"
-      ]
+      "item": "section[Initial%20requirements%20coverage%20audit]/section[Production%20source%20units]",
+      "hash": "043856e38908c1a595f6af2026b12c540a02463f2666a3225124d0e8207321a3"
     },
     {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 32,
-      "line_end": 36,
-      "text": [
-        "| `src/lib.rs:475` `is_escaped` | `requirements.references.markdown_literals` |",
-        "| `src/lib.rs:486` `valid_name` | `requirements.ci.identifiers` |",
-        "| `src/lib.rs:497` `escape_html` | `requirements.references.safe_badges` |",
-        "| `src/evidence.rs:28` `validate_repository` | `requirements.integration.report_api`, `requirements.ci.coverage`, `requirements.ci.orphans`, `requirements.references.targets`, `requirements.references.evidence_coverage` |",
-        "| `src/evidence.rs:85` `book_source_dir` | `requirements.ci.book_source` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 97,
-      "line_end": 102,
-      "text": [
-        "| `src/lib.rs:545` `links_preserve_requirement_names_containing_md` | `requirements.index.navigation` |",
-        "| `src/lib.rs:566` `code_examples_and_legacy_roles_remain_literal` | `requirements.references.markdown_literals` |",
-        "| `src/lib.rs:578` `invalid_names_remain_literal_and_html_is_escaped` | `requirements.ci.identifiers`, `requirements.references.safe_badges` |",
-        "| `src/lib.rs:593` `shields_badge_urls_escape_requirement_names` | `requirements.references.book_badges`, `requirements.references.safe_badges` |",
-        "| `src/lib.rs:606` `references_in_nested_chapters_link_to_the_requirement_definition` | `requirements.references.book_badges` |",
-        "| `src/lib.rs:645` `markdown_examples_and_escaped_references_stay_literal` | `requirements.references.markdown_literals` |"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 70,
-      "line_end": 74,
-      "text": [
-        ":::",
-        "",
-        ":::{req} safe_badges",
-        "The book preprocessor MUST escape requirement names and link targets when inserting badge HTML. It MUST encode badge label and message text in Shields.io URL path components so punctuation cannot change the badge URL structure.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 15,
-      "line_end": 19,
-      "text": [
-        "    Definition, DefinitionKind, EvidenceReport, ReferenceKind, chapter_href, colon_fence,",
-        "    definition_blocks, escape_html, overlaps_protected, protected_ranges, reference_roles,",
-        "    shield_badge,",
-        "};",
-        ""
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 653,
-      "line_end": 657,
-      "text": [
-        "    sources: &RenderSources<'_>,",
-        ") -> String {",
-        "    content.push_str(&shield_badge(",
-        "        \"evidence\",",
-        "        detail_evidence.state.label(),"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1153,
-      "line_end": 1157,
-      "text": [
-        "            ready",
-        "                .content",
-        "                .contains(\"img.shields.io/badge/evidence-Valid-237346\")",
-        "        );",
-        "        assert!(ready.content.contains(\"> Ready MUST work.\"));"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1236,
-      "line_end": 1240,
-      "text": [
-        "            },",
-        "        );",
-        "        assert!(page.contains(\"img.shields.io/badge/evidence-Valid-237346\"));",
-        "        assert!(page.contains(\"## Requirement\\n\\n> Ready MUST work.\\n> \\n> ## Example\"));",
-        "        assert!(page.contains(\"## Rationale\\n\\n**Checked** against the source.\"));"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 300,
-      "line_end": 304,
-      "text": [
-        "        result.push_str(&content[cursor..block.start]);",
-        "        let full_name = full_requirement_name(namespace, &block.name);",
-        "        // {impl}`requirements.references.safe_badges`",
-        "        let escaped_name = escape_html(&full_name);",
-        "        if block.kind == DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 319,
-      "line_end": 323,
-      "text": [
-        "            continue;",
-        "        }",
-        "        let badge = shield_badge(",
-        "            block.kind.badge(),",
-        "            &full_name,"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 406,
-      "line_end": 411,
-      "text": [
-        "            }",
-        "            let kind = reference.kind.label();",
-        "            let badge = shield_badge(kind, reference.name, reference.kind.color());",
-        "            // {impl}`requirements.references.safe_badges`",
-        "            let href = escape_html(&chapter_href(",
-        "                current_path,"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 431,
-      "line_end": 440,
-      "text": [
-        "",
-        "// {impl}`requirements.references.book_badges`",
-        "// {impl}`requirements.references.safe_badges`",
-        "pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {",
-        "    let url = format!(",
-        "        \"https://img.shields.io/badge/{}-{}-{color}?style=flat-square&labelColor=555\",",
-        "        shield_path_component(label),",
-        "        shield_path_component(message)",
-        "    );",
-        "    format!("
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 446,
-      "line_end": 451,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.references.safe_badges`",
-        "fn shield_path_component(value: &str) -> String {",
-        "    let mut encoded = String::with_capacity(value.len());",
-        "    for byte in value.bytes() {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 772,
-      "line_end": 776,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.references.safe_badges`",
-        "fn escape_html(value: &str) -> String {",
-        "    let mut escaped = String::with_capacity(value.len());"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 792,
-      "line_end": 796,
-      "text": [
-        "    use super::{",
-        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,",
-        "        reference_roles, replace_definitions, shield_badge,",
-        "    };",
-        "    use mdbook_preprocessor::book::{Book, BookItem, Chapter};"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 981,
-      "line_end": 985,
-      "text": [
-        "",
-        "    // {test}`requirements.ci.identifiers`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn invalid_names_remain_literal_and_html_is_escaped() {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 996,
-      "line_end": 1009,
-      "text": [
-        "",
-        "    // {test}`requirements.references.book_badges`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn shields_badge_urls_escape_requirement_names() {",
-        "        let badge = shield_badge(\"req\", \"requirements.foo_bar-baz\", \"006ba8\");",
-        "        assert!(badge.contains(",
-        "            \"https://img.shields.io/badge/req-requirements.foo__bar--baz-006ba8?style=flat-square&amp;labelColor=555\"",
-        "        ));",
-        "        assert!(badge.contains(\"alt=\\\"req requirements.foo_bar-baz\\\"\"));",
-        "",
-        "        let status = shield_badge(\"evidence\", \"Determination false\", \"ae5d14\");",
-        "        assert!(status.contains(\"badge/evidence-Determination_false-ae5d14\"));",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 1048,
-      "line_end": 1052,
-      "text": [
-        "            )));",
-        "            assert!(chapters[1].content.contains(&format!(",
-        "                \"img.shields.io/badge/{kind}-requirements.ready-{color}\"",
-        "            )));",
-        "        }"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 482,
-      "line_end": 486,
-      "text": [
-        "    );",
-        "    assert!(",
-        "        exact.contains(\"img.shields.io/badge/evidence-Valid-237346\"),",
-        "        \"{exact}\"",
-        "    );"
-      ]
+      "file": "md/habeas.css",
+      "item": "rule[.habeas-shield]",
+      "hash": "65c6a8da19d3969072dd7f5a44e7dd222af86dcfe2d7b25c11b3aaa889c87462"
     },
     {
       "file": "src/commands.rs",
-      "line_start": 3,
-      "line_end": 9,
-      "text": [
-        "use std::path::Path;",
-        "",
-        "use crate::definition_glob;",
-        "use crate::escape_html;",
-        "use crate::evidence::inspect_repository;",
-        "use crate::fixme::FixmeSummary;",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};"
-      ]
+      "item": "use@097679089ee4",
+      "hash": "097679089ee490481bfa4772c67f1b6c258759f0e3134263d387613c3706d3f4"
     },
     {
       "file": "src/commands.rs",
-      "line_start": 77,
-      "line_end": 83,
-      "text": [
-        "        ));",
-        "        if !evidence.errors().is_empty() {",
-        "            findings.push_str(&format!(\"\\n### `{name}`\\n\\n<pre><code>\"));",
-        "            findings.push_str(&escape_html(&evidence.errors().join(\"\\n\\n\")));",
-        "            findings.push_str(\"</code></pre>\\n\");",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 109,
-      "line_end": 115,
-      "text": [
-        "    }",
-        "    if !other_findings.is_empty() {",
-        "        output.push_str(\"\\n## Other validation findings\\n\\n<pre><code>\");",
-        "        output.push_str(&escape_html(",
-        "            &other_findings",
-        "                .into_iter()",
-        "                .map(String::as_str)"
-      ]
+      "item": "fn[status_markdown_with_options]",
+      "hash": "2c13522580db4cb92949b4a9d03bd9f679ac7d239ddb2b348bb209d0171ac1ea"
     },
     {
       "file": "src/fixme.rs",
-      "line_start": 3,
-      "line_end": 9,
-      "text": [
-        "",
-        "use regex::Regex;",
-        "",
-        "use crate::escape_html;",
-        "",
-        "#[derive(Default)]",
-        "pub(crate) struct FixmeSummary {"
-      ]
+      "item": "use@097679089ee4",
+      "hash": "097679089ee490481bfa4772c67f1b6c258759f0e3134263d387613c3706d3f4"
     },
     {
       "file": "src/fixme.rs",
-      "line_start": 90,
-      "line_end": 96,
-      "text": [
-        "    for judgment in judgments {",
-        "        output.push_str(&format!(\"- `{}` ({})\\n\\n\", judgment.name, judgment.kind));",
-        "        output.push_str(\"<pre><code>\");",
-        "        output.push_str(&escape_html(&judgment.entries.join(\"\\n\")));",
-        "        output.push_str(\"</code></pre>\\n\\n\");",
-        "    }",
-        "}"
-      ]
+      "item": "fn[render_judgments]",
+      "hash": "999a77b2e07eef9f4feaf682c53c616c097efebe3bac9e5247cffe19adb54f50"
     },
     {
       "file": "src/index.rs",
-      "line_start": 13,
-      "line_end": 19,
-      "text": [
-        "use crate::markdown::render_evidence_table;",
-        "use crate::{",
-        "    Definition, DefinitionKind, EvidenceReport, ReferenceKind, chapter_href, colon_fence,",
-        "    definition_blocks, escape_html, overlaps_protected, protected_ranges, reference_roles,",
-        "    shield_badge,",
-        "};",
-        ""
-      ]
+      "item": "use@340c56c5b2f6",
+      "hash": "340c56c5b2f6f4e3d0e5f7d46d76a3fc71f353e71b49c45ec283184651fa6363"
     },
     {
       "file": "src/index.rs",
-      "line_start": 673,
-      "line_end": 679,
-      "text": [
-        "",
-        "    if !detail_evidence.errors.is_empty() {",
-        "        content.push_str(\"\\n## Validation findings\\n\\n<pre><code>\");",
-        "        content.push_str(&escape_html(&detail_evidence.errors.join(\"\\n\\n\")));",
-        "        content.push_str(\"</code></pre>\\n\");",
-        "    }",
-        ""
-      ]
+      "item": "fn[render_detail_sections]",
+      "hash": "00b91bf2698421444a52bc246c4a7a01d9bfcfb5cb4c613a5a586c350aa0e90b"
     },
     {
       "file": "src/index.rs",
-      "line_start": 691,
-      "line_end": 697,
-      "text": [
-        "    }",
-        "    if !detail_evidence.fixme_entries.is_empty() {",
-        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
-        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));",
-        "        content.push_str(\"</code></pre>\\n\");",
-        "    }",
-        "    content.push_str(\"\\n\\n## Inputs\\n\\n\");"
-      ]
+      "item": "fn[render_input]",
+      "hash": "7a83a105c6b3fe0bb5c368fcaa0d0fe9acc7a710866548801e390ed4bd5fe4f6"
     },
     {
       "file": "src/index.rs",
-      "line_start": 809,
-      "line_end": 815,
-      "text": [
-        "            }",
-        "        };",
-        "        content.push_str(\": <code>\");",
-        "        content.push_str(&escape_html(&label));",
-        "        content.push_str(\"</code>\");",
-        "    }",
-        "    content.push_str(\"</summary>\\n\\n\");"
-      ]
+      "item": "fn[render_source_location]",
+      "hash": "60cb3f1fb3863b10b5c01f242721c59f60db36899106a911a639822a8d93960b"
     },
     {
       "file": "src/index.rs",
-      "line_start": 821,
-      "line_end": 827,
-      "text": [
-        "            content.push('\\n');",
-        "        }",
-        "        Some(Err(error)) => {",
-        "            content.push_str(&format!(\"Unresolved selector: {}\\n\\n\", escape_html(error)));",
-        "        }",
-        "        None => {}",
-        "    }"
-      ]
+      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
+      "hash": "cbd43f52db44a62a85959305ad34e9ff7d92e19e4d1ad6e7146fb30d329a7687"
     },
     {
       "file": "src/index.rs",
-      "line_start": 861,
-      "line_end": 878,
-      "text": [
-        "    content.push_str(\"- \");",
-        "    if let Some(name) = &range.name {",
-        "        content.push_str(\"<code>\");",
-        "        content.push_str(&escape_html(name));",
-        "        content.push_str(\"</code>: \");",
-        "    }",
-        "    if let Some(url) = url {",
-        "        content.push_str(\"<a href=\\\"\");",
-        "        content.push_str(&escape_html(&url));",
-        "        content.push_str(\"\\\"><code>\");",
-        "        content.push_str(&escape_html(&location));",
-        "        content.push_str(\"</code></a>\\n\");",
-        "    } else {",
-        "        content.push_str(\"<code>\");",
-        "        content.push_str(&escape_html(&location));",
-        "        content.push_str(\"</code>\\n\");",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1303,
-      "line_end": 1309,
-      "text": [
-        "            },",
-        "        );",
-        "        assert!(page.contains(",
-        "            \"<a href=\\\"https://github.com/example/project/blob/release/src/evidence.rs#L26-L37\\\"><code>src/evidence.rs:26–37</code></a>\"",
-        "        ));",
-        "",
-        "        let other_config: Config = \"[output.html]\\ngit-repository-url = \\\"https://github.com/example/project\\\"\\nedit-url-template = \\\"https://github.com/other/project/edit/main/{path}\\\"\\n\""
-      ]
+      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
+      "hash": "531127fb83e150e3482e96509af73a7103ceda90cf574c75b4284d63db3c6ec3"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 300,
-      "line_end": 313,
-      "text": [
-        "        result.push_str(&content[cursor..block.start]);",
-        "        let full_name = full_requirement_name(namespace, &block.name);",
-        "        // {impl}`requirements.references.safe_badges`",
-        "        let escaped_name = escape_html(&full_name);",
-        "        if block.kind == DefinitionKind::Term {",
-        "            if let Ok((phrase, body)) =",
-        "                terms::declaration(&content[block.body_start..block.body_end])",
-        "            {",
-        "                result.push_str(&format!(",
-        "                    \"<strong id=\\\"{}\\\">{}</strong>\\n\\n\",",
-        "                    escape_html(&block.kind.anchor(&full_name)),",
-        "                    terms::escaped_phrase(phrase)",
-        "                ));",
-        "                result.push_str(body);"
-      ]
+      "item": "mod[tests]/use@36082be0a766",
+      "hash": "36082be0a766ab9557ba41cc9a2f5a902f52abee0e1a5c8aa7873b0217b9def0"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 330,
-      "line_end": 340,
-      "text": [
-        "        let detail_href = current_path",
-        "            .zip(plan)",
-        "            .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))",
-        "            .map(|(current, path)| escape_html(&chapter_href(current, path, None)));",
-        "        let tag = if detail_href.is_some() { \"a\" } else { \"span\" };",
-        "        result.push('<');",
-        "        result.push_str(tag);",
-        "        result.push_str(\" class=\\\"habeas-req-badge\\\" id=\\\"habeas-\");",
-        "        result.push_str(block.kind.badge());",
-        "        result.push('-');",
-        "        result.push_str(&escaped_name);"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 357,
-      "line_end": 363,
-      "text": [
-        "            plan,",
-        "        ));",
-        "        if let Some(href) = &detail_href {",
-        "            result.push_str(\"\\n<p class=\\\"habeas-see-evidence\\\"><a href=\\\"\");",
-        "            result.push_str(href);",
-        "            result.push_str(\"\\\">See evidence</a></p>\\n\");",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 394,
-      "line_end": 401,
-      "text": [
-        "                        Some(&target.kind.anchor(reference.name)),",
-        "                    );",
-        "                    result.push_str(&format!(",
-        "                        \"<a href=\\\"{}\\\">{}</a>\",",
-        "                        escape_html(&href),",
-        "                        terms::escaped_phrase(phrase)",
-        "                    ));",
-        "                } else {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 407,
-      "line_end": 418,
-      "text": [
-        "            let kind = reference.kind.label();",
-        "            let badge = shield_badge(kind, reference.name, reference.kind.color());",
-        "            // {impl}`requirements.references.safe_badges`",
-        "            let href = escape_html(&chapter_href(",
-        "                current_path,",
-        "                &target.path,",
-        "                Some(&target.kind.anchor(reference.name)),",
-        "            ));",
-        "            result.push_str(\"<a class=\\\"habeas-req-badge habeas-req-ref-\");",
-        "            result.push_str(kind);",
-        "            result.push_str(\"\\\" href=\\\"\");",
-        "            result.push_str(&href);"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 438,
-      "line_end": 447,
-      "text": [
-        "        shield_path_component(message)",
-        "    );",
-        "    format!(",
-        "        \"<img class=\\\"habeas-shield\\\" src=\\\"{}\\\" alt=\\\"{} {}\\\" loading=\\\"lazy\\\">\",",
-        "        escape_html(&url),",
-        "        escape_html(label),",
-        "        escape_html(message)",
-        "    )",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 772,
-      "line_end": 778,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.references.safe_badges`",
-        "fn escape_html(value: &str) -> String {",
-        "    let mut escaped = String::with_capacity(value.len());",
-        "    for character in value.chars() {",
-        "        match character {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 902,
-      "line_end": 908,
-      "text": [
-        "            );",
-        "            assert!(",
-        "                rules.content.contains(&format!(",
-        "                    \"<p class=\\\"habeas-see-evidence\\\"><a href=\\\"{href}\\\">See evidence</a></p>\"",
-        "                )),",
-        "                \"{}\",",
-        "                rules.content"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 942,
-      "line_end": 948,
-      "text": [
-        "            None,",
-        "            None,",
-        "        );",
-        "        assert!(rendered.contains(\"habeas-req-badge\"));",
-        "        assert!(rendered.contains(\"alt=\\\"req requirements.tui.table\\\"\"));",
-        "        assert!(!rendered.contains(\"{req}\"));",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 1044,
-      "line_end": 1050,
-      "text": [
-        "        );",
-        "        for (kind, color) in [(\"impl\", \"237346\"), (\"cite\", \"7151a1\"), (\"test\", \"ae5d14\")] {",
-        "            assert!(chapters[1].content.contains(&format!(",
-        "                \"class=\\\"habeas-req-badge habeas-req-ref-{kind}\\\" href=\\\"../requirements.html#habeas-req-requirements.ready\\\"\"",
-        "            )));",
-        "            assert!(chapters[1].content.contains(&format!(",
-        "                \"img.shields.io/badge/{kind}-requirements.ready-{color}\""
-      ]
+      "item": "mod[tests]/fn[references_in_nested_chapters_link_to_the_requirement_definition]",
+      "hash": "3ef55f101eabee94723f10e8dec7a9bfebae14e8a3531ad06722b00968a4aa16"
     },
     {
       "file": "src/terms.rs",
-      "line_start": 151,
-      "line_end": 157,
-      "text": [
-        "            '*' | '_' | '`' | '[' | ']' | '\\\\' | '~' | '{' | '}' => {",
-        "                output.push_str(&format!(\"&#{};\", u32::from(ch)))",
-        "            }",
-        "            _ => output.push_str(&crate::escape_html(&ch.to_string())),",
-        "        }",
-        "    }",
-        "    output"
-      ]
+      "item": "fn[escaped_phrase]",
+      "hash": "57b2b69d44ee4dc8e909bd34eda3be6db51c381c7a68ad4bb24703592e31a3ea"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[info_renders_exact_and_glob_matches_as_markdown_without_an_index]",
+      "hash": "226214cc363632924f0309c006b3600dd01e0acd5b77eb5e269acee3fad7dfb0"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups]",
+      "hash": "fbd74e73ce15f55fba25d3c78ec4de70829b16ac638a0d4b48185656614bdc67"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[phrases_are_plain_links_and_markdown_literals_are_preserved]",
+      "hash": "c9cbd1c79a03648663927780ecae2c0311be3e629cd2f1c92f2c8d9d21ee653c"
     },
     {
       "file": "src/index.rs",
-      "line_start": 600,
-      "line_end": 672,
-      "text": [
-        "                    .name",
-        "                    .as_ref()",
-        "                    .is_some_and(|name| self.cited.contains(name))",
-        "            });",
-        "        let ranges = ranges",
-        "            .iter()",
-        "            .map(|range| {",
-        "                let file = root.join(&range.file);",
-        "                (",
-        "                    fs::canonicalize(&file).unwrap_or(file),",
-        "                    range.line_start,",
-        "                    range.line_end,",
-        "                )",
-        "            })",
-        "            .collect::<Vec<_>>();",
-        "        for (group, kind) in [",
-        "            (InputGroup::Implementation, ReferenceKind::Impl),",
-        "            (InputGroup::Tests, ReferenceKind::Test),",
-        "        ] {",
-        "            let site = self.sites.iter().any(|(site_kind, file, line)| {",
-        "                *site_kind == kind",
-        "                    && ranges",
-        "                        .iter()",
-        "                        .any(|(path, start, end)| path == file && start <= line && line <= end)",
-        "            });",
-        "            let anchored = self.anchors.iter().any(|(anchor_kind, file)| {",
-        "                *anchor_kind == kind && ranges.iter().any(|(path, _, _)| path == file)",
-        "            });",
-        "            if site || anchored {",
-        "                return group;",
-        "            }",
-        "        }",
-        "        match selector {",
-        "            Some(InputSelector::Definition { .. }) => InputGroup::ReferencedDefinitions,",
-        "            Some(InputSelector::Requirements { .. }) if all_cited => {",
-        "                InputGroup::ReferencedDefinitions",
-        "            }",
-        "            _ => InputGroup::OtherSources,",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.index.detail_format`",
-        "// {impl}`requirements.index.invalid_detail`",
-        "// {impl}`requirements.cli.info`",
-        "// {impl}`requirements.index.state`",
-        "// {impl}`requirements.examples.index`",
-        "fn render_detail_sections(",
-        "    mut content: String,",
-        "    name: &str,",
-        "    definition_text: &str,",
-        "    kind: DefinitionKind,",
-        "    detail_evidence: DetailEvidence<'_>,",
-        "    sources: &RenderSources<'_>,",
-        ") -> String {",
-        "    content.push_str(&shield_badge(",
-        "        \"evidence\",",
-        "        detail_evidence.state.label(),",
-        "        detail_evidence.state.color(),",
-        "    ));",
-        "    content.push_str(&format!(",
-        "        \"\\n\\n## {}\\n\\n\",",
-        "        if kind == DefinitionKind::Example {",
-        "            \"Example\"",
-        "        } else {",
-        "            \"Requirement\"",
-        "        }",
-        "    ));",
-        "    for line in definition_text.lines() {",
-        "        content.push_str(\"> \");",
-        "        content.push_str(line);",
-        "        content.push('\\n');",
-        "    }"
-      ]
+      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
+      "hash": "2cfb93db5ac479b443f95a6af8e8893f24bb908971f1c7f8650e5cf14fa734bb"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[chapter_href]",
+      "hash": "2ba7dbb9d51a4b685ada2f2724fa9edefbc76dd53b6224537378950681c20429"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[every_definition_gets_a_nested_detail_page_without_an_index]",
+      "hash": "f13211687e588783b0d028ce1023826fa3091aab65416c55a0c49e3d51397393"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[links_preserve_requirement_names_containing_md]",
+      "hash": "a05d165563f294ed6a725903b5d95974972e8873a8e055a4090eb71ebaa7b77d"
+    },
+    {
+      "file": "src/outline/selector.rs",
+      "item": "mod[tests]/fn[names_round_trip_through_percent_encoding]",
+      "hash": "a38602023e44117b19df6cd7d85503819b4acfa9c71120d303a039651dc0a6a7"
+    },
+    {
+      "file": "src/outline/selector.rs",
+      "item": "mod[tests]/fn[parses_named_anonymous_and_ordinal_segments]",
+      "hash": "d54da2680d05549e2f490ef8cfacabe3b0dd3e949ce062b3973587679a3071bd"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[rust_selectors_follow_syntactic_ancestry]",
+      "hash": "7a627337fef598d5192c2e2c38fdf34df2e64f1982013eab6907663c010b1a38"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[css_profile_names_rules_by_normalized_selectors]",
+      "hash": "15e40d0e3fb4d8eb24b3f505398cab32f6a367914692db35e956901a18f1a35c"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[markdown_profile_nests_sections_by_heading]",
+      "hash": "b3f0d96fc558dfb8d7f6e8a293f2c757f43c8df2012d93f91d82bb4025be8015"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[selectors_name_syntactic_ancestry_and_duplicates]",
+      "hash": "f93d907c69525a35f4df17bdf2414d1b1cc3b9bcb7f470233ad07756356e8baa"
     }
   ]
 }

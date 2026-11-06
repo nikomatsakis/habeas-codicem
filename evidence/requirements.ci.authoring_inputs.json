@@ -1,7 +1,7 @@
 {
   "requirement": "When `habeas author` assesses a subject with existing evidence, that evidence\nMUST only determine whether the subject needs assessment. Its inputs,\ndetermination, and rationale MUST NOT contribute to the mandatory input set\ndefined by {cite}`requirements.authoring.mandatory_inputs` or otherwise be\nsupplied to the model. A new assessment's evidence MUST record only the inputs\nsupplied to it, so sources that an earlier assessment read but that no longer\nexist or are no longer relevant cannot block or shape reassessment.",
   "determination": true,
-  "rationale": "**Judgment:** `requirements.ci.authoring_inputs` is satisfied. I found no gaps, and the code does not behave in ways the requirement doesn't specify.\n\n**Existing evidence only decides whether to reassess**\n- In `src/authoring/batch.rs`, `author_all_with_options` loads existing evidence through `LoadedDetailEvidence::load` and uses only `evidence.state()`. A Valid, Fixme or DeterminationFalse state counts as unchanged. Any other state queues the subject for assessment.\n- The evidence's inputs, determination and rationale are never passed on from there.\n\n**Evidence does not contribute to the mandatory input set**\n- `AssessmentSources::prepare` in `src/authoring/inputs.rs` builds the mandatory set only from these sources:\n  - the subject itself;\n  - its `{cite}` references;\n  - sources named by `{impl}` and `{test}` references;\n  - `:impl:` and `:test:` anchors;\n  - definition dependencies.\n- It never reads `evidence/<subject>.json`. A code comment says \"Existing evidence only decides whether to reassess; its inputs are not carried forward.\"\n- `recorded` starts as `Vec::new()`.\n- File and Rust selectors that point into generated `evidence/` are dropped by `generated_evidence_selector`, `omit_generated_evidence` and `generated_evidence_path`. That drop applies unless the workspace config explicitly allows the path.\n- Because earlier inputs are never read, sources that no longer exist cannot block reassessment.\n\n**A new assessment's evidence records only supplied inputs**\n- In `assess` in `src/authoring/mod.rs`, `sources.record_inputs(&pending)` runs only after a provider response. `pending` is seeded from the current `mandatory_inputs()` and extended by the current tool deliveries.\n- The written record uses `sources.recorded_inputs()`, so nothing from earlier evidence enters it.\n\n**Tests (in `src/authoring/inputs.rs`)**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors`:\n  - An old false record with the rationale \"old secret judgment\" and an input on `notes.txt` is present.\n  - The test asserts that `notes.txt` and the old rationale are absent from the mandatory inputs.\n  - It also asserts that `recorded_inputs()` is empty.\n- `unresolvable_earlier_inputs_do_not_block_reassessment`:\n  - The old record lists a missing file, a removed Rust item and a removed requirement.\n  - `prepare` still succeeds, and the mandatory set is exactly the subject.\n- `earlier_evidence_inputs_and_judgments_are_not_carried_forward`:\n  - Neither the old input paths, `evidence/`, nor the old rationale appear in the supplied inputs.\n  - The old file is left untouched.\n- `tests/authoring_batch.rs` also exercises unchanged-versus-reauthored batch behaviour. It is not marked against this requirement, but it supports the batch selection logic.\n\n**Minor weakness:** no test marked for this requirement checks directly that the final written record omits earlier inputs. That follows from the `recorded` mechanics and the empty-`recorded` assertions, so I don't count it as a gap.",
+  "rationale": "**Verdict: the requirement is met.** The implementation matches each obligation, and the tests exercise both the inputs and the reassessment decision.\n\n**Evidence only decides whether to assess**\n- `author_all_with_options` (`src/authoring/batch.rs`) reads existing evidence only through `LoadedDetailEvidence::load(...).state()`.\n  - Valid, FIXME and current-false states are left unchanged.\n  - Every other state is queued for reassessment.\n  - Nothing from the old record (inputs, determination or rationale) is passed on.\n- The single-subject path (`author_evidence_with_output` → `configured_record` → `AssessmentSources::prepare`) never reads existing evidence, so an old record cannot shape the new one.\n\n**Evidence stays out of the mandatory inputs and the model**\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the mandatory set from these sources only:\n  - the subject itself;\n  - its `{cite}` targets;\n  - the `{impl}`/`{test}` references that point at the subject;\n  - the subject's anchors;\n  - the definitions those inputs depend on.\n- The code comment \"Existing evidence only decides whether to reassess; its inputs are not carried forward\" matches this. No evidence file is parsed there.\n- `generated_evidence_selector`, `SourceAccess::omit_generated_evidence` and `generated_evidence_path` drop any outline input under `evidence/`. They keep a workspace allow and a workspace disallow working as `requirements.authoring.mandatory_inputs` specifies.\n- `initial_prompt` in `src/authoring/mod.rs` uses only `sources.mandatory_inputs()`.\n\n**New evidence records only what was supplied**\n- `assess` in `src/authoring/mod.rs` starts `AssessmentSources` with an empty `recorded` list.\n- It records inputs through `record_inputs(&pending)` only after a successful model response. The pending inputs are the mandatory set plus tool deliveries.\n- The evidence JSON is built from `sources.recorded_inputs()`.\n- Earlier inputs that no longer exist therefore cannot block or shape reassessment.\n\n**Tests**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors`:\n  - Existing evidence holds a false determination, the rationale \"old secret judgment\" and a `notes.txt` input.\n  - The test asserts that none of these reach the mandatory inputs, and that recorded inputs start empty.\n- `unresolvable_earlier_inputs_do_not_block_reassessment`: earlier inputs point at a missing file, a removed Rust item and a removed requirement. Preparation still succeeds and yields only the subject.\n- `earlier_evidence_inputs_and_judgments_are_not_carried_forward`: the supplied inputs contain no `notes.txt`, no `evidence/` and no old rationale, and the old evidence file is left untouched.\n- Batch integration tests in `tests/authoring_batch.rs` cover the \"needs assessment\" decision. Examples are `batch_preserves_current_false_judgments_and_reauthors_stale_ones` and `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`. They show current valid, FIXME and false records are skipped and only stale ones are reauthored. These tests are tagged `authoring.batch` and `ci.determination`, not this requirement, but they do exercise the behavior.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` also asserts that the recorded inputs equal the supplied mandatory inputs.\n\n**Gaps**\n- None found. The {impl} markers sit on the functions that implement the requirement. The behavior in them is covered by this or by the other requirements they also mark.\n- One minor weakness: the batch skip decision is tested under other requirement tags rather than this one.",
   "inputs": [
     {
       "requirements": "requirements.ci.authoring_inputs",
@@ -42,1902 +42,334 @@
       ]
     },
     {
-      "rust_file": "src/authoring/access.rs",
-      "rust_item": "impl[SourceAccess]/fn[omit_generated_evidence]",
-      "text": [
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.configuration.evidence_paths`",
-        "    // {impl}`requirements.authoring.source_tools`",
-        "    // {impl}`requirements.ci.authoring_inputs`",
-        "    pub(crate) fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {",
-        "        let joined = root.join(path);",
-        "        let requested = requested_location(&joined).unwrap_or_else(|_| joined.clone());",
-        "        let target = fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());",
-        "        if !generated_evidence_path(root, &requested) {",
-        "            return false;",
-        "        }",
-        "        self.policy.check_disallow(&joined, &target).is_ok()",
-        "            && !self.policy.allowed(&requested, &target)",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/batch.rs",
-      "rust_item": "fn[author_all_with_options]",
-      "text": [
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.authoring.concurrency`",
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "// {impl}`requirements.authoring.progress`",
-        "// {impl}`requirements.authoring.reporting`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "pub async fn author_all_with_options(",
-        "    root: &Path,",
-        "    selection: Option<&str>,",
-        "    options: AuthoringOptions,",
-        ") -> io::Result<BatchOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut progress = BatchProgress::new(options.verbose);",
-        "    let inspection = inspect_repository_with_progress(&root, |update| progress.inspect(update))?;",
-        "    if !inspection.discovery_errors.is_empty() {",
-        "        return Err(io::Error::other(inspection.discovery_errors.join(\"\\n\")));",
-        "    }",
-        "    let mut subjects = Vec::new();",
-        "    let mut unchanged = 0;",
-        "    let total = inspection.definitions.len();",
-        "    progress.inspect(InspectionProgress {",
-        "        stage: \"selecting assessments\",",
-        "        completed: 0,",
-        "        total: Some(total),",
-        "    });",
-        "    for (checked, (name, definition)) in inspection.definitions.iter().enumerate() {",
-        "        if definition.kind != DefinitionKind::Term {",
-        "            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);",
-        "            // A current false judgment stays until its subject or inputs change.",
-        "            if matches!(",
-        "                evidence.state(),",
-        "                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse",
-        "            ) {",
-        "                unchanged += 1;",
-        "            } else {",
-        "                subjects.push(AuthoringSubject::Definition(name.clone()));",
-        "            }",
-        "        }",
-        "        progress.inspect(InspectionProgress {",
-        "            stage: \"selecting assessments\",",
-        "            completed: checked + 1,",
-        "            total: Some(total),",
-        "        });",
-        "    }",
-        "    let mut outcome = BatchOutcome {",
-        "        completed: Vec::new(),",
-        "        failures: Vec::new(),",
-        "        unchanged,",
-        "    };",
-        "    if subjects.is_empty() {",
-        "        return Ok(outcome);",
-        "    }",
-        "    let config = config::resolve_authoring(&root, selection)?;",
-        "    let concurrency = config.effective_concurrency();",
-        "    progress.println(&format!(",
-        "        \"Authoring {} assessments with concurrency {concurrency}; {unchanged} current records unchanged\",",
-        "        subjects.len()",
-        "    ));",
-        "    progress.start(subjects.len());",
-        "    let mut subjects = subjects.into_iter();",
-        "    let mut tasks = JoinSet::new();",
-        "    let (cancel, cancellation) = watch::channel(None::<&'static str>);",
-        "    loop {",
-        "        while cancellation.borrow().is_none() && tasks.len() < concurrency {",
-        "            let Some(subject) = subjects.next() else {",
-        "                break;",
-        "            };",
-        "            let root = root.clone();",
-        "            let config = config.clone();",
-        "            let cancellation = cancellation.clone();",
-        "            let cancel = cancel.clone();",
-        "            tasks.spawn(async move {",
-        "                let result = prepare_assessment(&root, &subject, &config, cancellation).await;",
-        "                if let Err(error) = &result {",
-        "                    cancel_on_error(&cancel, error);",
-        "                }",
-        "                (subject.label(), result)",
-        "            });",
-        "        }",
-        "        progress.refresh(tasks.len(), subjects.len());",
-        "        let Some(result) = tasks.join_next().await else {",
-        "            break;",
-        "        };",
-        "        let (label, result) = match result {",
-        "            Ok(result) => result,",
-        "            Err(error) => {",
-        "                progress.failed(\"authoring task\", &error);",
-        "                outcome",
-        "                    .failures",
-        "                    .push((\"authoring task\".into(), error.to_string()));",
-        "                continue;",
-        "            }",
-        "        };",
-        "        let result = result.and_then(|pending| {",
-        "            // Serialize the stop signal with persistence: a write already in",
-        "            // progress finishes before the signal; later completions are discarded.",
-        "            let stop_reason = cancellation.borrow();",
-        "            if let Some(reason) = *stop_reason {",
-        "                return Err(pending.failed(io::Error::new(io::ErrorKind::Interrupted, reason)));",
-        "            }",
-        "            match write_record(&root, &pending) {",
-        "                Ok(path) => pending.persisted(path),",
-        "                Err(error) => Err(pending.failed(error)),",
-        "            }",
-        "        });",
-        "        match result {",
-        "            Ok(assessment) => {",
-        "                progress.completed(&assessment);",
-        "                outcome.completed.push(assessment);",
-        "            }",
-        "            Err(error) => {",
-        "                cancel_on_error(&cancel, &error);",
-        "                progress.failed(&label, &error);",
-        "                outcome.failures.push((label, error.to_string()));",
-        "            }",
-        "        }",
-        "    }",
-        "    if let Some(reason) = *cancellation.borrow() {",
-        "        let remaining = subjects.len();",
-        "        if remaining > 0 {",
-        "            let message = format!(\"{reason}; {remaining} assessments not started\");",
-        "            progress.println(&format!(\"batch: {message}\"));",
-        "            outcome.failures.push((\"batch\".into(), message));",
-        "        }",
-        "    }",
-        "    progress.finish(cancellation.borrow().is_some(), subjects.len());",
-        "    Ok(outcome)",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "impl[AssessmentSources]/fn[prepare]",
-      "text": [
-        "    // {impl}`requirements.authoring.invocation`",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.authoring_input`",
-        "    // {impl}`requirements.examples.authoring_inputs`",
-        "    // {impl}`requirements.references.authoring_inputs`",
-        "    // {impl}`requirements.definitions.authoring_inputs`",
-        "    // {impl}`requirements.ci.authoring_inputs`",
-        "    // {impl}`requirements.authoring.source_tools`",
-        "    // {impl}`requirements.authoring.read_denial`",
-        "    // {impl}`requirements.references.anchors`",
-        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {",
-        "        let root = fs::canonicalize(root)?;",
-        "        let access = SourceAccess::load(&root)?;",
-        "        let definitions = load_definitions(&root)?;",
-        "        let subject = definitions",
-        "            .get(subject_name)",
-        "            .filter(|definition| definition.kind != DefinitionKind::Term)",
-        "            .ok_or_else(|| {",
-        "                io::Error::other(format!(",
-        "                    \"{subject_name}: no matching requirement or named example\"",
-        "                ))",
-        "            })?;",
-        "        let mut selectors = vec![InputSelector::Requirements {",
-        "            requirements: subject_name.to_owned(),",
-        "        }];",
-        "",
-        "        for reference in crate::reference_roles(&subject.text, true) {",
-        "            if reference.kind == ReferenceKind::Term {",
-        "                continue;",
-        "            }",
-        "            if !definitions",
-        "                .get(reference.name)",
-        "                .is_some_and(|definition| definition.kind != DefinitionKind::Term)",
-        "            {",
-        "                return Err(io::Error::other(format!(",
-        "                    \"{subject_name}: referenced subject {} does not exist\",",
-        "                    reference.name",
-        "                )));",
-        "            }",
-        "            // Only `{cite}` leaves the subject; its `{impl}` and `{test}`",
-        "            // references point into it from the definitions it implements or tests.",
-        "            if reference.kind != ReferenceKind::Cite {",
-        "                continue;",
-        "            }",
-        "            insert_selector(",
-        "                &mut selectors,",
-        "                InputSelector::Requirements {",
-        "                    requirements: reference.name.to_owned(),",
-        "                },",
-        "            );",
-        "        }",
-        "",
-        "        let mut errors = Vec::new();",
-        "        let references = collect_references(&root, &mut errors);",
-        "        if !errors.is_empty() {",
-        "            return Err(io::Error::other(errors.join(\"\\n\")));",
-        "        }",
-        "        // `{impl}` and `{test}` point from the subject to their sources; `{cite}`",
-        "        // sites point into the subject and are discoverable with `references`.",
-        "        for reference in references.iter().filter(|reference| {",
-        "            reference.name == subject_name",
-        "                && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)",
-        "        }) {",
-        "            access.file(&root, &reference.file)?;",
-        "            insert_selector(",
-        "                &mut selectors,",
-        "                reference_selector(&root, &definitions, reference)?,",
-        "            );",
-        "        }",
-        "",
-        "        // {impl}`requirements.references.anchors`",
-        "        for anchor in &subject.anchors {",
-        "            let selector = access",
-        "                .file(&root, Path::new(&anchor.file))",
-        "                .and_then(|_| {",
-        "                    anchor",
-        "                        .complete_file(&root)",
-        "                        .map(|(_, line_count)| anchor.selector(line_count))",
-        "                        .map_err(io::Error::other)",
-        "                })",
-        "                .map_err(|error| {",
-        "                    io::Error::new(",
-        "                        error.kind(),",
-        "                        format!(",
-        "                            \"{subject_name}: cannot read :{}: anchor {}: {error}\",",
-        "                            anchor.kind.label(),",
-        "                            anchor.file",
-        "                        ),",
-        "                    )",
-        "                })?;",
-        "            insert_selector(&mut selectors, selector);",
-        "        }",
-        "",
-        "        // Existing evidence only decides whether to reassess; its inputs are",
-        "        // not carried forward.",
-        "        let mut mandatory = Vec::new();",
-        "        for selector in selectors {",
-        "            if !generated_evidence_selector(&root, &access, &selector) {",
-        "                mandatory.push(source_input(&root, &access, &definitions, &selector)?);",
-        "            }",
-        "        }",
-        "        let dependencies = definition_inputs(",
-        "            &root,",
-        "            &access,",
-        "            &definitions,",
-        "            &mandatory,",
-        "            Some(&subject.text),",
-        "        )?;",
-        "        for input in dependencies {",
-        "            if !mandatory.contains(&input) {",
-        "                mandatory.push(input);",
-        "            }",
-        "        }",
-        "        Ok(Self {",
-        "            root,",
-        "            access,",
-        "            subject_name: subject_name.to_owned(),",
-        "            subject_kind: AssessmentKind::Definition(subject.kind),",
-        "            subject_text: subject.text.clone(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),",
-        "        })",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "fn[generated_evidence_path]",
-      "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {",
-        "    let path = root.join(path);",
-        "    let evidence = root.join(\"evidence\");",
-        "    path.starts_with(&evidence)",
-        "        || fs::canonicalize(&path)",
-        "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "fn[generated_evidence_selector]",
-      "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "fn generated_evidence_selector(",
-        "    root: &Path,",
-        "    access: &SourceAccess,",
-        "    selector: &InputSelector,",
-        ") -> bool {",
-        "    match selector {",
-        "        InputSelector::FileRange { file, .. }",
-        "        | InputSelector::RustItem {",
-        "            rust_file: file, ..",
-        "        } => access.omit_generated_evidence(root, Path::new(file)),",
-        "        InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "fn[source_input]",
-      "text": [
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.definitions.authoring_inputs`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "fn source_input(",
-        "    root: &Path,",
-        "    access: &SourceAccess,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    selector: &InputSelector,",
-        ") -> io::Result<Value> {",
-        "    match selector {",
-        "        InputSelector::FileRange { file, .. }",
-        "        | InputSelector::RustItem {",
-        "            rust_file: file, ..",
-        "        } => {",
-        "            access.file(root, Path::new(file))?;",
-        "        }",
-        "        InputSelector::Definition { definition } => {",
-        "            if let Some(definition) = definitions.get(definition) {",
-        "                access.file(root, Path::new(&definition.file))?;",
-        "            }",
-        "        }",
-        "        InputSelector::Requirements { requirements } => {",
-        "            for (name, definition) in definitions {",
-        "                if definition.kind != DefinitionKind::Term",
-        "                    && crate::definition_glob::matches(requirements, name)",
-        "                {",
-        "                    access.file(root, Path::new(&definition.file))?;",
-        "                }",
-        "            }",
-        "        }",
-        "    }",
-        "    let resolved = selector",
-        "        .resolve(root, definitions)",
-        "        .map_err(io::Error::other)?;",
-        "    for range in &resolved.ranges {",
-        "        access.file(root, Path::new(&range.file))?;",
-        "    }",
-        "    Ok(selector.to_input(&resolved))",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "text": [
-        "    // {test}`requirements.authoring.complete_initial_bundle`",
-        "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    // {test}`requirements.authoring_input`",
-        "    // {test}`requirements.examples.authoring_inputs`",
-        "    // {test}`requirements.references.authoring_inputs`",
-        "    // {test}`requirements.definitions.authoring_inputs`",
-        "    // {test}`requirements.ci.authoring_inputs`",
-        "    #[test]",
-        "    fn bundle_combines_direct_references_terms_and_current_existing_selectors() {",
-        "        let root = project();",
-        "        let terms = format!(",
-        "            \":::{{definition}} unit\\n:phrase: unit\\nA {}.\\n:::\\n\\n:::{{definition}} value\\n:phrase: value\\nA {}.\\n:::\\n\",",
-        "            role(\"term\", \"terms.value\"),",
-        "            role(\"term\", \"terms.unit\")",
-        "        );",
-        "        fs::write(root.path().join(\"md/terms.md\"), terms).unwrap();",
-        "        let declarations = format!(",
-        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {} {}\\n:::\\n\",",
-        "            role(\"cite\", \"requirements.base\"),",
-        "            role(\"term\", \"terms.unit\"),",
-        "            role(\"cite\", \"requirements.distant\"),",
-        "            role(\"cite\", \"requirements.ready\"),",
-        "            role(\"test\", \"requirements.ready\")",
-        "        );",
-        "        fs::write(root.path().join(\"md/requirements.md\"), declarations).unwrap();",
-        "        fs::write(root.path().join(\"src/lib.rs\"), format!(\"struct Thing;\\nimpl Thing {{\\n    // {}\\n    fn run(&self) {{}}\\n    fn unrelated(&self) {{}}\\n}}\\n// {}\\nfn test_ready() {{}}\\n\", role(\"impl\", \"requirements.ready\"), role(\"test\", \"requirements.ready\"))).unwrap();",
-        "        fs::write(root.path().join(\"notes.txt\"), \"new source text\\n\").unwrap();",
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/requirements.ready.json\"),",
-        "            json!({",
-        "                \"determination\": false, \"rationale\": \"old secret judgment\",",
-        "                \"inputs\": [{\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old text\"]}]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let inputs = sources.mandatory_inputs();",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"rust_item\"] == \"impl[Thing]/fn[run]\")",
-        "        );",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"rust_item\"] == \"fn[test_ready]\")",
-        "        );",
-        "        assert!(",
-        "            !inputs",
-        "                .iter()",
-        "                .any(|input| input[\"rust_item\"] == \"impl[Thing]\")",
-        "        );",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"requirements\"] == \"requirements.case\")",
-        "        );",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"requirements\"] == \"requirements.base\")",
-        "        );",
-        "        assert!(",
-        "            !inputs",
-        "                .iter()",
-        "                .any(|input| input[\"requirements\"] == \"requirements.distant\")",
-        "        );",
-        "        assert_eq!(",
-        "            inputs",
-        "                .iter()",
-        "                .filter(|input| input.get(\"definition\").is_some())",
-        "                .count(),",
-        "            2",
-        "        );",
-        "        // Earlier evidence inputs are not carried forward.",
-        "        assert!(!inputs.iter().any(|input| input[\"file\"] == \"notes.txt\"));",
-        "        assert!(",
-        "            !serde_json::to_string(inputs)",
-        "                .unwrap()",
-        "                .contains(\"old secret judgment\")",
-        "        );",
-        "        let example = AssessmentSources::prepare(root.path(), \"requirements.case\").unwrap();",
-        "        assert!(matches!(",
-        "            example.subject_kind,",
-        "            AssessmentKind::Definition(DefinitionKind::Example)",
-        "        ));",
-        "        assert_eq!(",
-        "            example.mandatory_inputs()[0][\"requirements\"],",
-        "            \"requirements.case\"",
-        "        );",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    // {test}`requirements.ci.authoring_inputs`",
-        "    #[test]",
-        "    fn unresolvable_earlier_inputs_do_not_block_reassessment() {",
-        "        let root = project();",
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/requirements.ready.json\"),",
-        "            json!({",
-        "                \"inputs\": [",
-        "                    {\"file\":\"missing.txt\", \"line_start\":1, \"line_end\":1},",
-        "                    {\"rust_file\":\"src/lib.rs\", \"rust_item\":\"fn[removed]\", \"text\":[\"fn removed() {}\"]},",
-        "                    {\"requirements\":\"requirements.removed\", \"matches\":[\"requirements.removed\"], \"text\":[\"gone\"]}",
-        "                ]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        assert_eq!(",
-        "            sources.mandatory_inputs(),",
-        "            &[json!({",
-        "                \"requirements\": \"requirements.ready\",",
-        "                \"matches\": [\"requirements.ready\"],",
-        "                \"text\": [\":::{req} ready\", \"The project MUST be ready.\", \":::\"]",
-        "            })]",
-        "        );",
-        "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/inputs.rs",
-      "rust_item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
-      "text": [
-        "    // {test}`requirements.authoring.mandatory_inputs`",
-        "    // {test}`requirements.ci.authoring_inputs`",
-        "    #[test]",
-        "    fn earlier_evidence_inputs_and_judgments_are_not_carried_forward() {",
-        "        let root = project();",
-        "        fs::write(root.path().join(\"notes.txt\"), \"current source\\n\").unwrap();",
-        "        fs::create_dir_all(root.path().join(\"evidence\")).unwrap();",
-        "        let old = json!({",
-        "            \"requirement\": \"The project MUST be ready.\",",
-        "            \"determination\": false,",
-        "            \"rationale\": \"old secret judgment\",",
-        "            \"inputs\": [",
-        "                {\"file\":\"evidence/requirements.ready.json\", \"line_start\":1, \"line_end\":1, \"text\":[\"old judgment\"]},",
-        "                {\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old source\"]},",
-        "            ]",
-        "        });",
-        "        let path = root.path().join(\"evidence/requirements.ready.json\");",
-        "        fs::write(&path, old.to_string()).unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let supplied = serde_json::to_string(sources.mandatory_inputs()).unwrap();",
-        "        assert!(!supplied.contains(\"notes.txt\"), \"{supplied}\");",
-        "        assert!(!supplied.contains(\"evidence/\"), \"{supplied}\");",
-        "        assert!(!supplied.contains(\"old secret judgment\"), \"{supplied}\");",
-        "        assert_eq!(",
-        "            serde_json::from_str::<Value>(&fs::read_to_string(path).unwrap()).unwrap(),",
-        "            old",
-        "        );",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "src/authoring/mod.rs",
-      "rust_item": "fn[assess]",
-      "text": [
-        "// {impl}`requirements.authoring.submission`",
-        "// {impl}`requirements.authoring.initial_prompt`",
-        "// {impl}`requirements.authoring.delivered_inputs`",
-        "// {impl}`requirements.authoring.persistence`",
-        "// {impl}`requirements.authoring.usage_inputs`",
-        "// {impl}`requirements.authoring.usage_requests`",
-        "// {impl}`requirements.authoring.usage_storage`",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "// {impl}`requirements.authoring.provider_backoff`",
-        "// {impl}`requirements.authoring.submission_count`",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "async fn assess(",
-        "    provider: &impl CompletionProvider,",
-        "    sources: &mut AssessmentSources,",
-        "    usage: &mut UsageLog,",
-        ") -> io::Result<(Judgment, Value)> {",
-        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
-        "    request.tools = tool_definitions()?;",
-        "    let mut pending = sources.mandatory_inputs().to_vec();",
-        "    let mut backoff = providers::ProviderBackoff::default();",
-        "    loop {",
-        "        let index = usage.begin_request()?;",
-        "        let started = Instant::now();",
-        "        let response = provider.complete(request.clone()).await;",
-        "        usage.end_request(",
-        "            index,",
-        "            started.elapsed().as_millis(),",
-        "            response.as_ref().ok().map(|r| &r.usage),",
-        "        )?;",
-        "        let response = match response {",
-        "            Ok(response) => response,",
-        "            Err(error) => {",
-        "                if let Some(delay) = backoff.next_delay(&error) {",
-        "                    tokio::time::sleep(delay).await;",
-        "                    continue;",
-        "                }",
-        "                return Err(error);",
-        "            }",
-        "        };",
-        "        backoff = providers::ProviderBackoff::default();",
-        "        sources.record_inputs(&pending);",
-        "        pending.clear();",
-        "        if let Some(error) = turn_failure(",
-        "            &response.choice,",
-        "            Some(&response.stop()),",
-        "            response.finish_reason().as_ref(),",
-        "        ) {",
-        "            return Err(io::Error::other(error));",
-        "        }",
-        "        let calls: Vec<_> = response.tool_calls().cloned().collect();",
-        "        let submissions: Vec<_> = calls",
-        "            .iter()",
-        "            .filter(|call| call.function.name.as_str() == \"submit_judgment\")",
-        "            .collect();",
-        "        if !submissions.is_empty() {",
-        "            for call in &calls {",
-        "                if call.function.name.as_str() != \"submit_judgment\" {",
-        "                    usage.skipped_tool(call.function.name.as_str());",
-        "                }",
-        "            }",
-        "            if submissions.len() != 1 {",
-        "                for _ in &submissions {",
-        "                    usage.tool(\"submit_judgment\", true);",
-        "                }",
-        "                return Err(io::Error::other(",
-        "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
-        "                ));",
-        "            }",
-        "            let result = submission(&Value::Object(submissions[0].function.arguments.clone()));",
-        "            usage.tool(\"submit_judgment\", result.is_err());",
-        "            let (judgment, rationale) = result?;",
-        "            usage.record.determination = Some(judgment.kind().into());",
-        "            usage.save()?;",
-        "            let AssessmentKind::Definition(kind) = &sources.subject_kind;",
-        "            let evidence = json!({kind.noun(): sources.subject_text,",
-        "                \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()});",
-        "            return Ok((judgment, evidence));",
-        "        }",
-        "        if calls.is_empty() {",
-        "            return Err(io::Error::other(",
-        "                \"model finished without invoking submit_judgment\",",
-        "            ));",
-        "        }",
-        "        request.chat_history.push(",
-        "            response",
-        "                .message()",
-        "                .ok_or_else(|| io::Error::other(\"model returned an empty response\"))?,",
-        "        );",
-        "        let mut results = Vec::new();",
-        "        for call in calls {",
-        "            match tools::dispatch(",
-        "                sources,",
-        "                call.function.name.as_str(),",
-        "                &Value::Object(call.function.arguments.clone()),",
-        "            ) {",
-        "                Ok(delivery) => {",
-        "                    usage.tool(call.function.name.as_str(), false);",
-        "                    usage.prepared(call.function.name.as_str(), &delivery.inputs);",
-        "                    pending.extend(delivery.inputs);",
-        "                    results.push(",
-        "                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),",
-        "                    );",
-        "                }",
-        "                Err(error) => {",
-        "                    usage.tool(call.function.name.as_str(), true);",
-        "                    if error.kind() == io::ErrorKind::PermissionDenied {",
-        "                        return Err(error);",
-        "                    }",
-        "                    results",
-        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
-        "                }",
-        "            }",
-        "        }",
-        "        usage.save()?;",
-        "        request.chat_history.push(Message::tool_results(results));",
-        "    }",
-        "}"
-      ]
-    },
-    {
       "file": "src/authoring/access.rs",
-      "line_start": 533,
-      "line_end": 537,
-      "text": [
-        "        fs::write(root.path().join(\"generated/ok.txt\"), \"generated\\n\").unwrap();",
-        "        fs::write(root.path().join(\"generated/private/secret.txt\"), \"secret\\n\").unwrap();",
-        "        fs::write(root.path().join(\"evidence/old.txt\"), \"old judgment\\n\").unwrap();",
-        "        fs::write(external.path().join(\"outside.txt\"), \"outside\\n\").unwrap();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 544,
-      "line_end": 548,
-      "text": [
-        "        for path in [",
-        "            root.join(\"generated/ok.txt\"),",
-        "            root.join(\"evidence/old.txt\"),",
-        "            external.path().join(\"outside.txt\"),",
-        "        ] {"
-      ]
+      "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
+      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 13,
-      "line_end": 17,
-      "text": [
-        "use crate::config;",
-        "use crate::evidence::{InspectionProgress, inspect_repository_with_progress};",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence};",
-        "",
-        "pub struct BatchOutcome {"
-      ]
+      "item": "fn[author_all_with_options]",
+      "hash": "323d4bd9f7d3e60816e04cbff316f0db32575c44225a36d81fa72c8e5d561bf8"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "946a4db6e2efc48af190534f77a1ace8cb8edd28284170e8203ff7c12e8d547b"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_path]",
+      "hash": "df1f61c7b3a4bd67529fce5edc8c58f199c3183a6fa85569da97539acef0c39a"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
+      "hash": "c1e6e2be1aedce966332810f1e63bca14af74ee76bdc12f071c5614c3ec5bdb8"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
+      "hash": "a3f87dcf2b9125549fbfd02570ec43ddf209a3429eb38ce1be7d4edac0e7f6f3"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
+      "hash": "1bd97f9ef93ba8fdd423db968cb7c373b4efa3174afd40430062340350a7497f"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess]",
+      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 58,
-      "line_end": 62,
-      "text": [
-        "    for (checked, (name, definition)) in inspection.definitions.iter().enumerate() {",
-        "        if definition.kind != DefinitionKind::Term {",
-        "            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);",
-        "            // A current false judgment stays until its subject or inputs change.",
-        "            if matches!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 32,
-      "line_end": 36,
-      "text": [
-        "    pub(crate) subject_text: String,",
-        "    mandatory: Vec<Value>,",
-        "    recorded: Vec<Value>,",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 156,
-      "line_end": 160,
-      "text": [
-        "            subject_text: subject.text.clone(),",
-        "            mandatory,",
-        "            recorded: Vec::new(),",
-        "        })",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 166,
-      "line_end": 178,
-      "text": [
-        "",
-        "    // {impl}`requirements.authoring.delivered_inputs`",
-        "    pub(crate) fn recorded_inputs(&self) -> &[Value] {",
-        "        &self.recorded",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.delivered_inputs`",
-        "    pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {",
-        "        for input in inputs {",
-        "            if !self.recorded.contains(input) {",
-        "                self.recorded.push(input.clone());",
-        "            }",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 194,
-      "line_end": 198,
-      "text": [
-        "            definition_inputs(&self.root, &self.access, &definitions, inputs, None)?",
-        "                .into_iter()",
-        "                .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))",
-        "                .collect(),",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 432,
-      "line_end": 436,
-      "text": [
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/requirements.ready.json\"),",
-        "            json!({",
-        "                \"determination\": false, \"rationale\": \"old secret judgment\","
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 442,
-      "line_end": 446,
-      "text": [
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let inputs = sources.mandatory_inputs();",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        assert!(",
-        "            inputs"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 505,
-      "line_end": 509,
-      "text": [
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/requirements.ready.json\"),",
-        "            json!({",
-        "                \"inputs\": ["
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 540,
-      "line_end": 553,
-      "text": [
-        "            \"rationale\": \"old secret judgment\",",
-        "            \"inputs\": [",
-        "                {\"file\":\"evidence/requirements.ready.json\", \"line_start\":1, \"line_end\":1, \"text\":[\"old judgment\"]},",
-        "                {\"file\":\"notes.txt\", \"line_start\":1, \"line_end\":1, \"text\":[\"old source\"]},",
-        "            ]",
-        "        });",
-        "        let path = root.path().join(\"evidence/requirements.ready.json\");",
-        "        fs::write(&path, old.to_string()).unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let supplied = serde_json::to_string(sources.mandatory_inputs()).unwrap();",
-        "        assert!(!supplied.contains(\"notes.txt\"), \"{supplied}\");",
-        "        assert!(!supplied.contains(\"evidence/\"), \"{supplied}\");",
-        "        assert!(!supplied.contains(\"old secret judgment\"), \"{supplied}\");",
-        "        assert_eq!("
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 454,
-      "line_end": 458,
-      "text": [
-        "        };",
-        "        backoff = providers::ProviderBackoff::default();",
-        "        sources.record_inputs(&pending);",
-        "        pending.clear();",
-        "        if let Some(error) = turn_failure("
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 489,
-      "line_end": 493,
-      "text": [
-        "            let AssessmentKind::Definition(kind) = &sources.subject_kind;",
-        "            let evidence = json!({kind.noun(): sources.subject_text,",
-        "                \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()});",
-        "            return Ok((judgment, evidence));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 676,
-      "line_end": 680,
-      "text": [
-        "        tokio::time::advance(Duration::from_secs(120)).await;",
-        "        assert_eq!(provider.requests.borrow().len(), 1);",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();",
-        "        assert_eq!(log[\"request_count\"], 1);"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 114,
-      "line_end": 118,
-      "text": [
-        "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
-        "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
-        "    // would otherwise be hidden inside one recorded request.",
-        "    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
-        "        .retry_config(aws_config::retry::RetryConfig::disabled());"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 28,
-      "line_end": 32,
-      "text": [
-        "        json!({",
-        "            \"name\": \"habeas\",",
-        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\",",
-        "            \"parameters\": {\"type\":\"object\", \"properties\": {",
-        "                \"file\":{\"type\":\"string\"},"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 40,
-      "line_end": 48,
-      "text": [
-        "        }),",
-        "        json!({",
-        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\",",
-        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
-        "        }),",
-        "        json!({",
-        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.\",",
-        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
-        "        }),"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 553,
-      "line_end": 560,
-      "text": [
-        "        assert_eq!(read.inputs.len(), 2);",
-        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        sources.record_inputs(&read.inputs);",
-        "        sources.record_inputs(&read.inputs);",
-        "        assert_eq!(sources.recorded_inputs().len(), 2);",
-        "        let eof = dispatch(",
-        "            &sources,"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 663,
-      "line_end": 672,
-      "text": [
-        "        fs::create_dir(root.path().join(\"src/evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/old.json\"),",
-        "            \"needle in a previous judgment\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/generated.rs\"),",
-        "            \"fn generated() {}\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 674,
-      "line_end": 678,
-      "text": [
-        "        fs::write(root.path().join(\"source.txt\"), \"needle in source\\n\").unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"src/evidence/source.txt\"),",
-        "            \"needle in nested source\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 686,
-      "line_end": 690,
-      "text": [
-        "            .unwrap();",
-        "            std::os::unix::fs::symlink(",
-        "                root.path().join(\"evidence/old.json\"),",
-        "                root.path().join(\"old.json\"),",
-        "            )"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 705,
-      "line_end": 714,
-      "text": [
-        "            .map(|input| input[\"file\"].as_str().unwrap())",
-        "            .collect::<Vec<_>>();",
-        "        assert_eq!(files, vec![\"source.txt\", \"src/evidence/source.txt\"]);",
-        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
-        "        assert!(listing.result.as_array().unwrap().iter().all(|entry| {",
-        "            ![\"evidence\", \"old-output\", \"old.json\"].contains(&entry[\"path\"].as_str().unwrap())",
-        "        }));",
-        "        for path in [\"evidence/old.json\", \"./evidence/old.json\"] {",
-        "            assert!(",
-        "                dispatch(&sources, \"habeas\", &json!({\"file\":path, \"line_start\":1}))"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 723,
-      "line_end": 727,
-      "text": [
-        "                &sources,",
-        "                \"habeas\",",
-        "                &json!({\"rust_file\":\"evidence/generated.rs\", \"rust_item\":\"fn[generated]\"})",
-        "            )",
-        "            .err()"
-      ]
+      "item": "use@a9968c074203",
+      "hash": "a9968c07420370d4c23496cf012df352f182c9d64ba9a3600e530d06a9c96e45"
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 12,
-      "line_end": 18,
-      "text": [
-        "use crate::DefinitionKind;",
-        "use crate::config;",
-        "use crate::evidence::{InspectionProgress, inspect_repository_with_progress};",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence};",
-        "",
-        "pub struct BatchOutcome {",
-        "    pub completed: Vec<AuthoringOutcome>,"
-      ]
+      "item": "use@932d0226c309",
+      "hash": "932d0226c3090d47855b9b026b4ffa716d7872a488e9d7a83f7a6b05fb955dbc"
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 25,
-      "line_end": 31,
-      "text": [
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "// {impl}`requirements.authoring.progress`",
-        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
-        "    author_all_with_options(root, selection, AuthoringOptions::default()).await",
-        "}",
-        ""
-      ]
+      "item": "use@bf004211229c",
+      "hash": "bf004211229cb4035b27140a2de8e0971c31027846ff274d8fa94f471d8f26ae"
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 36,
-      "line_end": 42,
-      "text": [
-        "// {impl}`requirements.authoring.progress`",
-        "// {impl}`requirements.authoring.reporting`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "pub async fn author_all_with_options(",
-        "    root: &Path,",
-        "    selection: Option<&str>,",
-        "    options: AuthoringOptions,"
-      ]
+      "item": "struct[BatchOutcome]",
+      "hash": "55dd549065b9fcb4f504bfdd8aebd152e5140cbabdd264afa3f42a0013dd6bc3"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[update_inputs]",
+      "hash": "645d4e5926a2aa79b220a7adeb61787758bbca1fda4dd34e2d088a6d3b833e5f"
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 57,
-      "line_end": 67,
-      "text": [
-        "    });",
-        "    for (checked, (name, definition)) in inspection.definitions.iter().enumerate() {",
-        "        if definition.kind != DefinitionKind::Term {",
-        "            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);",
-        "            // A current false judgment stays until its subject or inputs change.",
-        "            if matches!(",
-        "                evidence.state(),",
-        "                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse",
-        "            ) {",
-        "                unchanged += 1;",
-        "            } else {"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 439,
-      "line_end": 445,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let inputs = sources.mandatory_inputs();",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 486,
-      "line_end": 492,
-      "text": [
-        "                .unwrap()",
-        "                .contains(\"old secret judgment\")",
-        "        );",
-        "        let example = AssessmentSources::prepare(root.path(), \"requirements.case\").unwrap();",
-        "        assert!(matches!(",
-        "            example.subject_kind,",
-        "            AssessmentKind::Definition(DefinitionKind::Example)"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 515,
-      "line_end": 521,
-      "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        assert_eq!(",
-        "            sources.mandatory_inputs(),",
-        "            &[json!({"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 524,
-      "line_end": 530,
-      "text": [
-        "                \"text\": [\":::{req} ready\", \"The project MUST be ready.\", \":::\"]",
-        "            })]",
-        "        );",
-        "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.mandatory_inputs`"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 545,
-      "line_end": 551,
-      "text": [
-        "        });",
-        "        let path = root.path().join(\"evidence/requirements.ready.json\");",
-        "        fs::write(&path, old.to_string()).unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let supplied = serde_json::to_string(sources.mandatory_inputs()).unwrap();",
-        "        assert!(!supplied.contains(\"notes.txt\"), \"{supplied}\");",
-        "        assert!(!supplied.contains(\"evidence/\"), \"{supplied}\");"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 567,
-      "line_end": 573,
-      "text": [
-        "        let root = project();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \"Cargo.toml\", \"book.toml\"]);",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()",
-        "            .unwrap();",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 584,
-      "line_end": 590,
-      "text": [
-        "            ),",
-        "        )",
-        "        .unwrap();",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()",
-        "            .unwrap();",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 606,
-      "line_end": 612,
-      "text": [
-        "            ),",
-        "        )",
-        "        .unwrap();",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()",
-        "            .unwrap();",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 614,
-      "line_end": 620,
-      "text": [
-        "            \"{error}\"",
-        "        );",
-        "        git(root.path(), &[\"add\", \"md/terms.md\"]);",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        assert!(",
-        "            sources",
-        "                .mandatory_inputs()"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 634,
-      "line_end": 640,
-      "text": [
-        "            \"version = 1\\n[evidence]\\ndisallow = ['md/requirements.md']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()",
-        "            .unwrap();",
-        "        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, \"{error}\");"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 666,
-      "line_end": 672,
-      "text": [
-        "            ),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let inputs = sources.mandatory_inputs();",
-        "        let has_requirements =",
-        "            |name: &str| inputs.iter().any(|input| input[\"requirements\"] == name);"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 680,
-      "line_end": 686,
-      "text": [
-        "        assert!(!has_requirements(\"requirements.citer\"), \"{inputs:#?}\");",
-        "        assert!(!has_requirements(\"requirements.parent\"), \"{inputs:#?}\");",
-        "",
-        "        let parent = AssessmentSources::prepare(root.path(), \"requirements.parent\").unwrap();",
-        "        let inputs = parent.mandatory_inputs();",
-        "        assert!(",
-        "            inputs"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 709,
-      "line_end": 715,
-      "text": [
-        "            \":::{req} ready\\n:impl: skills/ready.md\\n:test: skills/ready.md\\nThe project MUST be ready.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let inputs = sources.mandatory_inputs();",
-        "        assert_eq!(",
-        "            inputs,"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 740,
-      "line_end": 746,
-      "text": [
-        "            \":::{req} ready\\n:impl: skills/missing.md\\nThe project MUST be ready.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()",
-        "            .unwrap();",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 762,
-      "line_end": 768,
-      "text": [
-        "            \"version = 1\\n[evidence]\\ndisallow = ['private']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()",
-        "            .unwrap();",
-        "        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, \"{error}\");"
-      ]
+      "item": "fn[author_all]",
+      "hash": "04085915b6e2a6c34a2f30d39b22a3bb7286cc3beae8edbf5062489ae157f017"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 112,
-      "line_end": 118,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,"
-      ]
+      "item": "fn[prepare_assessment]",
+      "hash": "69eff45f518d3e89fae99b8c5c3edeef1e2c369e4d1fb06cf69a5e47d7628a1d"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 124,
-      "line_end": 130,
-      "text": [
-        "// {impl}`requirements.authoring.usage_storage`",
-        "// {impl}`requirements.configuration.state_location`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 333,
-      "line_end": 339,
-      "text": [
-        "    usage.record.backend = Some(backend.into());",
-        "    usage.record.model = Some(model.model.clone());",
-        "    let AuthoringSubject::Definition(name) = subject;",
-        "    let mut sources = AssessmentSources::prepare(root, name)?;",
-        "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
-        "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
-        "    usage.save()?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 594,
-      "line_end": 600,
-      "text": [
-        "        UsageLog,",
-        "    ) {",
-        "        let project = inputs::tests::project();",
-        "        let sources = AssessmentSources::prepare(project.path(), \"requirements.ready\").unwrap();",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut usage =",
-        "            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 540,
-      "line_end": 546,
-      "text": [
-        "            format!(\"// {}\\nfn work() {{}}\\n\", role(\"term\", \"terms.value\")),",
-        "        )",
-        "        .unwrap();",
-        "        let mut sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let listing = dispatch(&sources, \"list_files\", &json!({\"path\":\"src\"})).unwrap();",
-        "        assert_eq!(listing.result, json!([{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]));",
-        "        assert!(listing.inputs.is_empty());"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 622,
-      "line_end": 628,
-      "text": [
-        "            .collect::<Vec<_>>();",
-        "        fs::write(root.path().join(\"sample.txt\"), lines.join(\"\\n\")).unwrap();",
-        "        git(root.path(), &[\"add\", \"--force\", \".\"]);",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"needle\"})).unwrap();",
-        "        assert_eq!(search.inputs.len(), 1);",
-        "        assert_eq!(search.inputs[0][\"file\"], \"sample.txt\");"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 692,
-      "line_end": 698,
-      "text": [
-        "        }",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \".\"]);",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let search = dispatch(",
-        "            &sources,",
-        "            \"ripgrep\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 794,
-      "line_end": 800,
-      "text": [
-        "            root.path().join(\"outside.rs\"),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
-        "        assert!(listing.result.as_array().unwrap().iter().all(|entry| {",
-        "            ![\"outside\", \"outside.rs\"].contains(&entry[\"path\"].as_str().unwrap())"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 841,
-      "line_end": 847,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(root.path().join(\"untracked.rs\"), \"fn needle() {}\\n\").unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
-        "        assert_eq!(",
-        "            listing"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 918,
-      "line_end": 924,
-      "text": [
-        "                \"untracked-target.txt\",",
-        "            ],",
-        "        );",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let allowed = dispatch(",
-        "            &sources,",
-        "            \"habeas\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 985,
-      "line_end": 991,
-      "text": [
-        "        fs::write(root.path().join(\"habeas.toml\"), format!(",
-        "            \"version = 1\\n[evidence]\\nallow = ['generated', {external_toml}]\\ndisallow = ['generated/private']\\n\"",
-        "        )).unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
-        "        let paths = listing",
-        "            .result"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1053,
-      "line_end": 1059,
-      "text": [
-        "        fs::write(root.path().join(\".gitignore\"), \"target/\\n\").unwrap();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \".\"]);",
-        "        let unbuilt = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        assert!(",
-        "            dispatch(",
-        "                &unbuilt,"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1071,
-      "line_end": 1077,
-      "text": [
-        "            out.to_str().unwrap(),",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
-        "        assert!(",
-        "            listing"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1104,
-      "line_end": 1110,
-      "text": [
-        "            \"version = 1\\n[evidence]\\ndisallow = ['target/debug/build/fixture-hash/out']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let denied = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let listing = dispatch(&denied, \"list_files\", &json!({})).unwrap();",
-        "        assert!(",
-        "            !listing"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1152,
-      "line_end": 1158,
-      "text": [
-        "        fs::write(root.path().join(\"needle.txt\"), \"wrong needle\\n\").unwrap();",
-        "        std::os::unix::fs::symlink(root.path().join(\"actual/nested\"), root.path().join(\"alias\"))",
-        "            .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let result = dispatch(",
-        "            &sources,",
-        "            \"ripgrep\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1197,
-      "line_end": 1203,
-      "text": [
-        "            \"version = 1\\n\\n[evidence]\\ndisallow = [\\\"private\\\"]\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "",
-        "        let all = dispatch(&sources, \"references\", &json!({})).unwrap();",
-        "        assert_eq!("
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1267,
-      "line_end": 1273,
-      "text": [
-        "            )",
-        "            .unwrap();",
-        "        }",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let first = dispatch(",
-        "            &sources,",
-        "            \"ripgrep\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1323,
-      "line_end": 1329,
-      "text": [
-        "            \"version = 1\\n\\n[evidence]\\ndisallow = [\\\"private\\\"]\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
-        "        let result = dispatch(",
-        "            &sources,",
-        "            \"references\","
-      ]
+      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "hash": "b6ea41e0520a27f287ef5ef9bf0c947105fd047bf9d00f8c549b193159411dae"
     },
     {
       "file": "src/commands.rs",
-      "line_start": 6,
-      "line_end": 12,
-      "text": [
-        "use crate::escape_html;",
-        "use crate::evidence::inspect_repository;",
-        "use crate::fixme::FixmeSummary;",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};",
-        "use crate::markdown::render_evidence_table;",
-        "",
-        "// {impl}`requirements.cli.status`"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 59,
-      "line_end": 73,
-      "text": [
-        "        if glob.is_some_and(|glob| !definition_glob::matches(glob, name)) {",
-        "            continue;",
-        "        }",
-        "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);",
-        "        for error in evidence.errors() {",
-        "            associated_errors.insert(error.clone());",
-        "        }",
-        "        fixmes.add(name, definition.kind.noun(), evidence.fixme_entries());",
-        "        if !all && evidence.state() == EvidenceState::Valid {",
-        "            continue;",
-        "        }",
-        "        if !all && !verbose && evidence.state() == EvidenceState::Fixme {",
-        "            continue;",
-        "        }",
-        ""
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 136,
-      "line_end": 142,
-      "text": [
-        "        if !definition_glob::matches(selector, name) {",
-        "            continue;",
-        "        }",
-        "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);",
-        "        pages.push(render_cli_detail_page(",
-        "            name,",
-        "            &definition.source,"
-      ]
+      "item": "fn[status_markdown_with_options]",
+      "hash": "2c13522580db4cb92949b4a9d03bd9f679ac7d239ddb2b348bb209d0171ac1ea"
     },
     {
       "file": "src/index.rs",
-      "line_start": 123,
-      "line_end": 129,
-      "text": [
-        "}",
-        "",
-        "#[derive(Clone, Copy, PartialEq, Eq)]",
-        "pub(crate) enum EvidenceState {",
-        "    Valid,",
-        "    Missing,",
-        "    DeterminationFalse,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 131,
-      "line_end": 151,
-      "text": [
-        "    Invalid,",
-        "}",
-        "",
-        "pub(crate) struct LoadedDetailEvidence {",
-        "    state: EvidenceState,",
-        "    record: Option<String>,",
-        "    errors: Vec<String>,",
-        "    fixme_entries: Vec<String>,",
-        "}",
-        "",
-        "struct DetailEvidence<'a> {",
-        "    state: EvidenceState,",
-        "    record: Option<&'a str>,",
-        "    errors: &'a [String],",
-        "    fixme_entries: &'a [String],",
-        "}",
-        "",
-        "impl LoadedDetailEvidence {",
-        "    // {impl}`requirements.index.state`",
-        "    // {impl}`requirements.ci.outcomes`",
-        "    pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 179,
-      "line_end": 199,
-      "text": [
-        "            .map(|judgment| judgment.fixme_entries().to_vec())",
-        "            .unwrap_or_default();",
-        "        let state = if record.is_none() && !evidence_path.exists() {",
-        "            EvidenceState::Missing",
-        "        } else if errors.is_empty() {",
-        "            match judgment {",
-        "                Some(crate::judgment::Judgment::True) => EvidenceState::Valid,",
-        "                Some(crate::judgment::Judgment::False) => EvidenceState::DeterminationFalse,",
-        "                Some(crate::judgment::Judgment::Fixme(_)) => EvidenceState::Fixme,",
-        "                None => EvidenceState::Invalid,",
-        "            }",
-        "        } else if errors",
-        "            .iter()",
-        "            .all(|error| error.starts_with(&format!(\"{prefix} determination is false\")))",
-        "        {",
-        "            EvidenceState::DeterminationFalse",
-        "        } else {",
-        "            EvidenceState::Invalid",
-        "        };",
-        "        Self {",
-        "            state,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 204,
-      "line_end": 210,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.index.state`",
-        "    pub(crate) fn state(&self) -> EvidenceState {",
-        "        self.state",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 231,
-      "line_end": 237,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "impl EvidenceState {",
-        "    // {impl}`requirements.index.state`",
-        "    pub(crate) fn label(self) -> &'static str {",
-        "        match self {"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 350,
-      "line_end": 356,
-      "text": [
-        "        let mut pages = BTreeMap::new();",
-        "        for (name, detail_path) in &self.detail_paths {",
-        "            let evidence_path = root.join(\"evidence\").join(format!(\"{name}.json\"));",
-        "            let evidence = LoadedDetailEvidence::load(root, name, report);",
-        "            let definition = definitions",
-        "                .get(name)",
-        "                .expect(\"every detail page has a definition\");"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 495,
-      "line_end": 501,
-      "text": [
-        "    source: &str,",
-        "    text: &str,",
-        "    kind: DefinitionKind,",
-        "    evidence: &LoadedDetailEvidence,",
-        "    sources: &RenderSources<'_>,",
-        ") -> String {",
-        "    render_detail_sections("
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 983,
-      "line_end": 989,
-      "text": [
-        "    use tempfile::TempDir;",
-        "",
-        "    use super::{",
-        "        DetailEvidence, DetailPlan, EvidenceState, RenderSources, SourceLinks, code_language,",
-        "        evidence_edit_path, marker_ranges, render_detail_page,",
-        "    };",
-        "    use crate::{Definition, DefinitionKind, preprocess_book};"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1223,
-      "line_end": 1229,
-      "text": [
-        "            Some(Path::new(\"appendix/requirements-index.md\")),",
-        "            &definition,",
-        "            DetailEvidence {",
-        "                state: EvidenceState::Valid,",
-        "                record: Some(&record),",
-        "                errors: &[],",
-        "                fixme_entries: &[],"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1290,
-      "line_end": 1296,
-      "text": [
-        "            Some(Path::new(\"appendix/requirements-index.md\")),",
-        "            &definition,",
-        "            DetailEvidence {",
-        "                state: EvidenceState::Valid,",
-        "                record: Some(&record),",
-        "                errors: &[],",
-        "                fixme_entries: &[],"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1398,
-      "line_end": 1404,
-      "text": [
-        "            Some(index),",
-        "            &definition,",
-        "            DetailEvidence {",
-        "                state: EvidenceState::Invalid,",
-        "                record: Some(\"{broken\"),",
-        "                errors: &findings.map(str::to_owned),",
-        "                fixme_entries: &[],"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1424,
-      "line_end": 1430,
-      "text": [
-        "            Some(index),",
-        "            &definition,",
-        "            DetailEvidence {",
-        "                state: EvidenceState::Missing,",
-        "                record: None,",
-        "                errors: &[],",
-        "                fixme_entries: &[],"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 28,
-      "line_end": 28,
-      "text": [
-        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 39,
-      "line_end": 39,
-      "text": [
-        "pub async fn author_all_with_options("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 413,
-      "line_end": 413,
-      "text": [
-        "    fn bundle_combines_direct_references_terms_and_current_existing_selectors() {"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 503,
-      "line_end": 503,
-      "text": [
-        "    fn unresolvable_earlier_inputs_do_not_block_reassessment() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 517,
-      "line_end": 517,
-      "text": [
-        "            \"0 authored; 6 unchanged; 0 failed\""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 543,
-      "line_end": 543,
-      "text": [
-        "        \"1 authored; 5 unchanged; 0 failed\""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 685,
-      "line_end": 685,
-      "text": [
-        "    assert_eq!(stdout.trim(), \"5 authored; 0 unchanged; 1 failed\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 740,
-      "line_end": 740,
-      "text": [
-        "            \"5 authored; 0 unchanged; 1 failed\""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 769,
-      "line_end": 769,
-      "text": [
-        "        \"5 authored; 0 unchanged; 1 failed\""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 792,
-      "line_end": 792,
-      "text": [
-        "        \"6 authored; 0 unchanged; 0 failed\""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 1035,
-      "line_end": 1035,
-      "text": [
-        "        \"0 authored; 6 unchanged; 0 failed\""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 1065,
-      "line_end": 1065,
-      "text": [
-        "        \"1 authored; 5 unchanged; 0 failed\""
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 841,
-      "line_end": 841,
-      "text": [
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(\"unchanged\"));"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 28,
-      "line_end": 29,
-      "text": [
-        "pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {",
-        "    author_all_with_options(root, selection, AuthoringOptions::default()).await"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 88,
-      "line_end": 88,
-      "text": [
-        "        \"Authoring {} assessments with concurrency {concurrency}; {unchanged} current records unchanged\","
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 11,
-      "line_end": 11,
-      "text": [
-        "pub use batch::{BatchOutcome, author_all, author_all_with_options};"
-      ]
+      "item": "impl[DetailPlan]/fn[populate]",
+      "hash": "c9d0d9c600288b582e5b1d36242c6a33a325ab660449e74b0ff0bbeab14d3c19"
     },
     {
       "file": "src/main.rs",
-      "line_start": 161,
-      "line_end": 161,
-      "text": [
-        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options("
-      ]
+      "item": "fn[main]",
+      "hash": "bb3fbedf662fe3d50bd0de88cf6a0f9dd8b9f6d3b9f3d0552be4227d02d7a3f7"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
+      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
+      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[record_inputs]",
+      "hash": "2b4b1c437218feacfb819597643fe1a6ab99035b71b6001fd0a5cc1751ffbe50"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_selector]",
+      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[parse_file]",
+      "hash": "60bcb250ef0b20cccfac78923540d1637b80fbea9c68d624ec1f775aca96cb29"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]",
+      "hash": "b6f2ab4590313519766489b4e40be61fa09dc92c50e1497486410156a4a35f73"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "enum[EvidenceOutput]",
+      "hash": "cab30597e013082ecb5998ce9a0870adf314fe31f1abc4a3df1df7da41516fde"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence]",
+      "hash": "f6bba8aa9a5bb04e6b600c81cdb9ff1f13f7a7044b0605bcc8e12867dbaef5ca"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_output]",
+      "hash": "4e33e8f7d6e5f1698ef435aca4ada1d096a7de82f043eb7b92bc1f2466eb5a81"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_assessment]",
+      "hash": "e87ccffa89c54e55ec5a0b636f21d2fda0376ec1c44fabf97600f071b802d13b"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_record]",
+      "hash": "792de4a6e4c3dc00f4e12403f2c953553b710cecae5e954f8167ac9b74c22eba"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[initial_prompt]",
+      "hash": "e7da3bcb5ee82b6af7ebf8bdcc4d259b8ba733337fec6ae5bf91829858d8a208"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[submission]",
+      "hash": "0399b4a6cb4665e2c0d3cf700b5aac090be807722f8c47cfacbd37a6c94a2321"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[cancel_on_error]",
+      "hash": "5ef06efa77fecf8e7bd8c95c4d2de6d55e09cec956951402b0af25c68aa623da"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[write_record]",
+      "hash": "c9fcba0772240e31124d9d34d181e11e74ebb7fae00ab55a7c9e5217ddad9fe1"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[AuthoringSubject]/fn[label]",
+      "hash": "f9d7ad823631d4936baca032802c5e5f27c6487eb9982c87d6c534f376fbc8e4"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]/fn[persisted]",
+      "hash": "d53b2309ae382adbbe4d8544a9086812faf85935714d0a98f08590a8fe3c7093"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]/fn[failed]",
+      "hash": "16fa5320a0e9388601882000e1388e3331faaaa236049e750e61dbd56da6e1b3"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[completed]",
+      "hash": "4cb6a3a541d7cd011517bf9cd73652642b5b2fe2d6a39f35f054c174146f9dec"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[failed]",
+      "hash": "3e7ce2857e1e131a5310f70d692079778faafeb4fea379cff47c70d5133da144"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[println]",
+      "hash": "af52d26510d1062d13ad4fd96217dd3ca253b0f04493d7f1cd38476e0669d5fd"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository]",
+      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "43f7933cbbf05cb990cdbc13342160ee114f99df21412e2a549350867ffdc1a0"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run_in_pty]",
+      "hash": "40d87b871076683d3fd69b0ea42a468c83100b01291f3ea8cd6bd0375425cb40"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
+      "hash": "a1cc85857df2d07456387ff905e687d978f08abf662e7f88e12e4d7025a32391"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[ollama_batches_are_serial_by_default]",
+      "hash": "a5101e530004e2e082992ebac366ba931366d77b57a2e7b030e7043b947dc141"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
+      "hash": "48130bc66d66dc9c14f94ec9ea705c641e6bd400775b4ef50fade08fc3bdd909"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
+      "hash": "1bfb25fd0b84933dcb33f58100317500ac1bade5a8b38d9c7fd68844db686677"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_reports_false_rationales_only_when_verbose]",
+      "hash": "791756edeb4d4bfd0564468de5080996811b62f9d0c995ca2ddab3701bda6a5b"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[verbose_false_rationale_is_readable_above_terminal_progress]",
+      "hash": "4b5993f1c72318c124e8f3d9a21a850c4d2ac2038f29983a1ff1700f6f20d4c2"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[dumb_terminal_keeps_plain_batch_diagnostics]",
+      "hash": "e44004ffca4c55843922dbcb4a4d93e77d810f728fb28f44e228b7a219a1dbf9"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[denied_read_aborts_only_its_assessment_and_runs_queued_assessments]",
+      "hash": "1818a86503111f6747b4e89d059bb150d9db37dea42aa28b83036adda0a19fc3"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[denied_read_preserves_in_flight_assessments_and_their_evidence]",
+      "hash": "a3952466d895309077f421961e415a0525f5df41dfad36e6af986b4612896aee"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
+      "hash": "9c44d8725eeec44bdcdcbdb23527835a6d6ec832ae240fbcc09b8dd16da1193b"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_stdout_is_rejected_before_authoring]",
+      "hash": "786cb76d7f97049b29578897face51fea380960f064e3ca456b69f4d1fb23210"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
+      "hash": "0e4ca6089a575c990033cdf7e54e8619bca880cb259e7ec8eaa844abb8e36271"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ordinary_status_ignores_invalid_user_authoring_configuration]",
+      "hash": "3502e3dfa64be155d2ea8b41b2cbd1ee0034ac7c26b69a2b7a599df705b98de9"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_groups_fixme_judgments_by_distinct_normalized_issue]",
+      "hash": "6f466319cf1cbcc279824fcee53c898761775bd702bb1b02df46224714a19aac"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_lists_nonvalid_requirements_and_all_option_in_name_order]",
+      "hash": "a34d5032c1c42b65e67bb2731fd63a7fd8a807ef4e0c6d60200fc035592d8212"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_preserves_repository_wide_rust_findings_in_every_form]",
+      "hash": "1da28a3e9bdef8231a55966b5efdb0c478164d854da1df66607b57d70a0e0e48"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[commands_report_invalid_arguments_and_unmatched_selectors]",
+      "hash": "22ae022fbcc395b4ced202777d280483767fa26709a83a318609f2c72f912271"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_tables_align_each_column_to_its_widest_cell]",
+      "hash": "7004b082ec40ee3b0b5b27ec40a6c120dc240dfde87c3955c3aedc91cab8f8a1"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_and_info_accept_a_definition_selection]",
+      "hash": "747b9e023126dc02aa8aecedf882d4d87c2764aadaf0f5f61f83c3f2fe8de16e"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "c66bf3ceb1fb830ced7559dfeb069ca089e613906742006cd898c2bbfdd07a5c"
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "item": "def[main]",
+      "hash": "c9a012dba8d24d3497b7bbde3328e32932c4b2f690993b56295a962d20bf98e6"
     }
   ]
 }

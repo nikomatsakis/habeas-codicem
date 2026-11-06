@@ -1,7 +1,7 @@
 {
   "requirement": "When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Definition and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is met. The implementation is marked and the test covers it. I found no gaps.\n\n**Implementation.** `render_evidence_table` in `src/markdown.rs` is marked `{impl}` for `requirements.cli.status_table_alignment`.\n- It computes each column width as the maximum of the cell lengths in that column and the header word (`Definition` or `Evidence`). That gives widths set by the widest displayed cell, header included.\n- It writes the header, the `---` separator and every data row with the same format string, `| {x:<dw$} | {y:<ew$} |`. Every row therefore has left-aligned, space-padded cells and `|` delimiters in the same positions.\n- `src/commands.rs` (lines 93–96) calls this function for both `habeas status` and `habeas status --all`. The `all` flag only changes which rows are collected, so one code path serves both commands.\n- Using `len()` (bytes) for width could over-widen a column if a cell had non-ASCII characters. In practice the cells are ASCII. Definition names pass `valid_name`, which allows only ASCII alphanumerics, `_`, `-` and `.`. The cell text also contains backticks, parentheses and the kind noun, and the evidence labels are plain words.\n- The marking is complete. The only other users of the function, `src/index.rs` and the call site in `src/commands.rs`, are marked for `shared_status_rendering`, and the alignment logic lives only in this function.\n\n**Test.** `status_tables_align_each_column_to_its_widest_cell` in `tests/commands.rs` is marked `{test}`. It runs both `status` and `status --all` and extracts the table lines. It then checks that:\n- the table has more than two lines;\n- every line has `|` at the same byte positions as the header line, so the header and separator rows are covered too;\n- each cell begins with exactly one space of padding and ends with a space, so cells are left-aligned;\n- each column's width equals the widest trimmed cell in that column, which covers the \"widest displayed cell\" rule;\n- the separator row contains `---` in both columns.\n\nThe test is behavioural and covers both commands. The design space is small, so I judge it sufficient.",
+  "rationale": "**Implementation.** `render_evidence_table` in `src/markdown.rs` (lines 1–28) is marked `{impl}` for `requirements.cli.status_table_alignment`.\n- It computes each column width as the maximum cell length over the rows and the header text (\"Definition\" or \"Evidence\").\n- It writes the header, the `---` separator row and every data row with the same format string, `| {x:<w$} | {y:<w$} |`.\n- That left-aligns and space-pads every row, so the `|` delimiters land in the same positions, and widths follow the widest cell.\n- `status_markdown_with_options` in `src/commands.rs` serves both `status` and `status --all`. It builds the rows and calls this function, with a `{impl}` marker on that call site for the shared-rendering requirement.\n- The widths use byte length, which could differ from displayed width for non-ASCII text. Here that cannot matter. Definition names pass `valid_name` (ASCII alphanumerics, `_`, `-`, `.`), the kind nouns are words, and the evidence labels (\"Valid\", \"Missing\", \"Determination false\", \"FIXME\", \"Invalid\") are ASCII.\n- The function does nothing beyond the requirement. Its other `{impl}` marker, `requirements.cli.shared_status_rendering`, covers the shared use of the function by the index.\n\n**Tests.** `status_tables_align_each_column_to_its_widest_cell` in `tests/commands.rs` (lines 574–619) is marked `{test}`.\n- It runs both `habeas status` and `habeas status --all` against a fixture.\n- The fixture has several requirements with different name lengths (`ready`, `stale_input`, and others) and different states, plus an example. So both columns have varied widths.\n- For every table row it asserts that the `|` byte positions match the header's.\n- It asserts that each cell has exactly one leading space and is padded with spaces, not dashes.\n- It asserts that each column's width equals the widest trimmed content in that column, which includes the header and separator rows.\n- It asserts that the separator cells are `---`.\n\nThis covers the delimiter alignment, the widest-cell sizing, and both commands. The implementation is marked completely and I found no gaps.",
   "inputs": [
     {
       "requirements": "requirements.cli.status_table_alignment",
@@ -15,482 +15,184 @@
       ]
     },
     {
-      "rust_file": "src/markdown.rs",
-      "rust_item": "fn[render_evidence_table]",
-      "text": [
-        "// {impl}`requirements.cli.status_table_alignment`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {",
-        "    let definition_width = rows",
-        "        .iter()",
-        "        .map(|(definition, _)| definition.len())",
-        "        .max()",
-        "        .unwrap_or_default()",
-        "        .max(\"Definition\".len());",
-        "    let evidence_width = rows",
-        "        .iter()",
-        "        .map(|(_, evidence)| evidence.len())",
-        "        .max()",
-        "        .unwrap_or_default()",
-        "        .max(\"Evidence\".len());",
-        "    let mut table = String::new();",
-        "    for (definition, evidence) in [(\"Definition\", \"Evidence\"), (\"---\", \"---\")] {",
-        "        table.push_str(&format!(",
-        "            \"| {definition:<definition_width$} | {evidence:<evidence_width$} |\\n\"",
-        "        ));",
-        "    }",
-        "    for (definition, evidence) in rows {",
-        "        table.push_str(&format!(",
-        "            \"| {definition:<definition_width$} | {evidence:<evidence_width$} |\\n\"",
-        "        ));",
-        "    }",
-        "    table",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/commands.rs",
-      "rust_item": "fn[status_tables_align_each_column_to_its_widest_cell]",
-      "text": [
-        "// {test}`requirements.cli.status_table_alignment`",
-        "#[test]",
-        "fn status_tables_align_each_column_to_its_widest_cell() {",
-        "    let temp = fixture();",
-        "    for args in [[\"status\"].as_slice(), [\"status\", \"--all\"].as_slice()] {",
-        "        let output = habeas(temp.path(), args);",
-        "        assert!(output.status.success(), \"{args:?}: {output:?}\");",
-        "        let text = String::from_utf8(output.stdout).unwrap();",
-        "        let table = text",
-        "            .lines()",
-        "            .skip_while(|line| !line.starts_with(\"| \"))",
-        "            .take_while(|line| line.starts_with(\"| \"))",
-        "            .collect::<Vec<_>>();",
-        "        assert!(table.len() > 2, \"{text}\");",
-        "        let pipes = table[0]",
-        "            .match_indices('|')",
-        "            .map(|(index, _)| index)",
-        "            .collect::<Vec<_>>();",
-        "        assert_eq!(pipes.len(), 3, \"{text}\");",
-        "        for line in &table {",
-        "            let actual = line",
-        "                .match_indices('|')",
-        "                .map(|(index, _)| index)",
-        "                .collect::<Vec<_>>();",
-        "            assert_eq!(actual, pipes, \"{text}\");",
-        "            for cell in line.split('|').skip(1).take(2) {",
-        "                assert!(cell.starts_with(' ') && cell.ends_with(' '), \"{text}\");",
-        "                assert!(!cell[1..].starts_with(' '), \"{text}\");",
-        "            }",
-        "        }",
-        "        for column in 0..2 {",
-        "            let content_width = table",
-        "                .iter()",
-        "                .map(|line| line.split('|').nth(column + 1).unwrap().trim().len())",
-        "                .max()",
-        "                .unwrap();",
-        "            assert_eq!(",
-        "                pipes[column + 1] - pipes[column] - 3,",
-        "                content_width,",
-        "                \"{text}\"",
-        "            );",
-        "        }",
-        "        assert_eq!(table[1].split('|').nth(1).unwrap().trim(), \"---\");",
-        "        assert_eq!(table[1].split('|').nth(2).unwrap().trim(), \"---\");",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 7,
-      "line_end": 13,
-      "text": [
-        "use crate::evidence::inspect_repository;",
-        "use crate::fixme::FixmeSummary;",
-        "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};",
-        "use crate::markdown::render_evidence_table;",
-        "",
-        "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 93,
-      "line_end": 99,
-      "text": [
-        "        });",
-        "    } else {",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        output.push_str(&render_evidence_table(&rows));",
-        "    }",
-        "",
-        "    let other_findings = inspection"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 10,
-      "line_end": 16,
-      "text": [
-        "",
-        "use crate::evidence::{Declaration, SourceReference, inspect_repository};",
-        "use crate::inputs::{InputSelector, SourceRange};",
-        "use crate::markdown::render_evidence_table;",
-        "use crate::{",
-        "    Definition, DefinitionKind, EvidenceReport, ReferenceKind, chapter_href, colon_fence,",
-        "    definition_blocks, escape_html, overlaps_protected, protected_ranges, reference_roles,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 379,
-      "line_end": 385,
-      "text": [
-        "        }",
-        "",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        let rows = render_evidence_table(&rows);",
-        "",
-        "        // {impl}`requirements.index.navigation`",
-        "        let mut index_found = self.index_path.is_none();"
-      ]
-    },
-    {
       "file": "src/markdown.rs",
-      "line_start": 1,
-      "line_end": 6,
-      "text": [
-        "// {impl}`requirements.cli.status_table_alignment`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {",
-        "    let definition_width = rows",
-        "        .iter()",
-        "        .map(|(definition, _)| definition.len())"
-      ]
+      "item": "fn[render_evidence_table]",
+      "hash": "15fec740e84e738e236e21e44ecb9cde54afaacc153133eb233e41c4924ab80f"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_tables_align_each_column_to_its_widest_cell]",
+      "hash": "7004b082ec40ee3b0b5b27ec40a6c120dc240dfde87c3955c3aedc91cab8f8a1"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Request%20evidence%20inputs:%20`habeas`]",
+      "hash": "2284636d85d41294986b4b44773971b4d2c71e699f8b5f36ad39b4331ec4cd92"
     },
     {
       "file": "src/commands.rs",
-      "line_start": 40,
-      "line_end": 130,
-      "text": [
-        "        if !inspection.definitions.iter().any(|(name, d)| {",
-        "            d.kind != crate::DefinitionKind::Term && definition_glob::matches(glob, name)",
-        "        }) {",
-        "            return Err(io::Error::new(",
-        "                io::ErrorKind::NotFound,",
-        "                format!(\"no definitions match {glob:?}\"),",
-        "            ));",
-        "        }",
-        "    }",
-        "    let mut output = String::from(\"# Definitions status\\n\\n\");",
-        "    let mut rows = Vec::new();",
-        "    let mut findings = String::new();",
-        "    let mut fixmes = FixmeSummary::default();",
-        "    let mut associated_errors = BTreeSet::new();",
-        "",
-        "    for (name, definition) in &inspection.definitions {",
-        "        if definition.kind == crate::DefinitionKind::Term {",
-        "            continue;",
-        "        }",
-        "        if glob.is_some_and(|glob| !definition_glob::matches(glob, name)) {",
-        "            continue;",
-        "        }",
-        "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);",
-        "        for error in evidence.errors() {",
-        "            associated_errors.insert(error.clone());",
-        "        }",
-        "        fixmes.add(name, definition.kind.noun(), evidence.fixme_entries());",
-        "        if !all && evidence.state() == EvidenceState::Valid {",
-        "            continue;",
-        "        }",
-        "        if !all && !verbose && evidence.state() == EvidenceState::Fixme {",
-        "            continue;",
-        "        }",
-        "",
-        "        rows.push((",
-        "            format!(\"`{name}` ({})\", definition.kind.noun()),",
-        "            evidence.state().label(),",
-        "        ));",
-        "        if !evidence.errors().is_empty() {",
-        "            findings.push_str(&format!(\"\\n### `{name}`\\n\\n<pre><code>\"));",
-        "            findings.push_str(&escape_html(&evidence.errors().join(\"\\n\\n\")));",
-        "            findings.push_str(\"</code></pre>\\n\");",
-        "        }",
-        "    }",
-        "",
-        "    let fixmes = fixmes.render(verbose);",
-        "    if rows.is_empty() {",
-        "        output.push_str(if all {",
-        "            \"No definitions found.\\n\"",
-        "        } else if !fixmes.is_empty() {",
-        "            \"No other definitions need attention.\\n\"",
-        "        } else {",
-        "            \"All matching definitions have valid evidence.\\n\"",
-        "        });",
-        "    } else {",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        output.push_str(&render_evidence_table(&rows));",
-        "    }",
-        "",
-        "    let other_findings = inspection",
-        "        .report",
-        "        .errors",
-        "        .iter()",
-        "        .filter(|error| !associated_errors.contains(error.as_str()))",
-        "        .collect::<Vec<_>>();",
-        "    output.push_str(&fixmes);",
-        "    if !findings.is_empty() {",
-        "        output.push_str(\"\\n## Validation findings\\n\");",
-        "        output.push_str(&findings);",
-        "    }",
-        "    if !other_findings.is_empty() {",
-        "        output.push_str(\"\\n## Other validation findings\\n\\n<pre><code>\");",
-        "        output.push_str(&escape_html(",
-        "            &other_findings",
-        "                .into_iter()",
-        "                .map(String::as_str)",
-        "                .collect::<Vec<_>>()",
-        "                .join(\"\\n\\n\"),",
-        "        ));",
-        "        output.push_str(\"</code></pre>\\n\");",
-        "    }",
-        "    Ok(output)",
-        "}",
-        "",
-        "// {impl}`requirements.cli.info`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {",
-        "    let inspection = inspect_repository(root)?;",
-        "    definition_glob::validate(selector)",
-        "        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;"
-      ]
+      "item": "use@74004d918e81",
+      "hash": "74004d918e8112c28f6eca4dd1a8a277429a2d3956dbdd65c3534cf6314c0212"
     },
     {
-      "file": "src/add_input.rs",
-      "line_start": 136,
-      "line_end": 140,
-      "text": [
-        ") -> io::Result<String> {",
-        "    let Some(definition) = definitions.get(name) else {",
-        "        return Err(invalid_input(format!(\"unknown {} {name:?}\", kind.noun())));",
-        "    };",
-        "    if definition.kind != kind {"
-      ]
+      "file": "src/commands.rs",
+      "item": "use@e126c94c8465",
+      "hash": "e126c94c846536270d8924a952a4b884a7304b75f041777ddad1130f6a6ca508"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 281,
-      "line_end": 289,
-      "text": [
-        "        if let Some(authoring) = &self.authoring {",
-        "            if let Some(name) = &authoring.default {",
-        "                validate_name(path, \"authoring.default\", name)?;",
-        "            }",
-        "            for (name, config) in &authoring.configs {",
-        "                let setting = format!(\"authoring.configs.{name}\");",
-        "                validate_name(path, &setting, name)?;",
-        "                config.backend.validate(path, &setting)?;",
-        "            }"
-      ]
+      "file": "src/commands.rs",
+      "item": "use@cfb0752e62b2",
+      "hash": "cfb0752e62b22ca972bc79416d5869691f42c52525ed1edc545fc01635c1dbd6"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 338,
-      "line_end": 346,
-      "text": [
-        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
-        "        if let Some(name) = &self.default {",
-        "            validate_name(path, \"authoring.default\", name)?;",
-        "        }",
-        "        for (name, config) in &self.configs {",
-        "            let setting = format!(\"authoring.configs.{name}\");",
-        "            validate_name(path, &setting, name)?;",
-        "            config.backend.validate(path, &setting)?;",
-        "        }"
-      ]
+      "file": "src/commands.rs",
+      "item": "use@518d6db5a70c",
+      "hash": "518d6db5a70c61c9160c76fb7954a648bec171f3e85c3b748ad47fe8ca50c961"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 359,
-      "line_end": 363,
-      "text": [
-        "                ));",
-        "            }",
-        "            validate_name(path, &format!(\"{setting}.config\"), &selection.config)?;",
-        "        }",
-        "        Ok(())"
-      ]
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown]",
+      "hash": "106287a492ab2c60f028eae735d60d56ab6d5bca5f70953f9c500225fb4d5e5f"
     },
     {
-      "file": "src/config.rs",
-      "line_start": 925,
-      "line_end": 936,
-      "text": [
-        "",
-        "// {impl}`requirements.authoring.configuration_storage`",
-        "fn validate_name(path: &Path, setting: &str, name: &str) -> io::Result<()> {",
-        "    if name",
-        "        .as_bytes()",
-        "        .first()",
-        "        .is_none_or(|first| !first.is_ascii_alphanumeric())",
-        "        || !name",
-        "            .bytes()",
-        "            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')",
-        "    {",
-        "        return Err(invalid("
-      ]
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "line_start": 5,
-      "line_end": 9,
-      "text": [
-        "    }",
-        "    if let Some(character) = pattern.chars().find(|character| {",
-        "        !character.is_ascii_alphanumeric() && !matches!(character, '.' | '_' | '-' | '*')",
-        "    }) {",
-        "        return Err(format!("
-      ]
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown_with_options]",
+      "hash": "2c13522580db4cb92949b4a9d03bd9f679ac7d239ddb2b348bb209d0171ac1ea"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 11,
-      "line_end": 15,
-      "text": [
-        "use crate::{",
-        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
-        "    reference_roles, valid_name,",
-        "};",
-        ""
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 333,
-      "line_end": 339,
-      "text": [
-        "            let source = format!(\"{label}:{line}\");",
-        "            let name = full_requirement_name(&namespace, &block.name);",
-        "            if !valid_name(&name) {",
-        "                errors.push(format!(",
-        "                    \"{source}: invalid {} name {name:?}\",",
-        "                    block.kind.noun()",
-        "                ));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1486,
-      "line_end": 1490,
-      "text": [
-        "    // {test}`requirements.ci.span`",
-        "    #[test]",
-        "    fn validates_full_names_requirement_text_and_input_lines() {",
-        "        let temp = fixture();",
-        "        fs::write("
-      ]
-    },
-    {
-      "file": "src/fixme.rs",
-      "line_start": 108,
-      "line_end": 113,
-      "text": [
-        "            let before = entry[..matched.start()].chars().next_back();",
-        "            let after = entry[matched.end()..].chars().next();",
-        "            if before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '#'))",
-        "                || after.is_some_and(|c| c.is_alphanumeric() || c == '_')",
-        "            {",
-        "                continue;"
-      ]
+      "item": "fn[collect_definitions]",
+      "hash": "81ef003048a6bb45f28d136d9644c684a460b86c417ed5cbdeb2d5d51d689789"
     },
     {
       "file": "src/index.rs",
-      "line_start": 66,
-      "line_end": 73,
-      "text": [
-        "            || !owner",
-        "                .bytes()",
-        "                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')",
-        "            || !project",
-        "                .bytes()",
-        "                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))",
-        "        {",
-        "            return Ok(None);"
-      ]
+      "item": "use@1e6c996ce3b5",
+      "hash": "1e6c996ce3b5a1a37b1c02d42fcad498847947b78f7955660bef7aadfca30a2c"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "use@ad7063cca1ab",
+      "hash": "ad7063cca1ab0145765581a7342a57d0686d7fdae87981aa400632495af29d33"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "use@518d6db5a70c",
+      "hash": "518d6db5a70c61c9160c76fb7954a648bec171f3e85c3b748ad47fe8ca50c961"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "use@340c56c5b2f6",
+      "hash": "340c56c5b2f6f4e3d0e5f7d46d76a3fc71f353e71b49c45ec283184651fa6363"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]/fn[populate]",
+      "hash": "c9d0d9c600288b582e5b1d36242c6a33a325ab660449e74b0ff0bbeab14d3c19"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "struct[AuthoringOutcome]",
+      "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "struct[AuthoringOptions]",
+      "hash": "e387abae06c0138869367127118181ff502c16b7e7733d73d4e2ea43adc602f7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "enum[AuthoringSubject]",
+      "hash": "a904ca62130c1864b69c7b953815fbfabad40971bf6c38911d01d6d71accc0ed"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[AuthoringSubject]",
+      "hash": "bf417bee841914b2068e0d8ff9469c10219418d372dad2919a5aa923604f56c7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "struct[PendingAssessment]",
+      "hash": "7bf1a9e1e151e73bd0479a1abafbd02269c3bac9a2b1211140ce53c4c77e3dac"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]",
+      "hash": "b6f2ab4590313519766489b4e40be61fa09dc92c50e1497486410156a4a35f73"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[Anchor]",
+      "hash": "8f6790fc1f75fe2f6d46a2013ab58cca4d1c09a09ca43a218b2a248f6a57db40"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]",
+      "hash": "e74794c0aadd1cd597399ee2d67b82051f9b4434f00759a27319ee4f5dc3d964"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[EvidenceState]",
+      "hash": "85f87699185529bdd3f420846724e770ed490d1e0f0f555928428e55ec7563f1"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 551,
-      "line_end": 555,
-      "text": [
-        "        if overlaps_protected(start, body_start, &code_ranges)",
-        "            || !rest.chars().next().is_some_and(char::is_whitespace)",
-        "            || !valid_name(rest.trim())",
-        "        {",
-        "            index += 1;"
-      ]
+      "item": "struct[Definition]",
+      "hash": "3276d2aed460f63c5439d617c7db5784b73345a60a556841d6819ccc294a38b6"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 614,
-      "line_end": 618,
-      "text": [
-        "        || !name",
-        "            .bytes()",
-        "            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))",
-        "        || !(value.is_empty() || value.starts_with(char::is_whitespace))",
-        "    {"
-      ]
+      "item": "enum[ReferenceKind]",
+      "hash": "c2de57d3cd535b3bde78bd445091d59d2afc4e20c012c46c244fb52b5f8f8c77"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 714,
-      "line_end": 718,
-      "text": [
-        "        let name_end = name_start + name_end_offset;",
-        "        let name = &content[name_start..name_end];",
-        "        if valid_name(name) {",
-        "            references.push(ReferenceMatch {",
-        "                start,"
-      ]
+      "item": "impl[ReferenceKind]",
+      "hash": "ab8441b45ab11d6fc0e140157b8c07bd3e0a9460aaeb71266b2be681240ab7a9"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 762,
-      "line_end": 766,
-      "text": [
-        "",
-        "// {impl}`requirements.ci.identifiers`",
-        "fn valid_name(name: &str) -> bool {",
-        "    !name.is_empty()",
-        "        && name.split('.').all(|part| {"
-      ]
+      "item": "fn[is_escaped]",
+      "hash": "b5579d1a216565d53f327f68812bb121cabe82deac40cd008ae2a7d5f68ef6bd"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 768,
-      "line_end": 772,
-      "text": [
-        "                && part",
-        "                    .bytes()",
-        "                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))",
-        "        })",
-        "}"
-      ]
+      "item": "fn[valid_name]",
+      "hash": "d3113ad1c2701c9b8d3b9b044da3c1fc8d798d3c5628bc382138925bbc970a6e"
     },
     {
       "file": "src/lib.rs",
-      "line_start": 983,
-      "line_end": 987,
-      "text": [
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn invalid_names_remain_literal_and_html_is_escaped() {",
-        "        let rendered = replace_definitions(",
-        "            \":::{req} bad name\\nInvalid.\\n:::\\n\\n:::{req} good\\nGood.\\n:::\","
-      ]
+      "item": "fn[escape_html]",
+      "hash": "6957779eaea2a004ad19afb83132699cd61b174640c47ff4aa58e59960bd3653"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "use@e843693d3cbe",
+      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "use@452bcbdeacad",
+      "hash": "452bcbdeacad4042d491f5c3a1a2220e4e21e757efdbb9bc0ba20b679c7b5b8c"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "use@944727b459e2",
+      "hash": "944727b459e2ea08a7586f8fcc5fdab323588c75dd91da10f0d0655cabae4082"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "use@727a0a270d8a",
+      "hash": "727a0a270d8a2c7e83b62bb0afa524214301ccf32188029a001382c2937eca32"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[fixture]",
+      "hash": "a27389364fe17bf75465becdd9110a9638da73502dcff1f5988aed4b11e34284"
     }
   ]
 }

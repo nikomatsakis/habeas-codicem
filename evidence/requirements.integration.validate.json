@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.\nIts failure message MUST instruct the agent to run `habeas author --all`, address\nthe reported gaps, and rerun tests. Validation MUST remain deterministic and MUST\nNOT invoke authoring itself. {cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.deterministic_validation`",
   "determination": false,
-  "rationale": "The implementation looks right, but nothing tests the failure path, which is the core of this requirement.\n\n**Implementation (`src/lib.rs`, `validate`, marked `{impl}` at line 31)**\n- It finds the nearest ancestor of the current directory that has both `Cargo.toml` and `book.toml`.\n- It calls `validate_repository`, which is deterministic and reads only saved evidence. It never invokes authoring.\n- If `report.errors` is non-empty, it panics. The message includes the counts and every error, joined with `\\n- `.\n- The message tells the agent to run `habeas author --all`, address the reported gaps, and rerun the tests.\n- The extra sentence \"Do not write evidence judgments or snapshots by hand\" is consistent with the batch requirement's rule that judgments and snapshots are left to the authoring harness.\n\n**Tests**\n- The `references` lookup shows only one site for `requirements.integration.validate`: the `{impl}` at `src/lib.rs`. There is no `{test}` reference.\n- `tests/habeas.rs` calls `habeas::validate()`, but it is marked `{test}` for `requirements.integration.self_test`, and it only exercises the passing path.\n- `tests/setup.rs` checks the text of the generated test file.\n- Other tests call `validate_repository` and check its error list. That does not cover `validate()` itself.\n- A search of `tests` for `should_panic`, `catch_unwind`, \"Habeas validation failed\" and \"author --all\" found nothing. No test checks that `validate()` panics on invalid evidence, that all errors appear in the message, or that the message contains the `habeas author --all` instruction.\n- These behaviors are testable, for example by running a subprocess test against a fixture project with invalid evidence. Leaving them untested is not justified by simplicity or impracticality, and no FIXME acknowledges the gap.",
+  "rationale": "**Implementation (`src/lib.rs` `fn validate`, marked `{impl}`):** this looks correct.\n- It finds the nearest ancestor containing both `Cargo.toml` and `book.toml`.\n- It calls `validate_repository`, which is deterministic and does not invoke authoring.\n- It panics, which fails the Cargo test, with a message listing every error in `report.errors`.\n- The message tells the agent to run `habeas author --all`, address the gaps, and rerun the tests.\n- Two minor extras are not in the requirement: the summary counts in the panic header and the \"do not write evidence by hand\" sentence. Both are harmless.\n\n**Tests (the gap):** nothing is marked `{test}` for `requirements.integration.validate`. The `references` lookup returns only the single `{impl}` site. The closest test is `tests/habeas.rs::habeas`, which is tagged `{test}` for `requirements.integration.self_test`. It only exercises the success path, where the project's own evidence is valid. I found no test that:\n- makes `validate()` panic on invalid evidence;\n- checks that the panic message includes all errors;\n- checks that the message names `habeas author --all`;\n- checks that missing or stale evidence stays a failure and does not trigger authoring.\n\nThe `should_panic` and `catch_unwind` searches found nothing. Other tests call `validate_repository` directly, such as `tests/outcomes.rs` and `tests/commands.rs`. They cover the report, not the panic wrapper or its message.\n\nThis is not trivial enough to skip testing. The failure message and the all-errors behavior are explicit MUST obligations, and `validate()` could be tested with a temporary project in a subprocess or under `catch_unwind` (the function reads the current directory).\n\nNo FIXME acknowledges this gap, so the judgment is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.integration.validate",
@@ -70,419 +70,217 @@
       ]
     },
     {
-      "rust_file": "src/lib.rs",
-      "rust_item": "fn[validate]",
-      "text": [
-        "/// Validate the current Cargo and mdBook project for use in a Cargo test.",
-        "///",
-        "/// Panics with all validation errors so an integration test can simply call",
-        "/// `habeas::validate()`.",
-        "#[track_caller]",
-        "pub fn validate() {",
-        "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd",
-        "        .ancestors()",
-        "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
-        "        .expect(\"cannot find Cargo and mdBook project root\");",
-        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
-        "    if !report.errors.is_empty() {",
-        "        panic!(",
-        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\",",
-        "            report.requirements,",
-        "            report.examples,",
-        "            report.evidence_files,",
-        "            report.errors.len(),",
-        "            report.errors.join(\"\\n- \")",
-        "        );",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "README.md",
-      "line_start": 123,
-      "line_end": 129,
-      "text": [
-        "identity. Add the `autofix` label and trigger it as an owner. The workflow must",
-        "be on the default branch for issue and review events to run it.",
-        "",
-        "Requirements commits may fail the full `habeas::validate()` test because pending",
-        "evidence is missing, stale, or has a false judgment. Proposal runs check book rendering;",
-        "code runs must pass the regular Cargo and mdBook checks. The workflow does not",
-        "merge automatically or create a second implementation PR."
-      ]
-    },
-    {
-      "file": "md/getting_started.md",
-      "line_start": 29,
-      "line_end": 35,
-      "text": [
-        "habeas setup",
-        "```",
-        "",
-        "`habeas setup` adds Habeas as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, and creates `tests/habeas.rs`. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence.",
-        "",
-        "Once the plugin is enabled, `cargo agents sync` provides Habeas's skills to your configured agents. Run it again after updating the Habeas dependency to refresh the skills.",
-        ""
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 383,
-      "line_end": 389,
-      "text": [
-        "",
-        "## Checking and viewing",
-        "",
-        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
-        "",
-        "Run `habeas status [<selection>]` from within the project to list requirements and named",
-        "examples needing attention and their validation findings. FIXME judgments are"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 17,
-      "line_end": 23,
-      "text": [
-        ":::",
-        "",
-        ":::{req} determination",
-        "For requirement and example evidence, both `true` and `FIXME` MUST satisfy the determination check in `habeas::validate()`. A false determination MUST fail validation and be reported with its rationale. Each definition's determination MUST be checked on its own; a false determination MUST NOT fail the definitions it implements, tests, or cites. All other evidence checks MUST still pass: FIXME MUST NOT excuse malformed, missing, or stale evidence or uncovered references. Validation MUST check the recorded outcome, schema, input freshness, and reference coverage without inference or reassessing whether a source comment adequately acknowledges a gap.",
-        ":::",
-        "",
-        ":::{req} review_criteria"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 9,
-      "line_end": 19,
-      "text": [
-        ":::",
-        "",
-        ":::{req} setup",
-        "Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, enable sidebar folding with `output.html.fold.enable` unless the book already sets it, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills.",
-        ":::",
-        "",
-        ":::{req} status",
-        "`habeas status [<selection>] [--all] [--verbose]` MUST consider requirements and named examples matched by the {term}`requirements.references.definition_selection`; without a selection it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust function coverage findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied selection matching no definition clearly.",
-        ":::",
-        "",
-        ":::{req} fixme_summary"
-      ]
-    },
-    {
-      "file": "md/requirements/index/README.md",
-      "line_start": 14,
-      "line_end": 20,
-      "text": [
-        ":::",
-        "",
-        ":::{req} state",
-        "The requirements index MUST show each requirement's evidence state as Valid, Missing, Determination false, FIXME, or Invalid. Valid MUST mean its determination is true and its record passes the same evidence and reference coverage checks as `habeas::validate()`. A false or FIXME determination MUST have its distinct state when the record passes all other checks. The FIXME state MUST pass validation while retaining its distinct label. Malformed or stale evidence MUST remain Invalid regardless of its determination. Each detail page MUST show any validation findings.",
-        ":::",
-        "",
-        ":::{req} detail_format"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 1,
-      "line_end": 7,
-      "text": [
-        "# Project integration",
-        "",
-        ":::{req} validate",
-        "`habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.",
-        "Its failure message MUST instruct the agent to run `habeas author --all`, address",
-        "the reported gaps, and rerun tests. Validation MUST remain deterministic and MUST",
-        "NOT invoke authoring itself. {cite}`requirements.authoring.batch`"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 9,
-      "line_end": 15,
-      "text": [
-        ":::",
-        "",
-        ":::{req} self_test",
-        "The Habeas crate MUST have a Cargo integration test that invokes `habeas::validate()` against its own project, so its own requirements and evidence are checked recursively by `cargo test`.",
-        ":::",
-        "",
-        ":::{req} live_bedrock_test"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 63,
-      "line_end": 67,
-      "text": [
-        ":::",
-        "",
-        ":::{req} report_api",
-        "`habeas::validate_repository(root)` MUST return a report with the number of discovered requirements, the number of evidence files, and all validation errors for the supplied project. Ordinary invalid evidence MUST be reported in that report; an inaccessible project root MUST return an I/O error.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 391,
-      "line_end": 397,
-      "text": [
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    pub fn options_json(&self) -> io::Result<serde_json::Value> {",
-        "        for value in self.options().values() {",
-        "            value.validate()?;",
-        "        }",
-        "        serde_json::to_value(self.options()).map_err(io::Error::other)",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 483,
-      "line_end": 489,
-      "text": [
-        "                ));",
-        "            }",
-        "            value",
-        "                .validate()",
-        "                .map_err(|error| invalid(path, &field, error))?;",
-        "        }",
-        "        Ok(())"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[validate]",
+      "hash": "62f383517488d65ae57e20c9f0c9b6412facf81abe971e211563061b65ec6699"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 72,
-      "line_end": 78,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
-        "    Ok(inspect_repository(root)?.report)",
-        "}",
-        ""
-      ]
+      "item": "impl[Anchor]",
+      "hash": "8f6790fc1f75fe2f6d46a2013ab58cca4d1c09a09ca43a218b2a248f6a57db40"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_repository]",
+      "hash": "f2052cf4a6e46c972d3d01cb902f0b784a9701ea210a47fd574690be652b4df7"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[RepositoryInspection]",
+      "hash": "800607c371b41426f2bd4e9fe2d864020dc805bdc4efda5ea0627d7978eecbe5"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[InspectionProgress]",
+      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[load_definitions]",
+      "hash": "24dc7fffbb047826b4573df44f1a77addba9ea3c729332e80f7d487ae92c90ff"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository]",
+      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
     },
     {
       "file": "src/index.rs",
-      "line_start": 1280,
-      "line_end": 1286,
-      "text": [
-        "                \"file\": \"src/evidence.rs\",",
-        "                \"line_start\": 26,",
-        "                \"line_end\": 37,",
-        "                \"text\": [\"pub fn validate_repository() {}\"]",
-        "            }]",
-        "        })",
-        "        .to_string();"
-      ]
+      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
+      "hash": "531127fb83e150e3482e96509af73a7103ceda90cf574c75b4284d63db3c6ec3"
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 25,
-      "line_end": 33,
-      "text": [
-        "/// Validate the current Cargo and mdBook project for use in a Cargo test.",
-        "///",
-        "/// Panics with all validation errors so an integration test can simply call",
-        "/// `habeas::validate()`.",
-        "#[track_caller]",
-        "pub fn validate() {",
-        "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd"
-      ]
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
+      "hash": "2cfb93db5ac479b443f95a6af8e8893f24bb908971f1c7f8650e5cf14fa734bb"
+    },
+    {
+      "file": "README.md",
+      "item": "section[Habeas%20Codicem]/section[Experimental%20GitHub%20autofix%20workflow]",
+      "hash": "ed7e72d07aaa2fc7a22a80887cf6f1b9664b9018f403ec4cb3a9c49e95886df2"
+    },
+    {
+      "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
+      "item": "section[Bootstrap%20requirements]",
+      "hash": "3b89b1f810b832a7bdb04202a8c9b15a218a22e300b23fdb88556291dc6b4f1c"
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "item": "section[Habeas%20requirements]/section[New%20or%20changed%20behavior]",
+      "hash": "8f4cb44a74ebac455e58d4f42e617c11d82a836ed61e29f49133ed7f9d638c99"
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "item": "section[Habeas%20requirements]/section[Reviewing%20code%20against%20requirements]",
+      "hash": "377b2331c39e5c2dc5388d927ce9cf42cbadf2aab42c32aa68e3773a2bc8e764"
+    },
+    {
+      "file": "md/getting_started.md",
+      "item": "section[Getting%20started]",
+      "hash": "1a5c8d7677163a9cd7e8e7a911d0e262e3eb50af521eac9327c7ea7e4fef3fb3"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Evidence]",
+      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Checking%20and%20viewing]",
+      "hash": "78f6d6fac080420e55ab3ea05c9051b888a5903388ba0939139e450f1568f82c"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Editing%20the%20file]",
+      "hash": "d9e3662cd1722948c833eeb495512b440e9bbb4ca4e4d4175ad242e98336c0db"
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "db37ec0d37fdb96ee6ea622c36c2f2ff26c734eb78f2c7ee172bad12ef15f0d7"
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "item": "section[Command-line%20interface]",
+      "hash": "79cdf2a0a52b677d671cb92662c2eab824959f4f6a0b5e0a13803ff49c7c0d4a"
+    },
+    {
+      "file": "md/requirements/index/README.md",
+      "item": "section[Book%20rendering]",
+      "hash": "64366a0f87d49a81add5d17d218da21091fba0e8784722f66c26c9ae2e8517f3"
+    },
+    {
+      "file": "md/requirements/integration.md",
+      "item": "section[Project%20integration]",
+      "hash": "6a6adeee32fa93f5271a8ac4710cb928599fb0a5999094130b8615d9fc296f6c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[options_json]",
+      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[validate]",
+      "hash": "8da8cf7335aa662b4931705a99158f5a5f09614d66e961975f8f1bd434a8a571"
     },
     {
       "file": "src/setup.rs",
-      "line_start": 5,
-      "line_end": 11,
-      "text": [
-        "",
-        "use toml_edit::{Array, DocumentMut, Item, Table, value};",
-        "",
-        "const TEST_SOURCE: &str = \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\";",
-        "const BADGE_CSS: &str = include_str!(\"../md/habeas.css\");",
-        "",
-        "// {impl}`requirements.cli.setup_css`"
-      ]
+      "item": "use@611ac6702f0d",
+      "hash": "611ac6702f0dedfb61d57bf392e69a760f285f4bccf2ca6e09218fda0eb7d21e"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "const[TEST_SOURCE]",
+      "hash": "b7ee41d7df7ec8414a50d47e490b6807afdd99a4a3b3fa7f28b8d4fc0b5b0d55"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "const[BADGE_CSS]",
+      "hash": "4e9c42b2f8a6cdb9777aeef28b47992178194aeb35e965671f300a688cad8332"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[css_relative]",
+      "hash": "55fa6d9efea0282ec73e3aa7ee0d47e0b6f7514a05a41bfb544b3001eea9c53f"
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 457,
-      "line_end": 463,
-      "text": [
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    assert!(!fixture.project.join(\"evidence/rust\").exists());",
-        "    let mut beta = fixture.evidence(\"requirements.beta\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 546,
-      "line_end": 552,
-      "text": [
-        "    assert_eq!(fixture.evidence(\"requirements.alpha_case\"), example);",
-        "    assert_eq!(fixture.evidence(\"requirements.gamma\"), gamma);",
-        "    assert_eq!(fixture.evidence(\"requirements.gamma_case\"), gamma_case);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "}",
-        ""
-      ]
+      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
+      "hash": "a1cc85857df2d07456387ff905e687d978f08abf662e7f88e12e4d7025a32391"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 189,
-      "line_end": 195,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "    }",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    temp",
-        "}"
-      ]
+      "item": "fn[fixme_fixture]",
+      "hash": "777c5d7c731b3ef17579671a72be9dfb38eab88720f8a579b1e6b158866fe5e3"
     },
     {
       "file": "tests/evidence_boundaries.rs",
-      "line_start": 1,
-      "line_end": 7,
-      "text": [
-        "use std::fs;",
-        "use std::path::Path;",
-        "",
-        "use habeas::validate_repository;",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        ""
-      ]
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "use@e843693d3cbe",
+      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "use@df392a18987e",
+      "hash": "df392a18987eb6dcd94a75f6f83ef0de0786ccba5ce3b1e0cf15576c65b22020"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "use@727a0a270d8a",
+      "hash": "727a0a270d8a2c7e83b62bb0afa524214301ccf32188029a001382c2937eca32"
     },
     {
       "file": "tests/habeas.rs",
-      "line_start": 1,
-      "line_end": 5,
-      "text": [
-        "// {test}`requirements.integration.self_test`",
-        "#[test]",
-        "fn habeas() {",
-        "    habeas::validate();",
-        "}"
-      ]
+      "item": "fn[habeas]",
+      "hash": "cab257411adc9ec3d870039e66abea643677801029f3b90b554fc39084ed0a40"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 117,
-      "line_end": 129,
-      "text": [
-        "fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {",
-        "    let temp = fixture();",
-        "    assert!(",
-        "        habeas::validate_repository(temp.path())",
-        "            .unwrap()",
-        "            .errors",
-        "            .is_empty()",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(true));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
+      "item": "fn[fixme_examples_pass_without_test_references_but_true_examples_do_not]",
+      "hash": "373894013232ff04bc58d551da4dbf1af97a816fd7063cec7111b73d4a8dfc23"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 131,
-      "line_end": 137,
-      "text": [
-        "            .any(|error| error.contains(\"no {test} reference\"))",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(false));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
+      "item": "fn[fixme_requirements_accept_issue_references_and_other_content]",
+      "hash": "f7c022efc3585377b19c8163c7228518fbba32234248149e5d3e0511dc2d72b8"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 168,
-      "line_end": 174,
-      "text": [
-        "            \"file\": \"reviewed.txt\", \"line_start\": 1, \"line_end\": 1, \"text\": [comment]",
-        "        }));",
-        "        write_record(temp.path(), \"ready\", record);",
-        "        let report = habeas::validate_repository(temp.path()).unwrap();",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "}"
-      ]
+      "item": "fn[malformed_fixme_is_invalid_and_reports_the_required_shape]",
+      "hash": "8544577f3495760c828e3d751e33c014343f565038252c16fd27a276816cd00d"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 181,
-      "line_end": 187,
-      "text": [
-        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {",
-        "    let temp = fixture();",
-        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 208,
-      "line_end": 214,
-      "text": [
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 228,
-      "line_end": 234,
-      "text": [
-        "        \"IMPL`requirements.timeout`\".replace(\"IMPL\", \"{impl}\"),",
-        "    )",
-        "    .unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
+      "item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
+      "hash": "fcc6ebdc1a7333b30bd2c119b14803335667565f613603f0615423af41e3890f"
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 98,
-      "line_end": 104,
+      "item": "fn[setup_is_repeatable]",
+      "hash": "60c6580a293010591c594e1e37c279509990bb4bb934bd4f83079c6cf1408fd1"
+    },
+    {
+      "definition": "requirements.ci.validation_error",
       "text": [
-        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
-        "    assert_eq!(",
-        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
-        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
-        "    );",
-        "    assert!(project.join(\"md/habeas.css\").is_file());",
-        "    assert!(!project.join(\".agents/skills\").exists());"
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
       ]
     },
     {
@@ -496,18 +294,6 @@
         "{cite}`requirements.references.definition_globs`. A name without `*` selects",
         "exactly that definition.",
         ":::"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 38,
-      "line_end": 42,
-      "text": [
-        "    if !report.errors.is_empty() {",
-        "        panic!(",
-        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\",",
-        "            report.requirements,",
-        "            report.examples,"
       ]
     }
   ]

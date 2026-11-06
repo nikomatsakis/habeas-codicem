@@ -1,7 +1,7 @@
 {
   "requirement": "For requirement and example evidence, both `true` and `FIXME` MUST satisfy the determination check in `habeas::validate()`. A false determination MUST fail validation and be reported with its rationale. Each definition's determination MUST be checked on its own; a false determination MUST NOT fail the definitions it implements, tests, or cites. All other evidence checks MUST still pass: FIXME MUST NOT excuse malformed, missing, or stale evidence or uncovered references. Validation MUST check the recorded outcome, schema, input freshness, and reference coverage without inference or reassessing whether a source comment adequately acknowledges a gap.",
   "determination": false,
-  "rationale": "**Verdict: false.** The implementation looks correct. Two obligations of the requirement have no test, so test coverage of the design space is incomplete.\n\n**Implementation**\n- `validate_evidence_file` in `src/evidence.rs` is marked `{impl}` for this requirement at line 586.\n- A `Judgment::False` pushes a per-file error: `\"{label}: determination is false: <rationale>\"`.\n- `true` and `FIXME` add no error, so they pass this check.\n- The same function still runs every other check, so FIXME excuses none of them:\n  - schema and field validation;\n  - requirement or example text freshness;\n  - dependency checks;\n  - per-input freshness via `validate_input`.\n- Reference coverage is computed independently of the judgment.\n- The determination is checked per file and nothing propagates to other definitions.\n- No inference or reassessment of FIXME comments takes place.\n\n**Tests that exist**\n- `src/evidence.rs::collects_missing_orphan_format_false_and_changed_line_errors` checks that a false determination yields \"determination is false\". It also checks that stale text, stale input and schema errors are reported alongside it.\n- `tests/outcomes.rs::fixme_requirements_accept_issue_references_and_other_content` shows that FIXME with an issue reference or free-form content validates cleanly.\n- `tests/outcomes.rs::fixme_does_not_hide_stale_inputs_or_uncovered_references` shows that FIXME does not hide stale inputs or uncovered references.\n- `tests/outcomes.rs::fixme_examples_pass_without_test_references_but_true_examples_do_not` toggles an example between FIXME, true and false.\n- `tests/commands.rs::fixme_fixture` and the status test cover false and FIXME states end to end.\n- `tests/authoring_batch.rs` covers preserving current false and FIXME judgments.\n\n**Gaps**\n1. **Rationale reporting is not asserted.** The requirement says a false determination must be \"reported with its rationale\". The code appends the rationale, but no test checks it. The `evidence.rs` test uses the rationale \"Work remains.\" and only asserts the substring \"determination is false\". `tests/outcomes.rs` and `tests/commands.rs` also match only that substring.\n2. **Isolation is not tested.** The requirement says a false determination \"MUST NOT fail the definitions it implements, tests, or cites\". No test makes a false definition the target of another definition's `{impl}`, `{test}` or `{cite}` and then checks that the other definition still validates.\n   - In `tests/commands.rs` the false `pending` requirement is not referenced by anything.\n   - In `tests/outcomes.rs` the `timeout` example is toggled to false, but the test only checks that some error contains \"determination is false\". It does not check that `requirements.ready`, which the example cites, stays error-free or that this is the only error.\n\nNo FIXME or issue acknowledges these gaps, so the determination is false rather than FIXME.",
+  "rationale": "**Verdict: not satisfied.** The implementation looks correct, but the tests miss two explicit obligations of `requirements.ci.determination`.\n\n**What is implemented and tested**\n- `validate_evidence_file` in `src/evidence.rs` (about lines 637–645) carries the `{impl}` marker. It parses the determination with `Judgment::from_value`.\n- `true` and `{\"FIXME\": [...]}` add no error. `false` adds `\"{label}: determination is false: <rationale>\"`.\n- Each evidence file is validated on its own, and the other checks still run. Those are the text check, schema and key checks, `validate_dependencies` and `validate_input` for stale or malformed inputs. FIXME therefore excuses nothing else.\n- The `true` and `FIXME` acceptance paths are tested:\n  - `tests/outcomes.rs::fixme_requirements_accept_issue_references_and_other_content` accepts `FIXME` with an issue number and with free-text content.\n  - `tests/commands.rs::fixme_fixture` accepts `FIXME` for a requirement and an example.\n  - `tests/outcomes.rs::fixme_examples_pass_without_test_references_but_true_examples_do_not` accepts a `FIXME` example without a `{test}` reference.\n- The `false` failure is tested in `src/evidence.rs::collects_missing_orphan_format_false_and_changed_line_errors`, which asserts `\"determination is false\"`. `fixme_examples_pass_without_test_references_but_true_examples_do_not` asserts the same message.\n- `tests/outcomes.rs::fixme_does_not_hide_stale_inputs_or_uncovered_references` shows that FIXME does not excuse stale inputs or uncovered references.\n\n**Gaps**\n1. **Rationale reporting is not asserted.** The requirement says a false determination must be \"reported with its rationale\". The implementation appends the trimmed rationale to the message. No test checks that it appears.\n   - The tests I read assert only the substring `\"determination is false\"`, never the rationale text.\n   - In the evidence.rs test, the fixture rationale `\"Work remains.\"` is never checked.\n   - The `status`/`info` tests in `tests/commands.rs` also check only the substring.\n   - The authoring tests that check rationales concern CLI output of the `author` command, not validation errors.\n2. **Per-definition independence is not tested.** The requirement says a false determination must not fail the definitions it implements, tests, or cites. Nothing under `requirements.ci.determination` verifies that.\n   - No test pairs one false record with valid dependents, citers or implementers and asserts that only the false one errors.\n   - The `status` test comes closest, since `pending` is false and `ready` is valid. But it is not marked as covering this requirement, and it does not assert a clean validation report for `ready`.\n   - Independence holds in the implementation because validation runs per file. That is a structural property, not a tested one.\n\nNeither gap is acknowledged by a `FIXME` in source or tests, so `FIXME` is not applicable. The rationale assertion and an independence assertion would close the gaps.",
   "inputs": [
     {
       "requirements": "requirements.ci.determination",
@@ -15,1658 +15,294 @@
       ]
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "fn[validate_evidence_file]",
-      "text": [
-        "// {impl}`requirements.ci.schema`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.definitions.dependencies`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn validate_evidence_file(",
-        "    root: &Path,",
-        "    path: &Path,",
-        "    expected: Option<&Declaration>,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let label = display_path(root, path);",
-        "    let content = match fs::read_to_string(path) {",
-        "        Ok(content) => content,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot read evidence: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let value: Value = match serde_json::from_str(&content) {",
-        "        Ok(value) => value,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: invalid JSON: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let Some(object) = value.as_object() else {",
-        "        errors.push(format!(\"{label}: expected a JSON object\"));",
-        "        return;",
-        "    };",
-        "    let kind = expected",
-        "        .map(|definition| definition.kind)",
-        "        .unwrap_or_else(|| {",
-        "            if object.contains_key(\"example\") {",
-        "                DefinitionKind::Example",
-        "            } else {",
-        "                DefinitionKind::Requirement",
-        "            }",
-        "        });",
-        "    let text_field = kind.noun();",
-        "    check_keys(",
-        "        object,",
-        "        &[text_field, \"determination\", \"rationale\", \"inputs\"],",
-        "        &label,",
-        "        errors,",
-        "    );",
-        "",
-        "    // {impl}`requirements.ci.requirement_text`",
-        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
-        "        if text.trim().is_empty() {",
-        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
-        "        }",
-        "        if let Some(expected) = expected",
-        "            && text != expected.text",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{label}: {text_field} text changed at {}{}\",",
-        "                expected.source,",
-        "                compact_diff(",
-        "                    &text.split('\\n').collect::<Vec<_>>(),",
-        "                    &expected.text.split('\\n').collect::<Vec<_>>()",
-        "                )",
-        "            ));",
-        "        }",
-        "    }",
-        "",
-        "    let determination = match object.get(\"determination\") {",
-        "        Some(value) => match Judgment::from_value(value) {",
-        "            Ok(judgment) => Some(judgment),",
-        "            Err(error) => {",
-        "                errors.push(format!(\"{label}: determination: {error}\"));",
-        "                None",
-        "            }",
-        "        },",
-        "        None => {",
-        "            errors.push(format!(\"{label}: missing field \\\"determination\\\"\"));",
-        "            None",
-        "        }",
-        "    };",
-        "    let rationale = string_field(object, \"rationale\", &label, errors);",
-        "    if let Some(rationale) = rationale",
-        "        && rationale.trim().is_empty()",
-        "    {",
-        "        errors.push(format!(\"{label}: rationale must not be empty\"));",
-        "    }",
-        "    // {impl}`requirements.ci.determination`",
-        "    if determination == Some(Judgment::False) {",
-        "        errors.push(format!(",
-        "            \"{label}: determination is false{}\",",
-        "            rationale",
-        "                .filter(|text| !text.trim().is_empty())",
-        "                .map_or(String::new(), |text| format!(\": {}\", text.trim()))",
-        "        ));",
-        "    }",
-        "",
-        "    crate::terms::validate_dependencies(",
-        "        definitions,",
-        "        object,",
-        "        expected.map(|d| d.text.as_str()),",
-        "        &label,",
-        "        errors,",
-        "    );",
-        "    if let Some(inputs) = array_field(object, \"inputs\", &label, errors) {",
-        "        for (index, input) in inputs.iter().enumerate() {",
-        "            validate_input(",
-        "                root,",
-        "                definitions,",
-        "                input,",
-        "                &format!(\"{label}: inputs[{index}]\"),",
-        "                errors,",
-        "            );",
-        "        }",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "text": [
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.errors`",
-        "    // {test}`requirements.ci.diagnostics`",
-        "    // {test}`requirements.ci.input_containment`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    // {test}`requirements.ci.orphans`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.determination`",
-        "    // {test}`requirements.ci.inputs`",
-        "    // {test}`requirements.ci.requirement_text`",
-        "    // {test}`requirements.ci.schema`",
-        "    #[test]",
-        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.one.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Old text.\",",
-        "                \"determination\": false,",
-        "                \"rationale\": \"Work remains.\",",
-        "                \"inputs\": [",
-        "                    {",
-        "                        \"file\": \"src/main.rs\",",
-        "                        \"line_start\": 1,",
-        "                        \"line_end\": 1,",
-        "                        \"text\": [\"changed line\"]",
-        "                    },",
-        "                    {",
-        "                        \"file\": \"\",",
-        "                        \"line_start\": 0,",
-        "                        \"line_end\": 2,",
-        "                        \"text\": [1]",
-        "                    }",
-        "                ]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.three.json\"),",
-        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/ghost.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ghost.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"A valid but orphaned file.\",",
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\",",
-        "            \"requirement must be a string\",",
-        "            \"missing field \\\"determination\\\"\",",
-        "            \"inputs must be an array\",",
-        "            \"file must be a nonempty path\",",
-        "            \"line_start must be a positive integer\",",
-        "            \"text[0] must be a string\",",
-        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
-        "            \"requirement requirements.empty has no text\",",
-        "        ] {",
-        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "rust_file": "tests/authoring_batch.rs",
-      "rust_item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "text": [
-        "// {test}`requirements.authoring.batch`",
-        "// {test}`requirements.authoring.concurrency`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "// {test}`requirements.ci.determination`",
-        "// {test}`requirements.authoring.progress`",
-        "#[test]",
-        "fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {",
-        "    let server = Server::start(true, None);",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let source = fixture.project.join(\"src/lib.rs\");",
-        "    fs::write(",
-        "        &source,",
-        "        fs::read_to_string(&source).unwrap().replace(",
-        "            \"pub fn beta()\",",
-        "            \"// FIXME(#123): beta has no test yet.\\npub fn beta()\",",
-        "        ),",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"author\", \"--all\", \"--config\", \"mock\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    assert!(!fixture.project.join(\"evidence/rust\").exists());",
-        "    let mut beta = fixture.evidence(\"requirements.beta\");",
-        "    beta[\"determination\"] = json!({\"FIXME\":[\"#123\"]});",
-        "    beta[\"rationale\"] = \"The source explicitly acknowledges the missing beta test.\".into();",
-        "    fs::write(",
-        "        fixture.project.join(\"evidence/requirements.beta.json\"),",
-        "        serde_json::to_vec_pretty(&beta).unwrap(),",
-        "    )",
-        "    .unwrap();",
-        "    let example = fixture.evidence(\"requirements.alpha_case\");",
-        "    let gamma = fixture.evidence(\"requirements.gamma\");",
-        "    let gamma_case = fixture.evidence(\"requirements.gamma_case\");",
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage.len(), 6);",
-        "    assert!(",
-        "        usage",
-        "            .iter()",
-        "            .all(|run| run[\"outcome\"] == \"completed\" && run[\"evidence_written\"] == true)",
-        "    );",
-        "    {",
-        "        let requests = server.requests.0.lock().unwrap();",
-        "        assert_eq!(",
-        "            requests.peak, 2,",
-        "            \"the configured concurrency bounds in-flight requests\"",
-        "        );",
-        "        assert!(",
-        "            requests.first_pair_overlapped,",
-        "            \"a second assessment must start before the first model response\"",
-        "        );",
-        "    }",
-        "",
-        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
-        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        no_op.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&no_op.stderr)",
-        "    );",
-        "    fs::remove_file(&fixture.config).unwrap();",
-        "    let no_config = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        no_config.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&no_config.stderr)",
-        "    );",
-        "    #[cfg(unix)]",
-        "    {",
-        "        let no_op_terminal = fixture.run_in_pty(false, \"xterm-256color\");",
-        "        assert!(",
-        "            no_op_terminal.status.success(),",
-        "            \"{}\",",
-        "            String::from_utf8_lossy(&no_op_terminal.stderr)",
-        "        );",
-        "        assert_eq!(",
-        "            String::from_utf8_lossy(&no_op_terminal.stdout).trim(),",
-        "            \"0 authored; 6 unchanged; 0 failed\"",
-        "        );",
-        "        assert!(!String::from_utf8_lossy(&no_op_terminal.stderr).contains(\"0/0 finished\"));",
-        "    }",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    assert_eq!(fixture.usage().len(), 6);",
-        "",
-        "    fs::write(&fixture.config, &fixture.config_text).unwrap();",
-        "    let changed = fs::read_to_string(&source)",
-        "        .unwrap()",
-        "        .replace(\"-> u8 { 1 }\", \"-> u8 { 1_u8 }\");",
-        "    fs::write(source, changed).unwrap();",
-        "    let updated = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        updated.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&updated.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 7);",
-        "    assert_eq!(",
-        "        server.subjects().last().unwrap(),",
-        "        \"requirement requirements.alpha\"",
-        "    );",
-        "    assert_eq!(fixture.usage().len(), 7);",
-        "    assert_eq!(",
-        "        String::from_utf8_lossy(&updated.stdout).trim(),",
-        "        \"1 authored; 5 unchanged; 0 failed\"",
-        "    );",
-        "    assert_eq!(fixture.evidence(\"requirements.beta\"), beta);",
-        "    assert_eq!(fixture.evidence(\"requirements.alpha_case\"), example);",
-        "    assert_eq!(fixture.evidence(\"requirements.gamma\"), gamma);",
-        "    assert_eq!(fixture.evidence(\"requirements.gamma_case\"), gamma_case);",
-        "    let report = habeas::validate_repository(&fixture.project).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/authoring_batch.rs",
-      "rust_item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
-      "text": [
-        "// {test}`requirements.authoring.batch`",
-        "// {test}`requirements.ci.determination`",
-        "#[test]",
-        "fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {",
-        "    let server = Server::start(false, None);",
-        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
-        "    let output = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6);",
-        "    let mark_false = |name: &str| {",
-        "        let path = fixture.project.join(format!(\"evidence/{name}.json\"));",
-        "        let mut record = fixture.evidence(name);",
-        "        record[\"determination\"] = json!(false);",
-        "        record[\"rationale\"] = json!(\"The implementation omits a boundary case.\");",
-        "        fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();",
-        "        fs::read(path).unwrap()",
-        "    };",
-        "    let alpha = mark_false(\"requirements.alpha\");",
-        "    mark_false(\"requirements.gamma\");",
-        "",
-        "    let current = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        current.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&current.stderr)",
-        "    );",
-        "    assert_eq!(server.subjects().len(), 6, \"{:?}\", server.subjects());",
-        "    assert_eq!(",
-        "        String::from_utf8_lossy(&current.stdout).trim(),",
-        "        \"0 authored; 6 unchanged; 0 failed\"",
-        "    );",
-        "    assert_eq!(",
-        "        fs::read(fixture.project.join(\"evidence/requirements.alpha.json\")).unwrap(),",
-        "        alpha",
-        "    );",
-        "    assert_eq!(",
-        "        fixture.evidence(\"requirements.gamma\")[\"determination\"],",
-        "        false",
-        "    );",
-        "",
-        "    let source = fixture.project.join(\"src/lib.rs\");",
-        "    fs::write(",
-        "        &source,",
-        "        fs::read_to_string(&source)",
-        "            .unwrap()",
-        "            .replace(\"-> u8 { 3 }\", \"-> u8 { 3_u8 }\"),",
-        "    )",
-        "    .unwrap();",
-        "    let stale = fixture.run(&[\"author\", \"--all\"]);",
-        "    assert!(",
-        "        stale.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&stale.stderr)",
-        "    );",
-        "    let subjects = server.subjects();",
-        "    assert_eq!(subjects.len(), 7, \"{subjects:?}\");",
-        "    assert_eq!(subjects[6], \"requirement requirements.gamma\");",
-        "    assert_eq!(",
-        "        String::from_utf8_lossy(&stale.stdout).trim(),",
-        "        \"1 authored; 5 unchanged; 0 failed\"",
-        "    );",
-        "    assert_eq!(",
-        "        fixture.evidence(\"requirements.gamma\")[\"determination\"],",
-        "        true",
-        "    );",
-        "    assert_eq!(",
-        "        fs::read(fixture.project.join(\"evidence/requirements.alpha.json\")).unwrap(),",
-        "        alpha",
-        "    );",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/commands.rs",
-      "rust_item": "fn[fixme_fixture]",
-      "text": [
-        "// {test}`requirements.cli.fixme_summary`",
-        "// {test}`requirements.ci.outcomes`",
-        "// {test}`requirements.ci.determination`",
-        "// {test}`requirements.ci.schema`",
-        "// {test}`requirements.integration.report_api`",
-        "fn fixme_fixture() -> TempDir {",
-        "    let temp = TempDir::new().unwrap();",
-        "    fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "    fs::create_dir(temp.path().join(\"evidence\")).unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = 'fixture'\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    let example = \"A concrete case. CITE`rules.alpha`.\".replace(\"CITE\", \"{cite}\");",
-        "    let declarations = [",
-        "        (",
-        "            \"req\",",
-        "            \"alpha\",",
-        "            \"Alpha MUST work.\",",
-        "            vec![",
-        "                \"FIXME(#00123)\",",
-        "                \"Repeated #123 and rust-lang/rust#000456.\",",
-        "                \"https://github.com/rust-lang/rust/issues/456\",",
-        "                \"Unlinked extra detail\",",
-        "            ],",
-        "        ),",
-        "        (",
-        "            \"req\",",
-        "            \"beta\",",
-        "            \"Beta MUST work.\",",
-        "            vec![\"#123\", \"#45\", \"Rust-Lang/rust#456\", \"An unrelated note\"],",
-        "        ),",
-        "        (\"example\", \"case\", &example, vec![\"FIXME(#45)\"]),",
-        "        (",
-        "            \"req\",",
-        "            \"unlinked\",",
-        "            \"Unlinked MUST work.\",",
-        "            vec![",
-        "                \"No ticket for <script>alert(1)</script>\",",
-        "                \"#000 is not an issue\",",
-        "                \"#12abc and ##123 are not complete issue references\",",
-        "            ],",
-        "        ),",
-        "    ];",
-        "    let source: String = declarations",
-        "        .iter()",
-        "        .map(|(kind, name, text, _)| format!(\":::{{{kind}}} {name}\\n{text}\\n:::\\n\\n\"))",
-        "        .collect();",
-        "    fs::write(temp.path().join(\"md/rules.md\"), &source).unwrap();",
-        "    let input = json!({",
-        "        \"file\": \"md/rules.md\",",
-        "        \"line_start\": 1,",
-        "        \"line_end\": source.lines().count(),",
-        "        \"text\": source.lines().collect::<Vec<_>>()",
-        "    });",
-        "    for (kind, name, text, references) in declarations {",
-        "        let subject_key = if kind == \"example\" {",
-        "            \"example\"",
-        "        } else {",
-        "            \"requirement\"",
-        "        };",
-        "        fs::write(",
-        "            temp.path().join(format!(\"evidence/rules.{name}.json\")),",
-        "            json!({",
-        "                subject_key: text,",
-        "                \"determination\": {\"FIXME\": references},",
-        "                \"rationale\": \"The fixture records acknowledged implementation gaps.\",",
-        "                \"inputs\": [input]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "    }",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    temp",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/outcomes.rs",
-      "rust_item": "fn[fixme_examples_pass_without_test_references_but_true_examples_do_not]",
-      "text": [
-        "// {test}`requirements.ci.determination`",
-        "// {test}`requirements.examples.evidence`",
-        "// {test}`requirements.ci.fixme_example_test_gaps`",
-        "#[test]",
-        "fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {",
-        "    let temp = fixture();",
-        "    assert!(",
-        "        habeas::validate_repository(temp.path())",
-        "            .unwrap()",
-        "            .errors",
-        "            .is_empty()",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(true));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"no {test} reference\"))",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(false));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"determination is false\"))",
-        "    );",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/outcomes.rs",
-      "rust_item": "fn[fixme_requirements_accept_issue_references_and_other_content]",
-      "text": [
-        "// {test}`requirements.ci.determination`",
-        "// {test}`requirements.ci.fixme_implementation_gap`",
-        "// {test}`requirements.ci.fixme_without_issue`",
-        "#[test]",
-        "fn fixme_requirements_accept_issue_references_and_other_content() {",
-        "    let temp = fixture();",
-        "    for (comment, judgment) in [",
-        "        (",
-        "            \"// FIXME(#125): capacity-zero insertion does not return Full yet.\",",
-        "            json!({ \"FIXME\": [\"#125\"] }),",
-        "        ),",
-        "        (",
-        "            \"// FIXME: cancellation races are not tested on Windows.\",",
-        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
-        "        ),",
-        "    ] {",
-        "        fs::write(temp.path().join(\"reviewed.txt\"), format!(\"{comment}\\n\")).unwrap();",
-        "        let path = temp.path().join(\"evidence/requirements.ready.json\");",
-        "        let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "        record[\"determination\"] = judgment;",
-        "        record[\"inputs\"]",
-        "            .as_array_mut()",
-        "            .unwrap()",
-        "            .retain(|input| input.get(\"file\").and_then(Value::as_str) != Some(\"reviewed.txt\"));",
-        "        record[\"inputs\"].as_array_mut().unwrap().push(json!({",
-        "            \"file\": \"reviewed.txt\", \"line_start\": 1, \"line_end\": 1, \"text\": [comment]",
-        "        }));",
-        "        write_record(temp.path(), \"ready\", record);",
-        "        let report = habeas::validate_repository(temp.path()).unwrap();",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "rust_file": "tests/outcomes.rs",
-      "rust_item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
-      "text": [
-        "// {test}`requirements.ci.inputs`",
-        "// {test}`requirements.ci.determination`",
-        "// {test}`requirements.references.evidence_coverage`",
-        "// {test}`requirements.ci.fixme_stale_input`",
-        "// {test}`requirements.index.state`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"input text changed\"))",
-        "    );",
-        "    let status = habeas::status_markdown(temp.path(), false).unwrap();",
-        "    let row = status",
-        "        .lines()",
-        "        .find(|line| line.starts_with(\"| `requirements.timeout`\"))",
-        "        .unwrap();",
-        "    assert!(row.contains(\"Invalid\"), \"{row}\");",
-        "    assert!(status.contains(\"#125\"), \"{status}\");",
-        "    assert!(status.contains(\"input text changed\"), \"{status}\");",
-        "    fs::write(",
-        "        temp.path().join(\"other.txt\"),",
-        "        \"IMPL`requirements.timeout`\".replace(\"IMPL\", \"{impl}\"),",
-        "    )",
-        "    .unwrap();",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"no input covers\") && error.contains(\"other.txt:1\"))",
-        "    );",
-        "}"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 39,
-      "line_end": 39,
-      "text": [
-        "| `src/evidence.rs:234` `validate_evidence_file` | `requirements.ci.schema`, `requirements.ci.requirement_text`, `requirements.ci.determination` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 124,
-      "line_end": 124,
-      "text": [
-        "| `src/evidence.rs:266` | changed requirement text or false determination | `requirements.ci.requirement_text`, `requirements.ci.determination` |"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 88,
-      "line_end": 88,
-      "text": [
-        "Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 386,
-      "line_end": 386,
-      "text": [
-        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 799,
-      "line_end": 799,
-      "text": [
-        "status MUST follow {cite}`requirements.ci.determination`."
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 901,
-      "line_end": 901,
-      "text": [
-        "{cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 172,
-      "line_end": 172,
-      "text": [
-        "{cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 192,
-      "line_end": 192,
-      "text": [
-        "{cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 212,
-      "line_end": 212,
-      "text": [
-        "{cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 225,
-      "line_end": 225,
-      "text": [
-        "{cite}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 236,
-      "line_end": 236,
-      "text": [
-        "{cite}`requirements.ci.determination`"
-      ]
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "445b0ac92a0e4fb1fe1f25c5d08b69a8d3a9f629b1ce64f62eab6c0416210ec0"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 586,
-      "line_end": 586,
-      "text": [
-        "    // {impl}`requirements.ci.determination`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1525,
-      "line_end": 1525,
-      "text": [
-        "    // {test}`requirements.ci.determination`"
-      ]
+      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "hash": "624ad7a0c13045d4eda64b42208699d0441461f96dfafec3098a06c4dcaf7057"
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 438,
-      "line_end": 438,
-      "text": [
-        "// {test}`requirements.ci.determination`"
-      ]
+      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
+      "hash": "a1cc85857df2d07456387ff905e687d978f08abf662e7f88e12e4d7025a32391"
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 1003,
-      "line_end": 1003,
-      "text": [
-        "// {test}`requirements.ci.determination`"
-      ]
+      "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
+      "hash": "9c44d8725eeec44bdcdcbdb23527835a6d6ec832ae240fbcc09b8dd16da1193b"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 119,
-      "line_end": 119,
-      "text": [
-        "// {test}`requirements.ci.determination`"
-      ]
+      "item": "fn[fixme_fixture]",
+      "hash": "777c5d7c731b3ef17579671a72be9dfb38eab88720f8a579b1e6b158866fe5e3"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 113,
-      "line_end": 113,
-      "text": [
-        "// {test}`requirements.ci.determination`"
-      ]
+      "item": "fn[fixme_examples_pass_without_test_references_but_true_examples_do_not]",
+      "hash": "373894013232ff04bc58d551da4dbf1af97a816fd7063cec7111b73d4a8dfc23"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 143,
-      "line_end": 143,
-      "text": [
-        "// {test}`requirements.ci.determination`"
-      ]
+      "item": "fn[fixme_requirements_accept_issue_references_and_other_content]",
+      "hash": "f7c022efc3585377b19c8163c7228518fbba32234248149e5d3e0511dc2d72b8"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 202,
-      "line_end": 202,
-      "text": [
-        "// {test}`requirements.ci.determination`"
-      ]
+      "item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
+      "hash": "fcc6ebdc1a7333b30bd2c119b14803335667565f613603f0615423af41e3890f"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 22,
-      "line_end": 26,
-      "text": [
-        "",
-        "use crate::config::{self, BackendKind, ResolvedAuthoringConfig};",
-        "use crate::judgment::Judgment;",
-        "use inputs::{AssessmentKind, AssessmentSources};",
-        "use providers::{CompletionProvider, RigProvider};"
-      ]
+      "item": "use@767d1aec2185",
+      "hash": "767d1aec2185d13b41ad2005359076f421502c3bed54bcd47f4b71210000e31d"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 33,
-      "line_end": 37,
-      "text": [
-        "    pub evidence_path: Option<PathBuf>,",
-        "    pub usage_path: PathBuf,",
-        "    pub determination: Judgment,",
-        "    pub rationale: String,",
-        "}"
-      ]
+      "item": "use@18a4bb66fc2c",
+      "hash": "18a4bb66fc2c16a5afc36c64f161f7e40625c5fd41178a0cf9c2e534bcf53309"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 325,
-      "line_end": 329,
-      "text": [
-        "    config: &ResolvedAuthoringConfig,",
-        "    usage: &mut UsageLog,",
-        ") -> io::Result<(Judgment, Value)> {",
-        "    let model = config.model_ref();",
-        "    let backend = match model.backend {"
-      ]
+      "item": "use@33cd572d5867",
+      "hash": "33cd572d5867616122f641c092cb470ece180cbc8b4271e9d675cb80762ac978"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 374,
-      "line_end": 378,
-      "text": [
-        "",
-        "// {impl}`requirements.authoring.submission`",
-        "fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {",
-        "    let object = arguments",
-        "        .as_object()"
-      ]
+      "item": "use@f0c01fe9f7db",
+      "hash": "f0c01fe9f7db30c5bd6cd8496efc9c926fda5ac2125ec416ffabd10ab4023139"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 386,
-      "line_end": 390,
-      "text": [
-        "        ));",
-        "    }",
-        "    let judgment = Judgment::from_value(&object[\"determination\"]).map_err(io::Error::other)?;",
-        "    let rationale = object[\"rationale\"]",
-        "        .as_str()"
-      ]
+      "item": "struct[AuthoringOutcome]",
+      "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 429,
-      "line_end": 433,
-      "text": [
-        "    sources: &mut AssessmentSources,",
-        "    usage: &mut UsageLog,",
-        ") -> io::Result<(Judgment, Value)> {",
-        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
-        "    request.tools = tool_definitions()?;"
-      ]
+      "item": "fn[configured_record]",
+      "hash": "792de4a6e4c3dc00f4e12403f2c953553b710cecae5e954f8167ac9b74c22eba"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 542,
-      "line_end": 548,
-      "text": [
-        "    use super::*;",
-        "",
-        "    struct JudgmentProvider(Value);",
-        "",
-        "    impl CompletionProvider for JudgmentProvider {",
-        "        // {test}`requirements.authoring.submission`",
-        "        async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {"
-      ]
+      "item": "fn[submission]",
+      "hash": "0399b4a6cb4665e2c0d3cf700b5aac090be807722f8c47cfacbd37a6c94a2321"
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 583,
-      "line_end": 587,
-      "text": [
-        "                ));",
-        "            }",
-        "            JudgmentProvider(json!(true)).complete(request).await",
-        "        }",
-        "    }"
-      ]
+      "item": "fn[assess]",
+      "hash": "afeeb6bc83b39c5e0d06c89ec248138426032c7881619e6301e1de8d084709d0"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/use@a0259f98c77e",
+      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[JudgmentProvider]",
+      "hash": "a4d3bcc945e5ff73273efd38fe12c07e22eca04ce1dff12db82626cc57940bcc"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]",
+      "hash": "fd4c75c6950aa00bab42b25a2288185c9a031dfdbbd77ac570edd1bebeefb7f2"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]",
+      "hash": "c962d16db83300d5f65df0f04151a97e03a560a80ff6e54f2626f4be262b85a9"
     },
     {
       "file": "src/authoring/progress.rs",
-      "line_start": 6,
-      "line_end": 10,
-      "text": [
-        "use super::AuthoringOutcome;",
-        "use crate::evidence::InspectionProgress;",
-        "use crate::judgment::Judgment;",
-        "",
-        "pub(super) struct BatchProgress {"
-      ]
+      "item": "use@89168547ebb0",
+      "hash": "89168547ebb05411b3f3af744378e5942a505238a22acc21d672c921dabcd301"
     },
     {
       "file": "src/authoring/progress.rs",
-      "line_start": 96,
-      "line_end": 104,
-      "text": [
-        "    pub(super) fn completed(&mut self, assessment: &AuthoringOutcome) {",
-        "        match &assessment.determination {",
-        "            Judgment::True => self.positive += 1,",
-        "            Judgment::False => self.negative += 1,",
-        "            Judgment::Fixme(_) => self.fixme += 1,",
-        "        }",
-        "        if matches!(assessment.determination, Judgment::Fixme(_)) {",
-        "            self.println(&format!(",
-        "                \"{}: FIXME (usage: {})\","
-      ]
+      "item": "use@699a40c6ec6a",
+      "hash": "699a40c6ec6a447abf626396186de8476f03f5595005e7677faa0e2360c52327"
     },
     {
       "file": "src/authoring/progress.rs",
-      "line_start": 106,
-      "line_end": 110,
-      "text": [
-        "                assessment.usage_path.display()",
-        "            ));",
-        "        } else if matches!(assessment.determination, Judgment::False) {",
-        "            let mut message = format!(",
-        "                \"{}: false (usage: {})\","
-      ]
+      "item": "use@18a4bb66fc2c",
+      "hash": "18a4bb66fc2c16a5afc36c64f161f7e40625c5fd41178a0cf9c2e534bcf53309"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "struct[BatchProgress]",
+      "hash": "4f886d7efa57409f30bed65cb7d2ad5e80c982c61a057b30a3c4ddea3de72605"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[completed]",
+      "hash": "4cb6a3a541d7cd011517bf9cd73652642b5b2fe2d6a39f35f054c174146f9dec"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 8,
-      "line_end": 12,
-      "text": [
-        "",
-        "use crate::inputs::{InputSelector, ResolvedInput};",
-        "use crate::judgment::Judgment;",
-        "use crate::{",
-        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,"
-      ]
+      "item": "use@2e4fe4793e8b",
+      "hash": "2e4fe4793e8bc998ae55fea9e98735067114def6bef11cfe58864cca02577bbf"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 566,
-      "line_end": 570,
-      "text": [
-        "",
-        "    let determination = match object.get(\"determination\") {",
-        "        Some(value) => match Judgment::from_value(value) {",
-        "            Ok(judgment) => Some(judgment),",
-        "            Err(error) => {"
-      ]
+      "item": "use@18a4bb66fc2c",
+      "hash": "18a4bb66fc2c16a5afc36c64f161f7e40625c5fd41178a0cf9c2e534bcf53309"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 585,
-      "line_end": 589,
-      "text": [
-        "    }",
-        "    // {impl}`requirements.ci.determination`",
-        "    if determination == Some(Judgment::False) {",
-        "        errors.push(format!(",
-        "            \"{label}: determination is false{}\","
-      ]
+      "item": "use@d34bb79f11fa",
+      "hash": "d34bb79f11fa91ff43df333fd09f08c055030852bcc4690bfdeddbdd36265b71"
     },
     {
       "file": "src/fixme.rs",
-      "line_start": 8,
-      "line_end": 15,
-      "text": [
-        "#[derive(Default)]",
-        "pub(crate) struct FixmeSummary {",
-        "    judgments: Vec<FixmeJudgment>,",
-        "}",
-        "",
-        "struct FixmeJudgment {",
-        "    name: String,",
-        "    kind: &'static str,"
-      ]
+      "item": "struct[FixmeSummary]",
+      "hash": "97acef19bd5c19c3f5a9c6b66f9b3838c4aadfc016bd63e05541366baaaa6005"
     },
     {
       "file": "src/fixme.rs",
-      "line_start": 21,
-      "line_end": 25,
-      "text": [
-        "    pub(crate) fn add(&mut self, name: &str, kind: &'static str, entries: &[String]) {",
-        "        if !entries.is_empty() {",
-        "            self.judgments.push(FixmeJudgment {",
-        "                name: name.to_owned(),",
-        "                kind,"
-      ]
+      "item": "struct[FixmeJudgment]",
+      "hash": "c5575ad6be04187dd51a0360ef5be799e431df6b3a19535d6703c629e43c44b8"
     },
     {
       "file": "src/fixme.rs",
-      "line_start": 34,
-      "line_end": 38,
-      "text": [
-        "            return String::new();",
-        "        }",
-        "        let mut groups: BTreeMap<String, Vec<&FixmeJudgment>> = BTreeMap::new();",
-        "        let mut without_issue = Vec::new();",
-        "        for judgment in &self.judgments {"
-      ]
+      "item": "impl[FixmeSummary]/fn[add]",
+      "hash": "60511acf3a5fd02f8d220559be8fcc258715e89d87792d1af4331efe039106cd"
     },
     {
       "file": "src/fixme.rs",
-      "line_start": 87,
-      "line_end": 91,
-      "text": [
-        "",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "fn render_judgments(output: &mut String, judgments: &[&FixmeJudgment]) {",
-        "    for judgment in judgments {",
-        "        output.push_str(&format!(\"- `{}` ({})\\n\\n\", judgment.name, judgment.kind));"
-      ]
+      "item": "impl[FixmeSummary]/fn[render]",
+      "hash": "5ae8a98947303c608bb42baa06ff5ec0b4ed2d5d124fd02b4df9b2fd36b08b47"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "fn[render_judgments]",
+      "hash": "999a77b2e07eef9f4feaf682c53c616c097efebe3bac9e5247cffe19adb54f50"
     },
     {
       "file": "src/index.rs",
-      "line_start": 173,
-      "line_end": 177,
-      "text": [
-        "                record",
-        "                    .get(\"determination\")",
-        "                    .and_then(|value| crate::judgment::Judgment::from_value(value).ok())",
-        "            });",
-        "        let fixme_entries = judgment"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 183,
-      "line_end": 189,
-      "text": [
-        "        } else if errors.is_empty() {",
-        "            match judgment {",
-        "                Some(crate::judgment::Judgment::True) => EvidenceState::Valid,",
-        "                Some(crate::judgment::Judgment::False) => EvidenceState::DeterminationFalse,",
-        "                Some(crate::judgment::Judgment::Fixme(_)) => EvidenceState::Fixme,",
-        "                None => EvidenceState::Invalid,",
-        "            }"
-      ]
+      "item": "impl[LoadedDetailEvidence]/fn[load]",
+      "hash": "e1637ee90d2951ddf363d272ab0fa700d3251d854ef6fdf95fee88f2bbf96d00"
     },
     {
       "file": "src/judgment.rs",
-      "line_start": 3,
-      "line_end": 7,
-      "text": [
-        "/// A requirement or example assessment, independent of source freshness.",
-        "#[derive(Clone, Debug, PartialEq, Eq)]",
-        "pub enum Judgment {",
-        "    True,",
-        "    False,"
-      ]
+      "item": "enum[Judgment]",
+      "hash": "a9bfddb68ac7f643edbadb7a2ecea67abe9271b517b1b6f1b98ce706ac05f67b"
     },
     {
       "file": "src/judgment.rs",
-      "line_start": 9,
-      "line_end": 13,
-      "text": [
-        "}",
-        "",
-        "impl Judgment {",
-        "    // {impl}`requirements.ci.outcomes`",
-        "    // {impl}`requirements.ci.schema`"
-      ]
+      "item": "impl[Judgment]",
+      "hash": "b65e3178fd7a518410b9e16f8001f4ab448cc4d53160714f46c95f57cc4d74c6"
     },
     {
       "file": "src/main.rs",
-      "line_start": 193,
-      "line_end": 200,
-      "text": [
-        "                outcome.subject, outcome.backend, outcome.model,",
-        "            );",
-        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
-        "                summary.push_str(\" — FIXME\");",
-        "            }",
-        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
-        "                eprintln!(\"{}: false\", outcome.subject);",
-        "                if verbose {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 586,
-      "line_end": 592,
-      "text": [
-        "    // {impl}`requirements.ci.determination`",
-        "    if determination == Some(Judgment::False) {",
-        "        errors.push(format!(",
-        "            \"{label}: determination is false{}\",",
-        "            rationale",
-        "                .filter(|text| !text.trim().is_empty())",
-        "                .map_or(String::new(), |text| format!(\": {}\", text.trim()))"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1539,
-      "line_end": 1545,
-      "text": [
-        "            json!({",
-        "                \"requirement\": \"Old text.\",",
-        "                \"determination\": false,",
-        "                \"rationale\": \"Work remains.\",",
-        "                \"inputs\": [",
-        "                    {",
-        "                        \"file\": \"src/main.rs\","
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1585,
-      "line_end": 1591,
-      "text": [
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\","
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 189,
-      "line_end": 195,
-      "text": [
-        "            }",
-        "        } else if errors",
-        "            .iter()",
-        "            .all(|error| error.starts_with(&format!(\"{prefix} determination is false\")))",
-        "        {",
-        "            EvidenceState::DeterminationFalse",
-        "        } else {"
-      ]
+      "item": "fn[main]",
+      "hash": "bb3fbedf662fe3d50bd0de88cf6a0f9dd8b9f6d3b9f3d0552be4227d02d7a3f7"
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 390,
-      "line_end": 396,
-      "text": [
-        "    assert!(!text.contains(\"| `requirements.ready`\"), \"{text}\");",
-        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
-        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
-        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
-        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"input text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"invalid JSON\"), \"{text}\");"
-      ]
+      "item": "fn[status_lists_nonvalid_requirements_and_all_option_in_name_order]",
+      "hash": "a34d5032c1c42b65e67bb2731fd63a7fd8a807ef4e0c6d60200fc035592d8212"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[serve]",
+      "hash": "ef9ca0db509243039e14e3dc64d60641c65201d6c1fc788482561046f61d96a0"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
+      "hash": "1bfb25fd0b84933dcb33f58100317500ac1bade5a8b38d9c7fd68844db686677"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_reports_false_rationales_only_when_verbose]",
+      "hash": "791756edeb4d4bfd0564468de5080996811b62f9d0c995ca2ddab3701bda6a5b"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[verbose_false_rationale_is_readable_above_terminal_progress]",
+      "hash": "4b5993f1c72318c124e8f3d9a21a850c4d2ac2038f29983a1ff1700f6f20d4c2"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "6b7b36f30f716b7fab15ec0ee64feab0ffe765cd251ea0b9fecf660b2faf169b"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "7a00d15ac0b7c37acb1ece15dcd419c300c5d0bd775826b1dd2a09eef4fa3f5d"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
+      "hash": "baf298107691f3efb4f54b082b22051a9a864d19fbadfd3c5372359113b6023a"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[false_is_a_completed_assessment]",
+      "hash": "4120894e815d46d255b876a672b3d7de289d007c894388f4eb82ceec8e7ab722"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[verbose_single_author_reports_only_false_rationale_without_source_inputs]",
+      "hash": "ba4f23b738a96d50e1bb4e7afcd4761c2355816b13567dafd93c2ba2d3b6a174"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[stdout_emits_only_evidence_json_without_changing_project_files]",
+      "hash": "713b07dd6925e36ed3dd62359379053376ec3dc4d84c19ec76e78e84ce998d92"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[missing_duplicate_and_invalid_submissions_preserve_existing_evidence]",
+      "hash": "67f44d189fa7a170b468cc900f352066cb88bd8f347cb9a7ee70fc910e6347b0"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
+      "hash": "9c368a31e112c63a717c79e490de1a0b92151442949336fe52d7fc25aa0aa308"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[failed_evidence_write_keeps_the_accepted_judgment_in_usage]",
+      "hash": "d85b17a7bb964f8486059cdc40d70593f0deeff734cb5d2ab5815d2e874678a5"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[fixture]",
+      "hash": "a27389364fe17bf75465becdd9110a9638da73502dcff1f5988aed4b11e34284"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[info_renders_exact_and_glob_matches_as_markdown_without_an_index]",
+      "hash": "226214cc363632924f0309c006b3600dd01e0acd5b77eb5e269acee3fad7dfb0"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "c66bf3ceb1fb830ced7559dfeb069ca089e613906742006cd898c2bbfdd07a5c"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[approve]",
+      "hash": "21f1d929ffeb266212290508583f69fedcd7773e3eb80fda680729f343c763ab"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[write_inputs]",
+      "hash": "4e0389f2df7a9f9734620a151fc8ef4f46ca3aa5b9beaa71210c7911f542cfa2"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[live_bedrock_authoring]",
+      "hash": "334db9087426522bd749ba0bd042005190bc388325543e5f100f7c764f1a4969"
     },
     {
       "file": "tests/outcomes.rs",
-      "line_start": 136,
-      "line_end": 142,
-      "text": [
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"determination is false\"))",
-        "    );",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 62,
-      "line_end": 66,
-      "text": [
-        "            if matches!(",
-        "                evidence.state(),",
-        "                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse",
-        "            ) {",
-        "                unchanged += 1;"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 97,
-      "line_end": 101,
-      "text": [
-        "        match &assessment.determination {",
-        "            Judgment::True => self.positive += 1,",
-        "            Judgment::False => self.negative += 1,",
-        "            Judgment::Fixme(_) => self.fixme += 1,",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 127,
-      "line_end": 131,
-      "text": [
-        "    Valid,",
-        "    Missing,",
-        "    DeterminationFalse,",
-        "    Fixme,",
-        "    Invalid,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 184,
-      "line_end": 188,
-      "text": [
-        "            match judgment {",
-        "                Some(crate::judgment::Judgment::True) => EvidenceState::Valid,",
-        "                Some(crate::judgment::Judgment::False) => EvidenceState::DeterminationFalse,",
-        "                Some(crate::judgment::Judgment::Fixme(_)) => EvidenceState::Fixme,",
-        "                None => EvidenceState::Invalid,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 192,
-      "line_end": 196,
-      "text": [
-        "            .all(|error| error.starts_with(&format!(\"{prefix} determination is false\")))",
-        "        {",
-        "            EvidenceState::DeterminationFalse",
-        "        } else {",
-        "            EvidenceState::Invalid"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 238,
-      "line_end": 242,
-      "text": [
-        "            Self::Valid => \"Valid\",",
-        "            Self::Missing => \"Missing\",",
-        "            Self::DeterminationFalse => \"Determination false\",",
-        "            Self::Fixme => \"FIXME\",",
-        "            Self::Invalid => \"Invalid\","
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 249,
-      "line_end": 253,
-      "text": [
-        "            Self::Valid => \"237346\",",
-        "            Self::Missing => \"5f6670\",",
-        "            Self::DeterminationFalse => \"ae5d14\",",
-        "            Self::Fixme => \"ae5d14\",",
-        "            Self::Invalid => \"ad3028\","
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 196,
-      "line_end": 200,
-      "text": [
-        "                summary.push_str(\" — FIXME\");",
-        "            }",
-        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
-        "                eprintln!(\"{}: false\", outcome.subject);",
-        "                if verbose {"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 1,
-      "line_end": 112,
-      "text": [
-        "use std::fs;",
-        "use std::path::Path;",
-        "",
-        "use habeas::judgment::Judgment;",
-        "use mdbook_preprocessor::book::{Book, BookItem, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.ci.outcomes`",
-        "// {test}`requirements.examples.evidence`",
-        "fn fixture() -> TempDir {",
-        "    let temp = TempDir::new().unwrap();",
-        "    fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "    fs::create_dir(temp.path().join(\"evidence\")).unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = 'fixture'\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    let example = \"Timeout handling retries. CITE`requirements.ready`\".replace(\"CITE\", \"{cite}\");",
-        "    let example_lines = vec![",
-        "        \":::{example} timeout\".to_owned(),",
-        "        example.clone(),",
-        "        \":::\".to_owned(),",
-        "    ];",
-        "    fs::write(",
-        "        temp.path().join(\"md/requirements.md\"),",
-        "        format!(",
-        "            \":::{{req}} ready\\nThe behavior MUST work.\\n:::\\n\\n{}\\n\",",
-        "            example_lines.join(\"\\n\")",
-        "        ),",
-        "    )",
-        "    .unwrap();",
-        "    let source = \"// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).\";",
-        "    fs::write(temp.path().join(\"observed.txt\"), format!(\"{source}\\n\")).unwrap();",
-        "    let source_input = json!({",
-        "        \"file\": \"observed.txt\", \"line_start\": 1, \"line_end\": 1, \"text\": [source]",
-        "    });",
-        "    write_record(",
-        "        temp.path(),",
-        "        \"ready\",",
-        "        json!({",
-        "            \"requirement\": \"The behavior MUST work.\",",
-        "            \"determination\": true,",
-        "            \"rationale\": \"The requirement is supported by the fixture.\",",
-        "            \"inputs\": [{",
-        "                \"requirements\": \"requirements.timeout\",",
-        "                \"matches\": [\"requirements.timeout\"],",
-        "                \"text\": example_lines",
-        "            }]",
-        "        }),",
-        "    );",
-        "    write_record(",
-        "        temp.path(),",
-        "        \"timeout\",",
-        "        json!({",
-        "            \"example\": example,",
-        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },",
-        "            \"rationale\": \"The recorded comments acknowledge the missing timeout tests.\",",
-        "            \"inputs\": [source_input]",
-        "        }),",
-        "    );",
-        "    temp",
-        "}",
-        "",
-        "// {test}`requirements.ci.schema`",
-        "fn write_record(root: &Path, name: &str, value: Value) {",
-        "    fs::write(",
-        "        root.join(format!(\"evidence/requirements.{name}.json\")),",
-        "        serde_json::to_string_pretty(&value).unwrap(),",
-        "    )",
-        "    .unwrap();",
-        "}",
-        "",
-        "// {test}`requirements.ci.outcomes`",
-        "fn replace_judgment(root: &Path, name: &str, judgment: Value) {",
-        "    let path = root.join(format!(\"evidence/requirements.{name}.json\"));",
-        "    let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "    record[\"determination\"] = judgment;",
-        "    write_record(root, name, record);",
-        "}",
-        "",
-        "// {test}`requirements.ci.outcomes`",
-        "// {test}`requirements.ci.schema`",
-        "#[test]",
-        "fn judgments_round_trip_and_reject_invalid_fixme_shapes() {",
-        "    for value in [",
-        "        json!(true),",
-        "        json!(false),",
-        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
-        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
-        "    ] {",
-        "        assert_eq!(Judgment::from_value(&value).unwrap().to_value(), value);",
-        "    }",
-        "    for invalid in [",
-        "        Value::Null,",
-        "        json!(\"FIXME\"),",
-        "        json!([\"#125\"]),",
-        "        json!({}),",
-        "        json!({ \"FIXME\": [] }),",
-        "        json!({ \"FIXME\": [\"\"] }),",
-        "        json!({ \"FIXME\": [\"   \"] }),",
-        "        json!({ \"FIXME\": [\"#125\", 125] }),",
-        "        json!({ \"FIXME\": \"#125\" }),",
-        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
-        "        json!({ \"fixme\": [\"#125\"] }),",
-        "    ] {",
-        "        assert!(Judgment::from_value(&invalid).is_err(), \"{invalid}\");",
-        "    }",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 340,
-      "line_end": 400,
-      "text": [
-        "        \"{filtered}\"",
-        "    );",
-        "    assert!(filtered.contains(\"rules.case\"), \"{filtered}\");",
-        "    for excluded in [",
-        "        \"rules.alpha\",",
-        "        \"rules.beta\",",
-        "        \"rules.unlinked\",",
-        "        \"#123\",",
-        "        \"rust-lang/rust\",",
-        "    ] {",
-        "        assert!(!filtered.contains(excluded), \"{filtered}\");",
-        "    }",
-        "",
-        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\", \"rules.unlinked\"]);",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let unlinked = String::from_utf8(output.stdout).unwrap();",
-        "    assert!(unlinked.contains(\"rules.unlinked\"), \"{unlinked}\");",
-        "    assert!(",
-        "        unlinked",
-        "            .lines()",
-        "            .any(|line| line.contains(\"1 judgment\") && line.contains(\"without an issue\")),",
-        "        \"{unlinked}\"",
-        "    );",
-        "    assert!(!unlinked.contains(\"affects\"), \"{unlinked}\");",
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "#[test]",
-        "fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {",
-        "    let temp = fixture();",
-        "    let nested = temp.path().join(\"src/nested\");",
-        "    let output = habeas(&nested, &[\"status\"]);",
-        "    assert!(output.status.success(), \"{:?}\", output);",
-        "    let text = String::from_utf8(output.stdout).unwrap();",
-        "    for (name, state) in [",
-        "        (\"absent\", \"Missing\"),",
-        "        (\"malformed\", \"Invalid\"),",
-        "        (\"pending\", \"Determination false\"),",
-        "        (\"stale\", \"Invalid\"),",
-        "        (\"stale_input\", \"Invalid\"),",
-        "        (\"uncovered\", \"Invalid\"),",
-        "    ] {",
-        "        assert!(",
-        "            text.lines().any(|line| {",
-        "                line.starts_with(&format!(\"| `requirements.{name}`\"))",
-        "                    && line.contains(&format!(\"| {state}\"))",
-        "            }),",
-        "            \"{text}\"",
-        "        );",
-        "    }",
-        "    assert!(!text.contains(\"| `requirements.ready`\"), \"{text}\");",
-        "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
-        "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
-        "    assert!(text.contains(\"determination is false\"), \"{text}\");",
-        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"input text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"invalid JSON\"), \"{text}\");",
-        "    assert!(text.contains(\"no input covers\"), \"{text}\");",
-        "",
-        "    let output = habeas(&nested, &[\"status\", \"--all\"]);",
-        "    assert!(output.status.success(), \"{:?}\", output);"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 19,
-      "line_end": 31,
-      "text": [
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "    let requirements = [",
-        "        (\"ready\", \"Ready MUST work.\"),",
-        "        (\"xready\", \"Xready MUST work.\"),",
-        "        (\"pending\", \"Pending MUST work.\"),",
-        "        (\"stale\", \"Stale MUST work.\"),",
-        "        (\"stale_input\", \"Stale input MUST work.\"),",
-        "        (\"absent\", \"Absent MUST work.\"),",
-        "        (\"malformed\", \"Malformed MUST work.\"),",
-        "        (\"uncovered\", \"Uncovered MUST work.\"),",
-        "    ];"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 49,
-      "line_end": 61,
-      "text": [
-        "        [\"fn main() {}\\n// {\", \"impl}`requirements.uncovered`\\n\"].concat(),",
-        "    )",
-        "    .unwrap();",
-        "    for (name, text, determination) in [",
-        "        (\"ready\", \"Ready MUST work.\", true),",
-        "        (\"xready\", \"Xready MUST work.\", true),",
-        "        (\"pending\", \"Pending MUST work.\", false),",
-        "        (\"stale\", \"Old requirement.\", true),",
-        "        (\"stale_input\", \"Stale input MUST work.\", true),",
-        "        (\"uncovered\", \"Uncovered MUST work.\", true),",
-        "    ] {",
-        "        let inputs = if name == \"ready\" {",
-        "            vec!["
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 371,
-      "line_end": 383,
-      "text": [
-        "    let output = habeas(&nested, &[\"status\"]);",
-        "    assert!(output.status.success(), \"{:?}\", output);",
-        "    let text = String::from_utf8(output.stdout).unwrap();",
-        "    for (name, state) in [",
-        "        (\"absent\", \"Missing\"),",
-        "        (\"malformed\", \"Invalid\"),",
-        "        (\"pending\", \"Determination false\"),",
-        "        (\"stale\", \"Invalid\"),",
-        "        (\"stale_input\", \"Invalid\"),",
-        "        (\"uncovered\", \"Invalid\"),",
-        "    ] {",
-        "        assert!(",
-        "            text.lines().any(|line| {"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 400,
-      "line_end": 412,
-      "text": [
-        "    assert!(output.status.success(), \"{:?}\", output);",
-        "    let all = String::from_utf8(output.stdout).unwrap();",
-        "    assert!(all.contains(\"| `requirements.case` (example)\"), \"{all}\");",
-        "    let names = [",
-        "        \"absent\",",
-        "        \"malformed\",",
-        "        \"pending\",",
-        "        \"ready\",",
-        "        \"stale\",",
-        "        \"stale_input\",",
-        "        \"uncovered\",",
-        "        \"xready\",",
-        "    ];"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 485,
-      "line_end": 499,
-      "text": [
-        "        \"{exact}\"",
-        "    );",
-        "",
-        "    let output = habeas(temp.path(), &[\"info\", \"requirements.*\"]);",
-        "    assert!(output.status.success(), \"{:?}\", output);",
-        "    let matches = String::from_utf8(output.stdout).unwrap();",
-        "    let pending = matches.find(\"# `requirements.pending`\").unwrap();",
-        "    let ready = matches.find(\"# `requirements.ready`\").unwrap();",
-        "    assert!(pending < ready, \"{matches}\");",
-        "    assert!(matches.contains(\"# `requirements.xready`\"), \"{matches}\");",
-        "    assert!(",
-        "        matches.contains(\"# `requirements.case`\\n\\nDefinition:\"),",
-        "        \"{matches}\"",
-        "    );",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 561,
-      "line_end": 573,
-      "text": [
-        "        \"{status}\"",
-        "    );",
-        "    assert!(",
-        "        status.contains(\"`requirements.xready` (requirement)\"),",
-        "        \"{status}\"",
-        "    );",
-        "    assert!(!status.contains(\"| `requirements.pending`\"), \"{status}\");",
-        "    let no_status = habeas(temp.path(), &[\"status\", \"nothing.*\"]);",
-        "    assert!(!no_status.status.success());",
-        "    assert!(String::from_utf8_lossy(&no_status.stderr).contains(\"no definitions match\"));",
-        "",
-        "    let outside_project = TempDir::new().unwrap();",
-        "    let status = habeas(outside_project.path(), &[\"status\"]);"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 890,
-      "line_end": 902,
-      "text": [
-        "        serde_json::from_slice(&fs::read(&requirement_path).unwrap()).unwrap();",
-        "    assert_eq!(requirement[\"determination\"], false);",
-        "    assert!(",
-        "        requirement[\"rationale\"]",
-        "            .as_str()",
-        "            .unwrap()",
-        "            .contains(\"Review pending\"),",
-        "        \"{requirement}\"",
-        "    );",
-        "    assert!(!temp.path().join(\"evidence/rust\").exists());",
-        "    let detail = habeas(temp.path(), &[\"info\", \"rules.ready\"]);",
-        "    assert!(detail.status.success(), \"{detail:?}\");",
-        "    let detail = String::from_utf8(detail.stdout).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 32,
-      "line_end": 110,
-      "text": [
-        "    let mut source = String::from(\"# Requirements\\n\\n\");",
-        "    for (name, text) in requirements {",
-        "        source.push_str(&format!(\":::{{req}} {name}\\n{text}\\n:::\\n\\n\"));",
-        "    }",
-        "    source.push_str(",
-        "        &\":::{example} case\\nGiven ready, it works. CITE`requirements.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\"),",
-        "    );",
-        "    let case_line = source",
-        "        .lines()",
-        "        .position(|line| line.contains(\"Given ready, it works.\"))",
-        "        .unwrap()",
-        "        + 1;",
-        "    let case_text = source.lines().nth(case_line - 1).unwrap().to_owned();",
-        "    fs::write(temp.path().join(\"md/requirements.md\"), source).unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"src/main.rs\"),",
-        "        [\"fn main() {}\\n// {\", \"impl}`requirements.uncovered`\\n\"].concat(),",
-        "    )",
-        "    .unwrap();",
-        "    for (name, text, determination) in [",
-        "        (\"ready\", \"Ready MUST work.\", true),",
-        "        (\"xready\", \"Xready MUST work.\", true),",
-        "        (\"pending\", \"Pending MUST work.\", false),",
-        "        (\"stale\", \"Old requirement.\", true),",
-        "        (\"stale_input\", \"Stale input MUST work.\", true),",
-        "        (\"uncovered\", \"Uncovered MUST work.\", true),",
-        "    ] {",
-        "        let inputs = if name == \"ready\" {",
-        "            vec![",
-        "                json!({",
-        "                    \"file\": \"src/main.rs\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 1,",
-        "                    \"text\": [\"fn main() {}\"]",
-        "                }),",
-        "                json!({",
-        "                    \"file\": \"md/requirements.md\",",
-        "                    \"line_start\": case_line,",
-        "                    \"line_end\": case_line,",
-        "                    \"text\": [case_text]",
-        "                }),",
-        "            ]",
-        "        } else if name == \"stale_input\" {",
-        "            vec![json!({",
-        "                \"file\": \"src/main.rs\",",
-        "                \"line_start\": 1,",
-        "                \"line_end\": 1,",
-        "                \"text\": [\"old main\"]",
-        "            })]",
-        "        } else {",
-        "            vec![]",
-        "        };",
-        "        fs::write(",
-        "            temp.path()",
-        "                .join(format!(\"evidence/requirements.{name}.json\")),",
-        "            json!({",
-        "                \"requirement\": text,",
-        "                \"determination\": determination,",
-        "                \"rationale\": format!(\"**{name}** was inspected.\"),",
-        "                \"inputs\": inputs",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "    }",
-        "    fs::write(",
-        "        temp.path().join(\"evidence/requirements.malformed.json\"),",
-        "        \"{broken\",",
-        "    )",
-        "    .unwrap();",
-        "    temp",
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "// {test}`requirements.cli.info`",
-        "fn habeas(dir: &Path, args: &[&str]) -> Output {",
-        "    Command::new(env!(\"CARGO_BIN_EXE_habeas\"))"
-      ]
+      "item": "fn[fixture]",
+      "hash": "1edd6096485b1a1db0a61120d957ba2f26c544f467762055170d2e1c6ee7f786"
     }
   ]
 }

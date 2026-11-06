@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input --requirements <selection>` MUST add or refresh one requirements input containing the matched full names and their concatenated raw declaration sources. It MUST report the matched names in expansion order and reject a selection that matches no requirement or named example.",
-  "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The one weakness is that the add-input test never asserts the stored concatenated text or the refresh of an existing requirements input (see Tests).\n\n**Implementation**\n- `add_input` (`src/add_input.rs`) and `selectors_for_mode` map `--requirements <selection>` to `InputSelector::Requirements`. Both are marked `{impl}` for this requirement.\n- `InputSelector::resolve` (`src/inputs.rs`) does the matching and concatenation:\n  - It validates the glob, which rejects an empty one.\n  - It iterates the `BTreeMap` of definitions, so matches come out in sorted full-name order. The project's own docs call this \"sorted name order\".\n  - It skips terms and keeps requirements and named examples.\n  - It appends each match's raw declaration lines. A blank line separates consecutive declarations, which is the format `requirements.ci.requirements_inputs` specifies.\n  - It records the matched full names in `matches`.\n  - It returns the error \"requirements glob … matches no requirement or example\" when nothing matches. `add_input` propagates this error before anything is written.\n- `InputSelector::to_input` stores `requirements`, `matches` and `text` in the evidence input.\n- `update_inputs` finds an existing input with the same selector and then either leaves it unchanged, refreshes it, or adds it. It prints one line per input, such as `added: Requirements {…} matching a, b`, with the names in expansion order. This function is marked `{impl}` for this requirement.\n- Everything else in the path is either marked for this requirement or specified by another definition. The extra behavior in `update_inputs` is the reset of `determination` and `rationale` on change and the definition-dependency capture. These are implemented under `requirements.cli.add_input`, `requirements.definitions.capture` and `requirements.definitions.dependencies`.\n- `add_definition_inputs` creates the evidence record. It is marked for `add_input` and definitions capture, and it does not implement any part of this requirement's matching or reporting.\n\n**Tests**\n- `tests/commands.rs::add_input_modes_capture_raw_sources_and_refresh_idempotently` carries `{test}` for this requirement. It covers:\n  - `--requirements 'rules.*'` for both an example and a requirement target. It asserts the stored `matches` equal `[\"rules.case\",\"rules.ready\"]` in sorted order, and that stdout reports `rules.case, rules.ready`.\n  - Rejection of `missing.*`: the command fails and stderr contains \"matches no requirement or example\".\n  - A later `info` call shows the stored selection and the declaration range `md/rules.md:5–7`.\n  - The record becomes `determination: false` with \"Review pending\" after a change.\n- The `src/evidence.rs` unit tests for `requirements.ci.requirements_inputs` cover validation of stored requirements inputs.\n- Gaps in the add-input test:\n  - It does not directly assert the concatenated `text` with its blank-line separator.\n  - It does not re-run the same requirements selection to check the refresh path.\n  - Both behaviors share code with the other covered paths, so I treat these as minor.",
+  "determination": false,
+  "rationale": "**Implementation: sound.** I found no behavior gaps and no unmarked code.\n\n- `add_input` and `selectors_for_mode` (src/add_input.rs) turn `--requirements <selection>` into a single `InputSelector::Requirements`. Both carry `{impl}` for this requirement.\n- `InputSelector::resolve` (src/inputs.rs) validates the glob. It then walks the name-sorted definitions map, skipping terms, so matches come out in full-name order.\n- `resolve` concatenates each match's `raw_lines` with one blank line between declarations, and collects the matched names. If nothing matches, it returns the error \"requirements glob … matches no requirement or example\".\n- `to_input` records `{requirements, matches, text}`. It carries `{impl}` for this requirement.\n- `update_inputs` finds an existing input by selector, using `from_input` on the `requirements` string. It then reports `added`, `refreshed` or `unchanged`, and prints \"matching a, b\" in match order, which is the expansion order. It also carries `{impl}`.\n- Resolution happens before any evidence write, so a no-match selection fails without creating or changing a record.\n- Other behavior in this code is covered by other definitions the same code marks `{impl}`: `add_input`, `definitions.capture`, `definitions.dependencies`, and the pending-determination rule in `add_input`.\n\n**Tests: partly covered.** `add_input_modes_capture_outline_nodes_and_refresh_idempotently` (tests/commands.rs) is the only `{test}` for this requirement, and it covers only part of the design space.\n\nWhat it covers:\n- `--requirements 'rules.*'` for both an example target and a requirement target.\n- The recorded `matches` equal `[\"rules.case\",\"rules.ready\"]`, in sorted order.\n- stdout contains \"rules.case, rules.ready\".\n- The record is left with a false determination and a \"Review pending\" rationale.\n- `habeas info` shows the requirements selection and the `md/rules.md:5–7` range.\n- `missing.*` fails with \"matches no requirement or example\".\n- Concatenation with one blank line between declarations is checked indirectly. The validation test in src/evidence.rs (`cited_example_with_a_test_and_matching_evidence_validates`) builds that exact text and expects it to validate. The `requirements_inputs_omit_option_lines` test checks a single declaration.\n\nWhat it does not cover:\n- **Refresh and idempotence for requirements inputs.** The \"add or refresh one input\" obligation is never exercised in requirements mode. No test runs `--requirements` twice for one target, so none checks that the second run reports `unchanged`, leaves the file byte-identical, and adds no duplicate. No test changes the match set or a declaration and checks for `refreshed` with replaced `matches` and `text`. The idempotence check in that test uses only `--item`.\n- **Recorded `text` at the CLI level.** The add-input test never asserts it, only `matches`.\n- **No-match rejection leaving evidence unchanged.** The test checks failure and the message, but not that the record is unchanged.\n- **A single full name.** A selection without `*` is not tested.\n\nThese are the central \"add or refresh\" points of this requirement. The shared update logic is only tested through item inputs, so the evidence does not fully support a `true` judgment. No FIXME comment acknowledges the gaps, so the determination is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.cli.add_input_requirements",
@@ -15,1505 +15,992 @@
       ]
     },
     {
-      "rust_file": "src/add_input.rs",
-      "rust_item": "fn[add_input]",
-      "text": [
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    let definitions = &inspection.definitions;",
-        "    let selectors = selectors_for_mode(&root, mode)?;",
-        "    let mut inputs = Vec::new();",
-        "    for selector in selectors {",
-        "        let resolved = selector",
-        "            .resolve(&root, definitions)",
-        "            .map_err(invalid_input)?;",
-        "        inputs.push((",
-        "            selector.clone(),",
-        "            selector.to_input(&resolved),",
-        "            resolved.matches,",
-        "        ));",
-        "    }",
-        "",
-        "    match target {",
-        "        InputTarget::Requirement(name) => add_definition_inputs(",
-        "            &root,",
-        "            definitions,",
-        "            &name,",
-        "            DefinitionKind::Requirement,",
-        "            inputs,",
-        "        ),",
-        "        InputTarget::Example(name) => {",
-        "            add_definition_inputs(&root, definitions, &name, DefinitionKind::Example, inputs)",
-        "        }",
-        "    }",
-        "}"
-      ]
+      "file": "src/add_input.rs",
+      "item": "fn[add_input]",
+      "hash": "53748de2ef693e65783041c222841d9f4e6835784eca07c5d5df648481396d13"
     },
     {
-      "rust_file": "src/add_input.rs",
-      "rust_item": "fn[selectors_for_mode]",
-      "text": [
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.ci.schema`",
-        "fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {",
-        "    match mode {",
-        "        InputMode::FileRange(specification) => {",
-        "            let (file, range) = specification.rsplit_once(':').ok_or_else(|| {",
-        "                invalid_input(\"file range must have the form <file>:<start>-<end>\")",
-        "            })?;",
-        "            let (start, end) = range.split_once('-').ok_or_else(|| {",
-        "                invalid_input(\"file range must have the form <file>:<start>-<end>\")",
-        "            })?;",
-        "            let line_start = start",
-        "                .parse::<usize>()",
-        "                .map_err(|_| invalid_input(\"file range start must be a positive integer\"))?;",
-        "            let line_end = end",
-        "                .parse::<usize>()",
-        "                .map_err(|_| invalid_input(\"file range end must be a positive integer\"))?;",
-        "            Ok(vec![InputSelector::FileRange {",
-        "                file: file.to_owned(),",
-        "                line_start,",
-        "                line_end,",
-        "            }])",
-        "        }",
-        "        InputMode::RustItemsAtLine(specification) => {",
-        "            let (rust_file, line) = specification.rsplit_once(':').ok_or_else(|| {",
-        "                invalid_input(\"Rust item location must have the form <rust-file>:<line>\")",
-        "            })?;",
-        "            let line = line",
-        "                .parse::<usize>()",
-        "                .map_err(|_| invalid_input(\"Rust item line must be a positive integer\"))?;",
-        "            if !rust_file.ends_with(\".rs\") {",
-        "                return Err(invalid_input(\"Rust item location requires a .rs file\"));",
-        "            }",
-        "            let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;",
-        "            let rust_file = path",
-        "                .strip_prefix(root)",
-        "                .unwrap_or(&path)",
-        "                .to_str()",
-        "                .ok_or_else(|| invalid_input(\"Rust file path must be UTF-8\"))?;",
-        "            let items = parse_items(&source).map_err(|error| {",
-        "                invalid_input(format!(\"{rust_file}: cannot parse Rust source: {error}\"))",
-        "            })?;",
-        "            let selected = items",
-        "                .into_iter()",
-        "                .filter(|item| item.declaration_line == line)",
-        "                .map(|item| InputSelector::RustItem {",
-        "                    rust_file: rust_file.to_owned(),",
-        "                    rust_item: item.selector,",
-        "                })",
-        "                .collect::<Vec<_>>();",
-        "            if selected.is_empty() {",
-        "                return Err(invalid_input(format!(",
-        "                    \"{rust_file}:{line}: no Rust item is declared on this line\"",
-        "                )));",
-        "            }",
-        "            Ok(selected)",
-        "        }",
-        "        InputMode::Requirements(requirements) => {",
-        "            Ok(vec![InputSelector::Requirements { requirements }])",
-        "        }",
-        "    }",
-        "}"
-      ]
+      "file": "src/add_input.rs",
+      "item": "fn[selectors_for_mode]",
+      "hash": "caab34bf2f992d14e736dbc5f3405dfdecbdc95c521f18eabd4f285ee06faf8b"
     },
     {
-      "rust_file": "src/add_input.rs",
-      "rust_item": "fn[update_inputs]",
-      "text": [
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.definitions.capture`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "// {impl}`requirements.definitions.dependencies`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "fn update_inputs(",
-        "    record: &mut Value,",
-        "    inputs: Vec<(InputSelector, Value, Vec<String>)>,",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    subject: Option<&str>,",
-        ") -> io::Result<(String, bool)> {",
-        "    let Some(object) = record.as_object_mut() else {",
-        "        return Err(invalid_input(\"evidence record must be a JSON object\"));",
-        "    };",
-        "    let Some(existing) = object.get_mut(\"inputs\").and_then(Value::as_array_mut) else {",
-        "        return Err(invalid_input(\"evidence inputs must be an array\"));",
-        "    };",
-        "    let mut output = String::new();",
-        "    let mut changed = false;",
-        "    for (selector, input, matches) in inputs {",
-        "        let position = existing",
-        "            .iter()",
-        "            .position(|old| InputSelector::from_input(old).as_ref() == Some(&selector));",
-        "        let action = if let Some(position) = position {",
-        "            if existing[position] == input {",
-        "                \"unchanged\"",
-        "            } else {",
-        "                existing[position] = input;",
-        "                changed = true;",
-        "                \"refreshed\"",
-        "            }",
-        "        } else {",
-        "            existing.push(input);",
-        "            changed = true;",
-        "            \"added\"",
-        "        };",
-        "        output.push_str(&format!(\"- {action}: {selector:?}\"));",
-        "        if !matches.is_empty() {",
-        "            output.push_str(&format!(\" matching {}\", matches.join(\", \")));",
-        "        }",
-        "        output.push('\\n');",
-        "    }",
-        "    let required =",
-        "        crate::terms::dependencies(definitions, object, subject).map_err(invalid_input)?;",
-        "    let existing = object",
-        "        .get_mut(\"inputs\")",
-        "        .and_then(Value::as_array_mut)",
-        "        .unwrap();",
-        "    for definition in required {",
-        "        let selector = InputSelector::Definition {",
-        "            definition: definition.clone(),",
-        "        };",
-        "        let resolved = selector.resolve(root, definitions).map_err(invalid_input)?;",
-        "        let input = selector.to_input(&resolved);",
-        "        let positions: Vec<_> = existing",
-        "            .iter()",
-        "            .enumerate()",
-        "            .filter_map(|(i, old)| {",
-        "                (old.get(\"definition\").and_then(Value::as_str) == Some(definition.as_str()))",
-        "                    .then_some(i)",
-        "            })",
-        "            .collect();",
-        "        if positions.len() != 1 || existing[positions[0]] != input {",
-        "            existing.retain(|old| {",
-        "                old.get(\"definition\").and_then(Value::as_str) != Some(definition.as_str())",
-        "            });",
-        "            existing.push(input);",
-        "            changed = true;",
-        "            output.push_str(&format!(\"- captured: definition {definition}\\n\"));",
-        "        }",
-        "    }",
-        "    if changed {",
-        "        object.insert(\"determination\".to_owned(), Value::Bool(false));",
-        "        object.insert(",
-        "            \"rationale\".to_owned(),",
-        "            Value::String(",
-        "                \"Review pending: reassess the changed input, all applicable definitions and citations, and the behavior they jointly specify.\".to_owned(),",
-        "            ),",
-        "        );",
-        "    }",
-        "    Ok((output, changed))",
-        "}"
-      ]
+      "file": "src/add_input.rs",
+      "item": "fn[update_inputs]",
+      "hash": "645d4e5926a2aa79b220a7adeb61787758bbca1fda4dd34e2d088a6d3b833e5f"
     },
     {
-      "rust_file": "src/inputs.rs",
-      "rust_item": "impl[InputSelector]/fn[to_input]",
-      "text": [
-        "    // {impl}`requirements.cli.add_input`",
-        "    // {impl}`requirements.definitions.inputs`",
-        "    // {impl}`requirements.ci.schema`",
-        "    // {impl}`requirements.cli.add_input_requirements`",
-        "    pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {",
-        "        match self {",
-        "            Self::FileRange {",
-        "                file,",
-        "                line_start,",
-        "                line_end,",
-        "            } => json!({",
-        "                \"file\": file,",
-        "                \"line_start\": line_start,",
-        "                \"line_end\": line_end,",
-        "                \"text\": resolved.text,",
-        "            }),",
-        "            Self::RustItem {",
-        "                rust_file,",
-        "                rust_item,",
-        "            } => json!({",
-        "                \"rust_file\": rust_file,",
-        "                \"rust_item\": rust_item,",
-        "                \"text\": resolved.text,",
-        "            }),",
-        "            Self::Definition { definition } => {",
-        "                json!({ \"definition\": definition, \"text\": resolved.text })",
-        "            }",
-        "            Self::Requirements { requirements } => json!({",
-        "                \"requirements\": requirements,",
-        "                \"matches\": resolved.matches,",
-        "                \"text\": resolved.text,",
-        "            }),",
-        "        }",
-        "    }"
-      ]
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_input]",
+      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
     },
     {
-      "rust_file": "src/inputs.rs",
-      "rust_item": "impl[InputSelector]/fn[resolve]",
-      "text": [
-        "    // {impl}`requirements.ci.inputs`",
-        "    // {impl}`requirements.ci.rust_item_inputs`",
-        "    // {impl}`requirements.ci.requirements_inputs`",
-        "    // {impl}`requirements.definitions.inputs`",
-        "    // {impl}`requirements.definitions.selection`",
-        "    // {impl}`requirements.cli.add_input_file_range`",
-        "    // {impl}`requirements.cli.add_input_requirements`",
-        "    // {impl}`requirements.references.definition_globs`",
-        "    pub(crate) fn resolve(",
-        "        &self,",
-        "        root: &Path,",
-        "        definitions: &BTreeMap<String, Declaration>,",
-        "    ) -> Result<ResolvedInput, String> {",
-        "        match self {",
-        "            Self::FileRange {",
-        "                file,",
-        "                line_start,",
-        "                line_end,",
-        "            } => {",
-        "                let (_, content) = read_project_file(root, file)?;",
-        "                let lines = raw_lines(&content);",
-        "                if *line_start == 0 || *line_end < *line_start || *line_end > lines.len() {",
-        "                    return Err(format!(",
-        "                        \"{file}:{line_start}-{line_end} is not an inclusive range within the file's {} lines\",",
-        "                        lines.len()",
-        "                    ));",
-        "                }",
-        "                Ok(ResolvedInput {",
-        "                    ranges: vec![SourceRange {",
-        "                        file: file.clone(),",
-        "                        line_start: *line_start,",
-        "                        line_end: *line_end,",
-        "                        name: None,",
-        "                    }],",
-        "                    text: lines[*line_start - 1..*line_end].to_vec(),",
-        "                    matches: Vec::new(),",
-        "                })",
-        "            }",
-        "            Self::RustItem {",
-        "                rust_file,",
-        "                rust_item,",
-        "            } => {",
-        "                if Path::new(rust_file)",
-        "                    .extension()",
-        "                    .is_none_or(|extension| extension != \"rs\")",
-        "                {",
-        "                    return Err(format!(\"{rust_file}: Rust-item input requires a .rs file\"));",
-        "                }",
-        "                let (_, content) = read_project_file(root, rust_file)?;",
-        "                let items = parse_items(&content)",
-        "                    .map_err(|error| format!(\"{rust_file}: cannot parse Rust source: {error}\"))?;",
-        "                let mut matching = items.iter().filter(|item| item.selector == *rust_item);",
-        "                let Some(item) = matching.next() else {",
-        "                    return Err(format!(\"{rust_file}: no Rust item matches {rust_item:?}\"));",
-        "                };",
-        "                if matching.next().is_some() {",
-        "                    return Err(format!(\"{rust_file}: Rust item {rust_item:?} is ambiguous\"));",
-        "                }",
-        "                Ok(ResolvedInput {",
-        "                    ranges: vec![SourceRange {",
-        "                        file: rust_file.clone(),",
-        "                        line_start: item.line_start,",
-        "                        line_end: item.line_end,",
-        "                        name: None,",
-        "                    }],",
-        "                    text: item_lines(&content, item),",
-        "                    matches: Vec::new(),",
-        "                })",
-        "            }",
-        "            Self::Definition { definition } => {",
-        "                let target = definitions",
-        "                    .get(definition)",
-        "                    .filter(|d| d.kind == crate::DefinitionKind::Term)",
-        "                    .ok_or_else(|| format!(\"{definition}: no matching named definition\"))?;",
-        "                check_project_file(root, &target.file)?;",
-        "                Ok(ResolvedInput {",
-        "                    ranges: vec![SourceRange {",
-        "                        file: target.file.clone(),",
-        "                        line_start: target.line_start,",
-        "                        line_end: target.line_end,",
-        "                        name: Some(definition.clone()),",
-        "                    }],",
-        "                    text: target.raw_lines.clone(),",
-        "                    matches: Vec::new(),",
-        "                })",
-        "            }",
-        "            Self::Requirements { requirements } => {",
-        "                definition_glob::validate(requirements)?;",
-        "                let mut ranges = Vec::new();",
-        "                let mut text = Vec::new();",
-        "                let mut matches = Vec::new();",
-        "                for (name, definition) in definitions {",
-        "                    if definition.kind == crate::DefinitionKind::Term",
-        "                        || !definition_glob::matches(requirements, name)",
-        "                    {",
-        "                        continue;",
-        "                    }",
-        "                    check_project_file(root, &definition.file)?;",
-        "                    if !text.is_empty() {",
-        "                        text.push(String::new());",
-        "                    }",
-        "                    text.extend(definition.raw_lines.iter().cloned());",
-        "                    ranges.push(SourceRange {",
-        "                        file: definition.file.clone(),",
-        "                        line_start: definition.line_start,",
-        "                        line_end: definition.line_end,",
-        "                        name: Some(name.clone()),",
-        "                    });",
-        "                    matches.push(name.clone());",
-        "                }",
-        "                if matches.is_empty() {",
-        "                    return Err(format!(",
-        "                        \"requirements glob {requirements:?} matches no requirement or example\"",
-        "                    ));",
-        "                }",
-        "                Ok(ResolvedInput {",
-        "                    ranges,",
-        "                    text,",
-        "                    matches,",
-        "                })",
-        "            }",
-        "        }",
-        "    }"
-      ]
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "62ef579a8e3bfa3a76977643723328260e357e2e680735b3b8f2731fbbf90538"
     },
     {
-      "rust_file": "tests/commands.rs",
-      "rust_item": "fn[add_input_modes_capture_raw_sources_and_refresh_idempotently]",
-      "text": [
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.cli.add_input_requirements`",
-        "// {test}`requirements.references.selector_same_line`",
-        "// {test}`requirements.references.selector_raw_lines`",
-        "#[test]",
-        "fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {",
-        "    let temp = TempDir::new().unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = \\\"fixture\\\"\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"md/rules.md\"),",
-        "        \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it works. CITE`rules.ready`\\n:::\\n\".replace(\"CITE\", \"{cite}\"),",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"src/main.rs\"),",
-        "        \"/// user docs\\n#[allow(dead_code)]\\n// IMPL`rules.ready`\\nfn main() { fn nested() {} }\\n\"",
-        "            .replace(\"IMPL\", \"{impl}\"),",
-        "    )",
-        "    .unwrap();",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--file-range\",",
-        "            \"src/main.rs:1-2\",",
-        "        ],",
-        "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--rust-item\",",
-        "            \"src/main.rs:4\",",
-        "        ],",
-        "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let stdout = String::from_utf8(output.stdout).unwrap();",
-        "    assert!(stdout.contains(\"fn[main]\"), \"{stdout}\");",
-        "    assert!(stdout.contains(\"fn[main]/fn[nested]\"), \"{stdout}\");",
-        "    let requirement_path = temp.path().join(\"evidence/rules.ready.json\");",
-        "    let first = fs::read(&requirement_path).unwrap();",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--rust-item\",",
-        "            \"src/main.rs:4\",",
-        "        ],",
-        "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(\"unchanged\"));",
-        "    assert_eq!(fs::read(&requirement_path).unwrap(), first);",
-        "    let requirement: serde_json::Value = serde_json::from_slice(&first).unwrap();",
-        "    assert_eq!(requirement[\"inputs\"].as_array().unwrap().len(), 3);",
-        "    assert_eq!(",
-        "        requirement[\"inputs\"][1][\"text\"],",
-        "        json!([",
-        "            \"/// user docs\",",
-        "            \"#[allow(dead_code)]\",",
-        "            \"// IMPL`rules.ready`\".replace(\"IMPL\", \"{impl}\"),",
-        "            \"fn main() { fn nested() {} }\"",
-        "        ])",
-        "    );",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-example\",",
-        "            \"rules.case\",",
-        "            \"--requirements\",",
-        "            \"rules.*\",",
-        "        ],",
-        "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let example: serde_json::Value =",
-        "        serde_json::from_slice(&fs::read(temp.path().join(\"evidence/rules.case.json\")).unwrap())",
-        "            .unwrap();",
-        "    assert_eq!(",
-        "        example[\"example\"],",
-        "        \"Given ready, it works. CITE`rules.ready`\".replace(\"CITE\", \"{cite}\")",
-        "    );",
-        "    assert_eq!(",
-        "        example[\"inputs\"][0][\"matches\"],",
-        "        json!([\"rules.case\", \"rules.ready\"])",
-        "    );",
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--requirements\",",
-        "            \"rules.*\",",
-        "        ],",
-        "    );",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let stdout = String::from_utf8(output.stdout).unwrap();",
-        "    assert!(stdout.contains(\"rules.case, rules.ready\"), \"{stdout}\");",
-        "    let requirement: serde_json::Value =",
-        "        serde_json::from_slice(&fs::read(&requirement_path).unwrap()).unwrap();",
-        "    assert_eq!(requirement[\"determination\"], false);",
-        "    assert!(",
-        "        requirement[\"rationale\"]",
-        "            .as_str()",
-        "            .unwrap()",
-        "            .contains(\"Review pending\"),",
-        "        \"{requirement}\"",
-        "    );",
-        "    assert!(!temp.path().join(\"evidence/rust\").exists());",
-        "    let detail = habeas(temp.path(), &[\"info\", \"rules.ready\"]);",
-        "    assert!(detail.status.success(), \"{detail:?}\");",
-        "    let detail = String::from_utf8(detail.stdout).unwrap();",
-        "    assert!(",
-        "        detail.contains(\"Rust item src/main.rs fn[main]\"),",
-        "        \"{detail}\"",
-        "    );",
-        "    assert!(detail.contains(\"src/main.rs:1–4\"), \"{detail}\");",
-        "    assert!(",
-        "        detail.contains(\"requirements selection rules.*\"),",
-        "        \"{detail}\"",
-        "    );",
-        "    assert!(detail.contains(\"md/rules.md:5–7\"), \"{detail}\");",
-        "",
-        "    let invalid = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--requirements\",",
-        "            \"missing.*\",",
-        "        ],",
-        "    );",
-        "    assert!(!invalid.status.success());",
-        "    assert!(String::from_utf8_lossy(&invalid.stderr).contains(\"matches no requirement or example\"));",
-        "}"
-      ]
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "c66bf3ceb1fb830ced7559dfeb069ca089e613906742006cd898c2bbfdd07a5c"
     },
     {
       "file": "md/reference.md",
-      "line_start": 82,
-      "line_end": 90,
-      "text": [
-        "habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26",
-        "habeas add-input --for-requirement requirements.ci.inputs --requirements 'requirements.ci.*'",
-        "```",
-        "",
-        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`",
-        "",
-        "Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`",
-        "",
-        "## Authoring evidence with a model"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 408,
-      "line_end": 416,
-      "text": [
-        "findings. Use `habeas info <selection>` to print matching detail pages as Markdown,",
-        "including current texts, rationales, inputs, FIXME references, and findings. Both",
-        "commands take a definition selection: a full name selects exactly that definition,",
-        "and in a glob `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
-        "{cite}`requirements.references.definition_globs`",
-        "",
-        "```sh",
-        "habeas info requirements.ci.inputs",
-        "habeas info 'requirements.cli.*'"
-      ]
+      "item": "section[How%20it%20works]/section[Evidence]",
+      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 134,
-      "line_end": 142,
-      "text": [
-        "| Request fields | Evidence input returned | Definition |",
-        "| --- | --- | --- |",
-        "| `file: String`, `line_start: Integer`, optional `line_end: Integer` | File-range input | {cite}`requirements.ci.inputs` |",
-        "| `rust_file: String`, `rust_item: String` | Rust-item input | {cite}`requirements.ci.rust_item_inputs` |",
-        "| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |",
-        "| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |",
-        "",
-        "Rust file and selector arguments MUST use the syntax defined by",
-        "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current"
-      ]
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Request%20evidence%20inputs:%20`habeas`]",
+      "hash": "2284636d85d41294986b4b44773971b4d2c71e699f8b5f36ad39b4331ec4cd92"
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 782,
-      "line_end": 790,
-      "text": [
-        "The harness MUST record the source text it supplies to the model, including",
-        "mandatory inputs and additional reads, using the existing evidence input formats",
-        "defined by {cite}`requirements.ci.inputs`,",
-        "{cite}`requirements.ci.rust_item_inputs`,",
-        "{cite}`requirements.ci.requirements_inputs`, and",
-        "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
-        "itself so ordinary evidence validation can check them later.",
-        ":::",
-        ""
-      ]
+      "item": "section[Authoring%20evidence]/section[Recording%20results]",
+      "hash": "1343ea12b8521449038d642876ecdc285af2b3bb058bfc08c1d001e176543389"
     },
     {
       "file": "md/requirements/ci.md",
-      "line_start": 79,
-      "line_end": 88,
-      "text": [
-        ":::{req} rust_item_inputs",
-        "For a Rust-item input, Habeas MUST parse `rust_file` with `syn` and resolve `rust_item` to exactly one item. It MUST determine an inclusive range of complete raw source lines containing that item, including attached doc comments, attributes, and leading citation comments. It MUST compare `text` with those lines without serializing the `syn` tree, and derive the range again during validation for display and reference coverage. Moving unchanged lines because of edits earlier in the file MUST NOT invalidate the input. Habeas MUST report a missing file, parse failure, invalid or ambiguous selector, or changed lines.",
-        ":::",
-        "",
-        ":::{req} requirements_inputs",
-        "For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.",
-        ":::",
-        "",
-        ":::{definition} validation_error",
-        ":phrase: validation error"
-      ]
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "db37ec0d37fdb96ee6ea622c36c2f2ff26c734eb78f2c7ee172bad12ef15f0d7"
     },
     {
       "file": "md/requirements/cli.md",
-      "line_start": 67,
-      "line_end": 75,
-      "text": [
-        "`habeas add-input --rust-item <rust-file>:<line>` MUST parse the file with `syn` and add or refresh one Rust-item input for every explicit item declared on that line. An item with a declared name is declared on the line containing that name; an item without one is declared on the line containing its distinctive keyword or introducer, such as `use` or `impl`. Each input MUST store the selected `rust_file` under the path rules in {cite}`requirements.ci.schema`, the item's syntactic `rust_item` selector, and its complete raw source lines. The command MUST report every selected item and reject a line on which no item is declared.",
-        ":::",
-        "",
-        ":::{req} add_input_requirements",
-        "`habeas add-input --requirements <selection>` MUST add or refresh one requirements input containing the matched full names and their concatenated raw declaration sources. It MUST report the matched names in expansion order and reject a selection that matches no requirement or named example.",
-        ":::",
-        "",
-        "",
-        ":::{req} bootstrap_skill"
-      ]
+      "item": "section[Command-line%20interface]",
+      "hash": "79cdf2a0a52b677d671cb92662c2eab824959f4f6a0b5e0a13803ff49c7c0d4a"
     },
     {
       "file": "md/requirements/references.md",
-      "line_start": 46,
-      "line_end": 63,
-      "text": [
-        ":::{req} rust_item_coverage",
-        "During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. A comment immediately preceding an item's declaration or its attributes is attached to that item. A comment within an item's body, including one before a field, variant, or attribute inside it, belongs to the smallest enclosing item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
-        ":::",
-        "",
-        ":::{req} definition_globs",
-        "A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. Every definition selection MUST use this matching rule, including requirements evidence inputs, CLI definition filters, and the authoring `references` tool, and MUST match against both requirements and named examples.",
-        ":::",
-        "",
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::",
-        "",
-        ":::{req} rust_item_selectors"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 101,
-      "line_end": 109,
-      "text": [
-        "For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --rust-item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`. Both contain the complete raw line. {cite}`requirements.cli.add_input_rust_item`",
-        ":::",
-        "",
-        ":::{example} definition_glob_cases",
-        "Given a requirement `foo.a.bar` and a named example `foo.a.b.bar`, `foo.*.bar` matches both, in that order. A requirements input stores both full names and their complete raw fenced declarations. Adding another matching definition invalidates the existing input. {cite}`requirements.references.definition_globs` {cite}`requirements.ci.requirements_inputs`",
-        ":::",
-        "",
-        "",
-        "## References as authoring inputs"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 236,
-      "line_end": 244,
-      "text": [
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "fn source_input(",
-        "    root: &Path,",
-        "    access: &SourceAccess,",
-        "    definitions: &BTreeMap<String, Declaration>,"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 189,
-      "line_end": 197,
-      "text": [
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.reference_index`",
-        "// {impl}`requirements.references.definition_globs`",
-        "// {impl}`requirements.references.anchors`",
-        "fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
-        "    check_keys(args, &[\"selection\"])?;",
-        "    let selection = if args.contains_key(\"selection\") {"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 25,
-      "line_end": 33,
-      "text": [
-        "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "pub fn status_markdown_with_options(",
-        "    root: &Path,",
-        "    all: bool,",
-        "    glob: Option<&str>,"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 122,
-      "line_end": 130,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.cli.info`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {",
-        "    let inspection = inspect_repository(root)?;",
-        "    definition_glob::validate(selector)",
-        "        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;"
-      ]
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "line_start": 1,
-      "line_end": 5,
-      "text": [
-        "// {impl}`requirements.references.definition_globs`",
-        "pub(crate) fn validate(pattern: &str) -> Result<(), String> {",
-        "    if pattern.is_empty() {",
-        "        return Err(\"definition glob must not be empty\".to_owned());",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "line_start": 12,
-      "line_end": 20,
-      "text": [
-        "    }",
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.references.definition_globs`",
-        "pub(crate) fn matches(pattern: &str, name: &str) -> bool {",
-        "    let bytes = name.as_bytes();",
-        "    let mut previous = vec![false; bytes.len() + 1];",
-        "    previous[0] = true;"
-      ]
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "line_start": 38,
-      "line_end": 46,
-      "text": [
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use super::{matches, validate};",
-        "",
-        "    // {test}`requirements.references.definition_globs`",
-        "    // {test}`requirements.references.definition_glob_cases`",
-        "    #[test]",
-        "    fn wildcard_crosses_dot_segments_and_matches_the_whole_name() {",
-        "        assert!(validate(\"foo.*.bar\").is_ok());"
-      ]
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "18f826ab94be2908339f65d4eb3e28bb21181e8c1a12a491f11f5ec2bd7c9e94"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 615,
-      "line_end": 623,
-      "text": [
-        "",
-        "// {impl}`requirements.ci.schema`",
-        "// {impl}`requirements.ci.input_containment`",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "// {impl}`requirements.ci.requirements_inputs`",
-        "// {impl}`requirements.definitions.inputs`",
-        "fn validate_input(",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,"
-      ]
+      "item": "fn[validate_input]",
+      "hash": "7b128a6cc3bd15532a399d8a07e33ddd810d35a3920f9bdf49807b59a7530d03"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 781,
-      "line_end": 789,
-      "text": [
-        "        .collect()",
-        "}",
-        "",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "// {impl}`requirements.ci.requirements_inputs`",
-        "// {impl}`requirements.definitions.inputs`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn validate_resolved_input(",
-        "    root: &Path,"
-      ]
+      "item": "fn[text_field]",
+      "hash": "3a132dbe4927a199f53bcc6516d001f907f313007499420d3031da4dc8b52ec3"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1799,
-      "line_end": 1807,
-      "text": [
-        "    // {test}`requirements.examples.definition`",
-        "    // {test}`requirements.examples.evidence`",
-        "    // {test}`requirements.ci.schema`",
-        "    // {test}`requirements.references.evidence_coverage`",
-        "    // {test}`requirements.ci.requirements_inputs`",
-        "    #[test]",
-        "    fn cited_example_with_a_test_and_matching_evidence_validates() {",
-        "        let temp = fixture();",
-        "        let chapter = \"# Rules\\n\\n:::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it succeeds. CITE`rules.ready`\\n:::\\n\""
-      ]
+      "item": "fn[validate_resolved_input]",
+      "hash": "a7dc8e5e9647d535098e0456adf15074c7e41b18100f05054e6d88b190a55ba6"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 2147,
-      "line_end": 2157,
-      "text": [
-        "        assert!(super::load_definitions(temp.path()).is_err());",
-        "    }",
-        "",
-        "    // {test}`requirements.references.anchors`",
-        "    // {test}`requirements.ci.requirements_inputs`",
-        "    #[test]",
-        "    fn requirements_inputs_omit_option_lines() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Rules\\n\\n:::{req} ready\\n:impl: src/main.rs\\nReady MUST hold.\\n:::\\n\","
-      ]
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "e2eb073830548f870ecafe333d7614ef5413ddf53a785d00285a1f8615e8a1a8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
+      "hash": "8be34437444e3b25500ecf53a25869e46b497671f803090d9366490ec081dd5b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
+      "hash": "5f4a7697acc780e3eb0c3a43556339ff402f291c16fe33f830b6ff67df8fcfa1"
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 39,
-      "line_end": 47,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.ci.inputs`",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "// {impl}`requirements.ci.requirements_inputs`",
-        "pub(crate) struct ResolvedInput {",
-        "    pub(crate) ranges: Vec<SourceRange>,",
-        "    pub(crate) text: Vec<String>,",
-        "    pub(crate) matches: Vec<String>,"
-      ]
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 110,
-      "line_end": 123,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.ci.inputs`",
-        "    // {impl}`requirements.ci.rust_item_inputs`",
-        "    // {impl}`requirements.ci.requirements_inputs`",
-        "    // {impl}`requirements.definitions.inputs`",
-        "    // {impl}`requirements.definitions.selection`",
-        "    // {impl}`requirements.cli.add_input_file_range`",
-        "    // {impl}`requirements.cli.add_input_requirements`",
-        "    // {impl}`requirements.references.definition_globs`",
-        "    pub(crate) fn resolve(",
-        "        &self,",
-        "        root: &Path,",
-        "        definitions: &BTreeMap<String, Declaration>,"
-      ]
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_model_input]",
+      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
-      "line_start": 152,
-      "line_end": 160,
-      "text": [
-        "// additionally frees the previous value at |*out| and updates |*out| to the",
-        "// result. If parsing or allocating the result fails, it returns NULL.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// Note: If |out| and |*out| are both non-NULL, the object at |*out| is not"
-      ]
+      "item": "line@c494a1c3997a",
+      "hash": "c494a1c3997ad84f340bb711d1e55edcd42c7a0d9a74bf0f260e9b9e015a0ad1"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
-      "line_start": 181,
-      "line_end": 189,
-      "text": [
-        "//",
-        "// If any of the above fail, the function returns NULL.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// WARNING: Callers should not rely on the in-place update mode. It often"
-      ]
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
-      "line_start": 455,
-      "line_end": 463,
-      "text": [
-        "// returns the result. If |out| is non-NULL, it additionally writes the result",
-        "// to |*out|. On error, it returns |ASN1_BOOLEAN_NONE|.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// WARNING: This function's is slightly different from other |d2i_*| functions"
-      ]
+      "item": "line@072ab059b237",
+      "hash": "072ab059b2370fe2d12ff23e27440e10e770db9798bb81d392404edeadd03c0d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
+      "item": "line@769c173815fd",
+      "hash": "769c173815fd86c26993acd32e39ad3bdd307639402df8fd9cc76b602b8e0d5e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
+      "item": "line@1aa1c728eda3",
+      "hash": "1aa1c728eda33ea2efe8308a7c181d32b5e5861dfaa3f341bbb5843af01f2c32"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
+      "item": "line@050a9578fc31",
+      "hash": "050a9578fc3127155c2344b9eaa1049276e3c7110f1b2a9e17885630ff7b374e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
+      "item": "line@9dc070b13408",
+      "hash": "9dc070b13408972a89438a56c80f7853bcc15facbf2d5bb55844aadaa15390d5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
+      "item": "line@d7d0a8d157c0",
+      "hash": "d7d0a8d157c0b32c09c60dd8b47b2adb0e92e9a417bf7abeb8a3fd7ae3102ffd"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// is guaranteed to be C99 compliant and still give us an equivalent static",
-        "// assert mechanism.",
-        "//",
-        "// The solution below defines a struct type containing a bit field.",
-        "// The name of that type is |static_assertion_msg|. |msg| is a concatenation of",
-        "// a user-chosen error (which should be chosen with respect to actual assertion)",
-        "// and the line the assertion is defined. This should ensure name uniqueness.",
-        "// The width of the bit field is set to 1 or -1, depending on the evaluation of",
-        "// the boolean expression |cond|. If the condition is false, the width requested"
-      ]
+      "item": "line@2e38577b302d",
+      "hash": "2e38577b302d725616981722d380d7b1df1ae2dab8c7176038b03bedfacad4ad"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
+      "item": "line@69bc40340c48",
+      "hash": "69bc40340c48cffa0bc844720c6b3e46d0d15bfa1187a1b4d5d6aaaaa6ee55f5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
+      "item": "line@ecd737109b46",
+      "hash": "ecd737109b4634441febf6d9a13e4fc32bb4d867f6bdca53e991264da9d3dd9d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
+      "item": "line@f1d720e359da",
+      "hash": "f1d720e359dab7eef9cce5e24beed468a8253ab1234257b482d6f23e851527ae"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
+      "item": "line@1a716b58ff84",
+      "hash": "1a716b58ff84a8044a20844aa118075307435f7c8439c3a37c410894b779f70b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h",
+      "item": "line@8a7fe45de084",
+      "hash": "8a7fe45de08494570114bd6ac391d2c2bcbf7057223aa0d999f7f9e405eef00c"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// is guaranteed to be C99 compliant and still give us an equivalent static",
-        "// assert mechanism.",
-        "//",
-        "// The solution below defines a struct type containing a bit field.",
-        "// The name of that type is |static_assertion_msg|. |msg| is a concatenation of",
-        "// a user-chosen error (which should be chosen with respect to actual assertion)",
-        "// and the line the assertion is defined. This should ensure name uniqueness.",
-        "// The width of the bit field is set to 1 or -1, depending on the evaluation of",
-        "// the boolean expression |cond|. If the condition is false, the width requested"
-      ]
+      "item": "line@2e38577b302d",
+      "hash": "2e38577b302d725616981722d380d7b1df1ae2dab8c7176038b03bedfacad4ad"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
+      "item": "line@69bc40340c48",
+      "hash": "69bc40340c48cffa0bc844720c6b3e46d0d15bfa1187a1b4d5d6aaaaa6ee55f5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
+      "item": "line@ecd737109b46",
+      "hash": "ecd737109b4634441febf6d9a13e4fc32bb4d867f6bdca53e991264da9d3dd9d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
+      "item": "line@f1d720e359da",
+      "hash": "f1d720e359dab7eef9cce5e24beed468a8253ab1234257b482d6f23e851527ae"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
+      "item": "line@1a716b58ff84",
+      "hash": "1a716b58ff84a8044a20844aa118075307435f7c8439c3a37c410894b779f70b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/base.h.in",
+      "item": "line@8a7fe45de084",
+      "hash": "8a7fe45de08494570114bd6ac391d2c2bcbf7057223aa0d999f7f9e405eef00c"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/digest.h",
-      "line_start": 51,
-      "line_end": 59,
-      "text": [
-        "// must not be used with EVP_DigestSign* / EVP_DigestVerify* nor with any",
-        "// API that ASN.1-marshals a digest algorithm identifier.",
-        "OPENSSL_EXPORT const EVP_MD *EVP_keccak256(void);",
-        "",
-        "// EVP_md5_sha1 is a TLS-specific |EVP_MD| which computes the concatenation of",
-        "// MD5 and SHA-1, as used in TLS 1.1 and below.",
-        "OPENSSL_EXPORT const EVP_MD *EVP_md5_sha1(void);",
-        "",
-        "// EVP_get_digestbynid returns an |EVP_MD| for the given NID, or NULL if no"
-      ]
+      "item": "line@2bc63e33d01c",
+      "hash": "2bc63e33d01c5663dc32129198991646470ce55ed2858d50c2ad47f71e2070eb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/digest.h",
+      "item": "line@0e81e59ce1a4",
+      "hash": "0e81e59ce1a4798202acb4222952763e0eff7f792e426b72e51267f341f6fc71"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/digest.h",
+      "item": "line@fcc97f68a363",
+      "hash": "fcc97f68a363282294db3b0946ee4b73696d3b3f1ae816150930b72ab9aa9364"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/digest.h",
+      "item": "line@3e08094d1d44",
+      "hash": "3e08094d1d44e61f40d3493a70c4524261427e11c8fd4306997925cb408539f1"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/digest.h",
+      "item": "line@e5919b9cf63c",
+      "hash": "e5919b9cf63c033423f13eaede063d8f5b0e126d5362215c5b6d957cee062232"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/err.h",
-      "line_start": 360,
-      "line_end": 368,
-      "text": [
-        "OPENSSL_EXPORT void ERR_put_error(int library, int unused, int reason,",
-        "                                  const char *file, unsigned line);",
-        "",
-        "// ERR_add_error_data takes a variable number (|count|) of const char*",
-        "// pointers, concatenates them and sets the result as the data on the most",
-        "// recent error.",
-        "OPENSSL_EXPORT void ERR_add_error_data(unsigned count, ...);",
-        "",
-        "// ERR_add_error_dataf takes a printf-style format and arguments, and sets the"
-      ]
+      "item": "line@3fe0b9d0be12",
+      "hash": "3fe0b9d0be1272aa759ebcbcc1867f81b1c2ab7612c354ca1c8e074bb57882bc"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/err.h",
+      "item": "line@49814c9d9a88",
+      "hash": "49814c9d9a8876fa0687e7cd17899beb565b4af394e80a50d644db2d55c8736e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/err.h",
+      "item": "line@4e33b04d3171",
+      "hash": "4e33b04d3171028254789cef2464c0087eae72af2be396c96e77a5411be36803"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/err.h",
+      "item": "line@c892b3d31482",
+      "hash": "c892b3d31482eb5b22c16d70042c77b48b54ac9a64a643a80e08f7ccc2445642"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/err.h",
+      "item": "line@e0bbb88b313e",
+      "hash": "e0bbb88b313ef44158f4c5e0edef8a33a4f9576bd287089b479ad4a8052d1fd7"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
-      "line_start": 568,
-      "line_end": 576,
-      "text": [
-        "// |sig|. If sufficient, the signature will be written to |sig| and |*sig_len|",
-        "// updated with the true length. This function will fail for signature",
-        "// Ed25519 as it does not support signing pre-hashed inputs. For ML-DSA this",
-        "// function expects the format of |digest| to conform with \"ExternalMu\", i.e.,",
-        "// the digest mu is the SHAKE256 hash of the associated public key concatenated",
-        "// with a zero byte to indicate pure-mode, the context string length, the",
-        "// contents of the context string, and the input message in this order e.g.",
-        "// mu = SHAKE256(SHAKE256(pk) || 0 || |ctx| || ctx || M).",
-        "//"
-      ]
+      "item": "line@6a7ad0ac5c45",
+      "hash": "6a7ad0ac5c4523a48683785c447806b5fa55c7ef6c1c4a9859b25ed319bb24f2"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
-      "line_start": 597,
-      "line_end": 605,
-      "text": [
-        "// EVP_PKEY_verify verifies that |sig_len| bytes from |sig| are a valid",
-        "// signature for |digest|. This function will fail for signature",
-        "// Ed25519 as it does not support signing pre-hashed inputs. For ML-DSA this",
-        "// function expects the format of |digest| to conform with \"ExternalMu\", i.e.,",
-        "// the digest mu is the SHAKE256 hash of the associated public key concatenated",
-        "// with a zero byte to indicate pure-mode, the context string length, the",
-        "// contents of the context string, and the input message in this order e.g.",
-        "// mu = SHAKE256(SHAKE256(pk) || 0 || |ctx| || ctx || M).",
-        "//"
-      ]
+      "item": "line@dbf2245e0646",
+      "hash": "dbf2245e06462e1fd45161e898dcd0c1bf6afd4c8bca53b3a3ad7db007d56075"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@71d273900118",
+      "hash": "71d273900118b74b179ac47e4ee096c5c7c0fefec21680168ec90e85b3a1d569"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@2f94e6860b40",
+      "hash": "2f94e6860b40a72688f8fdeca7df2547a392f444f08bd503c444aba5f1fe0165"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@f179f5e05991",
+      "hash": "f179f5e0599198826f4fe896dcffbd6884f72184d81aad4e9cd6db14a67f3375"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@a34671ffa9a1",
+      "hash": "a34671ffa9a126db7ec843bf7caf1c4d9c473b20803c817700e91699f6ba007f"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@94c7a36696a1",
+      "hash": "94c7a36696a138168f6697f9151cc0e9c9efe5e7a17346444594a64aa04054a6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@39c67043bf86",
+      "hash": "39c67043bf86cc5ba10824a22337cbc80817cf51cb416c531d63221ff301f9c4"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hmac.h",
-      "line_start": 156,
-      "line_end": 164,
-      "text": [
-        "// |HMAC_Final|.",
-        "//",
-        "// The function returns one on success and zero on error.",
-        "//",
-        "// The precomputed key is the concatenation:",
-        "//   precomputed_key = key_ipad || key_opad",
-        "// where:",
-        "//   key_ipad = Hash_Compression_Function(key' xor ipad)",
-        "//   key_opad = Hash_Compression_Function(key' xor opad)"
-      ]
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hmac.h",
+      "item": "line@936116b0b242",
+      "hash": "936116b0b2421684406c3a9fb109c281cf8a6e72fa4ca1594a903228b70c6873"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hmac.h",
+      "item": "line@86bd5d381888",
+      "hash": "86bd5d381888cce56faa89b23832f4340c0a73d5aaab20502807b9b12975569b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hmac.h",
+      "item": "line@c9c340a67e62",
+      "hash": "c9c340a67e62e21b0e53340bf9df6917b102e9f387acd4ec00f9d9e1d963812a"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hmac.h",
+      "item": "line@d9d6344377b0",
+      "hash": "d9d6344377b057ba1523f2c260536bfeea76f3537d1b7b214f1fe29e204333c5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hmac.h",
+      "item": "line@5d54d7f87c7d",
+      "hash": "5d54d7f87c7df45f4cd3dfc6c1c5222f22e7bc9bdb64c90c9c313d77610296ce"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
-      "line_start": 1145,
-      "line_end": 1153,
-      "text": [
-        "// SSL_CTX_set_signed_cert_timestamp_list sets the list of signed certificate",
-        "// timestamps that is sent to clients that request it. The |list| argument must",
-        "// contain one or more SCT structures serialised as a SignedCertificateTimestamp",
-        "// List (see https://tools.ietf.org/html/rfc6962#section-3.3) – i.e. each SCT",
-        "// is prefixed by a big-endian, uint16 length and the concatenation of one or",
-        "// more such prefixed SCTs are themselves also prefixed by a uint16 length. It",
-        "// returns one on success and zero on error. The caller retains ownership of",
-        "// |list|.",
-        "OPENSSL_EXPORT int SSL_CTX_set_signed_cert_timestamp_list(SSL_CTX *ctx,"
-      ]
+      "item": "line@7e805562de18",
+      "hash": "7e805562de1892ca527a8b60168fe9ed1dcc205eec69908906e1b439414abecd"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
-      "line_start": 1192,
-      "line_end": 1200,
-      "text": [
-        "#define SSL_SIGN_MLDSA65 0x0905",
-        "#define SSL_SIGN_MLDSA87 0x0906",
-        "",
-        "// SSL_SIGN_RSA_PKCS1_MD5_SHA1 is an internal signature algorithm used to",
-        "// specify raw RSASSA-PKCS1-v1_5 with an MD5/SHA-1 concatenation, as used in TLS",
-        "// before TLS 1.2.",
-        "#define SSL_SIGN_RSA_PKCS1_MD5_SHA1 0xff01",
-        "",
-        "// SSL_get_signature_algorithm_name returns a human-readable name for |sigalg|,"
-      ]
+      "item": "line@4aca2064229e",
+      "hash": "4aca2064229e955a894155c0ec6f3aa0c922071d1ab394acd67525f614707090"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@660a19a22d70",
+      "hash": "660a19a22d708f0fa66cf14e0d1f91843c2aef6fe7d69bc2188bb878187c8bb3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@0d945c545cd1",
+      "hash": "0d945c545cd1f620c38ed6a224d953939efc15cca324f07752faa9d0d86d7c03"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@108d75817d54",
+      "hash": "108d75817d54819c2ad2a481d9a852ff5391205b355d69c2ed818d5d057a17fa"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@020cf7c59cd3",
+      "hash": "020cf7c59cd3072ea54bfd722688dc99beda974b83c4abf022ac7148099c1601"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@2ff315a3d088",
+      "hash": "2ff315a3d088e9441eb662b124ee79e3b3f2e8b877a491eefc089faf17c4cfd3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@0844e1ba4c52",
+      "hash": "0844e1ba4c526a0b7a52e33c1fe76742cd5891a86e909753f3a6220a72e0265b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@93027e7a39d1",
+      "hash": "93027e7a39d16e21883772ebe32b9ed2694e2e7f1f6206908afd1da8577ab6ca"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@b1b3c23e9f07",
+      "hash": "b1b3c23e9f075e573daa45306cdd0cbee758c7ba8ce28f4d15c346ee77a15fa3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@250f4466aeb6",
+      "hash": "250f4466aeb609a26be79b68dc42ffbcbe5cd6eaade327838b65a5f6b81436f3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@c3df046892f9",
+      "hash": "c3df046892f9f7347d80b1823540f36fd513762dad7546aa5078e8fd5397e9d0"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
-      "line_start": 152,
-      "line_end": 160,
-      "text": [
-        "// additionally frees the previous value at |*out| and updates |*out| to the",
-        "// result. If parsing or allocating the result fails, it returns NULL.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// Note: If |out| and |*out| are both non-NULL, the object at |*out| is not"
-      ]
+      "item": "line@c494a1c3997a",
+      "hash": "c494a1c3997ad84f340bb711d1e55edcd42c7a0d9a74bf0f260e9b9e015a0ad1"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
-      "line_start": 181,
-      "line_end": 189,
-      "text": [
-        "//",
-        "// If any of the above fail, the function returns NULL.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// WARNING: Callers should not rely on the in-place update mode. It often"
-      ]
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
-      "line_start": 455,
-      "line_end": 463,
-      "text": [
-        "// returns the result. If |out| is non-NULL, it additionally writes the result",
-        "// to |*out|. On error, it returns |ASN1_BOOLEAN_NONE|.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// WARNING: This function's is slightly different from other |d2i_*| functions"
-      ]
+      "item": "line@072ab059b237",
+      "hash": "072ab059b2370fe2d12ff23e27440e10e770db9798bb81d392404edeadd03c0d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
+      "item": "line@769c173815fd",
+      "hash": "769c173815fd86c26993acd32e39ad3bdd307639402df8fd9cc76b602b8e0d5e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
+      "item": "line@1aa1c728eda3",
+      "hash": "1aa1c728eda33ea2efe8308a7c181d32b5e5861dfaa3f341bbb5843af01f2c32"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
+      "item": "line@050a9578fc31",
+      "hash": "050a9578fc3127155c2344b9eaa1049276e3c7110f1b2a9e17885630ff7b374e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
+      "item": "line@9dc070b13408",
+      "hash": "9dc070b13408972a89438a56c80f7853bcc15facbf2d5bb55844aadaa15390d5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
+      "item": "line@d7d0a8d157c0",
+      "hash": "d7d0a8d157c0b32c09c60dd8b47b2adb0e92e9a417bf7abeb8a3fd7ae3102ffd"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// is guaranteed to be C99 compliant and still give us an equivalent static",
-        "// assert mechanism.",
-        "//",
-        "// The solution below defines a struct type containing a bit field.",
-        "// The name of that type is |static_assertion_msg|. |msg| is a concatenation of",
-        "// a user-chosen error (which should be chosen with respect to actual assertion)",
-        "// and the line the assertion is defined. This should ensure name uniqueness.",
-        "// The width of the bit field is set to 1 or -1, depending on the evaluation of",
-        "// the boolean expression |cond|. If the condition is false, the width requested"
-      ]
+      "item": "line@2e38577b302d",
+      "hash": "2e38577b302d725616981722d380d7b1df1ae2dab8c7176038b03bedfacad4ad"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
+      "item": "line@69bc40340c48",
+      "hash": "69bc40340c48cffa0bc844720c6b3e46d0d15bfa1187a1b4d5d6aaaaa6ee55f5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
+      "item": "line@ecd737109b46",
+      "hash": "ecd737109b4634441febf6d9a13e4fc32bb4d867f6bdca53e991264da9d3dd9d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
+      "item": "line@f1d720e359da",
+      "hash": "f1d720e359dab7eef9cce5e24beed468a8253ab1234257b482d6f23e851527ae"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
+      "item": "line@1a716b58ff84",
+      "hash": "1a716b58ff84a8044a20844aa118075307435f7c8439c3a37c410894b779f70b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h",
+      "item": "line@8a7fe45de084",
+      "hash": "8a7fe45de08494570114bd6ac391d2c2bcbf7057223aa0d999f7f9e405eef00c"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// is guaranteed to be C99 compliant and still give us an equivalent static",
-        "// assert mechanism.",
-        "//",
-        "// The solution below defines a struct type containing a bit field.",
-        "// The name of that type is |static_assertion_msg|. |msg| is a concatenation of",
-        "// a user-chosen error (which should be chosen with respect to actual assertion)",
-        "// and the line the assertion is defined. This should ensure name uniqueness.",
-        "// The width of the bit field is set to 1 or -1, depending on the evaluation of",
-        "// the boolean expression |cond|. If the condition is false, the width requested"
-      ]
+      "item": "line@2e38577b302d",
+      "hash": "2e38577b302d725616981722d380d7b1df1ae2dab8c7176038b03bedfacad4ad"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
+      "item": "line@69bc40340c48",
+      "hash": "69bc40340c48cffa0bc844720c6b3e46d0d15bfa1187a1b4d5d6aaaaa6ee55f5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
+      "item": "line@ecd737109b46",
+      "hash": "ecd737109b4634441febf6d9a13e4fc32bb4d867f6bdca53e991264da9d3dd9d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
+      "item": "line@f1d720e359da",
+      "hash": "f1d720e359dab7eef9cce5e24beed468a8253ab1234257b482d6f23e851527ae"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
+      "item": "line@1a716b58ff84",
+      "hash": "1a716b58ff84a8044a20844aa118075307435f7c8439c3a37c410894b779f70b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/base.h.in",
+      "item": "line@8a7fe45de084",
+      "hash": "8a7fe45de08494570114bd6ac391d2c2bcbf7057223aa0d999f7f9e405eef00c"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/digest.h",
-      "line_start": 51,
-      "line_end": 59,
-      "text": [
-        "// must not be used with EVP_DigestSign* / EVP_DigestVerify* nor with any",
-        "// API that ASN.1-marshals a digest algorithm identifier.",
-        "OPENSSL_EXPORT const EVP_MD *EVP_keccak256(void);",
-        "",
-        "// EVP_md5_sha1 is a TLS-specific |EVP_MD| which computes the concatenation of",
-        "// MD5 and SHA-1, as used in TLS 1.1 and below.",
-        "OPENSSL_EXPORT const EVP_MD *EVP_md5_sha1(void);",
-        "",
-        "// EVP_get_digestbynid returns an |EVP_MD| for the given NID, or NULL if no"
-      ]
+      "item": "line@2bc63e33d01c",
+      "hash": "2bc63e33d01c5663dc32129198991646470ce55ed2858d50c2ad47f71e2070eb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/digest.h",
+      "item": "line@0e81e59ce1a4",
+      "hash": "0e81e59ce1a4798202acb4222952763e0eff7f792e426b72e51267f341f6fc71"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/digest.h",
+      "item": "line@fcc97f68a363",
+      "hash": "fcc97f68a363282294db3b0946ee4b73696d3b3f1ae816150930b72ab9aa9364"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/digest.h",
+      "item": "line@3e08094d1d44",
+      "hash": "3e08094d1d44e61f40d3493a70c4524261427e11c8fd4306997925cb408539f1"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/digest.h",
+      "item": "line@e5919b9cf63c",
+      "hash": "e5919b9cf63c033423f13eaede063d8f5b0e126d5362215c5b6d957cee062232"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/err.h",
-      "line_start": 360,
-      "line_end": 368,
-      "text": [
-        "OPENSSL_EXPORT void ERR_put_error(int library, int unused, int reason,",
-        "                                  const char *file, unsigned line);",
-        "",
-        "// ERR_add_error_data takes a variable number (|count|) of const char*",
-        "// pointers, concatenates them and sets the result as the data on the most",
-        "// recent error.",
-        "OPENSSL_EXPORT void ERR_add_error_data(unsigned count, ...);",
-        "",
-        "// ERR_add_error_dataf takes a printf-style format and arguments, and sets the"
-      ]
+      "item": "line@3fe0b9d0be12",
+      "hash": "3fe0b9d0be1272aa759ebcbcc1867f81b1c2ab7612c354ca1c8e074bb57882bc"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/err.h",
+      "item": "line@49814c9d9a88",
+      "hash": "49814c9d9a8876fa0687e7cd17899beb565b4af394e80a50d644db2d55c8736e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/err.h",
+      "item": "line@4e33b04d3171",
+      "hash": "4e33b04d3171028254789cef2464c0087eae72af2be396c96e77a5411be36803"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/err.h",
+      "item": "line@c892b3d31482",
+      "hash": "c892b3d31482eb5b22c16d70042c77b48b54ac9a64a643a80e08f7ccc2445642"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/err.h",
+      "item": "line@e0bbb88b313e",
+      "hash": "e0bbb88b313ef44158f4c5e0edef8a33a4f9576bd287089b479ad4a8052d1fd7"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
-      "line_start": 568,
-      "line_end": 576,
-      "text": [
-        "// |sig|. If sufficient, the signature will be written to |sig| and |*sig_len|",
-        "// updated with the true length. This function will fail for signature",
-        "// Ed25519 as it does not support signing pre-hashed inputs. For ML-DSA this",
-        "// function expects the format of |digest| to conform with \"ExternalMu\", i.e.,",
-        "// the digest mu is the SHAKE256 hash of the associated public key concatenated",
-        "// with a zero byte to indicate pure-mode, the context string length, the",
-        "// contents of the context string, and the input message in this order e.g.",
-        "// mu = SHAKE256(SHAKE256(pk) || 0 || |ctx| || ctx || M).",
-        "//"
-      ]
+      "item": "line@6a7ad0ac5c45",
+      "hash": "6a7ad0ac5c4523a48683785c447806b5fa55c7ef6c1c4a9859b25ed319bb24f2"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
-      "line_start": 597,
-      "line_end": 605,
-      "text": [
-        "// EVP_PKEY_verify verifies that |sig_len| bytes from |sig| are a valid",
-        "// signature for |digest|. This function will fail for signature",
-        "// Ed25519 as it does not support signing pre-hashed inputs. For ML-DSA this",
-        "// function expects the format of |digest| to conform with \"ExternalMu\", i.e.,",
-        "// the digest mu is the SHAKE256 hash of the associated public key concatenated",
-        "// with a zero byte to indicate pure-mode, the context string length, the",
-        "// contents of the context string, and the input message in this order e.g.",
-        "// mu = SHAKE256(SHAKE256(pk) || 0 || |ctx| || ctx || M).",
-        "//"
-      ]
+      "item": "line@dbf2245e0646",
+      "hash": "dbf2245e06462e1fd45161e898dcd0c1bf6afd4c8bca53b3a3ad7db007d56075"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@71d273900118",
+      "hash": "71d273900118b74b179ac47e4ee096c5c7c0fefec21680168ec90e85b3a1d569"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@2f94e6860b40",
+      "hash": "2f94e6860b40a72688f8fdeca7df2547a392f444f08bd503c444aba5f1fe0165"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@f179f5e05991",
+      "hash": "f179f5e0599198826f4fe896dcffbd6884f72184d81aad4e9cd6db14a67f3375"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@a34671ffa9a1",
+      "hash": "a34671ffa9a126db7ec843bf7caf1c4d9c473b20803c817700e91699f6ba007f"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@94c7a36696a1",
+      "hash": "94c7a36696a138168f6697f9151cc0e9c9efe5e7a17346444594a64aa04054a6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@39c67043bf86",
+      "hash": "39c67043bf86cc5ba10824a22337cbc80817cf51cb416c531d63221ff301f9c4"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hmac.h",
-      "line_start": 156,
-      "line_end": 164,
-      "text": [
-        "// |HMAC_Final|.",
-        "//",
-        "// The function returns one on success and zero on error.",
-        "//",
-        "// The precomputed key is the concatenation:",
-        "//   precomputed_key = key_ipad || key_opad",
-        "// where:",
-        "//   key_ipad = Hash_Compression_Function(key' xor ipad)",
-        "//   key_opad = Hash_Compression_Function(key' xor opad)"
-      ]
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hmac.h",
+      "item": "line@936116b0b242",
+      "hash": "936116b0b2421684406c3a9fb109c281cf8a6e72fa4ca1594a903228b70c6873"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hmac.h",
+      "item": "line@86bd5d381888",
+      "hash": "86bd5d381888cce56faa89b23832f4340c0a73d5aaab20502807b9b12975569b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hmac.h",
+      "item": "line@c9c340a67e62",
+      "hash": "c9c340a67e62e21b0e53340bf9df6917b102e9f387acd4ec00f9d9e1d963812a"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hmac.h",
+      "item": "line@d9d6344377b0",
+      "hash": "d9d6344377b057ba1523f2c260536bfeea76f3537d1b7b214f1fe29e204333c5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hmac.h",
+      "item": "line@5d54d7f87c7d",
+      "hash": "5d54d7f87c7df45f4cd3dfc6c1c5222f22e7bc9bdb64c90c9c313d77610296ce"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
-      "line_start": 1145,
-      "line_end": 1153,
-      "text": [
-        "// SSL_CTX_set_signed_cert_timestamp_list sets the list of signed certificate",
-        "// timestamps that is sent to clients that request it. The |list| argument must",
-        "// contain one or more SCT structures serialised as a SignedCertificateTimestamp",
-        "// List (see https://tools.ietf.org/html/rfc6962#section-3.3) – i.e. each SCT",
-        "// is prefixed by a big-endian, uint16 length and the concatenation of one or",
-        "// more such prefixed SCTs are themselves also prefixed by a uint16 length. It",
-        "// returns one on success and zero on error. The caller retains ownership of",
-        "// |list|.",
-        "OPENSSL_EXPORT int SSL_CTX_set_signed_cert_timestamp_list(SSL_CTX *ctx,"
-      ]
+      "item": "line@7e805562de18",
+      "hash": "7e805562de1892ca527a8b60168fe9ed1dcc205eec69908906e1b439414abecd"
     },
     {
       "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
-      "line_start": 1192,
-      "line_end": 1200,
-      "text": [
-        "#define SSL_SIGN_MLDSA65 0x0905",
-        "#define SSL_SIGN_MLDSA87 0x0906",
-        "",
-        "// SSL_SIGN_RSA_PKCS1_MD5_SHA1 is an internal signature algorithm used to",
-        "// specify raw RSASSA-PKCS1-v1_5 with an MD5/SHA-1 concatenation, as used in TLS",
-        "// before TLS 1.2.",
-        "#define SSL_SIGN_RSA_PKCS1_MD5_SHA1 0xff01",
-        "",
-        "// SSL_get_signature_algorithm_name returns a human-readable name for |sigalg|,"
-      ]
+      "item": "line@4aca2064229e",
+      "hash": "4aca2064229e955a894155c0ec6f3aa0c922071d1ab394acd67525f614707090"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@660a19a22d70",
+      "hash": "660a19a22d708f0fa66cf14e0d1f91843c2aef6fe7d69bc2188bb878187c8bb3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@0d945c545cd1",
+      "hash": "0d945c545cd1f620c38ed6a224d953939efc15cca324f07752faa9d0d86d7c03"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@108d75817d54",
+      "hash": "108d75817d54819c2ad2a481d9a852ff5391205b355d69c2ed818d5d057a17fa"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@020cf7c59cd3",
+      "hash": "020cf7c59cd3072ea54bfd722688dc99beda974b83c4abf022ac7148099c1601"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@2ff315a3d088",
+      "hash": "2ff315a3d088e9441eb662b124ee79e3b3f2e8b877a491eefc089faf17c4cfd3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@0844e1ba4c52",
+      "hash": "0844e1ba4c526a0b7a52e33c1fe76742cd5891a86e909753f3a6220a72e0265b"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@93027e7a39d1",
+      "hash": "93027e7a39d16e21883772ebe32b9ed2694e2e7f1f6206908afd1da8577ab6ca"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@b1b3c23e9f07",
+      "hash": "b1b3c23e9f075e573daa45306cdd0cbee758c7ba8ce28f4d15c346ee77a15fa3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@250f4466aeb6",
+      "hash": "250f4466aeb609a26be79b68dc42ffbcbe5cd6eaade327838b65a5f6b81436f3"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@c3df046892f9",
+      "hash": "c3df046892f9f7347d80b1823540f36fd513762dad7546aa5078e8fd5397e9d0"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
-      "line_start": 152,
-      "line_end": 160,
-      "text": [
-        "// additionally frees the previous value at |*out| and updates |*out| to the",
-        "// result. If parsing or allocating the result fails, it returns NULL.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// Note: If |out| and |*out| are both non-NULL, the object at |*out| is not"
-      ]
+      "item": "line@c494a1c3997a",
+      "hash": "c494a1c3997ad84f340bb711d1e55edcd42c7a0d9a74bf0f260e9b9e015a0ad1"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
-      "line_start": 181,
-      "line_end": 189,
-      "text": [
-        "//",
-        "// If any of the above fail, the function returns NULL.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// WARNING: Callers should not rely on the in-place update mode. It often"
-      ]
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
-      "line_start": 455,
-      "line_end": 463,
-      "text": [
-        "// returns the result. If |out| is non-NULL, it additionally writes the result",
-        "// to |*out|. On error, it returns |ASN1_BOOLEAN_NONE|.",
-        "//",
-        "// This function does not reject trailing data in the input. This allows the",
-        "// caller to parse a sequence of concatenated structures. Callers parsing only",
-        "// one structure should check for trailing data by comparing the updated |*inp|",
-        "// with the end of the input.",
-        "//",
-        "// WARNING: This function's is slightly different from other |d2i_*| functions"
-      ]
+      "item": "line@072ab059b237",
+      "hash": "072ab059b2370fe2d12ff23e27440e10e770db9798bb81d392404edeadd03c0d"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
+      "item": "line@769c173815fd",
+      "hash": "769c173815fd86c26993acd32e39ad3bdd307639402df8fd9cc76b602b8e0d5e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
+      "item": "line@1aa1c728eda3",
+      "hash": "1aa1c728eda33ea2efe8308a7c181d32b5e5861dfaa3f341bbb5843af01f2c32"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
+      "item": "line@050a9578fc31",
+      "hash": "050a9578fc3127155c2344b9eaa1049276e3c7110f1b2a9e17885630ff7b374e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
+      "item": "line@9dc070b13408",
+      "hash": "9dc070b13408972a89438a56c80f7853bcc15facbf2d5bb55844aadaa15390d5"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
+      "item": "line@d7d0a8d157c0",
+      "hash": "d7d0a8d157c0b32c09c60dd8b47b2adb0e92e9a417bf7abeb8a3fd7ae3102ffd"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// is guaranteed to be C99 compliant and still give us an equivalent static",
-        "// assert mechanism.",
-        "//",
-        "// The solution below defines a struct type containing a bit field.",
-        "// The name of that type is |static_assertion_msg|. |msg| is a concatenation of",
-        "// a user-chosen error (which should be chosen with respect to actual assertion)",
-        "// and the line the assertion is defined. This should ensure name uniqueness.",
-        "// The width of the bit field is set to 1 or -1, depending on the evaluation of",
-        "// the boolean expression |cond|. If the condition is false, the width requested"
-      ]
+      "item": "line@2e38577b302d",
+      "hash": "2e38577b302d725616981722d380d7b1df1ae2dab8c7176038b03bedfacad4ad"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
+      "item": "line@69bc40340c48",
+      "hash": "69bc40340c48cffa0bc844720c6b3e46d0d15bfa1187a1b4d5d6aaaaa6ee55f5"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
+      "item": "line@ecd737109b46",
+      "hash": "ecd737109b4634441febf6d9a13e4fc32bb4d867f6bdca53e991264da9d3dd9d"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
+      "item": "line@f1d720e359da",
+      "hash": "f1d720e359dab7eef9cce5e24beed468a8253ab1234257b482d6f23e851527ae"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
+      "item": "line@1a716b58ff84",
+      "hash": "1a716b58ff84a8044a20844aa118075307435f7c8439c3a37c410894b779f70b"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h",
+      "item": "line@8a7fe45de084",
+      "hash": "8a7fe45de08494570114bd6ac391d2c2bcbf7057223aa0d999f7f9e405eef00c"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// is guaranteed to be C99 compliant and still give us an equivalent static",
-        "// assert mechanism.",
-        "//",
-        "// The solution below defines a struct type containing a bit field.",
-        "// The name of that type is |static_assertion_msg|. |msg| is a concatenation of",
-        "// a user-chosen error (which should be chosen with respect to actual assertion)",
-        "// and the line the assertion is defined. This should ensure name uniqueness.",
-        "// The width of the bit field is set to 1 or -1, depending on the evaluation of",
-        "// the boolean expression |cond|. If the condition is false, the width requested"
-      ]
+      "item": "line@2e38577b302d",
+      "hash": "2e38577b302d725616981722d380d7b1df1ae2dab8c7176038b03bedfacad4ad"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
+      "item": "line@69bc40340c48",
+      "hash": "69bc40340c48cffa0bc844720c6b3e46d0d15bfa1187a1b4d5d6aaaaa6ee55f5"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
+      "item": "line@ecd737109b46",
+      "hash": "ecd737109b4634441febf6d9a13e4fc32bb4d867f6bdca53e991264da9d3dd9d"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
+      "item": "line@f1d720e359da",
+      "hash": "f1d720e359dab7eef9cce5e24beed468a8253ab1234257b482d6f23e851527ae"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
+      "item": "line@1a716b58ff84",
+      "hash": "1a716b58ff84a8044a20844aa118075307435f7c8439c3a37c410894b779f70b"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/base.h.in",
+      "item": "line@8a7fe45de084",
+      "hash": "8a7fe45de08494570114bd6ac391d2c2bcbf7057223aa0d999f7f9e405eef00c"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/digest.h",
-      "line_start": 51,
-      "line_end": 59,
-      "text": [
-        "// must not be used with EVP_DigestSign* / EVP_DigestVerify* nor with any",
-        "// API that ASN.1-marshals a digest algorithm identifier.",
-        "OPENSSL_EXPORT const EVP_MD *EVP_keccak256(void);",
-        "",
-        "// EVP_md5_sha1 is a TLS-specific |EVP_MD| which computes the concatenation of",
-        "// MD5 and SHA-1, as used in TLS 1.1 and below.",
-        "OPENSSL_EXPORT const EVP_MD *EVP_md5_sha1(void);",
-        "",
-        "// EVP_get_digestbynid returns an |EVP_MD| for the given NID, or NULL if no"
-      ]
+      "item": "line@2bc63e33d01c",
+      "hash": "2bc63e33d01c5663dc32129198991646470ce55ed2858d50c2ad47f71e2070eb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/digest.h",
+      "item": "line@0e81e59ce1a4",
+      "hash": "0e81e59ce1a4798202acb4222952763e0eff7f792e426b72e51267f341f6fc71"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/digest.h",
+      "item": "line@fcc97f68a363",
+      "hash": "fcc97f68a363282294db3b0946ee4b73696d3b3f1ae816150930b72ab9aa9364"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/digest.h",
+      "item": "line@3e08094d1d44",
+      "hash": "3e08094d1d44e61f40d3493a70c4524261427e11c8fd4306997925cb408539f1"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/digest.h",
+      "item": "line@e5919b9cf63c",
+      "hash": "e5919b9cf63c033423f13eaede063d8f5b0e126d5362215c5b6d957cee062232"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/err.h",
-      "line_start": 360,
-      "line_end": 368,
-      "text": [
-        "OPENSSL_EXPORT void ERR_put_error(int library, int unused, int reason,",
-        "                                  const char *file, unsigned line);",
-        "",
-        "// ERR_add_error_data takes a variable number (|count|) of const char*",
-        "// pointers, concatenates them and sets the result as the data on the most",
-        "// recent error.",
-        "OPENSSL_EXPORT void ERR_add_error_data(unsigned count, ...);",
-        "",
-        "// ERR_add_error_dataf takes a printf-style format and arguments, and sets the"
-      ]
+      "item": "line@3fe0b9d0be12",
+      "hash": "3fe0b9d0be1272aa759ebcbcc1867f81b1c2ab7612c354ca1c8e074bb57882bc"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/err.h",
+      "item": "line@49814c9d9a88",
+      "hash": "49814c9d9a8876fa0687e7cd17899beb565b4af394e80a50d644db2d55c8736e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/err.h",
+      "item": "line@4e33b04d3171",
+      "hash": "4e33b04d3171028254789cef2464c0087eae72af2be396c96e77a5411be36803"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/err.h",
+      "item": "line@c892b3d31482",
+      "hash": "c892b3d31482eb5b22c16d70042c77b48b54ac9a64a643a80e08f7ccc2445642"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/err.h",
+      "item": "line@e0bbb88b313e",
+      "hash": "e0bbb88b313ef44158f4c5e0edef8a33a4f9576bd287089b479ad4a8052d1fd7"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
-      "line_start": 568,
-      "line_end": 576,
-      "text": [
-        "// |sig|. If sufficient, the signature will be written to |sig| and |*sig_len|",
-        "// updated with the true length. This function will fail for signature",
-        "// Ed25519 as it does not support signing pre-hashed inputs. For ML-DSA this",
-        "// function expects the format of |digest| to conform with \"ExternalMu\", i.e.,",
-        "// the digest mu is the SHAKE256 hash of the associated public key concatenated",
-        "// with a zero byte to indicate pure-mode, the context string length, the",
-        "// contents of the context string, and the input message in this order e.g.",
-        "// mu = SHAKE256(SHAKE256(pk) || 0 || |ctx| || ctx || M).",
-        "//"
-      ]
+      "item": "line@6a7ad0ac5c45",
+      "hash": "6a7ad0ac5c4523a48683785c447806b5fa55c7ef6c1c4a9859b25ed319bb24f2"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
-      "line_start": 597,
-      "line_end": 605,
-      "text": [
-        "// EVP_PKEY_verify verifies that |sig_len| bytes from |sig| are a valid",
-        "// signature for |digest|. This function will fail for signature",
-        "// Ed25519 as it does not support signing pre-hashed inputs. For ML-DSA this",
-        "// function expects the format of |digest| to conform with \"ExternalMu\", i.e.,",
-        "// the digest mu is the SHAKE256 hash of the associated public key concatenated",
-        "// with a zero byte to indicate pure-mode, the context string length, the",
-        "// contents of the context string, and the input message in this order e.g.",
-        "// mu = SHAKE256(SHAKE256(pk) || 0 || |ctx| || ctx || M).",
-        "//"
-      ]
+      "item": "line@dbf2245e0646",
+      "hash": "dbf2245e06462e1fd45161e898dcd0c1bf6afd4c8bca53b3a3ad7db007d56075"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@71d273900118",
+      "hash": "71d273900118b74b179ac47e4ee096c5c7c0fefec21680168ec90e85b3a1d569"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@2f94e6860b40",
+      "hash": "2f94e6860b40a72688f8fdeca7df2547a392f444f08bd503c444aba5f1fe0165"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@f179f5e05991",
+      "hash": "f179f5e0599198826f4fe896dcffbd6884f72184d81aad4e9cd6db14a67f3375"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@a34671ffa9a1",
+      "hash": "a34671ffa9a126db7ec843bf7caf1c4d9c473b20803c817700e91699f6ba007f"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@94c7a36696a1",
+      "hash": "94c7a36696a138168f6697f9151cc0e9c9efe5e7a17346444594a64aa04054a6"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@39c67043bf86",
+      "hash": "39c67043bf86cc5ba10824a22337cbc80817cf51cb416c531d63221ff301f9c4"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hmac.h",
-      "line_start": 156,
-      "line_end": 164,
-      "text": [
-        "// |HMAC_Final|.",
-        "//",
-        "// The function returns one on success and zero on error.",
-        "//",
-        "// The precomputed key is the concatenation:",
-        "//   precomputed_key = key_ipad || key_opad",
-        "// where:",
-        "//   key_ipad = Hash_Compression_Function(key' xor ipad)",
-        "//   key_opad = Hash_Compression_Function(key' xor opad)"
-      ]
+      "item": "line@a2c2339691fc",
+      "hash": "a2c2339691fc48fbd14fb307292dff3e21222712d9240810742d7df0c6d74dfb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hmac.h",
+      "item": "line@936116b0b242",
+      "hash": "936116b0b2421684406c3a9fb109c281cf8a6e72fa4ca1594a903228b70c6873"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hmac.h",
+      "item": "line@86bd5d381888",
+      "hash": "86bd5d381888cce56faa89b23832f4340c0a73d5aaab20502807b9b12975569b"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hmac.h",
+      "item": "line@c9c340a67e62",
+      "hash": "c9c340a67e62e21b0e53340bf9df6917b102e9f387acd4ec00f9d9e1d963812a"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hmac.h",
+      "item": "line@d9d6344377b0",
+      "hash": "d9d6344377b057ba1523f2c260536bfeea76f3537d1b7b214f1fe29e204333c5"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hmac.h",
+      "item": "line@5d54d7f87c7d",
+      "hash": "5d54d7f87c7df45f4cd3dfc6c1c5222f22e7bc9bdb64c90c9c313d77610296ce"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
-      "line_start": 1145,
-      "line_end": 1153,
-      "text": [
-        "// SSL_CTX_set_signed_cert_timestamp_list sets the list of signed certificate",
-        "// timestamps that is sent to clients that request it. The |list| argument must",
-        "// contain one or more SCT structures serialised as a SignedCertificateTimestamp",
-        "// List (see https://tools.ietf.org/html/rfc6962#section-3.3) – i.e. each SCT",
-        "// is prefixed by a big-endian, uint16 length and the concatenation of one or",
-        "// more such prefixed SCTs are themselves also prefixed by a uint16 length. It",
-        "// returns one on success and zero on error. The caller retains ownership of",
-        "// |list|.",
-        "OPENSSL_EXPORT int SSL_CTX_set_signed_cert_timestamp_list(SSL_CTX *ctx,"
-      ]
+      "item": "line@7e805562de18",
+      "hash": "7e805562de1892ca527a8b60168fe9ed1dcc205eec69908906e1b439414abecd"
     },
     {
       "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
-      "line_start": 1192,
-      "line_end": 1200,
-      "text": [
-        "#define SSL_SIGN_MLDSA65 0x0905",
-        "#define SSL_SIGN_MLDSA87 0x0906",
-        "",
-        "// SSL_SIGN_RSA_PKCS1_MD5_SHA1 is an internal signature algorithm used to",
-        "// specify raw RSASSA-PKCS1-v1_5 with an MD5/SHA-1 concatenation, as used in TLS",
-        "// before TLS 1.2.",
-        "#define SSL_SIGN_RSA_PKCS1_MD5_SHA1 0xff01",
-        "",
-        "// SSL_get_signature_algorithm_name returns a human-readable name for |sigalg|,"
-      ]
+      "item": "line@4aca2064229e",
+      "hash": "4aca2064229e955a894155c0ec6f3aa0c922071d1ab394acd67525f614707090"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 307,
-      "line_end": 315,
-      "text": [
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {",
-        "    let temp = fixme_fixture();",
-        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\"]);"
-      ]
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@660a19a22d70",
+      "hash": "660a19a22d708f0fa66cf14e0d1f91843c2aef6fe7d69bc2188bb878187c8bb3"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 422,
-      "line_end": 430,
-      "text": [
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.references.rust_item_coverage`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn status_preserves_repository_wide_rust_findings_in_every_form() {",
-        "    let temp = fixture();",
-        "    let nested = temp.path().join(\"src/nested\");"
-      ]
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@0d945c545cd1",
+      "hash": "0d945c545cd1f620c38ed6a224d953939efc15cca324f07752faa9d0d86d7c03"
     },
     {
-      "file": "tests/commands.rs",
-      "line_start": 521,
-      "line_end": 529,
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@108d75817d54",
+      "hash": "108d75817d54819c2ad2a481d9a852ff5391205b355d69c2ed818d5d057a17fa"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@020cf7c59cd3",
+      "hash": "020cf7c59cd3072ea54bfd722688dc99beda974b83c4abf022ac7148099c1601"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@2ff315a3d088",
+      "hash": "2ff315a3d088e9441eb662b124ee79e3b3f2e8b877a491eefc089faf17c4cfd3"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@0844e1ba4c52",
+      "hash": "0844e1ba4c526a0b7a52e33c1fe76742cd5891a86e909753f3a6220a72e0265b"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@93027e7a39d1",
+      "hash": "93027e7a39d16e21883772ebe32b9ed2694e2e7f1f6206908afd1da8577ab6ca"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@b1b3c23e9f07",
+      "hash": "b1b3c23e9f075e573daa45306cdd0cbee758c7ba8ce28f4d15c346ee77a15fa3"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@250f4466aeb6",
+      "hash": "250f4466aeb609a26be79b68dc42ffbcbe5cd6eaade327838b65a5f6b81436f3"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@c3df046892f9",
+      "hash": "c3df046892f9f7347d80b1823540f36fd513762dad7546aa5078e8fd5397e9d0"
+    },
+    {
+      "definition": "requirements.ci.validation_error",
       "text": [
-        "}",
+        ":::{definition} validation_error",
+        ":phrase: validation error",
         "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn commands_report_invalid_arguments_and_unmatched_selectors() {",
-        "    let temp = fixture();",
-        "    for args in ["
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
       ]
     },
     {
@@ -1531,190 +1018,23 @@
     },
     {
       "file": "src/add_input.rs",
-      "line_start": 1,
-      "line_end": 180,
-      "text": [
-        "use std::collections::BTreeMap;",
-        "use std::fs;",
-        "use std::io;",
-        "use std::path::Path;",
-        "",
-        "use serde_json::{Value, json};",
-        "",
-        "use crate::DefinitionKind;",
-        "use crate::evidence::{Declaration, inspect_repository};",
-        "use crate::inputs::{InputSelector, read_project_file};",
-        "use crate::rust_items::parse_items;",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "pub enum InputTarget {",
-        "    Requirement(String),",
-        "    Example(String),",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "pub enum InputMode {",
-        "    FileRange(String),",
-        "    RustItemsAtLine(String),",
-        "    Requirements(String),",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    let definitions = &inspection.definitions;",
-        "    let selectors = selectors_for_mode(&root, mode)?;",
-        "    let mut inputs = Vec::new();",
-        "    for selector in selectors {",
-        "        let resolved = selector",
-        "            .resolve(&root, definitions)",
-        "            .map_err(invalid_input)?;",
-        "        inputs.push((",
-        "            selector.clone(),",
-        "            selector.to_input(&resolved),",
-        "            resolved.matches,",
-        "        ));",
-        "    }",
-        "",
-        "    match target {",
-        "        InputTarget::Requirement(name) => add_definition_inputs(",
-        "            &root,",
-        "            definitions,",
-        "            &name,",
-        "            DefinitionKind::Requirement,",
-        "            inputs,",
-        "        ),",
-        "        InputTarget::Example(name) => {",
-        "            add_definition_inputs(&root, definitions, &name, DefinitionKind::Example, inputs)",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.ci.schema`",
-        "fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {",
-        "    match mode {",
-        "        InputMode::FileRange(specification) => {",
-        "            let (file, range) = specification.rsplit_once(':').ok_or_else(|| {",
-        "                invalid_input(\"file range must have the form <file>:<start>-<end>\")",
-        "            })?;",
-        "            let (start, end) = range.split_once('-').ok_or_else(|| {",
-        "                invalid_input(\"file range must have the form <file>:<start>-<end>\")",
-        "            })?;",
-        "            let line_start = start",
-        "                .parse::<usize>()",
-        "                .map_err(|_| invalid_input(\"file range start must be a positive integer\"))?;",
-        "            let line_end = end",
-        "                .parse::<usize>()",
-        "                .map_err(|_| invalid_input(\"file range end must be a positive integer\"))?;",
-        "            Ok(vec![InputSelector::FileRange {",
-        "                file: file.to_owned(),",
-        "                line_start,",
-        "                line_end,",
-        "            }])",
-        "        }",
-        "        InputMode::RustItemsAtLine(specification) => {",
-        "            let (rust_file, line) = specification.rsplit_once(':').ok_or_else(|| {",
-        "                invalid_input(\"Rust item location must have the form <rust-file>:<line>\")",
-        "            })?;",
-        "            let line = line",
-        "                .parse::<usize>()",
-        "                .map_err(|_| invalid_input(\"Rust item line must be a positive integer\"))?;",
-        "            if !rust_file.ends_with(\".rs\") {",
-        "                return Err(invalid_input(\"Rust item location requires a .rs file\"));",
-        "            }",
-        "            let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;",
-        "            let rust_file = path",
-        "                .strip_prefix(root)",
-        "                .unwrap_or(&path)",
-        "                .to_str()",
-        "                .ok_or_else(|| invalid_input(\"Rust file path must be UTF-8\"))?;",
-        "            let items = parse_items(&source).map_err(|error| {",
-        "                invalid_input(format!(\"{rust_file}: cannot parse Rust source: {error}\"))",
-        "            })?;",
-        "            let selected = items",
-        "                .into_iter()",
-        "                .filter(|item| item.declaration_line == line)",
-        "                .map(|item| InputSelector::RustItem {",
-        "                    rust_file: rust_file.to_owned(),",
-        "                    rust_item: item.selector,",
-        "                })",
-        "                .collect::<Vec<_>>();",
-        "            if selected.is_empty() {",
-        "                return Err(invalid_input(format!(",
-        "                    \"{rust_file}:{line}: no Rust item is declared on this line\"",
-        "                )));",
-        "            }",
-        "            Ok(selected)",
-        "        }",
-        "        InputMode::Requirements(requirements) => {",
-        "            Ok(vec![InputSelector::Requirements { requirements }])",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.definitions.capture`",
-        "fn add_definition_inputs(",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    name: &str,",
-        "    kind: DefinitionKind,",
-        "    inputs: Vec<(InputSelector, Value, Vec<String>)>,",
-        ") -> io::Result<String> {",
-        "    let Some(definition) = definitions.get(name) else {",
-        "        return Err(invalid_input(format!(\"unknown {} {name:?}\", kind.noun())));",
-        "    };",
-        "    if definition.kind != kind {",
-        "        return Err(invalid_input(format!(",
-        "            \"{name:?} is an {}, not a {}\",",
-        "            definition.kind.noun(),",
-        "            kind.noun()",
-        "        )));",
-        "    }",
-        "    let path = root.join(\"evidence\").join(format!(\"{name}.json\"));",
-        "    let mut record = read_or_new(",
-        "        &path,",
-        "        json!({",
-        "            kind.noun(): definition.text,",
-        "            \"determination\": false,",
-        "            \"rationale\": \"Review pending: inspect the definition, behavior, and supporting inputs.\",",
-        "            \"inputs\": [],",
-        "        }),",
-        "    )?;",
-        "    let output = update_inputs(",
-        "        &mut record,",
-        "        inputs,",
-        "        root,",
-        "        definitions,",
-        "        Some(&definition.text),",
-        "    )?;",
-        "    if output.1 {",
-        "        fs::create_dir_all(root.join(\"evidence\"))?;",
-        "        fs::write(",
-        "            &path,",
-        "            format!(\"{}\\n\", serde_json::to_string_pretty(&record)?),",
-        "        )?;",
-        "    }",
-        "    Ok(format!(\"evidence/{name}.json:\\n{}\", output.0))",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.definitions.capture`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "// {impl}`requirements.definitions.dependencies`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "fn update_inputs(",
-        "    record: &mut Value,"
-      ]
+      "item": "fn[add_definition_inputs]",
+      "hash": "e157233333e4a2e84300324a7e002dc128d0c5473d299153b5ce1676a4293615"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "14d32f21eeaf208f3f4ff0b100180c53d8dcb73dc6df8f6a08aa9e53a477f4f5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "9c50a31f04697f892f716b64d3e2414c0583599959e716dd1c9266822672cc78"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_rejects_function_targets_without_creating_evidence]",
+      "hash": "bd35cebd0ec012f8a994f9383de30ac747ee8aad433ec49561f14b243ccb41aa"
     }
   ]
 }
