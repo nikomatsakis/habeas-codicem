@@ -78,8 +78,6 @@ pub(crate) struct OutlineComment {
     pub(crate) line_end: usize,
     /// Index of the owning node in [`Outline::nodes`].
     pub(crate) owner: usize,
-    /// Whether the profile includes this comment in structural hashes.
-    pub(crate) hashed: bool,
 }
 
 /// A parsed outline.
@@ -319,7 +317,6 @@ struct Draft<'tree> {
 struct DraftComment {
     byte_start: usize,
     byte_end: usize,
-    hashed: bool,
     binds_to_container: bool,
 }
 
@@ -381,7 +378,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         self.comments.push(DraftComment {
             byte_start: node.start_byte(),
             byte_end: node.end_byte(),
-            hashed: (self.profile.hashes_comment)(node, self.source),
             binds_to_container: (self.profile.comment_binds_to_container)(node, self.source),
         });
     }
@@ -404,27 +400,21 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// is declared.
     // {impl}`requirements.references.outlines`
     fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
-        let named = |child: Node<'_>, normalize: bool| {
-            let text = text(child, self.source);
-            let text = if normalize {
-                profile::normalized(text)
-            } else {
-                text.to_owned()
-            };
-            (vec![text], child.start_byte())
+        let named = |child: Node<'_>| {
+            (
+                vec![text(child, self.source).to_owned()],
+                child.start_byte(),
+            )
         };
         match rule {
             NameRule::Anonymous => None,
-            NameRule::Field(field) => node.child_by_field_name(field).map(|c| named(c, false)),
-            NameRule::FieldNormalized(field) => {
-                node.child_by_field_name(field).map(|c| named(c, true))
-            }
+            NameRule::Field(field) => node.child_by_field_name(field).map(named),
             NameRule::FirstChild(kinds) => {
                 let mut cursor = node.walk();
                 let child = node
                     .named_children(&mut cursor)
                     .find(|child| kinds.contains(&child.kind()));
-                child.map(|c| named(c, false))
+                child.map(named)
             }
             NameRule::Custom(rule) => {
                 rule(node, self.source).map(|parts| (parts, node.start_byte()))
@@ -551,22 +541,39 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             encoder.kind(node.kind());
         }
         if node.child_count() == 0 {
-            let text = text(node, self.source);
-            if self.profile.prose || in_comment {
-                for word in text.split_whitespace() {
-                    encoder.text(word);
-                }
-            } else if !text.trim().is_empty() {
-                encoder.text(text);
-            }
+            self.encode_text(encoder, text(node, self.source), in_comment);
         } else {
+            // Some grammars, such as Markdown's, leave text between child
+            // tokens unlexed; it is still part of the node's leaf text.
+            let mut position = node.start_byte();
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
+                if let Some(gap) = self.source.get(position..child.start_byte()) {
+                    self.encode_text(encoder, gap, true);
+                }
                 self.encode(encoder, child, index, identity, in_comment);
+                position = position.max(child.end_byte());
+            }
+            if let Some(gap) = self.source.get(position..node.end_byte()) {
+                self.encode_text(encoder, gap, true);
             }
         }
         if node.is_named() {
             encoder.end();
+        }
+    }
+
+    /// Hashes leaf text: prose, comments, and unlexed gaps (`words`) as
+    /// whitespace-separated words, other text as written unless it is only
+    /// whitespace.
+    // {impl}`requirements.references.structural_hash`
+    fn encode_text(&self, encoder: &mut Encoder, text: &str, words: bool) {
+        if self.profile.prose || words {
+            for word in text.split_whitespace() {
+                encoder.text(word);
+            }
+        } else if !text.trim().is_empty() {
+            encoder.text(text);
         }
     }
 
@@ -718,7 +725,6 @@ fn assign_comments(
                 line_start,
                 line_end,
                 owner,
-                hashed: comment.hashed,
             }
         })
         .collect()
@@ -775,12 +781,6 @@ fn comment_owner(
 }
 
 impl Outline {
-    /// The root node.
-    // {impl}`requirements.references.outlines`
-    pub(crate) fn root(&self) -> &OutlineNode {
-        &self.nodes[0]
-    }
-
     /// Resolves a selector to a node index; the empty selector is the root.
     /// A `line` segment resolves to the first line with that content.
     // {impl}`requirements.references.outline_selectors`
@@ -827,29 +827,6 @@ impl Outline {
         found
     }
 
-    /// The innermost nodes covering any line of an inclusive range, without
-    /// nodes whose ancestor is also selected, in source order.
-    // {impl}`requirements.references.outlines`
-    pub(crate) fn innermost_in_range(&self, line_start: usize, line_end: usize) -> Vec<usize> {
-        let mut selected = (line_start..=line_end)
-            .flat_map(|line| self.innermost_at_line(line))
-            .collect::<Vec<_>>();
-        selected.sort_unstable();
-        selected.dedup();
-        let chosen = selected.clone();
-        selected.retain(|index| {
-            let mut ancestor = self.nodes[*index].parent;
-            while let Some(parent) = ancestor {
-                if chosen.binary_search(&parent).is_ok() {
-                    return false;
-                }
-                ancestor = self.nodes[parent].parent;
-            }
-            true
-        });
-        selected
-    }
-
     /// Non-root nodes declared on a line: named nodes on the line of their
     /// name, anonymous nodes on the line where they start.
     // {impl}`requirements.references.outlines`
@@ -870,6 +847,67 @@ impl Outline {
             .collect::<Vec<_>>();
         owners.dedup();
         owners
+    }
+
+    /// The smallest node a line's source belongs to: the owner of a comment
+    /// on that line, otherwise the smallest innermost node covering it, and
+    /// the root when no other node covers it.
+    // {impl}`requirements.references.outline_comments`
+    // {impl}`requirements.references.authoring_inputs`
+    pub(crate) fn owner_at_line(&self, line: usize) -> usize {
+        if let Some(owner) = self.comment_owners_at_line(line).first() {
+            return *owner;
+        }
+        self.innermost_at_line(line)
+            .into_iter()
+            .min_by_key(|index| {
+                let node = &self.nodes[*index];
+                (
+                    node.line_end - node.line_start,
+                    node.byte_end - node.byte_start,
+                )
+            })
+            .unwrap_or(0)
+    }
+
+    /// The innermost nodes for a set of lines, without nodes whose ancestor
+    /// is also selected, in source order. With `comments`, a line in a
+    /// comment belongs to the comment's owner.
+    // {impl}`requirements.references.outline_comments`
+    // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.authoring.source_tools`
+    pub(crate) fn nodes_for_lines(
+        &self,
+        lines: impl IntoIterator<Item = usize>,
+        comments: bool,
+    ) -> Vec<usize> {
+        let mut selected = Vec::new();
+        for line in lines {
+            let owners = if comments {
+                self.comment_owners_at_line(line)
+            } else {
+                Vec::new()
+            };
+            if owners.is_empty() {
+                selected.extend(self.innermost_at_line(line));
+            } else {
+                selected.extend(owners);
+            }
+        }
+        selected.sort_unstable();
+        selected.dedup();
+        let chosen = selected.clone();
+        selected.retain(|index| {
+            let mut ancestor = self.nodes[*index].parent;
+            while let Some(parent) = ancestor {
+                if chosen.binary_search(&parent).is_ok() {
+                    return false;
+                }
+                ancestor = self.nodes[parent].parent;
+            }
+            true
+        });
+        selected
     }
 
     /// A node's source lines, over its full line range, without line endings.

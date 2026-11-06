@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use serde_json::{Map, Value, json};
 
 use super::inputs::AssessmentSources;
-use crate::inputs::{InputSelector, read_project_file};
+use crate::inputs::InputSelector;
 
 pub(crate) struct ToolDelivery {
     pub(crate) result: Value,
@@ -27,13 +27,12 @@ pub(crate) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
                 "line_end":{"type":"integer","minimum":1},
-                "rust_file":{"type":"string"},
-                "rust_item":{"type":"string"},
+                "item":{"type":"string"},
                 "requirements":{"type":"string"},
                 "definition":{"type":"string"}
             }, "additionalProperties":false}
@@ -43,11 +42,15 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.",
+            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, each with its item selector (for habeas {file, item} reads), kind, name (null when anonymous), and current one-based inclusive line_start and line_end. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas. Requesting an excluded file aborts the assessment.",
+            "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
+        }),
+        json!({
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
-            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. An :impl: or :test: anchor on a definition names a complete file and is reported with line null. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
+            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and item, the selector of the smallest enclosing outline node when the file has a language outline (null otherwise). An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with line null and item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
             "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
     ]
@@ -67,6 +70,7 @@ pub(crate) fn dispatch(
     match name {
         "habeas" => read(sources, arguments),
         "list_files" => list_files(sources, arguments),
+        "outline" => outline(sources, arguments),
         "ripgrep" => search(sources, arguments),
         "references" => references(sources, arguments),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
@@ -78,31 +82,27 @@ pub(crate) fn dispatch(
 // {impl}`requirements.authoring.delivered_inputs`
 // {impl}`requirements.authoring.read_denial`
 fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
-    let selector = if args.contains_key("file") {
+    let selector = if args.contains_key("item") {
+        check_keys(args, &["file", "item"])?;
+        InputSelector::Outline {
+            file: string(args, "file")?.to_owned(),
+            item: string(args, "item")?.to_owned(),
+        }
+    } else if args.contains_key("file") {
         check_keys(args, &["file", "line_start", "line_end"])?;
-        let file = string(args, "file")?.to_owned();
-        sources.access.file(&sources.root, Path::new(&file))?;
+        let file = string(args, "file")?;
         let line_start = integer(args, "line_start")?;
         let line_end = if args.contains_key("line_end") {
-            integer(args, "line_end")?
+            Some(integer(args, "line_end")?)
         } else {
-            read_project_file(&sources.root, &file)
-                .map_err(io::Error::other)?
-                .1
-                .lines()
-                .count()
+            None
         };
-        InputSelector::FileRange {
-            file,
-            line_start,
-            line_end,
-        }
-    } else if args.contains_key("rust_file") {
-        check_keys(args, &["rust_file", "rust_item"])?;
-        InputSelector::RustItem {
-            rust_file: string(args, "rust_file")?.to_owned(),
-            rust_item: string(args, "rust_item")?.to_owned(),
-        }
+        let inputs = sources.read_lines(file, line_start, line_end, false)?;
+        let definitions = sources.additional_definitions(&inputs)?;
+        let result = json!({ "inputs": inputs, "definitions": definitions });
+        let mut inputs = inputs;
+        inputs.extend(definitions);
+        return Ok(ToolDelivery { result, inputs });
     } else if args.contains_key("requirements") {
         check_keys(args, &["requirements"])?;
         InputSelector::Requirements {
@@ -120,6 +120,43 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<To
     let mut inputs = vec![input];
     inputs.extend(definitions);
     Ok(ToolDelivery { result, inputs })
+}
+
+// {impl}`requirements.authoring.outline_tool`
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.references.outlines`
+fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+    check_keys(args, &["file"])?;
+    let file = string(args, "file")?;
+    let parsed = sources.parse_file(file)?;
+    let parsed = parsed
+        .as_ref()
+        .as_ref()
+        .map_err(|error| io::Error::other(error.clone()))?;
+    Ok(ToolDelivery {
+        result: Value::Array(outline_entries(&parsed.outline, 0)),
+        inputs: Vec::new(),
+    })
+}
+
+/// The outline entries for a node's children, nested by ancestry.
+// {impl}`requirements.authoring.outline_tool`
+fn outline_entries(outline: &crate::outline::Outline, parent: usize) -> Vec<Value> {
+    outline.nodes[parent]
+        .children
+        .iter()
+        .map(|child| {
+            let node = &outline.nodes[*child];
+            json!({
+                "item": node.selector,
+                "kind": node.kind,
+                "name": node.display_name(),
+                "line_start": node.line_start,
+                "line_end": node.line_end,
+                "children": outline_entries(outline, *child),
+            })
+        })
+        .collect()
 }
 
 // {impl}`requirements.authoring.file_discovery`
@@ -236,28 +273,16 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             // Discovery omits excluded sources rather than aborting.
             && sources.access.file(&sources.root, &reference.file).is_ok()
     });
-    let mut items: BTreeMap<PathBuf, Vec<crate::rust_items::RustItem>> = BTreeMap::new();
     let mut sites = Vec::new();
     for reference in &found {
         let file = relative_path(&sources.root, &reference.file)?;
-        let rust_item = if reference
-            .file
-            .extension()
-            .is_some_and(|extension| extension == "rs")
-        {
-            let parsed = items.entry(reference.file.clone()).or_insert_with(|| {
-                fs::read_to_string(&reference.file)
-                    .ok()
-                    .and_then(|source| crate::rust_items::parse_items(&source).ok())
-                    .unwrap_or_default()
-            });
-            parsed
-                .iter()
-                .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)
-                .min_by_key(|item| item.line_end - item.line_start)
-                .map(|item| item.selector.clone())
-        } else {
-            None
+        let parsed = sources.outlines.parse(&sources.root, &file);
+        let item = match parsed.as_ref() {
+            Ok(parsed) if parsed.outline.profile.language.is_some() => {
+                let index = parsed.outline.owner_at_line(reference.line);
+                Some(parsed.outline.nodes[index].selector.clone())
+            }
+            _ => None,
         };
         sites.push((
             reference.name.clone(),
@@ -268,7 +293,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
                 "role": reference.kind.label(),
                 "file": relative_path(&sources.root, &reference.file)?,
                 "line": reference.line,
-                "rust_item": rust_item,
+                "item": item,
             }),
         ));
     }
@@ -294,7 +319,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
                     "role": anchor.kind.label(),
                     "file": file,
                     "line": null,
-                    "rust_item": null,
+                    "item": (!anchor.item.is_empty()).then_some(&anchor.item),
                 }),
             ));
         }
@@ -416,8 +441,11 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
     let matches = matches.into_inner().expect("search results lock");
     let mut inputs = Vec::new();
     for (file, mut lines) in matches {
-        let (_, source) = read_project_file(&sources.root, &file).map_err(io::Error::other)?;
-        let count = source.lines().count();
+        let parsed = sources.parse_file(&file)?;
+        let count = match parsed.as_ref() {
+            Ok(parsed) => parsed.source.lines().count(),
+            Err(error) => return Err(io::Error::other(error.clone())),
+        };
         lines.sort_unstable();
         lines.dedup();
         let mut windows: Vec<(usize, usize)> = Vec::new();
@@ -438,11 +466,11 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
             }
         }
         for (line_start, line_end) in windows {
-            inputs.push(sources.read_selector(&InputSelector::FileRange {
-                file: file.clone(),
-                line_start,
-                line_end,
-            })?);
+            for input in sources.read_lines(&file, line_start, Some(line_end), true)? {
+                if !inputs.contains(&input) {
+                    inputs.push(input);
+                }
+            }
         }
     }
     let definitions = sources.additional_definitions(&inputs)?;
@@ -547,23 +575,50 @@ mod tests {
         let read = dispatch(
             &sources,
             "habeas",
-            &json!({"rust_file":"src/lib.rs","rust_item":"fn[work]"}),
+            &json!({"file":"src/lib.rs","item":"fn[work]"}),
         )
         .unwrap();
         assert_eq!(read.inputs.len(), 2);
+        assert_eq!(read.result["input"]["item"], "fn[work]");
+        assert_eq!(read.result["input"]["kind"], "fn");
+        assert_eq!(read.result["input"]["line_start"], 1);
+        assert_eq!(read.result["input"]["line_end"], 2);
+        assert_eq!(read.result["input"]["text"][1], "fn work() {}");
         assert_eq!(read.result["definitions"][0]["definition"], "terms.value");
         assert!(sources.recorded_inputs().is_empty());
         sources.record_inputs(&read.inputs);
         sources.record_inputs(&read.inputs);
         assert_eq!(sources.recorded_inputs().len(), 2);
+        // Recorded outline inputs carry only the file, selector, and hash.
+        assert_eq!(
+            sources.recorded_inputs()[0],
+            crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[work]").unwrap()
+        );
         let eof = dispatch(
             &sources,
             "habeas",
             &json!({"file":"src/lib.rs","line_start":2}),
         )
         .unwrap();
-        assert_eq!(eof.result["input"]["line_end"], 2);
-        assert_eq!(eof.result["input"]["text"], json!(["fn work() {}"]));
+        assert_eq!(eof.result["inputs"].as_array().unwrap().len(), 1);
+        assert_eq!(eof.result["inputs"][0]["item"], "fn[work]");
+        assert_eq!(eof.result["inputs"][0]["line_end"], 2);
+        assert!(
+            dispatch(
+                &sources,
+                "habeas",
+                &json!({"file":"src/lib.rs","line_start":3})
+            )
+            .is_err()
+        );
+        assert!(
+            dispatch(
+                &sources,
+                "habeas",
+                &json!({"file":"src/lib.rs","item":"fn[missing]"})
+            )
+            .is_err()
+        );
         assert!(
             dispatch(
                 &sources,
@@ -578,10 +633,11 @@ mod tests {
             json!({}),
             json!({"file":"src/lib.rs"}),
             json!({"line_start":1}),
-            json!({"rust_file":"src/lib.rs"}),
-            json!({"rust_item":"fn[work]"}),
+            json!({"rust_file":"src/lib.rs","rust_item":"fn[work]"}),
+            json!({"item":"fn[work]"}),
             json!({"file":"src/lib.rs","line_start":1,"definition":"terms.value"}),
-            json!({"rust_file":"src/lib.rs","rust_item":"fn[work]","requirements":"requirements.*"}),
+            json!({"file":"src/lib.rs","item":"fn[work]","line_start":1}),
+            json!({"file":"src/lib.rs","item":"fn[work]","requirements":"requirements.*"}),
             json!({"requirements":"requirements.*","definition":"terms.value"}),
             json!({"definition":"terms.value","extra":true}),
         ] {
@@ -624,20 +680,34 @@ mod tests {
         git(root.path(), &["add", "--force", "."]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"needle"})).unwrap();
-        assert_eq!(search.inputs.len(), 1);
-        assert_eq!(search.inputs[0]["file"], "sample.txt");
-        assert_eq!(search.inputs[0]["line_start"], 1);
-        assert_eq!(search.inputs[0]["line_end"], 11);
-        assert_eq!(search.inputs[0]["text"], json!(&lines[..11]));
+        // The merged window covers lines 1-11, one plain-text `line` node per
+        // line; the two identical needle lines are one interchangeable node.
+        assert_eq!(search.inputs.len(), 10, "{:#?}", search.inputs);
+        assert!(
+            search
+                .inputs
+                .iter()
+                .all(|input| input["file"] == "sample.txt"
+                    && input["kind"] == "line"
+                    && input["line_start"] == input["line_end"])
+        );
+        let texts = search
+            .inputs
+            .iter()
+            .map(|input| input["text"][0].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let mut expected = lines[..11].iter().map(String::as_str).collect::<Vec<_>>();
+        expected.remove(5);
+        assert_eq!(texts, expected);
         let exact = dispatch(
             &sources,
             "ripgrep",
             &json!({"pattern":"needle","path":"sample.txt","context":0}),
         )
         .unwrap();
-        assert_eq!(exact.inputs.len(), 2);
+        assert_eq!(exact.inputs.len(), 1);
         assert_eq!(exact.inputs[0]["line_start"], 2);
-        assert_eq!(exact.inputs[0]["line_end"], 2);
+        assert_eq!(exact.inputs[0]["text"], json!(["needle"]));
         let absent = dispatch(&sources, "ripgrep", &json!({"pattern":"NEEDLE"})).unwrap();
         assert_eq!(absent.result, json!({"inputs":[],"definitions":[]}));
         assert!(dispatch(&sources, "ripgrep", &json!({"pattern":"["})).is_err());
@@ -722,7 +792,7 @@ mod tests {
             dispatch(
                 &sources,
                 "habeas",
-                &json!({"rust_file":"evidence/generated.rs", "rust_item":"fn[generated]"})
+                &json!({"file":"evidence/generated.rs", "item":"fn[generated]"})
             )
             .err()
             .unwrap()
@@ -805,7 +875,7 @@ mod tests {
             for arguments in [
                 json!({"file":path, "line_start":1}),
                 json!({"file":path, "line_start":1, "line_end":1}),
-                json!({"rust_file":path, "rust_item":"fn[outside_needle]"}),
+                json!({"file":path, "item":"fn[outside_needle]"}),
             ] {
                 assert!(dispatch(&sources, "habeas", &arguments).is_err());
             }
@@ -858,7 +928,7 @@ mod tests {
             ("tracked-dir/file.txt", "needle dirty"),
         ] {
             let read = dispatch(&sources, "habeas", &json!({"file":path, "line_start":1})).unwrap();
-            assert_eq!(read.result["input"]["text"], json!([text]));
+            assert_eq!(read.result["inputs"][0]["text"], json!([text]));
         }
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"needle"})).unwrap();
         assert_eq!(
@@ -872,11 +942,16 @@ mod tests {
         for arguments in [
             json!({"file":"untracked.rs", "line_start":1}),
             json!({"file":"untracked.rs", "line_start":1, "line_end":1}),
-            json!({"rust_file":"untracked.rs", "rust_item":"fn[needle]"}),
+            json!({"file":"untracked.rs", "item":"fn[needle]"}),
         ] {
             let error = dispatch(&sources, "habeas", &arguments).err().unwrap();
             assert!(error.to_string().contains("git add"), "{error}");
         }
+        let error = dispatch(&sources, "outline", &json!({"file":"untracked.rs"}))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("git add"), "{error}");
         assert!(dispatch(&sources, "list_files", &json!({"path":"untracked-dir"})).is_err());
         assert!(
             dispatch(
@@ -925,7 +1000,10 @@ mod tests {
             &json!({"file":"tracked-alias.txt", "line_start":1}),
         )
         .unwrap();
-        assert_eq!(allowed.result["input"]["text"], json!(["needle allowed"]));
+        assert_eq!(
+            allowed.result["inputs"][0]["text"],
+            json!(["needle allowed"])
+        );
         for alias in ["untracked-target.txt", "untracked-alias.txt"] {
             assert!(
                 dispatch(&sources, "habeas", &json!({"file":alias, "line_start":1}))
@@ -1016,7 +1094,7 @@ mod tests {
             &json!({"file":external.path().join("outside.txt"), "line_start":1}),
         )
         .unwrap();
-        assert_eq!(read.result["input"]["text"], json!(["needle external"]));
+        assert_eq!(read.result["inputs"][0]["text"], json!(["needle external"]));
         for (name, args) in [
             (
                 "habeas",
@@ -1083,7 +1161,7 @@ mod tests {
         );
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap();
         assert_eq!(search.inputs.len(), 1);
-        let read = dispatch(&sources, "habeas", &json!({"rust_file":"target/debug/build/fixture-hash/out/generated.rs", "rust_item":"fn[generated_needle]"})).unwrap();
+        let read = dispatch(&sources, "habeas", &json!({"file":"target/debug/build/fixture-hash/out/generated.rs", "item":"fn[generated_needle]"})).unwrap();
         assert_eq!(
             read.result["input"]["text"],
             json!(["pub fn generated_needle() {}"])
@@ -1216,12 +1294,18 @@ mod tests {
             &json!({"selection": "requirements.ready"}),
         )
         .unwrap();
+        let mut result = ready.result.clone();
+        let markdown = result["sites"][0]["item"].take();
+        assert!(
+            markdown.as_str().unwrap().starts_with("section@"),
+            "{markdown}"
+        );
         assert_eq!(
-            ready.result,
+            result,
             json!({"definitions": [{"name": "requirements.ready", "kind": "requirement"}], "sites": [
-                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 10, "rust_item": null},
-                {"name": "requirements.ready", "role": "impl", "file": "src/lib.rs", "line": 1, "rust_item": "fn[work]"},
-                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "line": 6, "rust_item": "fn[check]"},
+                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 10, "item": null},
+                {"name": "requirements.ready", "role": "impl", "file": "src/lib.rs", "line": 1, "item": "fn[work]"},
+                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "line": 6, "item": "fn[check]"},
             ]})
         );
         assert!(ready.inputs.is_empty());
@@ -1236,7 +1320,7 @@ mod tests {
         assert_eq!(flattened.result["definitions"].as_array().unwrap().len(), 3);
         assert_eq!(sites.len(), 4);
         assert_eq!(sites[0]["name"], "requirements.other");
-        assert_eq!(sites[0]["rust_item"], "fn[work]");
+        assert_eq!(sites[0]["item"], "fn[work]");
         assert!(flattened.inputs.is_empty());
 
         for selection in ["requirements.missing", "bad name", ""] {
@@ -1288,7 +1372,15 @@ mod tests {
         let mut sorted = files.clone();
         sorted.sort();
         assert_eq!(files, sorted);
-        assert_eq!(files.len(), 80);
+        // Both comment matches in each file belong to its one function.
+        assert_eq!(files.len(), 40);
+        assert!(
+            first.result["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|input| input["item"] == "fn[a]" && input["line_end"] == 3)
+        );
         for _ in 0..5 {
             let again = dispatch(
                 &sources,
@@ -1304,7 +1396,7 @@ mod tests {
     // {test}`requirements.authoring.reference_index`
     // {test}`requirements.references.anchors`
     #[test]
-    fn references_report_anchors_as_whole_file_sites() {
+    fn references_report_anchors_as_file_or_node_sites() {
         let root = project();
         fs::create_dir_all(root.path().join("skills")).unwrap();
         fs::write(root.path().join("skills/ready.md"), "# Skill\n").unwrap();
@@ -1313,7 +1405,7 @@ mod tests {
         fs::write(
             root.path().join("md/requirements.md"),
             format!(
-                ":::{{req}} ready\n:impl: skills/ready.md\nThe project MUST be ready.\n:::\n\n:::{{example}} case\n:test: skills/ready.md\n:test: private/notes.md\nA ready case. {}\n:::\n",
+                ":::{{req}} ready\n:impl: skills/ready.md#section[Skill]\nThe project MUST be ready.\n:::\n\n:::{{example}} case\n:test: skills/ready.md\n:test: private/notes.md\nA ready case. {}\n:::\n",
                 role("cite", "requirements.ready")
             ),
         )
@@ -1330,14 +1422,168 @@ mod tests {
             &json!({"selection": "requirements.*"}),
         )
         .unwrap();
+        let mut sites = result.result["sites"].clone();
+        assert!(
+            sites[1]["item"]
+                .take()
+                .as_str()
+                .unwrap()
+                .starts_with("section@")
+        );
         assert_eq!(
-            result.result["sites"],
+            sites,
             json!([
-                {"name": "requirements.case", "role": "test", "file": "skills/ready.md", "line": null, "rust_item": null},
-                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 9, "rust_item": null},
-                {"name": "requirements.ready", "role": "impl", "file": "skills/ready.md", "line": null, "rust_item": null},
+                {"name": "requirements.case", "role": "test", "file": "skills/ready.md", "line": null, "item": null},
+                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 9, "item": null},
+                {"name": "requirements.ready", "role": "impl", "file": "skills/ready.md", "line": null, "item": "section[Skill]"},
             ])
         );
         assert!(result.inputs.is_empty());
+    }
+
+    // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.references.outlines`
+    #[test]
+    fn outline_lists_nested_nodes_without_text_or_inputs() {
+        let root = project();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "/// Docs.\nstruct Thing;\n\nimpl Thing {\n    fn run(&self) {}\n}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("notes.txt"), "alpha\n\nbeta\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let outline = dispatch(&sources, "outline", &json!({"file":"src/lib.rs"})).unwrap();
+        assert!(outline.inputs.is_empty());
+        assert_eq!(
+            outline.result,
+            json!([
+                {"item": "struct[Thing]", "kind": "struct", "name": "Thing", "line_start": 1, "line_end": 2, "children": []},
+                {"item": "impl[Thing]", "kind": "impl", "name": "Thing", "line_start": 4, "line_end": 6, "children": [
+                    {"item": "impl[Thing]/fn[run]", "kind": "fn", "name": "run", "line_start": 5, "line_end": 5, "children": []},
+                ]},
+            ])
+        );
+        assert!(!outline.result.to_string().contains("Docs"));
+        let plain = dispatch(&sources, "outline", &json!({"file":"notes.txt"})).unwrap();
+        let entries = plain.result.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| entry["kind"] == "line"
+            && entry["name"].is_null()
+            && entry["item"].as_str().unwrap().starts_with("line@")));
+        assert_eq!(entries[1]["line_start"], 3);
+        assert!(dispatch(&sources, "outline", &json!({"file":"missing.rs"})).is_err());
+        assert!(dispatch(&sources, "outline", &json!({})).is_err());
+
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['notes.txt']\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let error = dispatch(&sources, "outline", &json!({"file":"notes.txt"}))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.ci.outline_inputs`
+    #[test]
+    fn line_range_reads_record_the_innermost_covering_nodes() {
+        let root = project();
+        let source = "use std::fmt;\n\nfn first() {}\n\nmod inner {\n    fn second() {\n        let x = 1;\n    }\n}\n";
+        fs::write(root.path().join("src/lib.rs"), source).unwrap();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        // Blank lines between nodes do not select their common ancestor.
+        let read = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":3,"line_end":7}),
+        )
+        .unwrap();
+        let items = read.result["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| {
+                (
+                    input["item"].as_str().unwrap(),
+                    input["line_start"].as_u64().unwrap(),
+                    input["line_end"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            items,
+            [("fn[first]", 3, 3), ("mod[inner]", 5, 9)],
+            "line 5 is mod inner's own line, so the module is selected"
+        );
+        let nested = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":7,"line_end":7}),
+        )
+        .unwrap();
+        assert_eq!(nested.result["inputs"][0]["item"], "mod[inner]/fn[second]");
+        assert_eq!(
+            nested.result["inputs"][0]["text"],
+            json!(["    fn second() {", "        let x = 1;", "    }"])
+        );
+        sources.record_inputs(&nested.inputs);
+        assert_eq!(
+            sources.recorded_inputs(),
+            [
+                crate::inputs::outline_input(root.path(), "src/lib.rs", "mod[inner]/fn[second]")
+                    .unwrap()
+            ]
+        );
+        assert!(sources.recorded_inputs()[0].get("line_start").is_none());
+        assert!(sources.recorded_inputs()[0].get("text").is_none());
+        let whole = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":1}),
+        )
+        .unwrap();
+        assert!(
+            whole.result["inputs"][0]["item"]
+                .as_str()
+                .unwrap()
+                .starts_with("use@")
+        );
+        assert_eq!(whole.result["inputs"].as_array().unwrap().len(), 3);
+    }
+
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn search_returns_innermost_nodes_and_comment_owners() {
+        let root = project();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "fn outer() {\n    fn inner() {\n        needle();\n    }\n}\n\n// needle in a comment\nfn after() {}\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle","path":"src/lib.rs","context":0}),
+        )
+        .unwrap();
+        let items = search
+            .inputs
+            .iter()
+            .map(|input| input["item"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(items, ["fn[outer]/fn[inner]", "fn[after]"]);
+        assert_eq!(search.inputs[1]["line_start"], 7);
+        assert_eq!(
+            search.inputs[1]["text"],
+            json!(["// needle in a comment", "fn after() {}"])
+        );
+        assert!(search.result["inputs"][0]["hash"].is_string());
     }
 }

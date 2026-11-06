@@ -132,10 +132,8 @@ impl UsageLog {
     // {impl}`requirements.authoring.usage_inputs`
     pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {
         for input in inputs {
-            let kind = if input.get("file").is_some() {
-                "file_range"
-            } else if input.get("rust_file").is_some() {
-                "rust_item"
+            let kind = if input.get("item").is_some() {
+                "outline"
             } else if input.get("requirements").is_some() {
                 "requirements"
             } else {
@@ -338,7 +336,7 @@ impl TokenCounts {
 // {impl}`requirements.authoring.usage_storage`
 fn tool_name(name: &str) -> &str {
     match name {
-        "habeas" | "ripgrep" | "list_files" | "references" | "submit_judgment" => name,
+        "habeas" | "ripgrep" | "list_files" | "outline" | "references" | "submit_judgment" => name,
         _ => "unknown",
     }
 }
@@ -370,7 +368,8 @@ mod tests {
         let mut log =
             UsageLog::start(state.path(), Path::new("/project"), "requirements.case").unwrap();
         let file = json!({
-            "file": "private-source-file.rs", "line_start": 1, "line_end": 2,
+            "file": "private-source-file.rs", "item": "fn[private_item]", "hash": "0".repeat(64),
+            "kind": "fn", "line_start": 1, "line_end": 2,
             "text": ["λ", "DO_NOT_LOG_SOURCE"]
         });
         let requirements = json!({
@@ -382,6 +381,7 @@ mod tests {
         log.prepared("habeas", &[file]);
         log.save().unwrap();
         let prepared = persisted(&log);
+        assert_eq!(prepared["inputs"][0]["kind"], "outline");
         assert_eq!(prepared["inputs"][0]["bytes"], "λ\nDO_NOT_LOG_SOURCE".len());
         assert_eq!(prepared["inputs"][0]["lines"], 2);
         assert_eq!(prepared["inputs"][1]["components"], 2);
@@ -412,6 +412,7 @@ mod tests {
             "DO_NOT_LOG_SOURCE",
             "PRIVATE_REQUIREMENT_TEXT",
             "private-source-file.rs",
+            "private_item",
             "private.match",
         ] {
             assert!(
@@ -562,14 +563,16 @@ mod tests {
         let mut log =
             UsageLog::start(state.path(), Path::new("/project"), "requirements.case").unwrap();
         log.tool("list_files", false);
+        log.tool("outline", false);
         log.tool("habeas", true);
         log.skipped_tool("ripgrep");
         log.tool("MODEL_TEXT_SHOULD_NOT_APPEAR", true);
         log.skipped_tool("OTHER_MODEL_TEXT");
         log.finish("completed").unwrap();
         let value = persisted(&log);
-        assert_eq!(value["tool_call_count"], 5);
+        assert_eq!(value["tool_call_count"], 6);
         assert_eq!(value["tool_calls"]["list_files"], 1);
+        assert_eq!(value["tool_calls"]["outline"], 1);
         assert_eq!(value["tool_failures"]["habeas"], 1);
         assert_eq!(value["tool_skipped"]["ripgrep"], 1);
         assert_eq!(value["tool_calls"]["unknown"], 2);

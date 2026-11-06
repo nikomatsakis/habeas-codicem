@@ -243,9 +243,9 @@ fn line_queries_find_innermost_and_declared_nodes() {
     assert_eq!(names(outline.innermost_at_line(2)), [""]);
     assert_eq!(names(outline.innermost_at_line(3)), ["fn[a]", "fn[b]"]);
     assert_eq!(names(outline.innermost_at_line(5)), ["fn[outer]"]);
-    assert_eq!(names(outline.innermost_in_range(4, 7)), ["fn[outer]"]);
+    assert_eq!(names(outline.nodes_for_lines(4..=7, false)), ["fn[outer]"]);
     assert_eq!(
-        names(outline.innermost_in_range(5, 6)),
+        names(outline.nodes_for_lines(5..=6, false)),
         ["fn[outer]"],
         "an ancestor absorbs its selected descendants"
     );
@@ -406,5 +406,66 @@ fn toml_and_yaml_profiles_name_keys() {
             "pair[\"b\"]/pair[e]/item@/pair[f] 6-6",
             "pair[\"b\"]/pair[e]/item@ 7-7",
         ]
+    );
+}
+
+// {test}`requirements.references.rust_item_selectors`
+// {test}`requirements.references.selector_nested`
+// {test}`requirements.references.selector_impl_and_trait`
+// {test}`requirements.references.selector_inline_and_foreign`
+// {test}`requirements.references.selector_duplicate_names`
+// {test}`requirements.references.selector_use`
+#[test]
+fn selectors_name_syntactic_ancestry_and_duplicates() {
+    let source = r#"
+use alpha::A;
+use beta::B;
+mod local { fn run() {} }
+mod external;
+struct Thing;
+impl Thing { fn run() {} }
+impl Trait for Thing { fn run() {} }
+impl [u8; 4] { fn edge() {} }
+trait Trait { fn read(&self); }
+extern "C" { fn puts(); }
+fn outer() { fn inner() {} }
+#[cfg(a)] fn repeated() {}
+#[cfg(b)] fn repeated() {}
+"#;
+    let selectors = selectors(&outline("lib.rs", source));
+    assert!(selectors[0].starts_with("use@") && selectors[1].starts_with("use@"));
+    assert_ne!(selectors[0], selectors[1]);
+    for selector in [
+        "mod[local]/fn[run]",
+        "mod[external]",
+        "struct[Thing]",
+        "impl[Thing]/fn[run]",
+        "impl[Thing/Trait]/fn[run]",
+        "impl[%5Bu8;%204%5D]/fn[edge]",
+        "trait[Trait]/fn[read]",
+        "extern[C]/fn[puts]",
+        "fn[outer]/fn[inner]",
+        "fn[repeated]#1",
+        "fn[repeated]#2",
+    ] {
+        assert!(
+            selectors.contains(&selector.to_owned()),
+            "{selector}: {selectors:?}"
+        );
+    }
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn markdown_hashes_include_paragraph_text_between_punctuation_tokens() {
+    let hash = |source: &str| outline("a.md", source).nodes[1].structural_hash.clone();
+    assert_ne!(
+        hash("# Skill\nUse ready.\n"),
+        hash("# Skill\nUse ready now.\n")
+    );
+    assert_eq!(
+        hash("# Skill\nUse ready.\n"),
+        hash("# Skill\nUse   ready.\n"),
+        "whitespace is not hashed"
     );
 }

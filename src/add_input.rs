@@ -7,8 +7,7 @@ use serde_json::{Value, json};
 
 use crate::DefinitionKind;
 use crate::evidence::{Declaration, inspect_repository};
-use crate::inputs::{InputSelector, read_project_file};
-use crate::rust_items::parse_items;
+use crate::inputs::{InputSelector, OutlineCache};
 
 // {impl}`requirements.cli.add_input`
 pub enum InputTarget {
@@ -18,24 +17,24 @@ pub enum InputTarget {
 
 // {impl}`requirements.cli.add_input`
 pub enum InputMode {
-    FileRange(String),
-    RustItemsAtLine(String),
+    /// `<file>:<line>`: every outline node declared on that line.
+    ItemsAtLine(String),
     Requirements(String),
 }
 
 // {impl}`requirements.cli.add_input`
-// {impl}`requirements.cli.add_input_file_range`
-// {impl}`requirements.cli.add_input_rust_item`
+// {impl}`requirements.cli.add_input_item`
 // {impl}`requirements.cli.add_input_requirements`
 pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {
     let root = fs::canonicalize(root)?;
     let inspection = inspect_repository(&root)?;
     let definitions = &inspection.definitions;
-    let selectors = selectors_for_mode(&root, mode)?;
+    let outlines = OutlineCache::default();
+    let selectors = selectors_for_mode(&root, &outlines, mode)?;
     let mut inputs = Vec::new();
     for selector in selectors {
         let resolved = selector
-            .resolve(&root, definitions)
+            .resolve(&root, definitions, &outlines)
             .map_err(invalid_input)?;
         inputs.push((
             selector.clone(),
@@ -48,73 +47,60 @@ pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Resul
         InputTarget::Requirement(name) => add_definition_inputs(
             &root,
             definitions,
+            &outlines,
             &name,
             DefinitionKind::Requirement,
             inputs,
         ),
-        InputTarget::Example(name) => {
-            add_definition_inputs(&root, definitions, &name, DefinitionKind::Example, inputs)
-        }
+        InputTarget::Example(name) => add_definition_inputs(
+            &root,
+            definitions,
+            &outlines,
+            &name,
+            DefinitionKind::Example,
+            inputs,
+        ),
     }
 }
 
 // {impl}`requirements.cli.add_input`
-// {impl}`requirements.cli.add_input_file_range`
-// {impl}`requirements.cli.add_input_rust_item`
+// {impl}`requirements.cli.add_input_item`
 // {impl}`requirements.cli.add_input_requirements`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.ci.schema`
-fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {
+fn selectors_for_mode(
+    root: &Path,
+    outlines: &OutlineCache,
+    mode: InputMode,
+) -> io::Result<Vec<InputSelector>> {
     match mode {
-        InputMode::FileRange(specification) => {
-            let (file, range) = specification.rsplit_once(':').ok_or_else(|| {
-                invalid_input("file range must have the form <file>:<start>-<end>")
-            })?;
-            let (start, end) = range.split_once('-').ok_or_else(|| {
-                invalid_input("file range must have the form <file>:<start>-<end>")
-            })?;
-            let line_start = start
-                .parse::<usize>()
-                .map_err(|_| invalid_input("file range start must be a positive integer"))?;
-            let line_end = end
-                .parse::<usize>()
-                .map_err(|_| invalid_input("file range end must be a positive integer"))?;
-            Ok(vec![InputSelector::FileRange {
-                file: file.to_owned(),
-                line_start,
-                line_end,
-            }])
-        }
-        InputMode::RustItemsAtLine(specification) => {
-            let (rust_file, line) = specification.rsplit_once(':').ok_or_else(|| {
-                invalid_input("Rust item location must have the form <rust-file>:<line>")
-            })?;
+        InputMode::ItemsAtLine(specification) => {
+            let (file, line) = specification
+                .rsplit_once(':')
+                .ok_or_else(|| invalid_input("item location must have the form <file>:<line>"))?;
             let line = line
                 .parse::<usize>()
-                .map_err(|_| invalid_input("Rust item line must be a positive integer"))?;
-            if !rust_file.ends_with(".rs") {
-                return Err(invalid_input("Rust item location requires a .rs file"));
-            }
-            let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;
-            let rust_file = path
+                .map_err(|_| invalid_input("item line must be a positive integer"))?;
+            let parsed = outlines.parse(root, file);
+            let parsed = parsed.as_ref().as_ref().map_err(invalid_input)?;
+            let file = parsed
+                .path
                 .strip_prefix(root)
-                .unwrap_or(&path)
+                .unwrap_or(&parsed.path)
                 .to_str()
-                .ok_or_else(|| invalid_input("Rust file path must be UTF-8"))?;
-            let items = parse_items(&source).map_err(|error| {
-                invalid_input(format!("{rust_file}: cannot parse Rust source: {error}"))
-            })?;
-            let selected = items
+                .ok_or_else(|| invalid_input("file path must be UTF-8"))?;
+            let selected = parsed
+                .outline
+                .declared_on_line(line)
                 .into_iter()
-                .filter(|item| item.declaration_line == line)
-                .map(|item| InputSelector::RustItem {
-                    rust_file: rust_file.to_owned(),
-                    rust_item: item.selector,
+                .map(|index| InputSelector::Outline {
+                    file: file.to_owned(),
+                    item: parsed.outline.nodes[index].selector.clone(),
                 })
                 .collect::<Vec<_>>();
             if selected.is_empty() {
                 return Err(invalid_input(format!(
-                    "{rust_file}:{line}: no Rust item is declared on this line"
+                    "{file}:{line}: no outline node is declared on this line"
                 )));
             }
             Ok(selected)
@@ -130,6 +116,7 @@ fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelec
 fn add_definition_inputs(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     name: &str,
     kind: DefinitionKind,
     inputs: Vec<(InputSelector, Value, Vec<String>)>,
@@ -159,6 +146,7 @@ fn add_definition_inputs(
         inputs,
         root,
         definitions,
+        outlines,
         Some(&definition.text),
     )?;
     if output.1 {
@@ -175,12 +163,13 @@ fn add_definition_inputs(
 // {impl}`requirements.definitions.capture`
 // {impl}`requirements.cli.add_input_requirements`
 // {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.cli.add_input_file_range`
+// {impl}`requirements.cli.add_input_item`
 fn update_inputs(
     record: &mut Value,
     inputs: Vec<(InputSelector, Value, Vec<String>)>,
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     subject: Option<&str>,
 ) -> io::Result<(String, bool)> {
     let Some(object) = record.as_object_mut() else {
@@ -214,8 +203,8 @@ fn update_inputs(
         }
         output.push('\n');
     }
-    let required =
-        crate::terms::dependencies(definitions, object, subject).map_err(invalid_input)?;
+    let required = crate::terms::dependencies(root, definitions, outlines, object, subject)
+        .map_err(invalid_input)?;
     let existing = object
         .get_mut("inputs")
         .and_then(Value::as_array_mut)
@@ -224,7 +213,9 @@ fn update_inputs(
         let selector = InputSelector::Definition {
             definition: definition.clone(),
         };
-        let resolved = selector.resolve(root, definitions).map_err(invalid_input)?;
+        let resolved = selector
+            .resolve(root, definitions, outlines)
+            .map_err(invalid_input)?;
         let input = selector.to_input(&resolved);
         let positions: Vec<_> = existing
             .iter()

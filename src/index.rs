@@ -9,7 +9,7 @@ use mdbook_preprocessor::config::Config;
 use serde_json::Value;
 
 use crate::evidence::{Declaration, SourceReference, inspect_repository};
-use crate::inputs::{InputSelector, SourceRange};
+use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, SourceRange};
 use crate::markdown::render_evidence_table;
 use crate::{
     Definition, DefinitionKind, EvidenceReport, ReferenceKind, chapter_href, colon_fence,
@@ -39,6 +39,8 @@ pub(crate) struct RenderSources<'a> {
     /// Current `{impl}`, `{cite}`, and `{test}` references in project sources.
     pub(crate) references: &'a [SourceReference],
     pub(crate) source_links: Option<&'a SourceLinks>,
+    /// Parsed outlines, cached while rendering.
+    pub(crate) outlines: &'a OutlineCache,
 }
 
 impl SourceLinks {
@@ -340,11 +342,13 @@ impl DetailPlan {
         let source_links = SourceLinks::from_config(&config)?;
         let inspection = inspect_repository(root)?;
         let report = &inspection.report;
+        let outlines = OutlineCache::default();
         let sources = RenderSources {
             root,
             definitions: &inspection.definitions,
             references: &inspection.references,
             source_links: source_links.as_ref(),
+            outlines: &outlines,
         };
         let mut rows = Vec::new();
         let mut pages = BTreeMap::new();
@@ -553,8 +557,8 @@ impl InputGroup {
 struct DefinitionEdges {
     /// `{impl}` and `{test}` reference sites as canonical file and line.
     sites: Vec<(ReferenceKind, PathBuf, usize)>,
-    /// Anchored files as canonical paths.
-    anchors: Vec<(ReferenceKind, PathBuf)>,
+    /// Anchored nodes as canonical paths and current line ranges.
+    anchors: Vec<(ReferenceKind, PathBuf, usize, usize)>,
     /// Definitions the subject cites with `{cite}`.
     cited: BTreeSet<String>,
 }
@@ -574,8 +578,13 @@ impl DefinitionEdges {
         }
         if let Some(declaration) = sources.definitions.get(name) {
             for anchor in &declaration.anchors {
-                if let Ok((path, _)) = anchor.complete_file(sources.root) {
-                    edges.anchors.push((anchor.kind, path));
+                if let Ok(target) = anchor.resolve(sources.root, sources.outlines) {
+                    edges.anchors.push((
+                        anchor.kind,
+                        target.path,
+                        target.line_start,
+                        target.line_end,
+                    ));
                 }
             }
             edges.cited = reference_roles(&declaration.text, true)
@@ -622,9 +631,15 @@ impl DefinitionEdges {
                         .iter()
                         .any(|(path, start, end)| path == file && start <= line && line <= end)
             });
-            let anchored = self.anchors.iter().any(|(anchor_kind, file)| {
-                *anchor_kind == kind && ranges.iter().any(|(path, _, _)| path == file)
-            });
+            let anchored =
+                self.anchors
+                    .iter()
+                    .any(|(anchor_kind, file, anchor_start, anchor_end)| {
+                        *anchor_kind == kind
+                            && ranges.iter().any(|(path, start, end)| {
+                                path == file && start <= anchor_end && anchor_start <= end
+                            })
+                    });
             if site || anchored {
                 return group;
             }
@@ -744,40 +759,39 @@ fn render_detail_sections(
     content
 }
 
-/// An input's selector and the source ranges it currently resolves to.
+/// An input's selector and what it currently resolves to.
 // {impl}`requirements.index.detail_format`
 struct InputLocation {
     selector: Option<InputSelector>,
+    resolved: Option<Result<ResolvedInput, String>>,
     ranges: Option<Result<Vec<SourceRange>, String>>,
 }
 
 impl InputLocation {
     // {impl}`requirements.index.detail_format`
     // {impl}`requirements.definitions.inputs`
+    // {impl}`requirements.ci.outline_inputs`
     fn resolve(input: &Value, sources: &RenderSources<'_>) -> Self {
         let selector = InputSelector::from_input(input);
-        let ranges = selector.as_ref().map(|selector| match selector {
-            InputSelector::FileRange {
-                file,
-                line_start,
-                line_end,
-            } if *line_start > 0 && *line_end >= *line_start => Ok(vec![SourceRange {
-                file: file.clone(),
-                line_start: *line_start,
-                line_end: *line_end,
-                name: None,
-            }]),
-            _ => selector
-                .resolve(sources.root, sources.definitions)
-                .map(|resolved| resolved.ranges),
+        let resolved = selector
+            .as_ref()
+            .map(|selector| selector.resolve(sources.root, sources.definitions, sources.outlines));
+        let ranges = resolved.as_ref().map(|resolved| match resolved {
+            Ok(resolved) => Ok(resolved.ranges.clone()),
+            Err(error) => Err(error.clone()),
         });
-        Self { selector, ranges }
+        Self {
+            selector,
+            resolved,
+            ranges,
+        }
     }
 }
 
 // {impl}`requirements.index.source_links`
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.definitions.inputs`
+// {impl}`requirements.ci.outline_inputs`
 fn render_input(
     content: &mut String,
     index: usize,
@@ -790,19 +804,10 @@ fn render_input(
     ));
     if let Some(selector) = &location.selector {
         let label = match selector {
-            InputSelector::FileRange {
-                file,
-                line_start,
-                line_end,
-            } => {
-                format!("file range {file}:{line_start}–{line_end}")
+            InputSelector::Outline { file, item } if item.is_empty() => {
+                format!("outline {file} (whole file)")
             }
-            InputSelector::RustItem {
-                rust_file,
-                rust_item,
-            } => {
-                format!("Rust item {rust_file} {rust_item}")
-            }
+            InputSelector::Outline { file, item } => format!("outline {file} {item}"),
             InputSelector::Definition { definition } => format!("definition {definition}"),
             InputSelector::Requirements { requirements } => {
                 format!("requirements selection {requirements}")
@@ -813,12 +818,36 @@ fn render_input(
         content.push_str("</code>");
     }
     content.push_str("</summary>\n\n");
-    match &location.ranges {
-        Some(Ok(ranges)) => {
-            for range in ranges {
+    match &location.resolved {
+        Some(Ok(resolved)) => {
+            if let (Some(InputSelector::Outline { file, item }), Some(node)) =
+                (&location.selector, &resolved.node)
+            {
+                content.push_str(&format!(
+                    "- File: <code>{}</code>\n- Selector: <code>{}</code>\n- Kind: <code>{}</code>\n",
+                    escape_html(file),
+                    escape_html(if item.is_empty() { "(root)" } else { item }),
+                    escape_html(node.kind)
+                ));
+            }
+            for range in &resolved.ranges {
                 render_source_location(content, range, sources.source_links);
             }
             content.push('\n');
+            if let Some(node) = &resolved.node {
+                if input.get("hash").and_then(Value::as_str) != Some(node.hash.as_str()) {
+                    content.push_str(
+                        "**The recorded hash no longer matches this source; the input is stale.**\n\n",
+                    );
+                }
+                let file = match &location.selector {
+                    Some(InputSelector::Outline { file, .. }) => Some(file.as_str()),
+                    _ => None,
+                };
+                push_code_block(content, &resolved.text.join("\n"), code_language(file));
+                content.push_str("\n</details>\n\n");
+                return;
+            }
         }
         Some(Err(error)) => {
             content.push_str(&format!("Unresolved selector: {}\n\n", escape_html(error)));
@@ -832,12 +861,10 @@ fn render_input(
         .and_then(|lines| lines.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
     {
         let file = match &location.selector {
-            Some(InputSelector::FileRange { file, .. }) => Some(file.as_str()),
-            Some(InputSelector::RustItem { rust_file, .. }) => Some(rust_file.as_str()),
             Some(InputSelector::Requirements { .. } | InputSelector::Definition { .. }) => {
                 Some("requirements.md")
             }
-            None => None,
+            _ => None,
         };
         push_code_block(content, &lines.join("\n"), code_language(file));
     } else {
@@ -1191,32 +1218,34 @@ mod tests {
             text: "Ready MUST work.\n\n## Example\n\nUse the CLI.".to_owned(),
             kind: DefinitionKind::Requirement,
         };
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::write(
+            root.join("src/main.rs"),
+            "// lead\nfn main() {\n    println!(\"ready\");\n}\n",
+        )
+        .unwrap();
+        fs::write(root.join("md/notes.md"), "```rust\nfn x() {}\n```\n").unwrap();
+        fs::write(root.join("book.toml"), "[book]\n").unwrap();
         let record = json!({
             "requirement": "Stale text.",
             "determination": true,
             "rationale": "**Checked** against the source.\n\n- First check\n- Second check",
             "inputs": [
-                {
-                    "file": "src/main.rs",
-                    "line_start": 2,
-                    "line_end": 3,
-                    "text": ["fn main() {", "    println!(\"ready\");"]
-                },
-                {
-                    "file": "md/requirements.md",
-                    "line_start": 8,
-                    "line_end": 8,
-                    "text": ["```rust"]
-                },
-                {
-                    "file": "book.toml",
-                    "line_start": 1,
-                    "line_end": 1,
-                    "text": ["[book]"]
-                }
+                crate::inputs::outline_input(root, "src/main.rs", "fn[main]").unwrap(),
+                crate::inputs::outline_input(root, "md/notes.md", "").unwrap(),
+                crate::inputs::outline_input(root, "book.toml", "").unwrap(),
             ]
         })
         .to_string();
+        // The page shows the current source, flagging a changed hash.
+        fs::write(
+            root.join("src/main.rs"),
+            "// lead\nfn main() {\n    println!(\"changed\");\n}\n",
+        )
+        .unwrap();
         let page = render_detail_page(
             "requirements.core.ready",
             Path::new("appendix/requirements-index/requirements.core.ready.md"),
@@ -1229,21 +1258,43 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
-                root: Path::new("."),
+                root,
                 definitions: &BTreeMap::new(),
                 references: &[],
                 source_links: None,
+                outlines: &crate::inputs::OutlineCache::default(),
             },
         );
         assert!(page.contains("img.shields.io/badge/evidence-Valid-237346"));
         assert!(page.contains("## Requirement\n\n> Ready MUST work.\n> \n> ## Example"));
         assert!(page.contains("## Rationale\n\n**Checked** against the source."));
         assert!(page.contains(
-            "<summary id=\"habeas-input-1\"><strong>Input 1</strong>: <code>file range src/main.rs:2–3</code></summary>"
+            "<summary id=\"habeas-input-1\"><strong>Input 1</strong>: <code>outline src/main.rs fn[main]</code></summary>"
         ));
-        assert!(page.contains("```rust,noplayground\nfn main()"));
-        assert!(page.contains("````markdown\n```rust\n````"));
-        assert!(page.contains("```ini\n[book]\n```"));
+        assert!(page.contains(
+            "- File: <code>src/main.rs</code>\n- Selector: <code>fn[main]</code>\n- Kind: <code>fn</code>\n- <code>src/main.rs:1–4</code>\n"
+        ), "{page}");
+        assert!(
+            page.contains(
+                "```rust,noplayground\n// lead\nfn main() {\n    println!(\"changed\");\n}\n```"
+            ),
+            "{page}"
+        );
+        assert_eq!(
+            page.matches("The recorded hash no longer matches").count(),
+            1,
+            "{page}"
+        );
+        assert!(
+            page.contains("<code>outline md/notes.md (whole file)</code>"),
+            "{page}"
+        );
+        assert!(page.contains("- Kind: <code>file</code>"), "{page}");
+        assert!(
+            page.contains("````markdown\n```rust\nfn x() {}\n```\n````"),
+            "{page}"
+        );
+        assert!(page.contains("```ini\n[book]\n```"), "{page}");
         assert!(!page.contains("Stale text."));
     }
 
@@ -1274,14 +1325,20 @@ mod tests {
             text: "Ready MUST work.".to_owned(),
             kind: DefinitionKind::Requirement,
         };
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(
+            temp.path().join("src/evidence.rs"),
+            format!(
+                "{}pub fn validate_repository() {{\n{}}}\n",
+                "\n".repeat(25),
+                "    let _ = ();\n".repeat(10)
+            ),
+        )
+        .unwrap();
         let record = json!({
             "rationale": "Checked.",
-            "inputs": [{
-                "file": "src/evidence.rs",
-                "line_start": 26,
-                "line_end": 37,
-                "text": ["pub fn validate_repository() {}"]
-            }]
+            "inputs": [crate::inputs::outline_input(temp.path(), "src/evidence.rs", "fn[validate_repository]").unwrap()]
         })
         .to_string();
         let page = render_detail_page(
@@ -1296,10 +1353,11 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
-                root: Path::new("."),
+                root: temp.path(),
                 definitions: &BTreeMap::new(),
                 references: &[],
                 source_links: Some(&links),
+                outlines: &crate::inputs::OutlineCache::default(),
             },
         );
         assert!(page.contains(
@@ -1408,6 +1466,7 @@ mod tests {
                 definitions: &BTreeMap::new(),
                 references: &[],
                 source_links: None,
+                outlines: &crate::inputs::OutlineCache::default(),
             },
         );
         assert!(page.contains("> Ready MUST work."));
@@ -1434,6 +1493,7 @@ mod tests {
                 definitions: &BTreeMap::new(),
                 references: &[],
                 source_links: None,
+                outlines: &crate::inputs::OutlineCache::default(),
             },
         );
         assert!(missing.contains("> Ready MUST work."));
@@ -1553,14 +1613,16 @@ mod tests {
                 .replace("TEST", "{test}"),
         )
         .unwrap();
+        let outline =
+            |file: &str, item: &str| crate::inputs::outline_input(root, file, item).unwrap();
         let inputs = json!([
             {"requirements": "rules.ready", "matches": ["rules.ready"], "text": ["ready"]},
-            {"rust_file": "src/lib.rs", "rust_item": "fn[check]", "text": ["check"]},
-            {"file": "notes.txt", "line_start": 1, "line_end": 1, "text": ["Notes."]},
+            outline("src/lib.rs", "fn[check]"),
+            outline("notes.txt", ""),
             {"requirements": "rules.base", "matches": ["rules.base"], "text": ["base"]},
-            {"file": "skills/ready.md", "line_start": 1, "line_end": 1, "text": ["# Skill"]},
+            outline("skills/ready.md", "section[Skill]"),
             {"requirements": "rules.case", "matches": ["rules.case"], "text": ["case"]},
-            {"rust_file": "src/lib.rs", "rust_item": "fn[run]", "text": ["run"]},
+            outline("src/lib.rs", "fn[run]"),
         ]);
         fs::write(
             root.join("evidence/rules.ready.json"),

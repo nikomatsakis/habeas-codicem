@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::access::SourceAccess;
 use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
-use crate::inputs::{InputSelector, read_project_file};
+use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::{DefinitionKind, ReferenceKind};
 
 pub(crate) enum AssessmentKind {
@@ -24,12 +24,16 @@ impl AssessmentKind {
     }
 }
 
+// {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.authoring.delivered_inputs`
 pub(crate) struct AssessmentSources {
     pub(crate) root: PathBuf,
     pub(crate) access: SourceAccess,
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
     pub(crate) subject_text: String,
+    /// Parsed outlines, cached for this assessment.
+    pub(crate) outlines: OutlineCache,
     mandatory: Vec<Value>,
     recorded: Vec<Value>,
 }
@@ -87,6 +91,7 @@ impl AssessmentSources {
             );
         }
 
+        let outlines = OutlineCache::default();
         let mut errors = Vec::new();
         let references = collect_references(&root, &mut errors);
         if !errors.is_empty() {
@@ -101,7 +106,7 @@ impl AssessmentSources {
             access.file(&root, &reference.file)?;
             insert_selector(
                 &mut selectors,
-                reference_selector(&root, &definitions, reference)?,
+                reference_selector(&root, &definitions, &outlines, reference)?,
             );
         }
 
@@ -111,8 +116,8 @@ impl AssessmentSources {
                 .file(&root, Path::new(&anchor.file))
                 .and_then(|_| {
                     anchor
-                        .complete_file(&root)
-                        .map(|(_, line_count)| anchor.selector(line_count))
+                        .resolve(&root, &outlines)
+                        .map(|_| anchor.selector())
                         .map_err(io::Error::other)
                 })
                 .map_err(|error| {
@@ -121,7 +126,7 @@ impl AssessmentSources {
                         format!(
                             "{subject_name}: cannot read :{}: anchor {}: {error}",
                             anchor.kind.label(),
-                            anchor.file
+                            anchor.label()
                         ),
                     )
                 })?;
@@ -133,13 +138,20 @@ impl AssessmentSources {
         let mut mandatory = Vec::new();
         for selector in selectors {
             if !generated_evidence_selector(&root, &access, &selector) {
-                mandatory.push(source_input(&root, &access, &definitions, &selector)?);
+                mandatory.push(source_input(
+                    &root,
+                    &access,
+                    &definitions,
+                    &outlines,
+                    &selector,
+                )?);
             }
         }
         let dependencies = definition_inputs(
             &root,
             &access,
             &definitions,
+            &outlines,
             &mandatory,
             Some(&subject.text),
         )?;
@@ -154,6 +166,7 @@ impl AssessmentSources {
             subject_name: subject_name.to_owned(),
             subject_kind: AssessmentKind::Definition(subject.kind),
             subject_text: subject.text.clone(),
+            outlines,
             mandatory,
             recorded: Vec::new(),
         })
@@ -164,16 +177,20 @@ impl AssessmentSources {
         &self.mandatory
     }
 
+    /// Inputs recorded as evidence: outline inputs keep only their file,
+    /// selector, and hash.
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn recorded_inputs(&self) -> &[Value] {
         &self.recorded
     }
 
     // {impl}`requirements.authoring.delivered_inputs`
+    // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {
         for input in inputs {
-            if !self.recorded.contains(input) {
-                self.recorded.push(input.clone());
+            let input = recorded_input(input);
+            if !self.recorded.contains(&input) {
+                self.recorded.push(input);
             }
         }
     }
@@ -182,7 +199,63 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.text_search`
     pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {
         let definitions = load_definitions(&self.root)?;
-        source_input(&self.root, &self.access, &definitions, selector)
+        source_input(
+            &self.root,
+            &self.access,
+            &definitions,
+            &self.outlines,
+            selector,
+        )
+    }
+
+    /// Parses a permitted file, aborting on access denial.
+    // {impl}`requirements.authoring.source_tools`
+    // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.authoring.outline_tool`
+    // {impl}`requirements.authoring.read_denial`
+    pub(crate) fn parse_file(
+        &self,
+        file: &str,
+    ) -> io::Result<std::sync::Arc<Result<ParsedSource, String>>> {
+        self.access.file(&self.root, Path::new(file))?;
+        Ok(self.outlines.parse(&self.root, file))
+    }
+
+    /// Reads the innermost outline nodes covering an inclusive line range,
+    /// as model-facing outline inputs. With `comments`, comment lines select
+    /// their comments' owners.
+    // {impl}`requirements.authoring.source_tools`
+    // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.ci.outline_inputs`
+    pub(crate) fn read_lines(
+        &self,
+        file: &str,
+        line_start: usize,
+        line_end: Option<usize>,
+        comments: bool,
+    ) -> io::Result<Vec<Value>> {
+        let parsed = self.parse_file(file)?;
+        let parsed = parsed
+            .as_ref()
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        let count = parsed.source.lines().count();
+        let line_end = line_end.unwrap_or(count);
+        if line_start == 0 || line_end < line_start || line_end > count {
+            return Err(io::Error::other(format!(
+                "{file}:{line_start}-{line_end} is not an inclusive range within the file's {count} lines"
+            )));
+        }
+        parsed
+            .nodes_for_range(line_start, line_end, comments)
+            .into_iter()
+            .map(|index| {
+                self.read_selector(&InputSelector::Outline {
+                    file: file.to_owned(),
+                    item: parsed.outline.nodes[index].selector.clone(),
+                })
+            })
+            .collect()
     }
 
     // {impl}`requirements.definitions.authoring_inputs`
@@ -190,12 +263,17 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.text_search`
     pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> io::Result<Vec<Value>> {
         let definitions = load_definitions(&self.root)?;
-        Ok(
-            definition_inputs(&self.root, &self.access, &definitions, inputs, None)?
-                .into_iter()
-                .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
-                .collect(),
-        )
+        Ok(definition_inputs(
+            &self.root,
+            &self.access,
+            &definitions,
+            &self.outlines,
+            inputs,
+            None,
+        )?
+        .into_iter()
+        .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
+        .collect())
     }
 }
 
@@ -222,10 +300,9 @@ fn generated_evidence_selector(
     selector: &InputSelector,
 ) -> bool {
     match selector {
-        InputSelector::FileRange { file, .. }
-        | InputSelector::RustItem {
-            rust_file: file, ..
-        } => access.omit_generated_evidence(root, Path::new(file)),
+        InputSelector::Outline { file, .. } => {
+            access.omit_generated_evidence(root, Path::new(file))
+        }
         InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,
     }
 }
@@ -242,13 +319,11 @@ fn source_input(
     root: &Path,
     access: &SourceAccess,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     selector: &InputSelector,
 ) -> io::Result<Value> {
     match selector {
-        InputSelector::FileRange { file, .. }
-        | InputSelector::RustItem {
-            rust_file: file, ..
-        } => {
+        InputSelector::Outline { file, .. } => {
             access.file(root, Path::new(file))?;
         }
         InputSelector::Definition { definition } => {
@@ -267,12 +342,12 @@ fn source_input(
         }
     }
     let resolved = selector
-        .resolve(root, definitions)
+        .resolve(root, definitions, outlines)
         .map_err(io::Error::other)?;
     for range in &resolved.ranges {
         access.file(root, Path::new(&range.file))?;
     }
-    Ok(selector.to_input(&resolved))
+    Ok(selector.to_model_input(&resolved))
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
@@ -282,10 +357,15 @@ fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) 
     }
 }
 
+/// The input a `{impl}` or `{test}` reference contributes: the enclosing
+/// Markdown declaration, otherwise the smallest outline node the reference
+/// belongs to, or the whole file in a plain-text source.
 // {impl}`requirements.references.authoring_inputs`
+// {impl}`requirements.references.outline_comments`
 fn reference_selector(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     reference: &SourceReference,
 ) -> io::Result<InputSelector> {
     let file = reference
@@ -295,33 +375,6 @@ fn reference_selector(
         .to_str()
         .ok_or_else(|| io::Error::other("reference path is not UTF-8"))?
         .to_owned();
-    if reference
-        .file
-        .extension()
-        .is_some_and(|extension| extension == "rs")
-    {
-        let (_, source) = read_project_file(root, &file).map_err(io::Error::other)?;
-        let items = crate::rust_items::parse_items(&source).map_err(|error| {
-            io::Error::other(format!(
-                "{file}: cannot parse referenced Rust source: {error}"
-            ))
-        })?;
-        if let Some(item) = items
-            .iter()
-            .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)
-            .min_by_key(|item| {
-                (
-                    item.line_end - item.line_start,
-                    item.byte_end - item.byte_start,
-                )
-            })
-        {
-            return Ok(InputSelector::RustItem {
-                rust_file: file,
-                rust_item: item.selector.clone(),
-            });
-        }
-    }
     if reference
         .file
         .extension()
@@ -345,12 +398,18 @@ fn reference_selector(
             }
         });
     }
-    let (_, source) = read_project_file(root, &file).map_err(io::Error::other)?;
-    Ok(InputSelector::FileRange {
-        file,
-        line_start: 1,
-        line_end: source.lines().count(),
-    })
+    let parsed = outlines.parse(root, &file);
+    let parsed = parsed
+        .as_ref()
+        .as_ref()
+        .map_err(|error| io::Error::other(format!("cannot outline referenced source: {error}")))?;
+    let item = if parsed.outline.profile.language.is_some() {
+        let index = parsed.outline.owner_at_line(reference.line);
+        parsed.outline.nodes[index].selector.clone()
+    } else {
+        String::new()
+    };
+    Ok(InputSelector::Outline { file, item })
 }
 
 // {impl}`requirements.definitions.authoring_inputs`
@@ -359,18 +418,25 @@ fn definition_inputs(
     root: &Path,
     access: &SourceAccess,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     inputs: &[Value],
     subject: Option<&str>,
 ) -> io::Result<Vec<Value>> {
     let record = json!({ "inputs": inputs });
-    crate::terms::dependencies(definitions, record.as_object().unwrap(), subject)
-        .map_err(io::Error::other)?
-        .into_iter()
-        .map(|definition| {
-            let selector = InputSelector::Definition { definition };
-            source_input(root, access, definitions, &selector)
-        })
-        .collect()
+    crate::terms::dependencies(
+        root,
+        definitions,
+        outlines,
+        record.as_object().unwrap(),
+        subject,
+    )
+    .map_err(io::Error::other)?
+    .into_iter()
+    .map(|definition| {
+        let selector = InputSelector::Definition { definition };
+        source_input(root, access, definitions, outlines, &selector)
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -445,18 +511,10 @@ pub(super) mod tests {
         assert!(
             inputs
                 .iter()
-                .any(|input| input["rust_item"] == "impl[Thing]/fn[run]")
+                .any(|input| input["item"] == "impl[Thing]/fn[run]")
         );
-        assert!(
-            inputs
-                .iter()
-                .any(|input| input["rust_item"] == "fn[test_ready]")
-        );
-        assert!(
-            !inputs
-                .iter()
-                .any(|input| input["rust_item"] == "impl[Thing]")
-        );
+        assert!(inputs.iter().any(|input| input["item"] == "fn[test_ready]"));
+        assert!(!inputs.iter().any(|input| input["item"] == "impl[Thing]"));
         assert!(
             inputs
                 .iter()
@@ -670,7 +728,7 @@ pub(super) mod tests {
         let inputs = sources.mandatory_inputs();
         let has_requirements =
             |name: &str| inputs.iter().any(|input| input["requirements"] == name);
-        let has_item = |item: &str| inputs.iter().any(|input| input["rust_item"] == item);
+        let has_item = |item: &str| inputs.iter().any(|input| input["item"] == item);
         assert!(has_requirements("requirements.ready"));
         assert!(has_requirements("requirements.base"), "{inputs:#?}");
         assert!(has_requirements("requirements.tester"), "{inputs:#?}");
@@ -700,7 +758,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.authoring.mandatory_inputs`
     #[test]
-    fn anchored_files_contribute_complete_file_inputs() {
+    fn anchored_files_contribute_root_node_inputs() {
         let root = project();
         fs::create_dir_all(root.path().join("skills")).unwrap();
         fs::write(root.path().join("skills/ready.md"), "# Skill\nBe ready.\n").unwrap();
@@ -711,6 +769,9 @@ pub(super) mod tests {
         .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let inputs = sources.mandatory_inputs();
+        let hash =
+            crate::inputs::outline_input(root.path(), "skills/ready.md", "").unwrap()["hash"]
+                .clone();
         assert_eq!(
             inputs,
             &[
@@ -721,6 +782,9 @@ pub(super) mod tests {
                 }),
                 json!({
                     "file": "skills/ready.md",
+                    "item": "",
+                    "hash": hash,
+                    "kind": "file",
                     "line_start": 1,
                     "line_end": 2,
                     "text": ["# Skill", "Be ready."]
@@ -767,5 +831,59 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("private/skill.md"), "{error}");
+    }
+
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn references_contribute_their_owning_outline_nodes() {
+        let root = project();
+        fs::create_dir_all(root.path().join("docs")).unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#mod[inner]\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "mod inner {\n    fn unrelated() {}\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("docs/guide.md"),
+            format!(
+                "# Intro\n\nText.\n\n# Usage\n\nSee {}.\n",
+                role("impl", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("notes.txt"),
+            format!("first\n{}\n", role("test", "requirements.ready")),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let items = sources
+            .mandatory_inputs()
+            .iter()
+            .filter(|input| input.get("item").is_some())
+            .map(|input| {
+                (
+                    input["file"].as_str().unwrap(),
+                    input["item"].as_str().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            items,
+            [
+                ("docs/guide.md", "section[Usage]"),
+                // A plain-text file contributes the complete file.
+                ("notes.txt", ""),
+                ("src/lib.rs", "mod[inner]"),
+            ]
+        );
     }
 }

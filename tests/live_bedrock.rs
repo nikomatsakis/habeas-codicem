@@ -180,8 +180,10 @@ fn live_bedrock_authoring() {
     assert!(!evidence["rationale"].as_str().unwrap().trim().is_empty());
     assert!(
         evidence["inputs"].as_array().unwrap().iter().any(|input| {
-            (input["file"] == "src/parity.rs" || input["rust_file"] == "src/parity.rs")
-                && !input["text"].as_array().unwrap().is_empty()
+            input["file"] == "src/parity.rs"
+                && input["item"].is_string()
+                && input["hash"].is_string()
+                && input.get("text").is_none()
         }),
         "model must inspect the fixture's source through a read tool"
     );

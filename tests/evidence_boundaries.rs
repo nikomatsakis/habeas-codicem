@@ -5,7 +5,7 @@ use habeas::validate_repository;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-// {test}`requirements.ci.inputs`
+// {test}`requirements.ci.outline_inputs`
 // {test}`requirements.ci.input_containment`
 // {test}`requirements.ci.orphans`
 fn fixture() -> TempDir {
@@ -41,45 +41,132 @@ fn write_inputs(root: &Path, inputs: Vec<Value>) {
     .unwrap();
 }
 
-// {test}`requirements.ci.inputs`
+/// The recorded outline input for `item` in `file`.
+// {test}`requirements.ci.outline_inputs`
+fn outline(root: &Path, file: &str, item: &str) -> Value {
+    habeas::outline_input(root, file, item).unwrap()
+}
+
+// {test}`requirements.ci.outline_inputs`
 // {test}`requirements.ci.input_containment`
+// {test}`requirements.ci.diagnostics`
+// {test}`requirements.ci.schema`
+// {test}`requirements.ci.fixme_stale_input`
+// {test}`requirements.references.selector_raw_lines`
+// {test}`requirements.references.structural_hash`
 #[test]
-fn file_ranges_report_order_eof_length_and_missing_file_errors() {
+fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     let temp = fixture();
     let root = temp.path().join("project");
-    write_inputs(
-        &root,
-        vec![json!({"file":"data.txt", "line_start":2, "line_end":2, "text":["second"]})],
-    );
-    assert!(validate_repository(&root).unwrap().errors.is_empty());
+    let errors = |inputs: Vec<Value>| {
+        write_inputs(&root, inputs);
+        validate_repository(&root).unwrap().errors.join("\n")
+    };
+    let rust = "// CITE`rules.ready`\nfn alpha() { work(1); }\n\n/// Docs.\n// CITE`rules.ready`\nfn beta() {}\n"
+        .replace("CITE", "{cite}");
+    fs::write(root.join("src/lib.rs"), &rust).unwrap();
+    let inputs = vec![
+        outline(&root, "src/lib.rs", "fn[alpha]"),
+        outline(&root, "src/lib.rs", "fn[beta]"),
+        habeas::outline_inputs_for_lines(&root, "data.txt", 2, 2)
+            .unwrap()
+            .remove(0),
+    ];
+    assert_eq!(errors(inputs.clone()), "");
 
+    // Moving nodes and lines, and editing unhashed comments, keeps inputs valid.
+    fs::write(
+        root.join("src/lib.rs"),
+        format!("// CITE`rules.ready` moved below a new line\n\n{rust}")
+            .replacen("CITE", "{cite}", 1)
+            .replace("fn alpha() { work(1); }", "fn alpha() {\n    work(1);\n}"),
+    )
+    .unwrap();
+    fs::write(root.join("data.txt"), "zero\nfirst\nsecond\n").unwrap();
+    assert_eq!(errors(inputs.clone()), "");
+
+    // Editing a node's code or its doc comment makes the input stale, naming the
+    // file, selector, and current line range.
+    fs::write(
+        root.join("src/lib.rs"),
+        rust.replace("work(1)", "work(2)")
+            .replace("/// Docs.", "/// Changed docs."),
+    )
+    .unwrap();
+    let found = errors(inputs.clone());
+    for expected in [
+        "inputs[0]: outline input changed: src/lib.rs fn[alpha] (now lines 1-2) no longer has the recorded hash",
+        "inputs[1]: outline input changed: src/lib.rs fn[beta] (now lines 4-6) no longer has the recorded hash",
+    ] {
+        assert!(found.contains(expected), "missing {expected:?}: {found}");
+    }
+    assert!(!found.contains("inputs[2]"), "{found}");
+    assert!(!found.contains("work(2)"), "no diff: {found}");
+
+    // An edited plain-text line is a different node.
+    fs::write(root.join("data.txt"), "first\nchanged\n").unwrap();
+    let found = errors(inputs[2..].to_vec());
+    assert!(
+        found.contains("data.txt: no outline node matches \"line@"),
+        "{found}"
+    );
+
+    fs::write(
+        root.join("src/lib.rs"),
+        "// CITE`rules.ready`\n#[cfg(a)]\nfn dup() {}\n// CITE`rules.ready`\n#[cfg(b)]\nfn dup() {}\n"
+            .replace("CITE", "{cite}"),
+    )
+    .unwrap();
+    let hash = "0".repeat(64);
     for (input, expected) in [
         (
-            json!({"file":"data.txt", "line_start":2, "line_end":1, "text":["second"]}),
-            "line_end must be at least line_start",
+            json!({"file":"src/lib.rs", "item":"fn[missing]", "hash":hash}),
+            "src/lib.rs: no outline node matches \"fn[missing]\"",
         ),
         (
-            json!({"file":"data.txt", "line_start":1, "line_end":3, "text":["first", "second", "third"]}),
-            "exceeds the file's 2 lines",
+            json!({"file":"src/lib.rs", "item":"fn[dup]", "hash":hash}),
+            "src/lib.rs: outline selector \"fn[dup]\" is ambiguous",
         ),
         (
-            json!({"file":"data.txt", "line_start":1, "line_end":2, "text":["first"]}),
-            "text has 1 lines, but data.txt:1-2 has 2",
+            json!({"file":"src/lib.rs", "item":"fn[unclosed", "hash":hash}),
+            "src/lib.rs: invalid outline selector \"fn[unclosed\"",
         ),
         (
-            json!({"file":"missing.txt", "line_start":1, "line_end":1, "text":["first"]}),
+            json!({"file":"src/lib.rs", "item":"fn[dup]#2", "hash":"ABC"}),
+            "hash must be a lowercase hexadecimal SHA-256 digest",
+        ),
+        (
+            json!({"file":"missing.txt", "item":"", "hash":hash}),
             "cannot open missing.txt",
         ),
+        (
+            json!({"file":"data.txt", "line_start":1, "line_end":1, "text":["first"]}),
+            "unexpected field \"line_start\"",
+        ),
+        (
+            json!({"rust_file":"src/lib.rs", "rust_item":"fn[dup]#1", "text":["fn dup() {}"]}),
+            "unexpected field \"rust_file\"",
+        ),
+        (
+            json!({"file":"src/lib.rs", "item":"fn[dup]#1", "hash":hash, "text":["fn dup() {}"]}),
+            "unexpected field \"text\"",
+        ),
     ] {
-        write_inputs(&root, vec![input]);
-        let errors = validate_repository(&root).unwrap().errors.join("\n");
-        assert!(errors.contains(expected), "missing {expected:?}: {errors}");
+        let found = errors(vec![input]);
+        assert!(found.contains(expected), "missing {expected:?}: {found}");
     }
+    fs::write(root.join("src/broken.rs"), "fn {").unwrap();
+    let found = errors(vec![
+        json!({"file":"src/broken.rs", "item":"", "hash":hash}),
+    ]);
+    assert!(
+        found.contains("src/broken.rs: cannot parse rust source"),
+        "{found}"
+    );
 }
 
 // {test}`requirements.ci.input_containment`
-// {test}`requirements.ci.inputs`
-// {test}`requirements.ci.rust_item_inputs`
+// {test}`requirements.ci.outline_inputs`
 #[cfg(unix)]
 #[test]
 fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {
@@ -88,22 +175,15 @@ fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {
     let temp = fixture();
     let root = temp.path().join("project");
     symlink(root.join("data.txt"), root.join("inside.txt")).unwrap();
-    write_inputs(
-        &root,
-        vec![
-            json!({"file":"inside.txt", "line_start":1, "line_end":2, "text":["first", "second"]}),
-        ],
-    );
+    write_inputs(&root, vec![outline(&root, "inside.txt", "")]);
     assert!(validate_repository(&root).unwrap().errors.is_empty());
 
     let sibling = temp.path().join("project-sibling");
     fs::create_dir(&sibling).unwrap();
     fs::write(sibling.join("outside.rs"), "fn outside() {}\n").unwrap();
     symlink(sibling.join("outside.rs"), root.join("escape.rs")).unwrap();
-    for input in [
-        json!({"file":"escape.rs", "line_start":1, "line_end":1, "text":["fn outside() {}"]}),
-        json!({"rust_file":"escape.rs", "rust_item":"fn[outside]", "text":["fn outside() {}"]}),
-    ] {
+    {
+        let input = json!({"file":"escape.rs", "item":"fn[outside]", "hash":"0".repeat(64)});
         write_inputs(&root, vec![input]);
         let errors = validate_repository(&root).unwrap().errors.join("\n");
         assert!(
@@ -139,8 +219,7 @@ fn nested_evidence_files_are_reported() {
 
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.ci.input_containment`
-// {test}`requirements.ci.inputs`
-// {test}`requirements.ci.rust_item_inputs`
+// {test}`requirements.ci.outline_inputs`
 #[test]
 fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow() {
     let temp = fixture();
@@ -151,10 +230,9 @@ fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disal
     fs::write(&source, "pub fn generated() {}\n").unwrap();
     let external_toml = toml::Value::String(external.display().to_string());
     let config = format!("version = 1\n[evidence]\nallow = [{external_toml}]\n");
-    for input in [
-        json!({"file":source, "line_start":1, "line_end":1, "text":["pub fn generated() {}"]}),
-        json!({"rust_file":source, "rust_item":"fn[generated]", "text":["pub fn generated() {}"]}),
-    ] {
+    fs::write(root.join("habeas.toml"), &config).unwrap();
+    {
+        let input = outline(&root, source.to_str().unwrap(), "fn[generated]");
         write_inputs(&root, vec![input]);
         fs::write(root.join("habeas.toml"), "version = 1\n").unwrap();
         assert!(
@@ -167,13 +245,13 @@ fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disal
         fs::write(root.join("habeas.toml"), &config).unwrap();
         let report = validate_repository(&root).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        fs::write(&source, "pub fn generated() { /* changed */ }\n").unwrap();
+        fs::write(&source, "pub fn generated() { changed(); }\n").unwrap();
         assert!(
             validate_repository(&root)
                 .unwrap()
                 .errors
                 .join("\n")
-                .contains("input text changed")
+                .contains("outline input changed")
         );
         fs::write(&source, "pub fn generated() {}\n").unwrap();
         fs::write(
@@ -193,8 +271,7 @@ fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disal
 
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.ci.input_containment`
-// {test}`requirements.ci.inputs`
-// {test}`requirements.ci.rust_item_inputs`
+// {test}`requirements.ci.outline_inputs`
 #[cfg(unix)]
 #[test]
 fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources() {
@@ -221,10 +298,9 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
         "private/link/source.rs",
         "sub/../private/link/source.rs",
     ] {
-        for input in [
-            json!({"file":file, "line_start":2, "line_end":2, "text":["pub struct Source;"]}),
-            json!({"rust_file":file, "rust_item":"struct[Source]", "text":[cite, "pub struct Source;"]}),
-        ] {
+        {
+            let mut input = outline(&root, "public/source.rs", "struct[Source]");
+            input["file"] = json!(file);
             write_inputs(&root, vec![input]);
             let errors = validate_repository(&root).unwrap().errors.join("\n");
             if file == "public/source.rs" {
@@ -267,8 +343,7 @@ fn validation_checks_workspace_common_config_without_loading_unused_authoring_se
 // {test}`requirements.authoring.generated_inputs`
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.ci.input_containment`
-// {test}`requirements.ci.inputs`
-// {test}`requirements.ci.rust_item_inputs`
+// {test}`requirements.ci.outline_inputs`
 // {test}`requirements.integration.report_api`
 #[test]
 fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {
@@ -306,17 +381,15 @@ fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {
     .unwrap();
     let generated = out.join("generated.rs");
     fs::write(&generated, "pub fn generated() {}\n").unwrap();
-    for input in [
-        json!({"file":generated, "line_start":1, "line_end":1, "text":["pub fn generated() {}"]}),
-        json!({"rust_file":generated, "rust_item":"fn[generated]", "text":["pub fn generated() {}"]}),
-    ] {
-        write_inputs(&root, vec![input]);
+    {
         fs::write(root.join("habeas.toml"), "version = 1\n").unwrap();
+        let input = outline(&root, generated.to_str().unwrap(), "fn[generated]");
+        write_inputs(&root, vec![input]);
         let report = validate_repository(&root).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        fs::write(&generated, "pub fn generated() { /* changed */ }\n").unwrap();
+        fs::write(&generated, "pub fn generated() { changed(); }\n").unwrap();
         let errors = validate_repository(&root).unwrap().errors.join("\n");
-        assert!(errors.contains("input text changed"), "{errors}");
+        assert!(errors.contains("outline input changed"), "{errors}");
         fs::write(&generated, "pub fn generated() {}\n").unwrap();
         fs::write(
             root.join("habeas.toml"),

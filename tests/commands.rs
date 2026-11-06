@@ -42,7 +42,6 @@ fn fixture() -> TempDir {
         .position(|line| line.contains("Given ready, it works."))
         .unwrap()
         + 1;
-    let case_text = source.lines().nth(case_line - 1).unwrap().to_owned();
     fs::write(temp.path().join("md/requirements.md"), source).unwrap();
     fs::write(
         temp.path().join("src/main.rs"),
@@ -65,25 +64,21 @@ fn fixture() -> TempDir {
     ] {
         let inputs = if name == "ready" {
             vec![
-                json!({
-                    "file": "src/main.rs",
-                    "line_start": 1,
-                    "line_end": 1,
-                    "text": ["fn main() {}"]
-                }),
-                json!({
-                    "file": "md/requirements.md",
-                    "line_start": case_line,
-                    "line_end": case_line,
-                    "text": [case_text]
-                }),
+                habeas::outline_input(temp.path(), "src/main.rs", "fn[main]").unwrap(),
+                habeas::outline_inputs_for_lines(
+                    temp.path(),
+                    "md/requirements.md",
+                    case_line,
+                    case_line,
+                )
+                .unwrap()
+                .remove(0),
             ]
         } else if name == "stale_input" {
             vec![json!({
                 "file": "src/main.rs",
-                "line_start": 1,
-                "line_end": 1,
-                "text": ["old main"]
+                "item": "fn[main]",
+                "hash": "0".repeat(64)
             })]
         } else {
             vec![]
@@ -171,12 +166,7 @@ fn fixme_fixture() -> TempDir {
         .map(|(kind, name, text, _)| format!(":::{{{kind}}} {name}\n{text}\n:::\n\n"))
         .collect();
     fs::write(temp.path().join("md/rules.md"), &source).unwrap();
-    let input = json!({
-        "file": "md/rules.md",
-        "line_start": 1,
-        "line_end": source.lines().count(),
-        "text": source.lines().collect::<Vec<_>>()
-    });
+    let input = habeas::outline_input(temp.path(), "md/rules.md", "").unwrap();
     for (kind, name, text, references) in declarations {
         let subject_key = if kind == "example" {
             "example"
@@ -398,7 +388,7 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
     assert!(text.contains("missing for requirement"), "{text}");
     assert!(text.contains("determination is false"), "{text}");
     assert!(text.contains("requirement text changed"), "{text}");
-    assert!(text.contains("input text changed"), "{text}");
+    assert!(text.contains("outline input changed"), "{text}");
     assert!(text.contains("invalid JSON"), "{text}");
     assert!(text.contains("no input covers"), "{text}");
 
@@ -634,8 +624,7 @@ fn status_tables_align_each_column_to_its_widest_cell() {
 
 // {test}`requirements.cli.add_input`
 // {test}`requirements.ci.input_containment`
-// {test}`requirements.cli.add_input_file_range`
-// {test}`requirements.cli.add_input_rust_item`
+// {test}`requirements.cli.add_input_item`
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.ci.schema`
 #[test]
@@ -649,48 +638,41 @@ fn add_input_external_sources_respect_allow_and_disallow() {
     let config = format!("version = 1\n[evidence]\nallow = [{allowed}]\n");
     fs::write(temp.path().join("habeas.toml"), &config).unwrap();
     let evidence = temp.path().join("evidence/requirements.absent.json");
-    for (mode, location) in [
-        ("--file-range", format!("{}:1-1", source.display())),
-        ("--rust-item", format!("{}:1", source.display())),
-    ] {
-        let output = habeas(
-            temp.path(),
-            &[
-                "add-input",
-                "--for-requirement",
-                "requirements.absent",
-                mode,
-                &location,
-            ],
-        );
-        assert!(output.status.success(), "{output:?}");
-    }
+    let location = format!("{}:1", source.display());
+    let output = habeas(
+        temp.path(),
+        &[
+            "add-input",
+            "--for-requirement",
+            "requirements.absent",
+            "--item",
+            &location,
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
     let contents = fs::read(&evidence).unwrap();
     let record: serde_json::Value = serde_json::from_slice(&contents).unwrap();
     assert_eq!(
         record["inputs"],
         json!([
-            {"file": source, "line_start": 1, "line_end": 1, "text": ["pub fn external() {}"]},
-            {"rust_file": source, "rust_item": "fn[external]", "text": ["pub fn external() {}"]},
+            habeas::outline_input(temp.path(), source.to_str().unwrap(), "fn[external]").unwrap()
         ])
     );
+    assert_eq!(record["inputs"][0]["file"], json!(source));
 
     fs::write(
         temp.path().join("habeas.toml"),
         format!("{config}disallow = [{allowed}]\n"),
     )
     .unwrap();
-    for (mode, location) in [
-        ("--file-range", format!("{}:1-1", source.display())),
-        ("--rust-item", format!("{}:1", source.display())),
-    ] {
+    {
         let output = habeas(
             temp.path(),
             &[
                 "add-input",
                 "--for-requirement",
                 "requirements.absent",
-                mode,
+                "--item",
                 &location,
             ],
         );
@@ -779,13 +761,13 @@ fn add_input_rejects_function_targets_without_creating_evidence() {
 
 // {test}`requirements.cli.add_input`
 // {test}`requirements.cli.info`
-// {test}`requirements.cli.add_input_file_range`
-// {test}`requirements.cli.add_input_rust_item`
+// {test}`requirements.cli.add_input_item`
 // {test}`requirements.cli.add_input_requirements`
 // {test}`requirements.references.selector_same_line`
 // {test}`requirements.references.selector_raw_lines`
+// {test}`requirements.references.structural_hash`
 #[test]
-fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {
+fn add_input_modes_capture_outline_nodes_and_refresh_idempotently() {
     let temp = TempDir::new().unwrap();
     fs::create_dir_all(temp.path().join("md")).unwrap();
     fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -800,63 +782,80 @@ fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {
         ":::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it works. CITE`rules.ready`\n:::\n".replace("CITE", "{cite}"),
     )
     .unwrap();
-    fs::write(
-        temp.path().join("src/main.rs"),
+    let main =
         "/// user docs\n#[allow(dead_code)]\n// IMPL`rules.ready`\nfn main() { fn nested() {} }\n"
-            .replace("IMPL", "{impl}"),
-    )
-    .unwrap();
-    let output = habeas(
-        temp.path(),
-        &[
-            "add-input",
-            "--for-requirement",
-            "rules.ready",
-            "--file-range",
-            "src/main.rs:1-2",
-        ],
-    );
-    assert!(output.status.success(), "{output:?}");
-    let output = habeas(
-        temp.path(),
-        &[
-            "add-input",
-            "--for-requirement",
-            "rules.ready",
-            "--rust-item",
-            "src/main.rs:4",
-        ],
-    );
+            .replace("IMPL", "{impl}");
+    fs::write(temp.path().join("src/main.rs"), &main).unwrap();
+    fs::write(temp.path().join("notes.txt"), "alpha\n\nbeta\n").unwrap();
+    let add = |location: &str| {
+        habeas(
+            temp.path(),
+            &[
+                "add-input",
+                "--for-requirement",
+                "rules.ready",
+                "--item",
+                location,
+            ],
+        )
+    };
+    let output = add("src/main.rs:4");
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("fn[main]"), "{stdout}");
     assert!(stdout.contains("fn[main]/fn[nested]"), "{stdout}");
+    // A plain-text file's lines are outline nodes too.
+    let output = add("notes.txt:3");
+    assert!(output.status.success(), "{output:?}");
     let requirement_path = temp.path().join("evidence/rules.ready.json");
     let first = fs::read(&requirement_path).unwrap();
-    let output = habeas(
-        temp.path(),
-        &[
-            "add-input",
-            "--for-requirement",
-            "rules.ready",
-            "--rust-item",
-            "src/main.rs:4",
-        ],
-    );
+    let output = add("src/main.rs:4");
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("unchanged"));
     assert_eq!(fs::read(&requirement_path).unwrap(), first);
     let requirement: serde_json::Value = serde_json::from_slice(&first).unwrap();
-    assert_eq!(requirement["inputs"].as_array().unwrap().len(), 3);
+    let outline = |file: &str, item: &str| habeas::outline_input(temp.path(), file, item).unwrap();
+    let beta = habeas::outline_inputs_for_lines(temp.path(), "notes.txt", 3, 3)
+        .unwrap()
+        .remove(0);
+    assert!(beta["item"].as_str().unwrap().starts_with("line@"));
     assert_eq!(
-        requirement["inputs"][1]["text"],
+        requirement["inputs"],
         json!([
-            "/// user docs",
-            "#[allow(dead_code)]",
-            "// IMPL`rules.ready`".replace("IMPL", "{impl}"),
-            "fn main() { fn nested() {} }"
+            outline("src/main.rs", "fn[main]"),
+            outline("src/main.rs", "fn[main]/fn[nested]"),
+            beta,
         ])
     );
+    for location in [
+        "src/main.rs:3",
+        "notes.txt:2",
+        "src/main.rs:x",
+        "missing.rs:1",
+    ] {
+        let output = add(location);
+        assert!(!output.status.success(), "{location}: {output:?}");
+        assert_eq!(fs::read(&requirement_path).unwrap(), first);
+    }
+    assert!(
+        String::from_utf8_lossy(&add("src/main.rs:3").stderr)
+            .contains("src/main.rs:3: no outline node is declared on this line")
+    );
+    // The citation comment is not hashed; the doc comment is.
+    let recorded = requirement["inputs"][0]["hash"].clone();
+    fs::write(
+        temp.path().join("src/main.rs"),
+        main.replace("`rules.ready`", "`rules.ready` (edited)"),
+    )
+    .unwrap();
+    assert_eq!(outline("src/main.rs", "fn[main]")["hash"], recorded);
+    fs::write(
+        temp.path().join("src/main.rs"),
+        main.replace("user docs", "changed docs"),
+    )
+    .unwrap();
+    assert_ne!(outline("src/main.rs", "fn[main]")["hash"], recorded);
+    fs::write(temp.path().join("src/main.rs"), &main).unwrap();
     let output = habeas(
         temp.path(),
         &[
@@ -906,11 +905,10 @@ fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {
     let detail = habeas(temp.path(), &["info", "rules.ready"]);
     assert!(detail.status.success(), "{detail:?}");
     let detail = String::from_utf8(detail.stdout).unwrap();
-    assert!(
-        detail.contains("Rust item src/main.rs fn[main]"),
-        "{detail}"
-    );
+    assert!(detail.contains("outline src/main.rs fn[main]"), "{detail}");
+    assert!(detail.contains("- Kind: <code>fn</code>"), "{detail}");
     assert!(detail.contains("src/main.rs:1–4"), "{detail}");
+    assert!(detail.contains("fn main() { fn nested() {} }"), "{detail}");
     assert!(
         detail.contains("requirements selection rules.*"),
         "{detail}"

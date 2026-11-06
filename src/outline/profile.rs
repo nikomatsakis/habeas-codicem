@@ -10,9 +10,6 @@ pub(crate) enum NameRule {
     Anonymous,
     /// Named by the source text of a field, as written.
     Field(&'static str),
-    /// Named by the source text of a field, with whitespace runs collapsed to
-    /// one space.
-    FieldNormalized(&'static str),
     /// Named by the first named child whose kind is listed, as written.
     FirstChild(&'static [&'static str]),
     /// Named by a profile-specific rule returning the name's parts, which are

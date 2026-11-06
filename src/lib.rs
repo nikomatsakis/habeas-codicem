@@ -15,17 +15,13 @@ mod fixme;
 mod index;
 mod inputs;
 pub mod judgment;
-mod rust_coverage;
-// Evidence inputs and authoring tools move onto the rest of this API next.
-#[allow(dead_code)]
 mod outline;
-mod rust_items;
-#[cfg(test)]
-mod rust_items_legacy;
+mod rust_coverage;
 mod terms;
 
 pub use add_input::{InputMode, InputTarget, add_input};
 pub use evidence::{EvidenceReport, validate_repository};
+pub use inputs::{outline_input, outline_inputs_for_lines};
 
 /// Validate the current Cargo and mdBook project for use in a Cargo test.
 ///

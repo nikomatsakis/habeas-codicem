@@ -60,17 +60,16 @@ enum Command {
     },
     #[command(
         group(ArgGroup::new("target").required(true).multiple(false).args(["for_requirement", "for_example"])),
-        group(ArgGroup::new("mode").required(true).multiple(false).args(["file_range", "rust_item", "requirements"]))
+        group(ArgGroup::new("mode").required(true).multiple(false).args(["item", "requirements"]))
     )]
     AddInput {
         #[arg(long)]
         for_requirement: Option<String>,
         #[arg(long)]
         for_example: Option<String>,
-        #[arg(long)]
-        file_range: Option<String>,
-        #[arg(long)]
-        rust_item: Option<String>,
+        /// Add every outline node declared on a line, as `<file>:<line>`.
+        #[arg(long, value_name = "file:line")]
+        item: Option<String>,
         #[arg(long, value_name = "selection")]
         requirements: Option<String>,
     },
@@ -220,11 +219,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             command: HookCommand::SessionStart,
         } => hook::session_start(),
         // {impl}`requirements.cli.add_input`
+        // {impl}`requirements.cli.add_input_item`
         Command::AddInput {
             for_requirement,
             for_example,
-            file_range,
-            rust_item,
+            item,
             requirements,
         } => {
             let root = setup::project_root()?;
@@ -233,10 +232,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 habeas::InputTarget::Example(for_example.expect("clap requires a target"))
             };
-            let mode = if let Some(specification) = file_range {
-                habeas::InputMode::FileRange(specification)
-            } else if let Some(specification) = rust_item {
-                habeas::InputMode::RustItemsAtLine(specification)
+            let mode = if let Some(specification) = item {
+                habeas::InputMode::ItemsAtLine(specification)
             } else {
                 habeas::InputMode::Requirements(requirements.expect("clap requires an input mode"))
             };

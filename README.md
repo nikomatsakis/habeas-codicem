@@ -42,10 +42,10 @@ During local development, `habeas setup --path /path/to/habeas-codicem` uses a l
 
 Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command.
 
-Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or input lines. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use a definition selection: an exact full name, or a glob where `*` matches any characters including dots:
+Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or changed source inputs. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use a definition selection: an exact full name, or a glob where `*` matches any characters including dots:
 
 ```sh
-habeas info requirements.ci.inputs
+habeas info requirements.ci.outline_inputs
 habeas info 'requirements.cli.*'
 ```
 

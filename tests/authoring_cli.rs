@@ -321,6 +321,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         [
             "habeas",
             "list_files",
+            "outline",
             "references",
             "ripgrep",
             "submit_judgment"
@@ -358,20 +359,21 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         .iter()
         .filter(|input| input["file"] == "extra.txt")
         .collect::<Vec<_>>();
+    // The search window covers lines 1-11 and the reads lines 10-12, one
+    // plain-text line node each; overlapping and repeated deliveries are
+    // recorded once, by selector and hash only.
     assert_eq!(
-        extra.len(),
-        2,
+        extra,
+        habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 1, 12)
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>(),
         "repeated delivery is deduplicated in evidence"
     );
     assert!(
-        extra
-            .iter()
-            .any(|input| input["line_start"] == 1 && input["line_end"] == 11)
-    );
-    assert!(
-        extra
-            .iter()
-            .any(|input| input["line_start"] == 10 && input["line_end"] == 12)
+        !evidence["inputs"]
+            .to_string()
+            .contains("SECRET_SOURCE_PAYLOAD")
     );
     assert!(
         !inputs
@@ -577,7 +579,15 @@ fn false_is_a_completed_assessment() {
             .unwrap()
             .contains("without acknowledging")
     );
-    assert!(evidence["inputs"].to_string().contains("FIXME(#125)"));
+    // Outline inputs record selectors and hashes, never the source text.
+    assert!(
+        evidence["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| input["item"].is_string() && input["hash"].is_string())
+    );
+    assert!(!evidence["inputs"].to_string().contains("FIXME(#125)"));
     assert_eq!(fixture.usage()["outcome"], "completed");
     assert_eq!(fixture.usage()["determination"], "false");
     let diagnostics = format!(
@@ -689,7 +699,7 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
         assert!(
             inputs
                 .iter()
-                .any(|input| input["rust_file"] == "src/lib.rs")
+                .any(|input| input["file"] == "src/lib.rs" && input["item"].is_string())
         );
         if existing_evidence {
             assert_eq!(
@@ -932,13 +942,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
             .find(|tool| tool["toolSpec"]["name"] == "habeas")
             .unwrap()["toolSpec"]["inputSchema"]["json"];
         assert_eq!(habeas_schema["additionalProperties"], false);
-        for field in [
-            "file",
-            "rust_file",
-            "rust_item",
-            "requirements",
-            "definition",
-        ] {
+        for field in ["file", "item", "requirements", "definition"] {
             assert_eq!(habeas_schema["properties"][field]["type"], "string");
         }
         for field in ["line_start", "line_end"] {
@@ -969,6 +973,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
             [
                 "habeas",
                 "list_files",
+                "outline",
                 "references",
                 "ripgrep",
                 "submit_judgment"
@@ -982,9 +987,12 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|input| input["file"] == "extra.txt"
-                    && input["line_start"] == 1
-                    && input["line_end"] == 2)
+                .filter(|input| input["file"] == "extra.txt")
+                .collect::<Vec<_>>()
+                == habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 1, 2)
+                    .unwrap()
+                    .iter()
+                    .collect::<Vec<_>>()
         );
         let usage = fixture.usage();
         assert_eq!(usage["backend"], "bedrock");

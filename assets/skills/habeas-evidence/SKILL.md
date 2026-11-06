@@ -17,8 +17,18 @@ judgments whose subject and inputs are unchanged; rerun one explicitly with
 `habeas author <full-name>`. Each assessment runs in its own model conversation.
 The harness records delivered source inputs and writes the model's judgment and
 rationale. The supervising agent must not compose or refresh evidence JSON,
-determinations, rationales, or source snapshots itself, or delegate that work to
+determinations, rationales, or source inputs itself, or delegate that work to
 an ad hoc evidence-writing agent.
+
+The model reads sources with the `habeas` tool, lists a file's selectable nodes
+with the `outline` tool, and searches with `ripgrep`. Evidence identifies each
+source by an outline node of its file, such as `fn[run]` or `impl[Thing]/fn[run]`,
+and that node's structural hash; it stores no source text or line numbers. Moving
+code or editing comments that the language profile does not hash, such as
+ordinary Rust `//` comments, keeps the evidence current; changing the node's code
+or doc comments makes it stale and calls for reassessment. `habeas add-input
+--item <file>:<line>` adds every node declared on a line to a record pending
+review, but authoring remains the way to produce judgments.
 
 Monitor summaries, outcomes, and validation diagnostics without loading generated
 evidence bodies into the supervising agent's context. If a rationale needs

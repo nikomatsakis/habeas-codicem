@@ -34,9 +34,7 @@ fn fixture() -> TempDir {
     .unwrap();
     let source = "// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).";
     fs::write(temp.path().join("observed.txt"), format!("{source}\n")).unwrap();
-    let source_input = json!({
-        "file": "observed.txt", "line_start": 1, "line_end": 1, "text": [source]
-    });
+    let source_input = habeas::outline_input(temp.path(), "observed.txt", "").unwrap();
     write_record(
         temp.path(),
         "ready",
@@ -164,9 +162,10 @@ fn fixme_requirements_accept_issue_references_and_other_content() {
             .as_array_mut()
             .unwrap()
             .retain(|input| input.get("file").and_then(Value::as_str) != Some("reviewed.txt"));
-        record["inputs"].as_array_mut().unwrap().push(json!({
-            "file": "reviewed.txt", "line_start": 1, "line_end": 1, "text": [comment]
-        }));
+        record["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(habeas::outline_input(temp.path(), "reviewed.txt", "").unwrap());
         write_record(temp.path(), "ready", record);
         let report = habeas::validate_repository(temp.path()).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -198,7 +197,7 @@ fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
     assert!(!status.contains("affects"), "{status}");
 }
 
-// {test}`requirements.ci.inputs`
+// {test}`requirements.ci.outline_inputs`
 // {test}`requirements.ci.determination`
 // {test}`requirements.references.evidence_coverage`
 // {test}`requirements.ci.fixme_stale_input`
@@ -213,7 +212,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
         report
             .errors
             .iter()
-            .any(|error| error.contains("input text changed"))
+            .any(|error| error.contains("outline input changed: observed.txt <root>"))
     );
     let status = habeas::status_markdown(temp.path(), false).unwrap();
     let row = status
@@ -222,7 +221,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
         .unwrap();
     assert!(row.contains("Invalid"), "{row}");
     assert!(status.contains("#125"), "{status}");
-    assert!(status.contains("input text changed"), "{status}");
+    assert!(status.contains("outline input changed"), "{status}");
     fs::write(
         temp.path().join("other.txt"),
         "IMPL`requirements.timeout`".replace("IMPL", "{impl}"),

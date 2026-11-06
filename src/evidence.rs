@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
-use crate::inputs::{InputSelector, ResolvedInput};
+use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, ResolvedNode};
 use crate::judgment::Judgment;
 use crate::{
     DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,
@@ -34,39 +34,84 @@ pub(crate) struct Declaration {
     pub(crate) anchors: Vec<Anchor>,
 }
 
-/// An `:impl:` or `:test:` option naming a complete project file.
+/// An `:impl:` or `:test:` option naming a project file, or one outline node
+/// in it as `path#selector`.
 // {impl}`requirements.references.anchors`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Anchor {
     pub(crate) kind: ReferenceKind,
     pub(crate) file: String,
+    /// Outline selector; empty for the file's root node.
+    pub(crate) item: String,
+}
+
+/// The node an anchor currently resolves to.
+// {impl}`requirements.references.anchors`
+pub(crate) struct AnchorTarget {
+    /// Canonical path of the anchored file.
+    pub(crate) path: PathBuf,
+    /// The anchored node followed by its outline ancestors.
+    pub(crate) nodes: Vec<usize>,
+    pub(crate) line_start: usize,
+    pub(crate) line_end: usize,
 }
 
 impl Anchor {
-    /// Resolve the anchored file, returning its canonical path and line count.
+    /// Parses an option value: a path, optionally followed by `#selector`.
     // {impl}`requirements.references.anchors`
-    pub(crate) fn complete_file(&self, root: &Path) -> Result<(PathBuf, usize), String> {
+    pub(crate) fn parse(kind: ReferenceKind, value: &str) -> Self {
+        let (file, item) = value.split_once('#').unwrap_or((value, ""));
+        Self {
+            kind,
+            file: file.to_owned(),
+            item: item.to_owned(),
+        }
+    }
+
+    /// The option value as written.
+    // {impl}`requirements.references.anchors`
+    pub(crate) fn label(&self) -> String {
+        if self.item.is_empty() {
+            self.file.clone()
+        } else {
+            format!("{}#{}", self.file, self.item)
+        }
+    }
+
+    /// Resolves the anchored file and node.
+    // {impl}`requirements.references.anchors`
+    pub(crate) fn resolve(
+        &self,
+        root: &Path,
+        outlines: &OutlineCache,
+    ) -> Result<AnchorTarget, String> {
         if self.file.is_empty() {
             return Err("anchor path must be nonempty".to_owned());
         }
-        let (path, content) = crate::inputs::read_project_file(root, &self.file)?;
-        let line_count = content.lines().count();
-        if line_count == 0 {
-            return Err(format!(
-                "{} is empty, so no input can contain it",
-                self.file
-            ));
+        let parsed = outlines.parse(root, &self.file);
+        let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
+        let index = parsed.resolve(&self.file, &self.item)?;
+        let node = &parsed.outline.nodes[index];
+        let mut nodes = vec![index];
+        let mut ancestor = node.parent;
+        while let Some(parent) = ancestor {
+            nodes.push(parent);
+            ancestor = parsed.outline.nodes[parent].parent;
         }
-        Ok((fs::canonicalize(&path).unwrap_or(path), line_count))
+        Ok(AnchorTarget {
+            path: parsed.path.clone(),
+            nodes,
+            line_start: node.line_start,
+            line_end: node.line_end,
+        })
     }
 
-    /// The file-range selector containing the complete anchored file.
+    /// The outline input selecting the anchored node.
     // {impl}`requirements.references.anchors`
-    pub(crate) fn selector(&self, line_count: usize) -> InputSelector {
-        InputSelector::FileRange {
+    pub(crate) fn selector(&self) -> InputSelector {
+        InputSelector::Outline {
             file: self.file.clone(),
-            line_start: 1,
-            line_end: line_count,
+            item: self.item.clone(),
         }
     }
 }
@@ -156,6 +201,7 @@ pub(crate) fn inspect_repository_with_progress(
         Vec::new()
     };
     let mut present = BTreeSet::new();
+    let outlines = OutlineCache::default();
     let ordinary_files: Vec<_> = evidence_files.iter().collect();
 
     // {impl}`requirements.ci.orphans`
@@ -186,7 +232,7 @@ pub(crate) fn inspect_repository_with_progress(
         } else {
             errors.push(format!("{label}: no matching requirement or example"));
         }
-        validate_evidence_file(&root, file, expected, &definitions, &mut errors);
+        validate_evidence_file(&root, file, expected, &definitions, &outlines, &mut errors);
     }
     progress(InspectionProgress {
         stage: "evidence files",
@@ -206,7 +252,14 @@ pub(crate) fn inspect_repository_with_progress(
     }
 
     let references = collect_references_with_progress(&root, &mut errors, &mut progress);
-    validate_references(&root, &definitions, &references, &mut errors, &mut progress);
+    validate_references(
+        &root,
+        &definitions,
+        &references,
+        &outlines,
+        &mut errors,
+        &mut progress,
+    );
     // {impl}`requirements.references.rust_item_coverage`
     progress(InspectionProgress {
         stage: "Rust citations",
@@ -377,10 +430,7 @@ fn collect_definitions(
                     ));
                     continue;
                 }
-                anchors.push(Anchor {
-                    kind,
-                    file: option.value.clone(),
-                });
+                anchors.push(Anchor::parse(kind, &option.value));
             }
             if text.is_empty() {
                 errors.push(format!(
@@ -507,6 +557,7 @@ fn validate_evidence_file(
     path: &Path,
     expected: Option<&Declaration>,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) {
     let label = display_path(root, path);
@@ -594,7 +645,9 @@ fn validate_evidence_file(
     }
 
     crate::terms::validate_dependencies(
+        root,
         definitions,
+        outlines,
         object,
         expected.map(|d| d.text.as_str()),
         &label,
@@ -605,6 +658,7 @@ fn validate_evidence_file(
             validate_input(
                 root,
                 definitions,
+                outlines,
                 input,
                 &format!("{label}: inputs[{index}]"),
                 errors,
@@ -615,12 +669,13 @@ fn validate_evidence_file(
 
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.input_containment`
-// {impl}`requirements.ci.rust_item_inputs`
+// {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.definitions.inputs`
 fn validate_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     input: &Value,
     label: &str,
     errors: &mut Vec<String>,
@@ -629,20 +684,6 @@ fn validate_input(
         errors.push(format!("{label}: expected a JSON object"));
         return None;
     };
-    if object.contains_key("rust_file") || object.contains_key("rust_item") {
-        check_keys(object, &["rust_file", "rust_item", "text"], label, errors);
-        let rust_file = string_field(object, "rust_file", label, errors);
-        let rust_item = string_field(object, "rust_item", label, errors);
-        let text = text_field(object, label, errors);
-        let (Some(rust_file), Some(rust_item), Some(text)) = (rust_file, rust_item, text) else {
-            return None;
-        };
-        let selector = InputSelector::RustItem {
-            rust_file: rust_file.to_owned(),
-            rust_item: rust_item.to_owned(),
-        };
-        return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);
-    }
     if object.contains_key("definition") {
         check_keys(object, &["definition", "text"], label, errors);
         let definition = string_field(object, "definition", label, errors);
@@ -653,6 +694,7 @@ fn validate_input(
         return validate_resolved_input(
             root,
             definitions,
+            outlines,
             &InputSelector::Definition {
                 definition: definition.to_owned(),
             },
@@ -693,6 +735,7 @@ fn validate_input(
         return validate_resolved_input(
             root,
             definitions,
+            outlines,
             &selector,
             &text,
             Some(&matches),
@@ -700,26 +743,22 @@ fn validate_input(
             errors,
         );
     }
-    validate_file_range_input(root, definitions, object, label, errors)
+    validate_outline_input(root, definitions, outlines, object, label, errors)
 }
 
 // {impl}`requirements.ci.schema`
-// {impl}`requirements.ci.inputs`
+// {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.configuration.evidence_paths`
-fn validate_file_range_input(
+// {impl}`requirements.ci.diagnostics`
+fn validate_outline_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     object: &Map<String, Value>,
     label: &str,
     errors: &mut Vec<String>,
 ) -> Option<ResolvedInput> {
-    check_keys(
-        object,
-        &["file", "line_start", "line_end", "text"],
-        label,
-        errors,
-    );
-
+    check_keys(object, &["file", "item", "hash"], label, errors);
     let file = string_field(object, "file", label, errors).and_then(|file| {
         if file.is_empty() {
             errors.push(format!("{label}: file must be a nonempty path"));
@@ -728,35 +767,46 @@ fn validate_file_range_input(
             Some(file)
         }
     });
-    let start = positive_integer_field(object, "line_start", label, errors);
-    let end = positive_integer_field(object, "line_end", label, errors);
-    let text = text_field(object, label, errors);
-
-    if let (Some(start), Some(end)) = (start, end)
-        && end < start
-    {
-        errors.push(format!("{label}: line_end must be at least line_start"));
-        return None;
-    }
-    let (Some(file), Some(start), Some(end), Some(text)) = (file, start, end, text) else {
+    let item = string_field(object, "item", label, errors);
+    let hash = string_field(object, "hash", label, errors).and_then(|hash| {
+        if hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            Some(hash)
+        } else {
+            errors.push(format!(
+                "{label}: hash must be a lowercase hexadecimal SHA-256 digest"
+            ));
+            None
+        }
+    });
+    let (Some(file), Some(item), Some(hash)) = (file, item, hash) else {
         return None;
     };
-    validate_input_lines(
-        root,
-        file,
-        start,
-        end,
-        &text.iter().map(String::as_str).collect::<Vec<_>>(),
-        label,
-        errors,
-    );
-    InputSelector::FileRange {
+    let selector = InputSelector::Outline {
         file: file.to_owned(),
-        line_start: start,
-        line_end: end,
+        item: item.to_owned(),
+    };
+    let resolved = match selector.resolve(root, definitions, outlines) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            errors.push(format!("{label}: {error}"));
+            return None;
+        }
+    };
+    if let (Some(node), Some(range)) = (&resolved.node, resolved.ranges.first())
+        && node.hash != hash
+    {
+        errors.push(format!(
+            "{label}: outline input changed: {file} {} (now lines {}-{}) no longer has the recorded hash",
+            if item.is_empty() { "<root>" } else { item },
+            range.line_start,
+            range.line_end
+        ));
     }
-    .resolve(root, definitions)
-    .ok()
+    Some(resolved)
 }
 
 // {impl}`requirements.ci.schema`
@@ -781,20 +831,21 @@ fn text_field(
         .collect()
 }
 
-// {impl}`requirements.ci.rust_item_inputs`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.definitions.inputs`
 // {impl}`requirements.ci.diagnostics`
+#[allow(clippy::too_many_arguments)]
 fn validate_resolved_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     selector: &InputSelector,
     text: &[String],
     matches: Option<&[String]>,
     label: &str,
     errors: &mut Vec<String>,
 ) -> Option<ResolvedInput> {
-    let resolved = match selector.resolve(root, definitions) {
+    let resolved = match selector.resolve(root, definitions, outlines) {
         Ok(resolved) => resolved,
         Err(error) => {
             errors.push(format!("{label}: {error}"));
@@ -828,53 +879,6 @@ fn validate_resolved_input(
         ));
     }
     Some(resolved)
-}
-
-// {impl}`requirements.ci.inputs`
-// {impl}`requirements.ci.input_containment`
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.ci.diagnostics`
-fn validate_input_lines(
-    root: &Path,
-    file: &str,
-    start: usize,
-    end: usize,
-    text: &[&str],
-    label: &str,
-    errors: &mut Vec<String>,
-) {
-    let (_, content) = match crate::inputs::read_project_file(root, file) {
-        Ok(source) => source,
-        Err(error) => {
-            errors.push(format!("{label}: {error}"));
-            return;
-        }
-    };
-    let lines: Vec<_> = content
-        .lines()
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
-    if end > lines.len() {
-        errors.push(format!(
-            "{label}: {file}:{start}-{end} exceeds the file's {} lines",
-            lines.len()
-        ));
-        return;
-    }
-    let expected_count = end - start + 1;
-    if text.len() != expected_count {
-        errors.push(format!(
-            "{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}",
-            text.len()
-        ));
-    }
-    let actual = &lines[start - 1..end];
-    if text != actual {
-        errors.push(format!(
-            "{label}: input text changed at {file}:{start}-{end}{}",
-            compact_diff(text, actual)
-        ));
-    }
 }
 
 // {impl}`requirements.ci.diagnostics`
@@ -939,28 +943,6 @@ fn string_field<'a>(
 }
 
 // {impl}`requirements.ci.schema`
-fn positive_integer_field(
-    object: &Map<String, Value>,
-    key: &str,
-    label: &str,
-    errors: &mut Vec<String>,
-) -> Option<usize> {
-    match object.get(key) {
-        Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
-            Some(value) if value > 0 => Some(value),
-            _ => {
-                errors.push(format!("{label}: {key} must be a positive integer"));
-                None
-            }
-        },
-        None => {
-            errors.push(format!("{label}: missing field {key:?}"));
-            None
-        }
-    }
-}
-
-// {impl}`requirements.ci.schema`
 fn array_field<'a>(
     object: &'a Map<String, Value>,
     key: &str,
@@ -995,10 +977,13 @@ pub(crate) struct SourceReference {
     pub(crate) line: usize,
 }
 
+// {impl}`requirements.references.evidence_coverage`
+// {impl}`requirements.references.anchors`
 struct InputRange {
     file: PathBuf,
     line_start: usize,
     line_end: usize,
+    node: Option<ResolvedNode>,
 }
 
 // {impl}`requirements.references.evidence_coverage`
@@ -1012,6 +997,7 @@ fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
+    outlines: &OutlineCache,
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) {
@@ -1076,7 +1062,7 @@ fn validate_references(
                 display_path(root, &evidence_file)
             ));
         }
-        let inputs = evidence_input_ranges(root, &evidence_file, definitions);
+        let inputs = evidence_input_ranges(root, &evidence_file, definitions, outlines);
         // `{cite}` points from its source to the definition, so it is not part of
         // the definition's evidence.
         for reference in references
@@ -1098,28 +1084,32 @@ fn validate_references(
                 ));
             }
         }
-        // An anchor is an edge to the complete file, so one input must contain
-        // every line of it.
+        // An anchor is an edge to a file's root node or another node, so an
+        // outline input must select that node or one of its ancestors.
         for anchor in &definition.anchors {
-            match anchor.complete_file(root) {
-                Ok((path, line_count)) => {
+            match anchor.resolve(root, outlines) {
+                Ok(target) => {
                     if !inputs.iter().any(|input| {
-                        input.file == path && input.line_start <= 1 && line_count <= input.line_end
+                        input.node.as_ref().is_some_and(|node| {
+                            node.path == target.path && target.nodes.contains(&node.index)
+                        })
                     }) {
                         errors.push(format!(
-                            "{}: no input contains the complete file {} (lines 1-{line_count}) anchored by :{}: on {} {name}",
+                            "{}: no input selects {} (lines {}-{}) anchored by :{}: on {} {name}",
                             display_path(root, &evidence_file),
-                            anchor.file,
+                            anchor.label(),
+                            target.line_start,
+                            target.line_end,
                             anchor.kind.label(),
                             definition.kind.noun()
                         ));
                     }
                 }
                 Err(error) => errors.push(format!(
-                    "{}: :{}: anchor {} on {} {name} at {} does not resolve to a readable, permitted file: {error}",
+                    "{}: :{}: anchor {} on {} {name} at {} does not resolve to a readable, permitted file or node: {error}",
                     display_path(root, &evidence_file),
                     anchor.kind.label(),
-                    anchor.file,
+                    anchor.label(),
                     definition.kind.noun(),
                     definition.source
                 )),
@@ -1250,6 +1240,7 @@ fn evidence_input_ranges(
     root: &Path,
     path: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
 ) -> Vec<InputRange> {
     let Some(inputs) = fs::read_to_string(path)
         .ok()
@@ -1261,8 +1252,9 @@ fn evidence_input_ranges(
     inputs
         .iter()
         .filter_map(InputSelector::from_input)
-        .filter_map(|selector| selector.resolve(root, definitions).ok())
+        .filter_map(|selector| selector.resolve(root, definitions, outlines).ok())
         .flat_map(|resolved| {
+            let node = resolved.node;
             resolved
                 .ranges
                 .into_iter()
@@ -1271,6 +1263,7 @@ fn evidence_input_ranges(
                         file: fs::canonicalize(root.join(range.file)).ok()?,
                         line_start: range.line_start,
                         line_end: range.line_end,
+                        node: node.clone(),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1286,6 +1279,12 @@ mod tests {
     use tempfile::TempDir;
 
     use super::validate_repository;
+
+    /// The recorded outline input for `item` in `file`.
+    // {test}`requirements.ci.outline_inputs`
+    fn outline(root: &std::path::Path, file: &str, item: &str) -> Value {
+        crate::inputs::outline_input(root, file, item).unwrap()
+    }
 
     // {test}`requirements.integration.report_api`
     fn fixture() -> TempDir {
@@ -1320,12 +1319,7 @@ mod tests {
                 "requirement": "The check MUST pass.",
                 "determination": true,
                 "rationale": "The inspected file has the expected lines.",
-                "inputs": [{
-                    "file": "src/main.rs",
-                    "line_start": 1,
-                    "line_end": 2,
-                    "text": ["// first line", "// second line"]
-                }]
+                "inputs": [outline(root, "src/main.rs", "")]
             })
             .to_string(),
         )
@@ -1481,7 +1475,7 @@ mod tests {
     // {test}`requirements.ci.book_source`
     // {test}`requirements.ci.coverage`
     // {test}`requirements.ci.requirement_text`
-    // {test}`requirements.ci.inputs`
+    // {test}`requirements.ci.outline_inputs`
     // {test}`requirements.ci.identifiers`
     // {test}`requirements.ci.span`
     #[test]
@@ -1498,12 +1492,7 @@ mod tests {
                 "requirement": "The check MUST pass.\n\n```text\n{req}`example`\n```",
                 "determination": true,
                 "rationale": "The inspected file has the expected lines.",
-                "inputs": [{
-                    "file": "src/main.rs",
-                    "line_start": 1,
-                    "line_end": 2,
-                    "text": ["// first line", "// second line"]
-                }]
+                "inputs": [outline(temp.path(), "src/main.rs", "")]
             })
             .to_string(),
         )
@@ -1523,7 +1512,7 @@ mod tests {
     // {test}`requirements.ci.orphans`
     // {test}`requirements.ci.coverage`
     // {test}`requirements.ci.determination`
-    // {test}`requirements.ci.inputs`
+    // {test}`requirements.ci.outline_inputs`
     // {test}`requirements.ci.requirement_text`
     // {test}`requirements.ci.schema`
     #[test]
@@ -1543,14 +1532,28 @@ mod tests {
                 "inputs": [
                     {
                         "file": "src/main.rs",
-                        "line_start": 1,
-                        "line_end": 1,
-                        "text": ["changed line"]
+                        "item": "",
+                        "hash": "0".repeat(64)
                     },
                     {
                         "file": "",
-                        "line_start": 0,
-                        "line_end": 2,
+                        "item": 0,
+                        "hash": "ABC"
+                    },
+                    {
+                        "file": "src/main.rs",
+                        "item": "fn[missing]",
+                        "hash": "0".repeat(64)
+                    },
+                    {
+                        "file": "src/main.rs",
+                        "line_start": 1,
+                        "line_end": 1,
+                        "text": ["// first line"]
+                    },
+                    {
+                        "requirements": "requirements.two",
+                        "matches": ["requirements.two"],
                         "text": [1]
                     }
                 ]
@@ -1586,15 +1589,17 @@ mod tests {
             "- Old text.",
             "+ First.",
             "determination is false",
-            "input text changed",
-            "- changed line",
-            "+ // first line",
+            "inputs[0]: outline input changed: src/main.rs <root> (now lines 1-2) no longer has the recorded hash",
+            "inputs[1]: file must be a nonempty path",
+            "inputs[1]: item must be a string",
+            "inputs[1]: hash must be a lowercase hexadecimal SHA-256 digest",
+            "inputs[2]: src/main.rs: no outline node matches \"fn[missing]\"",
+            "inputs[3]: unexpected field \"line_start\"",
+            "inputs[3]: missing field \"item\"",
+            "inputs[4]: text[0] must be a string",
             "requirement must be a string",
             "missing field \"determination\"",
             "inputs must be an array",
-            "file must be a nonempty path",
-            "line_start must be a positive integer",
-            "text[0] must be a string",
             "duplicate requirement requirements.one; first declared at md/requirements.md:3",
             "requirement requirements.empty has no text",
         ] {
@@ -1627,18 +1632,9 @@ mod tests {
                 "determination": true,
                 "rationale": "The source and notes were examined.",
                 "inputs": [
-                    {
-                        "file": "src/main.rs",
-                        "line_start": 1,
-                        "line_end": 2,
-                        "text": source.lines().collect::<Vec<_>>()
-                    },
-                    {
-                        "file": "md/notes.md",
-                        "line_start": 3,
-                        "line_end": 3,
-                        "text": [test]
-                    }
+                    outline(temp.path(), "src/main.rs", ""),
+                    crate::inputs::outline_inputs_for_lines(temp.path(), "md/notes.md", 3, 3)
+                        .unwrap()[0]
                 ]
             })
             .to_string(),
@@ -1662,19 +1658,19 @@ mod tests {
         let known = ["{", "test}`foo.bar.ready`"].concat();
         let unknown = ["{", "impl}`missing.requirement`"].concat();
         let source = format!("// {known}\n// {known}\n// {unknown}\n");
-        fs::write(temp.path().join("src/main.rs"), &source).unwrap();
+        fs::write(temp.path().join("src/notes.txt"), &source).unwrap();
+        // Identical plain-text lines are interchangeable, so this selects the
+        // first line only.
+        let first = crate::inputs::outline_inputs_for_lines(temp.path(), "src/notes.txt", 1, 1)
+            .unwrap()
+            .remove(0);
         fs::write(
             temp.path().join("evidence/foo.bar.ready.json"),
             json!({
                 "requirement": "Ready.",
                 "determination": true,
                 "rationale": "Only the first line was examined.",
-                "inputs": [{
-                    "file": "src/main.rs",
-                    "line_start": 1,
-                    "line_end": 1,
-                    "text": [source.lines().next().unwrap()]
-                }]
+                "inputs": [first]
             })
             .to_string(),
         )
@@ -1685,12 +1681,12 @@ mod tests {
         assert_eq!(report.errors.len(), 2, "{errors}");
         assert!(
             errors.contains(&format!(
-                "src/main.rs:3: {unknown} has no matching requirement"
+                "src/notes.txt:3: {unknown} has no matching requirement"
             )),
             "{errors}"
         );
         assert!(
-            errors.contains(&format!("no input covers {known} at src/main.rs:2")),
+            errors.contains(&format!("no input covers {known} at src/notes.txt:2")),
             "{errors}"
         );
     }
@@ -1816,12 +1812,8 @@ mod tests {
                 "requirement": "Ready.",
                 "determination": true,
                 "rationale": "The example cites this rule.",
-                "inputs": [{
-                    "file": "md/rules.md",
-                    "line_start": 8,
-                    "line_end": 8,
-                    "text": [chapter.lines().nth(7).unwrap()]
-                }]
+                "inputs": crate::inputs::outline_inputs_for_lines(temp.path(), "md/rules.md", 8, 8)
+                    .unwrap()
             })
             .to_string(),
         )
@@ -1834,12 +1826,7 @@ mod tests {
                 "determination": true,
                 "rationale": "checks_case sets up ready and asserts the result.",
                 "inputs": [
-                    {
-                        "file": "src/main.rs",
-                        "line_start": 1,
-                        "line_end": 3,
-                        "text": test_source.lines().collect::<Vec<_>>()
-                    },
+                    outline(temp.path(), "src/main.rs", "fn[checks_case]"),
                     {
                         "requirements": "rules.*",
                         "matches": ["rules.case", "rules.ready"],
@@ -1880,7 +1867,9 @@ mod tests {
         .unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
-            errors.contains("input text changed at src/main.rs:1-3"),
+            errors.contains(
+                "outline input changed: src/main.rs fn[checks_case] (now lines 1-3) no longer has the recorded hash"
+            ),
             "{errors}"
         );
         fs::write(temp.path().join("src/main.rs"), &test_source).unwrap();
@@ -1937,7 +1926,6 @@ mod tests {
             .replace("IMPL", "{impl}")
             .replace("TEST", "{test}");
         fs::write(temp.path().join("src/main.rs"), &source).unwrap();
-        let lines = source.lines().collect::<Vec<_>>();
         let record = |inputs: serde_json::Value| {
             json!({
                 "requirement": "Ready.",
@@ -1974,12 +1962,10 @@ mod tests {
 
         fs::write(
             &path,
-            record(json!([{
-                "file": "src/main.rs",
-                "line_start": 3,
-                "line_end": 6,
-                "text": lines[2..6]
-            }])),
+            record(json!([
+                outline(temp.path(), "src/main.rs", "fn[run]"),
+                outline(temp.path(), "src/main.rs", "fn[check]")
+            ])),
         )
         .unwrap();
         let report = validate_repository(temp.path()).unwrap();
@@ -2058,14 +2044,8 @@ mod tests {
             ":::{req} ready\n:impl: skills/ready.md\n:test: missing.sh\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
         )
         .unwrap();
-        let skill = |line_end: usize| {
-            json!({
-                "file": "skills/ready.md",
-                "line_start": 1,
-                "line_end": line_end,
-                "text": &["# Skill", "Use ready."][..line_end],
-            })
-        };
+        // The root node is the whole file; its heading's section is not.
+        let skill = |item: &str| outline(root, "skills/ready.md", item);
         let write = |name: &str, field: &str, text: &str, inputs: Value| {
             fs::write(
                 root.join(format!("evidence/{name}.json")),
@@ -2084,18 +2064,18 @@ mod tests {
             "requirements.ready",
             "requirement",
             "Ready MUST hold.",
-            json!([skill(1)]),
+            json!([skill("section[Skill]")]),
         );
         write(
             "requirements.case",
             "example",
             &"A ready case. CITE`requirements.ready`".replace("CITE", "{cite}"),
-            json!([skill(2)]),
+            json!([skill("")]),
         );
         let errors = validate_repository(root).unwrap().errors.join("\n");
         assert!(!errors.contains("text changed"), "{errors}");
         assert!(
-            errors.contains("evidence/requirements.ready.json: no input contains the complete file skills/ready.md (lines 1-2) anchored by :impl: on requirement requirements.ready"),
+            errors.contains("evidence/requirements.ready.json: no input selects skills/ready.md (lines 1-2) anchored by :impl: on requirement requirements.ready"),
             "{errors}"
         );
         assert!(
@@ -2113,7 +2093,7 @@ mod tests {
             "requirements.ready",
             "requirement",
             "Ready MUST hold.",
-            json!([skill(2)]),
+            json!([skill("")]),
         );
         let report = validate_repository(root).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -2122,7 +2102,68 @@ mod tests {
         fs::write(root.join("skills/ready.md"), "# Skill\nUse ready now.\n").unwrap();
         let errors = validate_repository(root).unwrap().errors.join("\n");
         assert!(
-            errors.contains("evidence/requirements.ready.json: inputs[0]: input text changed at skills/ready.md:1-2"),
+            errors.contains("evidence/requirements.ready.json: inputs[0]: outline input changed: skills/ready.md <root> (now lines 1-2) no longer has the recorded hash"),
+            "{errors}"
+        );
+    }
+
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.ci.outline_inputs`
+    #[test]
+    fn selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("src/lib.rs"),
+            "mod inner {\n    fn run() {}\n    fn other() {}\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#mod[inner]/fn[run]\nReady MUST hold.\n:::\n",
+        )
+        .unwrap();
+        let write = |inputs: Value| {
+            fs::write(
+                root.join("evidence/requirements.ready.json"),
+                json!({
+                    "requirement": "Ready MUST hold.",
+                    "determination": true,
+                    "rationale": "Checked.",
+                    "inputs": inputs,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let anchor_errors = || {
+            validate_repository(root)
+                .unwrap()
+                .errors
+                .into_iter()
+                .filter(|error| error.contains("anchor"))
+                .collect::<Vec<_>>()
+        };
+        write(json!([outline(root, "src/lib.rs", "mod[inner]/fn[other]")]));
+        let errors = anchor_errors();
+        assert_eq!(
+            errors,
+            [
+                "evidence/requirements.ready.json: no input selects src/lib.rs#mod[inner]/fn[run] (lines 2-2) anchored by :impl: on requirement requirements.ready"
+            ],
+        );
+        for item in ["mod[inner]/fn[run]", "mod[inner]", ""] {
+            write(json!([outline(root, "src/lib.rs", item)]));
+            assert!(anchor_errors().is_empty(), "{item}: {:?}", anchor_errors());
+        }
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#fn[missing]\nReady MUST hold.\n:::\n",
+        )
+        .unwrap();
+        let errors = anchor_errors().join("\n");
+        assert!(
+            errors.contains(":impl: anchor src/lib.rs#fn[missing] on requirement requirements.ready at md/requirements.md:1 does not resolve to a readable, permitted file or node: src/lib.rs: no outline node matches \"fn[missing]\""),
             "{errors}"
         );
     }
@@ -2170,12 +2211,17 @@ mod tests {
             [super::Anchor {
                 kind: crate::ReferenceKind::Impl,
                 file: "src/main.rs".to_owned(),
+                item: String::new(),
             }]
         );
         let resolved = crate::inputs::InputSelector::Requirements {
             requirements: "requirements.ready".to_owned(),
         }
-        .resolve(&fs::canonicalize(temp.path()).unwrap(), &definitions)
+        .resolve(
+            &fs::canonicalize(temp.path()).unwrap(),
+            &definitions,
+            &crate::inputs::OutlineCache::default(),
+        )
         .unwrap();
         assert_eq!(resolved.text, ready.raw_lines);
     }

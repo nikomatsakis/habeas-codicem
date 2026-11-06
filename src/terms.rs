@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde_json::{Map, Value};
 
 use crate::evidence::Declaration;
-use crate::inputs::InputSelector;
+use crate::inputs::{InputSelector, OutlineCache};
 use crate::{DefinitionKind, ReferenceKind, reference_roles};
 
 // {impl}`requirements.definitions.declaration`
@@ -44,7 +45,9 @@ fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
 // {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.definitions.selection`
 pub(crate) fn dependencies(
+    root: &Path,
     declarations: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     record: &Map<String, Value>,
     subject: Option<&str>,
 ) -> Result<BTreeSet<String>, String> {
@@ -57,29 +60,30 @@ pub(crate) fn dependencies(
             let Some(selector) = InputSelector::from_input(input) else {
                 continue;
             };
-            let Some(lines) = input.get("text").and_then(Value::as_array) else {
-                continue;
+            // Recorded outline inputs carry no text; read the node's current source.
+            let text = match input.get("text").and_then(Value::as_array) {
+                Some(lines) => lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => match selector.resolve(root, declarations, outlines) {
+                    Ok(resolved) if matches!(selector, InputSelector::Outline { .. }) => {
+                        resolved.text.join("\n")
+                    }
+                    _ => continue,
+                },
             };
-            let text = lines
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join("\n");
             match selector {
                 InputSelector::Definition { definition } => {
                     pending.insert(definition);
                 }
-                InputSelector::RustItem { .. } => {
+                InputSelector::Outline { file, .. } if file.ends_with(".rs") => {
                     for range in crate::rust_coverage::comments(&text) {
                         referenced_terms(&text[range], false, &mut pending);
                     }
                 }
-                InputSelector::FileRange { file, .. } if file.ends_with(".rs") => {
-                    for range in crate::rust_coverage::comments(&text) {
-                        referenced_terms(&text[range], false, &mut pending);
-                    }
-                }
-                InputSelector::FileRange { file, .. } => {
+                InputSelector::Outline { file, .. } => {
                     referenced_terms(&text, file.ends_with(".md"), &mut pending)
                 }
                 InputSelector::Requirements { .. } => {
@@ -113,13 +117,15 @@ pub(crate) fn dependencies(
 
 // {impl}`requirements.definitions.dependencies`
 pub(crate) fn validate_dependencies(
+    root: &Path,
     declarations: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     record: &Map<String, Value>,
     subject: Option<&str>,
     label: &str,
     errors: &mut Vec<String>,
 ) {
-    match dependencies(declarations, record, subject) {
+    match dependencies(root, declarations, outlines, record, subject) {
         Ok(required) => {
             for name in required {
                 let count = record

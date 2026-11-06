@@ -36,7 +36,7 @@ example. Each requirement or example evidence file records four fields:
 | `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |
 | `determination` | `true`, `false`, or `{"FIXME": ["#125"]}` for explicitly documented gaps. |
 | `rationale` | A Markdown explanation of that judgment. |
-| `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or definition selection. |
+| `inputs` | Sources supporting it. Inputs select an outline node of a file, a definition selection, or a terminology definition. |
 
 For a requirement, the model reviews whether the code marked `{impl}` implements its
 stated obligations completely and exactly, and whether tests cover the interesting
@@ -62,13 +62,24 @@ convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference ma
 appear elsewhere in the comment or test. The harness captures those source inputs.
 {cite}`requirements.ci.outcomes`
 
-An input has exactly one of these forms. `text` always stores complete raw lines, so comments remain available to the reviewer:
+An input has exactly one of these forms. A source file input names one node of
+the file's outline by its selector and records the node's structural hash; it
+stores no source text and no line numbers. Requirements and definition inputs
+store the complete raw declaration lines:
 
 ```json
-{"file":"src/main.rs","line_start":1,"line_end":3,"text":["..."]}
-{"rust_file":"src/main.rs","rust_item":"fn[main]","text":["..."]}
+{"file":"src/main.rs","item":"fn[main]","hash":"<64 lowercase hex digits>"}
 {"requirements":"requirements.cli.*","matches":["requirements.cli.info"],"text":["..."]}
+{"definition":"glossary.command","text":["..."]}
 ```
+
+The empty `item` selects the whole file. Moving a node, editing other nodes, or
+editing comments its language profile does not hash, such as ordinary Rust `//`
+comments, leaves the input valid; changing its code, or a Rust doc comment,
+changes the hash and makes the input stale. The validation error names the file,
+the selector, and the node's current line range. Detail pages and `habeas info`
+show each node's kind, current line range, and current source text.
+{cite}`requirements.ci.outline_inputs` {cite}`requirements.references.structural_hash`
 
 `habeas author --all` captures source text and delegates judgments to the configured
 model. The supervising agent fixes reported gaps and reruns the command; it does
@@ -78,14 +89,14 @@ determination false until the authoring harness reassesses it.
 {cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`
 
 ```sh
-habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20
-habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26
-habeas add-input --for-requirement requirements.ci.inputs --requirements 'requirements.ci.*'
+habeas add-input --for-requirement requirements.ci.outline_inputs --item src/evidence.rs:20
+habeas add-input --for-example reference.cli.unknown_command --item tests/cli.rs:26
+habeas add-input --for-requirement requirements.ci.outline_inputs --requirements 'requirements.ci.*'
 ```
 
-The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`
+The `--item <file>:<line>` mode works on any text file. It selects every outline node declared on that line: a named node, such as a Rust function, is declared on the line containing its name; an anonymous node, such as a `use` declaration or a line of a plain-text file, is declared where it starts. Each selected node is recorded with its selector and structural hash. A line on which no node is declared is rejected. A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.outline_inputs` {cite}`requirements.ci.requirements_inputs`
 
-Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`
+Habeas checks that every requirement and example has evidence, that every evidence file names a definition, that recorded requirement and definition text still matches, and that every outline input's hash still matches its node. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`
 
 ## Authoring evidence with a model
 
@@ -116,7 +127,7 @@ without input snapshots or additional inference:
 
 ```sh
 habeas author --all --config cloud -v
-habeas author requirements.ci.inputs --verbose
+habeas author requirements.ci.outline_inputs --verbose
 ```
 
 This also works with `--stdout`: stdout remains evidence JSON and the verbose
@@ -131,14 +142,19 @@ because waiting cannot make that request fit. {cite}`requirements.authoring.prov
 `habeas author <full-name>` assesses one requirement or example, records the
 source inputs delivered to the model, and writes its judgment to the usual
 evidence file. `author-evidence` remains an alias. The model can read sources
-with `habeas`, list files, search them with ripgrep (built in; no `rg` executable
-is needed), and use `references` to list definition names or every `{impl}`,
-`{cite}`, and `{test}` site for a definition selection. Listings, searches, and
-reference lookups are not recorded as evidence.
+with `habeas`, list files, list a file's selectable nodes with `outline`, search
+files with ripgrep (built in; no `rg` executable is needed), and use `references`
+to list definition names or every `{impl}`, `{cite}`, and `{test}` site for a
+definition selection. A `habeas` read names an outline node directly or asks for
+a line range; a line range, like each ripgrep match and its context, is returned
+as the innermost outline nodes covering those lines, and those nodes are recorded
+as outline inputs. Listings, outlines, and reference lookups are not recorded as
+evidence.
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
 {cite}`requirements.authoring.text_search`
+{cite}`requirements.authoring.outline_tool`
 {cite}`requirements.authoring.reference_index`
 
 In a Git worktree, stage new source files with `git add` before authoring. The
@@ -367,7 +383,7 @@ Each reference must name an existing requirement or example and is a directed ed
 Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.
 {cite}`requirements.references.targets` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
-Some sources cannot or should not carry a reference themselves, such as a shipped agent skill. A requirement can anchor such a file with `:impl:` or `:test:` option lines immediately after its opening fence; an example can use `:test:`. Each anchor is an edge to the complete file, so that requirement's evidence must contain an input covering every line of it, and changing the file makes the evidence stale. Option lines are not part of the requirement text. Prefer a precise in-source reference whenever one is possible.
+Some sources cannot or should not carry a reference themselves, such as a shipped agent skill. A requirement can anchor such a file with `:impl:` or `:test:` option lines immediately after its opening fence; an example can use `:test:`. Each anchor is an edge to the complete file, or with `path#selector` to one outline node in it, such as `src/lib.rs#fn[run]`. The requirement's evidence must contain an outline input selecting the anchored node or one of its ancestors (the empty selector selects the whole file), so changing it makes the evidence stale. Option lines are not part of the requirement text. Prefer a precise in-source reference whenever one is possible.
 {cite}`requirements.references.anchors`
 
 ```text
@@ -477,7 +493,7 @@ and in a glob `*` can span any number of characters, including dots. {cite}`requ
 {cite}`requirements.references.definition_globs`
 
 ```sh
-habeas info requirements.ci.inputs
+habeas info requirements.ci.outline_inputs
 habeas info 'requirements.cli.*'
 habeas status 'requirements.cli.*' --all
 habeas status --verbose

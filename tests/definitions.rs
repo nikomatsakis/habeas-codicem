@@ -242,7 +242,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
 // {test}`requirements.definitions.dependencies`
 // {test}`requirements.definitions.references`
 #[test]
-fn rust_item_inputs_capture_terms_without_counting_them_as_citations() {
+fn outline_inputs_capture_terms_without_counting_them_as_citations() {
     let temp = fixture();
     let root = temp.path();
     fs::write(
@@ -255,14 +255,14 @@ fn rust_item_inputs_capture_terms_without_counting_them_as_citations() {
     add_input(
         root,
         InputTarget::Requirement("rules.ready".into()),
-        InputMode::RustItemsAtLine("src/lib.rs:3".into()),
+        InputMode::ItemsAtLine("src/lib.rs:3".into()),
     )
     .unwrap();
     let path = root.join("evidence/rules.ready.json");
     let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     let inputs = record["inputs"].as_array().unwrap();
     assert!(
-        inputs.iter().any(|input| input["rust_item"] == "fn[run]"),
+        inputs.iter().any(|input| input["item"] == "fn[run]"),
         "{inputs:?}"
     );
     for term in ["glossary.a", "glossary.b"] {
@@ -275,7 +275,7 @@ fn rust_item_inputs_capture_terms_without_counting_them_as_citations() {
     add_input(
         root,
         InputTarget::Requirement("rules.ready".into()),
-        InputMode::RustItemsAtLine("src/lib.rs:3".into()),
+        InputMode::ItemsAtLine("src/lib.rs:3".into()),
     )
     .unwrap();
     approve(&root.join("evidence/rules.ready.json"));
