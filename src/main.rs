@@ -15,6 +15,7 @@ struct Cli {
     command: Command,
 }
 
+// {impl}`requirements.cli.clap`
 #[derive(Subcommand)]
 enum Command {
     Mdbook {
@@ -58,6 +59,9 @@ enum Command {
         #[command(subcommand)]
         command: HookCommand,
     },
+    // {impl}`requirements.cli.add_input`
+    // {impl}`requirements.cli.add_input_item`
+    // {impl}`requirements.cli.add_input_requirements`
     #[command(
         group(ArgGroup::new("target").required(true).multiple(false).args(["for_requirement", "for_example"])),
         group(ArgGroup::new("mode").required(true).multiple(false).args(["item", "requirements"]))
@@ -75,11 +79,13 @@ enum Command {
     },
 }
 
+// {impl}`requirements.cli.clap`
 #[derive(Subcommand)]
 enum MdbookCommand {
     Supports { renderer: String },
 }
 
+// {impl}`requirements.cli.clap`
 #[derive(Subcommand)]
 enum HookCommand {
     SessionStart,
@@ -91,11 +97,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     // {impl}`requirements.configuration.workspace_location`
     // {impl}`requirements.configuration.workspace_structure`
     // {impl}`requirements.configuration.loading`
+    // Only commands that resolve evidence inputs use the workspace evidence
+    // path policy; setup, the session-start hook, and support queries do not.
     if !matches!(
         cli.command,
         Command::Mdbook {
             command: Some(MdbookCommand::Supports { .. })
-        }
+        } | Command::Setup { .. }
+            | Command::Hook { .. }
     ) {
         habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;
     }
@@ -220,6 +229,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } => hook::session_start(),
         // {impl}`requirements.cli.add_input`
         // {impl}`requirements.cli.add_input_item`
+        // {impl}`requirements.cli.add_input_requirements`
         Command::AddInput {
             for_requirement,
             for_example,

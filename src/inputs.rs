@@ -196,6 +196,7 @@ impl InputSelector {
     // {impl}`requirements.definitions.inputs`
     // {impl}`requirements.ci.schema`
     // {impl}`requirements.cli.add_input_requirements`
+    // {impl}`requirements.cli.add_input_item`
     // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {
         match self {

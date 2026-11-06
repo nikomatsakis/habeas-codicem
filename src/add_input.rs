@@ -125,9 +125,12 @@ fn add_definition_inputs(
         return Err(invalid_input(format!("unknown {} {name:?}", kind.noun())));
     };
     if definition.kind != kind {
+        let article = |noun: &str| if noun.starts_with('e') { "an" } else { "a" };
         return Err(invalid_input(format!(
-            "{name:?} is an {}, not a {}",
+            "{name:?} is {} {}, not {} {}",
+            article(definition.kind.noun()),
             definition.kind.noun(),
+            article(kind.noun()),
             kind.noun()
         )));
     }

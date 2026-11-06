@@ -250,6 +250,18 @@ fn session_start_advises_only_when_setup_is_incomplete() {
         json!({"SessionStart": {}}),
         "a project without Habeas must not receive an advisory"
     );
+    let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        format!("{manifest}\n[dependencies]\nhabeas = \"0.2\"\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        session_start(project, project),
+        json!({"SessionStart": {}}),
+        "only a Habeas dev dependency makes the hook applicable"
+    );
+    fs::write(project.join("Cargo.toml"), manifest).unwrap();
     run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
 
     let nested = project.join("src/nested");
@@ -277,6 +289,101 @@ fn session_start_advises_only_when_setup_is_incomplete() {
     let response = session_start(project, &nested);
     assert!(response["SessionStart"]["additionalContext"].is_string());
 
+    fs::write(project.join("book.toml"), &book).unwrap();
+    assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+    let mut without_fold: toml_edit::DocumentMut = book.parse().unwrap();
+    without_fold["output"]["html"]["fold"]
+        .as_table_like_mut()
+        .unwrap()
+        .remove("enable");
+    fs::write(project.join("book.toml"), without_fold.to_string()).unwrap();
+    let response = session_start(project, &nested);
+    assert!(
+        response["SessionStart"]["additionalContext"].is_string(),
+        "a book without `output.html.fold.enable` is not fully configured"
+    );
+    let mut disabled_fold = without_fold;
+    disabled_fold["output"]["html"]["fold"]["enable"] = toml_edit::value(false);
+    fs::write(project.join("book.toml"), disabled_fold.to_string()).unwrap();
+    assert_eq!(
+        session_start(project, &nested),
+        json!({"SessionStart": {}}),
+        "setup keeps an existing fold setting, so any value is complete"
+    );
+
     fs::remove_file(project.join("book.toml")).unwrap();
     assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+}
+
+// {test}`requirements.cli.setup`
+#[test]
+fn setup_does_not_overwrite_a_differing_test_or_stylesheet() {
+    for existing in ["tests/habeas.rs", "md/habeas.css"] {
+        let temp = fixture();
+        let project = temp.path();
+        let path = project.join(existing);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "user content\n").unwrap();
+        let book = fs::read_to_string(project.join("book.toml")).unwrap();
+        let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+
+        let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .args(["setup", "--path", env!("CARGO_MANIFEST_DIR")])
+            .current_dir(project)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{existing}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("already exists with different content") && stderr.contains(existing),
+            "{existing}: {stderr}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "user content\n");
+        assert_eq!(fs::read_to_string(project.join("book.toml")).unwrap(), book);
+        assert_eq!(
+            fs::read_to_string(project.join("Cargo.toml")).unwrap(),
+            cargo
+        );
+    }
+}
+
+// {test}`requirements.cli.setup_project`
+#[test]
+fn setup_finds_the_nearest_cargo_and_mdbook_ancestor() {
+    let binary = env!("CARGO_BIN_EXE_habeas");
+    for present in [
+        ["Cargo.toml"].as_slice(),
+        ["book.toml"].as_slice(),
+        [].as_slice(),
+    ] {
+        let temp = TempDir::new().unwrap();
+        for file in present {
+            fs::write(temp.path().join(file), "").unwrap();
+        }
+        let nested = temp.path().join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        let output = Command::new(binary)
+            .args(["setup", "--path", env!("CARGO_MANIFEST_DIR")])
+            .current_dir(&nested)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{present:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("cannot find a project with Cargo.toml and book.toml"),
+            "{present:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let temp = fixture();
+    let project = temp.path();
+    let nested = project.join("src/nested");
+    fs::create_dir_all(&nested).unwrap();
+    run(&nested, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert!(project.join("tests/habeas.rs").is_file());
+    assert!(project.join("md/habeas.css").is_file());
+    assert!(!nested.join("tests").exists());
 }
