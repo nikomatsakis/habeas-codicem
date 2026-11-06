@@ -34,6 +34,8 @@ pub struct WorkspaceConfig {
     pub evidence: Option<EvidenceConfig>,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceAuthoringConfig {
@@ -68,6 +70,8 @@ pub struct WorkspaceEvidenceConfig {
 }
 
 /// A user-supplied credential value. Serialization preserves it; diagnostics do not.
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretString(String);
@@ -87,6 +91,8 @@ impl fmt::Debug for SecretString {
     }
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BedrockCredentials {
@@ -96,6 +102,8 @@ pub struct BedrockCredentials {
     pub session_token: Option<SecretString>,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserAuthoringConfig {
@@ -106,12 +114,17 @@ pub struct UserAuthoringConfig {
     pub projects: BTreeMap<PathBuf, ProjectSelection>,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectSelection {
     pub config: String,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.authoring.concurrency`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuthoringConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,6 +133,8 @@ pub struct AuthoringConfig {
     pub backend: BackendConfig,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "backend", rename_all = "lowercase")]
 pub enum BackendConfig {
@@ -127,6 +142,9 @@ pub enum BackendConfig {
     Ollama(OllamaConfig),
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.authoring.rig_configuration_mapping`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BedrockConfig {
@@ -141,6 +159,9 @@ pub struct BedrockConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.authoring.rig_configuration_mapping`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OllamaConfig {
@@ -155,6 +176,8 @@ pub struct OllamaConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OptionValue {
@@ -166,6 +189,7 @@ pub enum OptionValue {
     Map(BTreeMap<String, OptionValue>),
 }
 
+// {impl}`requirements.authoring.configuration_structure`
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
@@ -173,12 +197,14 @@ pub enum BackendKind {
     Ollama,
 }
 
+// {impl}`requirements.authoring.configuration_structure`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelRef {
     pub backend: BackendKind,
     pub model: String,
 }
 
+// {impl}`requirements.authoring.concurrency`
 /// The selected saved values together with their source, without resolved secrets.
 #[derive(Clone, Debug)]
 pub struct ResolvedAuthoringConfig {
@@ -248,6 +274,7 @@ impl WorkspaceConfig {
     // {impl}`requirements.configuration.loading`
     // {impl}`requirements.authoring.credentials`
     // {impl}`requirements.authoring.configuration_serialization`
+    // {impl}`requirements.authoring.concurrency`
     // {impl}`requirements.configuration.serialization`
     pub fn parse(text: &str, path: &Path) -> io::Result<Self> {
         let table = parse_document(text, path)?;
@@ -350,7 +377,11 @@ impl UserAuthoringConfig {
                 || root
                     .components()
                     .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
-                || fs::canonicalize(root).is_ok_and(|canonical| canonical != *root)
+                // `Path` equality ignores `.` components and trailing
+                // separators, so compare the spelled-out keys instead.
+                || root.components().collect::<PathBuf>().as_os_str() != root.as_os_str()
+                || fs::canonicalize(root)
+                    .is_ok_and(|canonical| canonical.as_os_str() != root.as_os_str())
             {
                 return Err(invalid(
                     path,
@@ -365,6 +396,7 @@ impl UserAuthoringConfig {
 }
 
 impl BackendConfig {
+    // {impl}`requirements.authoring.rig_configuration_mapping`
     // {impl}`requirements.authoring.configuration_structure`
     pub fn model_ref(&self) -> ModelRef {
         match self {
@@ -508,6 +540,7 @@ impl OptionValue {
 
 impl OllamaConfig {
     // {impl}`requirements.authoring.configuration_precedence`
+    // {impl}`requirements.authoring.rig_configuration_mapping`
     pub fn endpoint(&self) -> &str {
         self.endpoint.as_deref().unwrap_or("http://localhost:11434")
     }
@@ -515,6 +548,7 @@ impl OllamaConfig {
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.configuration.serialization`
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.authoring.rig_configuration_mapping`
     pub fn api_key(&self) -> io::Result<Option<String>> {
         self.api_key_from(|name| std::env::var_os(name))
     }
@@ -522,6 +556,7 @@ impl OllamaConfig {
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.configuration.serialization`
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.authoring.rig_configuration_mapping`
     pub fn api_key_from(
         &self,
         lookup: impl Fn(&str) -> Option<OsString>,
@@ -638,6 +673,8 @@ pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.configuration.workspace_structure`
 // {impl}`requirements.configuration.serialization`
+// {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.authoring.concurrency`
 pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {
     let Some((path, table)) = workspace_document(root)? else {
         return Ok(None);
@@ -846,6 +883,7 @@ pub fn resolve_authoring_from(
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.configuration`
 // {impl}`requirements.configuration.serialization`
+// {impl}`requirements.authoring.concurrency`
 pub fn resolve_authoring_with_workspace_from(
     path: &Path,
     user: Option<&UserConfig>,

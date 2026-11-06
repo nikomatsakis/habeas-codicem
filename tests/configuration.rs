@@ -591,3 +591,303 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
         assert!(WorkspaceConfig::parse(&invalid_source, path).is_err());
     }
 }
+
+// {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.configuration.serialization`
+#[test]
+fn user_and_workspace_authoring_tables_round_trip_every_map() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let path = root.join("config.toml");
+
+    // A user section with a project selection keeps the canonical key.
+    let source = format!(
+        "version = 1\n[authoring]\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm:tag'\n[authoring.projects.{:?}]\nconfig = 'local'\n",
+        root.display().to_string()
+    );
+    let user = UserConfig::parse(&source, &path).unwrap();
+    let projects = &user.authoring.as_ref().unwrap().projects;
+    assert_eq!(projects[&root].config, "local");
+    let serialized = user.to_toml().unwrap();
+    assert!(serialized.contains("[authoring.projects."), "{serialized}");
+    assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), user);
+
+    // A present-but-empty `configs` is preserved and still parses.
+    let empty = UserConfig::parse("version = 1\n[authoring]\nconfigs = {}\n", &path).unwrap();
+    let serialized = empty.to_toml().unwrap();
+    assert!(serialized.contains("configs"), "{serialized}");
+    let reparsed = UserConfig::parse(&serialized, &path).unwrap();
+    assert_eq!(reparsed, empty);
+    assert!(reparsed.authoring.unwrap().configs.is_empty());
+
+    // A workspace table with populated configs and options round-trips, and
+    // the production loader decodes it exactly as `WorkspaceConfig::parse`.
+    let workspace_path = root.join("habeas.toml");
+    let workspace_text = "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'arn:aws:bedrock:us-east-1:123:inference-profile/us.model-v1:0'\nregion = 'us-east-1'\n[authoring.configs.cloud.options]\ntemperature = 0.5\n[authoring.configs.cloud.options.nested]\nflag = true\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'local:7b'\n[authoring.configs.local.options]\nnum_ctx = 2048\n";
+    fs::write(&workspace_path, workspace_text).unwrap();
+    let workspace = WorkspaceConfig::parse(workspace_text, &workspace_path).unwrap();
+    let loaded = load_workspace_config(&root).unwrap().unwrap();
+    assert_eq!(loaded.config, workspace);
+    let configs = &workspace.authoring.as_ref().unwrap().configs;
+    assert_eq!(configs["cloud"].backend.options().len(), 2);
+    assert_eq!(configs["local"].backend.options().len(), 1);
+    let serialized = workspace.to_toml().unwrap();
+    assert!(serialized.contains("backend = \"bedrock\""), "{serialized}");
+    assert!(
+        serialized.contains("[authoring.configs.cloud.options"),
+        "{serialized}"
+    );
+    assert_eq!(
+        WorkspaceConfig::parse(&serialized, &workspace_path).unwrap(),
+        workspace
+    );
+
+    // `ModelRef` keeps the exact Bedrock identifier and nothing else.
+    for (model, region) in [
+        (
+            "arn:aws:bedrock:us-east-1:123:inference-profile/us.model-v1:0",
+            "us-east-1",
+        ),
+        ("us.anthropic.claude-v1:0", "eu-west-1"),
+    ] {
+        let config = UserConfig::parse(
+            &format!("version = 1\n[authoring.configs.c]\nbackend = 'bedrock'\nmodel = '{model}'\naws_profile = 'p'\nregion = '{region}'\n"),
+            &path,
+        )
+        .unwrap();
+        let backend = &config.authoring.as_ref().unwrap().configs["c"].backend;
+        assert_eq!(
+            backend.model_ref(),
+            habeas::config::ModelRef {
+                backend: BackendKind::Bedrock,
+                model: model.to_owned(),
+            }
+        );
+        let BackendConfig::Bedrock(bedrock) = backend else {
+            panic!("wrong backend")
+        };
+        assert_eq!(bedrock.aws_profile.as_deref(), Some("p"));
+        assert_eq!(bedrock.region.as_deref(), Some(region));
+    }
+}
+
+// {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.configuration.loading`
+#[test]
+fn storage_rules_reject_each_invalid_field_with_its_setting() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let path = root.join("config.toml");
+    let named = |name: &str| {
+        format!("version = 1\n[authoring.configs.{name}]\nbackend = 'ollama'\nmodel = 'm'\n")
+    };
+    let ollama = |extra: &str| format!("{}{extra}", named("local"));
+    let project = |key: &str, config: &str| {
+        format!(
+            "version = 1\n[authoring]\nconfigs = {{}}\n[authoring.projects.{key:?}]\nconfig = '{config}'\n"
+        )
+    };
+    let root_text = root.display().to_string();
+    let base = root.file_name().unwrap().to_string_lossy().into_owned();
+    let mut cases = vec![
+        // Configuration names.
+        (named("\"\""), "authoring.configs."),
+        (named("\"a.b\""), "authoring.configs.a.b"),
+        (named("\"a b\""), "authoring.configs.a b"),
+        (named("\"é\""), "authoring.configs.é"),
+        (named("\"-x\""), "authoring.configs.-x"),
+        (named("_x"), "authoring.configs._x"),
+        (
+            "version = 1\n[authoring]\nconfigs = {}\ndefault = 'a.b'\n".to_owned(),
+            "authoring.default",
+        ),
+        (project(&root_text, "bad name"), ".config"),
+        // Project-selection keys must be canonical absolute paths.
+        (project("relative", "local"), "authoring.projects.relative"),
+        (
+            project(&format!("{root_text}/../{base}"), "local"),
+            "authoring.projects.",
+        ),
+        (
+            project(&format!("{root_text}/./"), "local"),
+            "authoring.projects.",
+        ),
+        (
+            project(&format!("{root_text}/"), "local"),
+            "authoring.projects.",
+        ),
+        // Model IDs.
+        (
+            "version = 1\n[authoring.configs.c]\nbackend = 'bedrock'\nmodel = ''\n".to_owned(),
+            "authoring.configs.c.model",
+        ),
+        // `api_key_env` names.
+        (
+            ollama("api_key_env = ''\n"),
+            "authoring.configs.local.api_key_env",
+        ),
+        (
+            ollama("api_key_env = 'A=B'\n"),
+            "authoring.configs.local.api_key_env",
+        ),
+        (
+            ollama("api_key_env = \"A\\u0000B\"\n"),
+            "authoring.configs.local.api_key_env",
+        ),
+        // Non-finite floats, including nested ones.
+        (
+            ollama("[authoring.configs.local.options]\nvalue = nan\n"),
+            "authoring.configs.local.options.value",
+        ),
+        (
+            ollama("[authoring.configs.local.options]\nvalue = inf\n"),
+            "authoring.configs.local.options.value",
+        ),
+        (
+            ollama("[authoring.configs.local.options]\nvalue = [1.0, -inf]\n"),
+            "authoring.configs.local.options.value",
+        ),
+        (
+            ollama("[authoring.configs.local.options.value]\ninner = nan\n"),
+            "authoring.configs.local.options.value",
+        ),
+    ];
+    #[cfg(unix)]
+    {
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        cases.push((
+            project(&link.display().to_string(), "local"),
+            "authoring.projects.",
+        ));
+    }
+    // Options may not replace the model, prompt, or tools.
+    for key in [
+        "model",
+        "modelId",
+        "model_id",
+        "prompt",
+        "messages",
+        "system",
+        "tools",
+        "tool_choice",
+        "toolChoice",
+        "toolConfig",
+    ] {
+        for backend in ["ollama", "bedrock"] {
+            cases.push((
+                format!("version = 1\n[authoring.configs.c]\nbackend = '{backend}'\nmodel = 'm'\n[authoring.configs.c.options]\n{key} = 'x'\n"),
+                "authoring.configs.c.options.",
+            ));
+        }
+    }
+    for (source, setting) in &cases {
+        let error = UserConfig::parse(source, &path).unwrap_err().to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{source}: {error}");
+        assert!(error.contains(setting), "{source}: {error}");
+    }
+
+    // Workspace files apply the same name and field rules.
+    let workspace_path = root.join("habeas.toml");
+    for (source, setting) in [
+        (
+            "version = 1\n[authoring]\ndefault = '_bad'\n".to_owned(),
+            "authoring.default",
+        ),
+        (named("\"a.b\""), "authoring.configs.a.b"),
+        (
+            ollama("api_key_env = ''\n"),
+            "authoring.configs.local.api_key_env",
+        ),
+    ] {
+        let error = WorkspaceConfig::parse(&source, &workspace_path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("habeas.toml"), "{source}: {error}");
+        assert!(error.contains(setting), "{source}: {error}");
+    }
+
+    // Accepted values: case-sensitive distinct names, opaque model IDs with
+    // tags, a canonical existing root, and a canonical root that does not exist.
+    let missing = root.join("not-yet-created");
+    let accepted = UserConfig::parse(
+        &format!(
+            "version = 1\n[authoring]\n[authoring.configs.Local]\nbackend = 'ollama'\nmodel = 'name:tag@sha256:abc'\napi_key_env = 'MODEL_KEY_1'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\n[authoring.configs.A-1_b]\nbackend = 'bedrock'\nmodel = 'arn:aws:bedrock:us-east-1:1:x/y'\n[authoring.projects.{root_text:?}]\nconfig = 'Local'\n[authoring.projects.{:?}]\nconfig = 'A-1_b'\n",
+            missing.display().to_string()
+        ),
+        &path,
+    )
+    .unwrap();
+    let authoring = accepted.authoring.unwrap();
+    assert_eq!(authoring.configs.len(), 3);
+    assert_eq!(
+        authoring.configs["Local"].backend.model_ref().model,
+        "name:tag@sha256:abc"
+    );
+    assert_eq!(authoring.projects.len(), 2);
+}
+
+// {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.configuration_precedence`
+#[test]
+fn workspace_configurations_accept_validate_and_override_concurrency() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let user_path = root.join("user.toml");
+    let user = UserConfig::parse(
+        "version = 1\n[authoring.configs.shared]\nbackend = 'bedrock'\nmodel = 'user'\nconcurrency = 5\n",
+        &user_path,
+    )
+    .unwrap();
+    let path = root.join("habeas.toml");
+    for (workspace, expected) in [("concurrency = 3\n", Some(3)), ("", None)] {
+        for backend in ["bedrock", "ollama"] {
+            fs::write(
+                &path,
+                format!("version = 1\n[authoring.configs.shared]\nbackend = '{backend}'\nmodel = 'local'\n{workspace}"),
+            )
+            .unwrap();
+            let loaded = load_workspace_config(&root).unwrap().unwrap();
+            let resolved = resolve_authoring_with_workspace_from(
+                &user_path,
+                Some(&user),
+                Some(&loaded),
+                &root,
+                Some("shared"),
+            )
+            .unwrap();
+            // The workspace config replaces the user config as a whole,
+            // including its concurrency.
+            assert_eq!(resolved.config_path, path);
+            assert_eq!(resolved.concurrency.map(|value| value.get()), expected);
+            let default = if backend == "bedrock" {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+            assert_eq!(
+                resolved.effective_concurrency(),
+                expected.unwrap_or(default)
+            );
+            let serialized = loaded.config.to_toml().unwrap();
+            assert_eq!(serialized.contains("concurrency = 3"), expected.is_some());
+        }
+    }
+    for invalid in ["0", "-1", "1.5", "'2'"] {
+        let text = format!(
+            "version = 1\n[authoring.configs.shared]\nbackend = 'ollama'\nmodel = 'm'\nconcurrency = {invalid}\n"
+        );
+        let error = WorkspaceConfig::parse(&text, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("concurrency"), "{error}");
+        fs::write(&path, text).unwrap();
+        let error = load_workspace_config(&root).unwrap_err().to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(error.contains("concurrency"), "{error}");
+    }
+}

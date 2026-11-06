@@ -447,6 +447,7 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.ci.authoring_inputs`
+// {impl}`requirements.authoring.rig_configuration_mapping`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,

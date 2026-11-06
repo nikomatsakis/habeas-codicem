@@ -1316,3 +1316,211 @@ fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {
     assert_eq!(usage["request_count"], 1);
     assert_eq!(usage["requests"][0]["outcome"], "completed");
 }
+
+/// Answers one request with an HTTP error status and returns its JSON body.
+// {test}`requirements.authoring.configuration_storage`
+fn reject_once(status: &'static str, body: &'static str) -> (String, JoinHandle<Value>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut reader = BufReader::new(&mut stream);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut bytes = vec![0; length];
+        reader.read_exact(&mut bytes).unwrap();
+        write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    });
+    (endpoint, thread)
+}
+
+// {test}`requirements.authoring.configuration_storage`
+#[test]
+fn provider_rejection_of_inference_options_is_reported() {
+    let (endpoint, server) = reject_once(
+        "400 Bad Request",
+        r#"{"error":"PROVIDER_REJECTED_OPTION num_ctx"}"#,
+    );
+    let fixture = Fixture::new(&endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(!output.status.success());
+    let body = server.join().unwrap();
+    // The configured options were passed through to the provider unchanged.
+    assert_eq!(body["options"]["num_ctx"], 4096);
+    assert_eq!(body["options"]["temperature"], 0.25);
+    assert_eq!(body["model"], MODEL);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("PROVIDER_REJECTED_OPTION"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+    assert_eq!(fixture.usage()["outcome"], "failed");
+
+    // Rig-side rejection of a Bedrock option is reported before any request.
+    let fixture = Fixture::new("http://unused");
+    fs::write(
+        fixture.config.join("habeas/config.toml"),
+        "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\nregion = 'us-west-2'\n[authoring.configs.cloud.options]\ntemperature = 'hot'\n",
+    )
+    .unwrap();
+    let output = fixture
+        .command()
+        .env("AWS_ACCESS_KEY_ID", "FAKE")
+        .env("AWS_SECRET_ACCESS_KEY", "fake")
+        .env("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://127.0.0.1:9")
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .args(["author", SUBJECT])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Bedrock options.temperature must be a number"),
+        "{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+}
+
+/// Returns the first request's prompt and its sorted tool names and descriptions.
+// {test}`requirements.authoring.rig_configuration_mapping`
+fn prompt_and_tools(body: &Value, bedrock: bool) -> (String, Vec<(String, String)>) {
+    let (prompt, tools, spec) = if bedrock {
+        (
+            &body["messages"][0]["content"][0]["text"],
+            &body["toolConfig"]["tools"],
+            "toolSpec",
+        )
+    } else {
+        (&body["messages"][0]["content"], &body["tools"], "function")
+    };
+    let mut tools = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| {
+            (
+                tool[spec]["name"].as_str().unwrap().to_owned(),
+                tool[spec]["description"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    tools.sort();
+    (prompt.as_str().unwrap().to_owned(), tools)
+}
+
+// {test}`requirements.authoring.rig_configuration_mapping`
+// {test}`requirements.authoring.provider`
+#[test]
+fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
+    let submit =
+        json!({"determination":true,"rationale":"The supplied sources support the subject."});
+
+    // Ollama with no authentication configured sends no credential.
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        submit.clone(),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.config.join("habeas/config.toml"),
+        format!(
+            "version = 1\n[authoring]\ndefault = 'local'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = '{MODEL}'\nendpoint = '{}'\n",
+            server.endpoint
+        ),
+    )
+    .unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !requests[0]
+            .headers
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+    assert_eq!(requests[0].body["model"], MODEL);
+    let ollama = prompt_and_tools(&requests[0].body, false);
+
+    // Bedrock without a profile or region uses the SDK default chain.
+    let server = Server::start(vec![json!({
+        "output":{"message":{"role":"assistant","content":[{"toolUse":
+            {"toolUseId":"submit","name":"submit_judgment","input":submit}}]}},
+        "stopReason":"tool_use",
+        "usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},
+        "metrics":{"latencyMs":1}
+    })]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.config.join("habeas/config.toml"),
+        "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'default-chain-model'\n",
+    )
+    .unwrap();
+    let mut command = fixture.command();
+    for key in [
+        "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_DEFAULT_REGION",
+        "AWS_ENDPOINT_URL",
+        "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS",
+        "AWS_BEARER_TOKEN_BEDROCK",
+    ] {
+        command.env_remove(key);
+    }
+    let output = command
+        .env("AWS_CONFIG_FILE", fixture.temp.path().join("no-aws-config"))
+        .env(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            fixture.temp.path().join("no-aws-credentials"),
+        )
+        .env("AWS_ACCESS_KEY_ID", "DEFAULT_CHAIN_ACCESS_KEY")
+        .env("AWS_SECRET_ACCESS_KEY", "default-chain-secret")
+        .env("AWS_REGION", "ap-south-1")
+        .env("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", &server.endpoint)
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .args(["author", SUBJECT])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    let headers = &requests[0].headers;
+    assert!(headers.starts_with("POST /model/default-chain-model/converse HTTP/1.1\r\n"));
+    assert!(headers.contains("Credential=DEFAULT_CHAIN_ACCESS_KEY/"));
+    assert!(headers.contains("/ap-south-1/bedrock/aws4_request"));
+    let bedrock = prompt_and_tools(&requests[0].body, true);
+
+    // Both fixtures are identical projects, so the requests must match.
+    assert_eq!(ollama, bedrock);
+    assert_eq!(ollama.1.len(), 6);
+}
