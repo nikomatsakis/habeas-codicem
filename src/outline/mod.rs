@@ -63,6 +63,8 @@ pub(crate) struct OutlineNode {
 impl OutlineNode {
     /// The name as displayed, with parts joined by `/`.
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.authoring.outline_tool`
+    // {impl}`requirements.references.rust_item_coverage`
     pub(crate) fn display_name(&self) -> Option<String> {
         self.name.as_ref().map(|parts| parts.join("/"))
     }
@@ -158,6 +160,7 @@ pub(crate) fn parse_with(profile: &'static Profile, source: &str) -> Result<Outl
 
 /// Reports the first syntax error in a tree.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.ci.outline_inputs`
 fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
     let root = tree.root_node();
     if !root.has_error() {
@@ -790,6 +793,7 @@ impl Outline {
     /// The innermost nodes whose line ranges cover a line: covering nodes
     /// none of whose children cover it. Several siblings can share a line.
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.references.outline_comments`
     pub(crate) fn innermost_at_line(&self, line: usize) -> Vec<usize> {
         let covers = |index: usize| {
             self.nodes[index].line_start <= line && line <= self.nodes[index].line_end
@@ -818,6 +822,7 @@ impl Outline {
     /// Non-root nodes declared on a line: named nodes on the line of their
     /// name, anonymous nodes on the line where they start.
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.cli.add_input_item`
     pub(crate) fn declared_on_line(&self, line: usize) -> Vec<usize> {
         (1..self.nodes.len())
             .filter(|index| self.nodes[*index].declaration_line == line)
@@ -900,6 +905,7 @@ impl Outline {
 
     /// A node's source lines, over its full line range, without line endings.
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn node_lines(&self, source: &str, index: usize) -> Vec<String> {
         let node = &self.nodes[index];
         source

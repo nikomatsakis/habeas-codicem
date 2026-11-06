@@ -454,6 +454,29 @@ fn reports_parse_failures_with_lines() {
     let error = parse(Path::new("src/lib.rs"), "fn ok() {}\nfn broken( {\n").unwrap_err();
     assert_eq!(error.line, 2, "{error}");
     assert!(parse(Path::new("a.py"), "def f(:\n").is_err());
+    let late = parse(Path::new("a.toml"), "a = 1\nb = 2\nc = = 3\nd = [\n").unwrap_err();
+    assert_eq!(late.line, 3, "the first error is reported: {late}");
+    assert!(late.to_string().starts_with("line 3: "), "{late}");
+}
+
+// {test}`requirements.references.outlines`
+#[test]
+fn profiles_are_selected_by_extension_case_insensitively() {
+    for (path, profile) in [
+        ("src/LIB.RS", "rust"),
+        ("a.Py", "python"),
+        ("a.TSX", "tsx"),
+        ("README.MD", "markdown"),
+        ("Cargo.TOML", "toml"),
+        ("notes", "plain-text"),
+        ("notes.rs.txt", "plain-text"),
+    ] {
+        assert_eq!(
+            super::profile_for_path(Path::new(path)).name,
+            profile,
+            "{path}"
+        );
+    }
 }
 
 // {test}`requirements.references.outlines`
