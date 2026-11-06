@@ -61,6 +61,7 @@ impl Judgment {
 
     // {impl}`requirements.index.detail_format`
     // {impl}`requirements.cli.status`
+    // {impl}`requirements.cli.fixme_summary`
     pub fn fixme_entries(&self) -> &[String] {
         match self {
             Self::Fixme(entries) => entries,

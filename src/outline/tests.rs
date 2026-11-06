@@ -1055,3 +1055,20 @@ fn nodes_are_declared_on_their_name_line_or_where_their_syntax_starts() {
         ]
     );
 }
+
+// {test}`requirements.references.selector_inline_and_foreign`
+#[test]
+fn functions_in_a_separate_module_file_are_selected_within_that_file() {
+    // `src/lib.rs` declares `mod local;`; `src/local.rs` holds its body. The
+    // function's selector is relative to `src/local.rs`, without the module
+    // path that the declaration in another file implies.
+    let declaring = selectors(&outline("lib.rs", "mod local;\n"));
+    assert_eq!(declaring, vec!["mod[local]".to_owned()]);
+    let module = selectors(&outline("local.rs", "pub fn run() {}\n"));
+    assert_eq!(module, vec!["fn[run]".to_owned()]);
+    assert!(
+        !module
+            .iter()
+            .any(|selector| selector.contains("mod[local]"))
+    );
+}

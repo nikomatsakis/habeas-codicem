@@ -153,6 +153,7 @@ struct DetailEvidence<'a> {
 impl LoadedDetailEvidence {
     // {impl}`requirements.index.state`
     // {impl}`requirements.ci.outcomes`
+    // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
         let evidence_path = root.join("evidence").join(format!("{name}.json"));
         let prefix = format!("evidence/{name}.json:");
@@ -220,6 +221,7 @@ impl LoadedDetailEvidence {
 
     // {impl}`requirements.cli.status`
     // {impl}`requirements.index.detail_format`
+    // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn fixme_entries(&self) -> &[String] {
         &self.fixme_entries
     }

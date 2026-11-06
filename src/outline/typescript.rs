@@ -56,6 +56,7 @@ pub(crate) static PROFILE: Profile = TYPESCRIPT;
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 pub(crate) static TSX_PROFILE: Profile = Profile {
     name: "tsx",
     extensions: &["tsx"],
