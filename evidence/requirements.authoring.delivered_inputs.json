@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST record the sources it supplies to the model, including\nmandatory inputs and additional reads, using the evidence input formats\ndefined by {cite}`requirements.ci.outline_inputs`,\n{cite}`requirements.ci.requirements_inputs`, and\n{cite}`requirements.definitions.inputs`. The harness MUST create these records\nitself so ordinary evidence validation can check them later.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** The harness records the sources it supplies to the model, builds the records itself, and tests cover the main cases.\n\n**Implementation**\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the mandatory inputs through `source_input`. These are requirements inputs, outline inputs and definition inputs. The harness creates them from `InputSelector::resolve` and `to_model_input`, not from anything the model supplies.\n- `assess` (`src/authoring/mod.rs`) starts with `pending = mandatory_inputs`. After each successful provider response it calls `sources.record_inputs(&pending)` and clears `pending`, so only inputs the model actually received are recorded. Every successful tool call's `delivery.inputs` is added to `pending`, and those are recorded after the next successful response. The final evidence is written with `\"inputs\": sources.recorded_inputs()`.\n- `read` and `search` (`src/authoring/tools.rs`) are the additional-read paths. They return a `ToolDelivery` whose `inputs` are the exact inputs shown to the model, plus any definitions of terms they use. Each form maps to an input format: a `{file, item}` outline read, a line-range read, a requirements read, a definition read, and search windows read via `read_lines`.\n  - Line-range and search reads record the innermost covering outline nodes.\n  - Terms mentioned in delivered text are added as definition inputs and filtered against what is already delivered or recorded.\n- `recorded_input` (`src/inputs.rs`) reduces outline inputs to exactly `file`, `item` and `hash`, the format `requirements.ci.outline_inputs` validates. Requirements inputs (`requirements`, `matches`, `text`) and definition inputs (`definition`, `text`) are kept unchanged, which matches `requirements.ci.requirements_inputs` and `requirements.definitions.inputs`.\n- `record_inputs` deduplicates, so a repeated or overlapping delivery is recorded once.\n- Tools that supply no source text (`list_files`, `outline`, `references`) add no inputs. This fits \"sources it supplies\".\n- I found no behavior in the `{impl}` code beyond what this requirement and the other definitions it implements specify.\n\n**Tests**\n- `reading_records_only_delivered_sources_and_their_terms` (`tools.rs`) checks that:\n  - recording is explicit and deduplicated;\n  - recorded outline inputs equal `outline_input(...)`, with only file, selector and hash;\n  - `list_files` records nothing;\n  - end-of-file and invalid line ranges are rejected;\n  - incomplete, mixed and unknown request forms are rejected;\n  - requirements and definition reads succeed.\n- `line_range_reads_record_the_innermost_covering_nodes` (`tools.rs`) checks which nodes line-range reads select and records. It asserts that the recorded input has no `line_start` or `text`.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`) is an end-to-end test. It checks that:\n  - mandatory definition inputs appear in the written evidence;\n  - overlapping search and read deliveries equal the expected outline inputs, deduplicated;\n  - source text is absent from the inputs;\n  - failed reads such as `absent.txt` are not recorded.\n- `stdout_emits_only_evidence_json_without_changing_project_files` (`tests/authoring_cli.rs`) checks that the requirements, definition and outline mandatory inputs appear in the evidence.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` (`tests/authoring_cli.rs`) checks the same recording on a second provider path.\n- `live_bedrock_authoring` (`tests/live_bedrock.rs`) checks the same against a real model. It is skipped when `CI` is set or credentials are missing.\n\nI found no unacknowledged gaps and no FIXME markers relevant to this requirement.",
+  "rationale": "**Judgment: true.** The harness records the sources it supplies, builds the records itself in the evidence input formats, and tests cover the main delivery paths and failure cases.\n\n**Implementation**\n\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the mandatory inputs itself, using the harness's own constructors. They are requirements inputs, outline inputs and definition inputs.\n- `assess` (`src/authoring/mod.rs`) holds these as `pending`. After a provider response succeeds, it calls `sources.record_inputs(&pending)`. This records mandatory inputs and each tool delivery's inputs only once they have actually been supplied to the model.\n- Tool deliveries come from `tools::read` and `tools::search` (`src/authoring/tools.rs`). They create the inputs through `read_lines` and `read_selector`, and add terminology as definition inputs through `additional_definitions`. Each delivery's inputs go into `pending`.\n- Failed reads and denials return an error before anything is added to `pending`, so they add no evidence.\n- `record_inputs` deduplicates repeated deliveries. `recorded_input` (`src/inputs.rs`) reduces outline inputs to `file`, `item` and `hash`. It passes requirements and definition inputs through whole.\n- The model never supplies the recorded content, so the harness creates the records itself. `assess` writes `recorded_inputs()` into the evidence.\n- The `{impl}` markers cover all of this: `AssessmentSources`, `recorded_inputs`, `record_inputs`, `assess`, `read`, `search` and `recorded_input`. The one `{cite}` on `ToolDelivery` is on a plain data carrier, not on behavior this requirement specifies.\n- Nothing in the `{impl}` code goes beyond this requirement. The extra behavior it carries is specified by other requirements it also marks, such as `mandatory_inputs`, `source_tools` and `definitions.authoring_inputs`.\n\n**Tests**\n\n- `reading_records_only_delivered_sources_and_their_terms` covers these points:\n  - Listings add no input.\n  - Reads give outline inputs plus a definition input.\n  - Nothing is recorded until `record_inputs` is called.\n  - Repeated recording is deduplicated.\n  - Recorded outline inputs equal the `crate::inputs::outline_input` form, with only `file`, `item` and `hash`.\n  - Reads through end of file work.\n  - Out-of-range lines, a missing item, and malformed or mixed request forms are rejected.\n  - `requirements` and `definition` forms succeed.\n- `line_range_reads_record_the_innermost_covering_nodes` checks that recorded inputs hold no line numbers or text, and that line-range reads resolve to the innermost nodes.\n- `search_supplies_terminology_clamps_at_eof_and_reports_failures` checks that search results and their terminology are recorded, and that a failed search records nothing.\n- The CLI tests drive the full harness, with mocked Ollama and Bedrock servers:\n  - `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` shows that mandatory definitions and the subject's requirements input are recorded. It also shows that overlapping or repeated reads are recorded once, as selector and hash only, and that a failed read (`absent.txt`) adds nothing. Source text does not leak into the evidence inputs.\n  - `stdout_emits_only_evidence_json_without_changing_project_files` shows that the stdout evidence holds the subject's requirements input, the definition input and the outline input.\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` shows that a read tool result on Bedrock is recorded as outline inputs.\n  - `live_bedrock_authoring` checks the same recording against a real model, but it is skipped when `CI` is set.\n- Comparing recorded inputs with `habeas::outline_inputs_for_lines` and `crate::inputs::outline_input` ties the recorded form to the validator's own input constructors. That makes the records checkable by ordinary validation later.\n\nNo FIXME or acknowledged gaps were found.",
   "inputs": [
     {
       "requirements": "requirements.authoring.delivered_inputs",
@@ -91,7 +91,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "c71320b40ade275633a2dbfd32e6d949b4c537ba76927694283167816a99b491"
+      "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -102,6 +102,11 @@
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
       "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
+      "hash": "d696dfac1be95318e44b6ab09df3e942cddecf150df34029ef7ab988e95a6442"
     },
     {
       "file": "src/inputs.rs",
@@ -126,7 +131,7 @@
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
-      "hash": "372d4143227c94e60be30077a9386da7eb61c0791690cc9b8d28686c026fda5d"
+      "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
     },
     {
       "definition": "requirements.references.definition_selection",
@@ -215,6 +220,66 @@
       "file": "src/authoring/inputs.rs",
       "item": "fn[source_input]",
       "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@420a7d4fdb66",
+      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@95d18074761c",
+      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@b9fce3e500fd",
+      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@69f1369e5967",
+      "hash": "69f1369e596708e4b2474e88de2c25bd404e6181251e10dadd326c1cc66ed07d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@609a46973d28",
+      "hash": "609a46973d28dfcb123abe46fe6254caf2864b9cdf07b10597c5a4bf12ede345"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@30eeb8b2da14",
+      "hash": "30eeb8b2da143fb697fe82387a2026276cf3107fb6720d8e6cddd217798a9512"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@33fbcbcf8b2b",
+      "hash": "33fbcbcf8b2bdf7d352ff12755c30fadfd343dfc41c396e140d6c82fadb90e87"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "struct[ToolDelivery]",
+      "hash": "b89083c22fbebc4ae7d403ca015fd6081cbb922149ca753f8b0e4d97909908ce"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "aa14a49b4870c3defa4253018d1624300934052ebdef5d5a9199570c18a0a7b8"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]",
+      "hash": "f169a850e4606af161eb255f8b540ce7b453ac8695f5b0a088ddb5f8196e902f"
     }
   ]
 }

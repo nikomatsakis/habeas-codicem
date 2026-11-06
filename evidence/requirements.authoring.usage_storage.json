@@ -1,7 +1,7 @@
 {
   "requirement": "Each assessment MUST have a separate JSON usage record under\n`<state-root>/authoring/usage/<run-id>.json` using\n{cite}`requirements.configuration.state_location`.\nIt MUST identify its format version, run, project root, subject kind and full\nname, start time, backend and model when known, end time when finished, outcome,\naccepted determination kind (`true`, `false`, or `FIXME`) when present, and\nwhether evidence was written. It MUST record the selected output destination in\n`evidence_output` as `file` or `stdout`; a successful write to either destination\nMUST set `evidence_written` to true. Usage recording MUST remain outside the\nproject in stdout mode. FIXME entry text MUST NOT be stored in usage records.\nFailed, cancelled, or unfinished\nruns MUST remain distinguishable from completed judgments. Records MUST persist\nfor later review without storing source text, prompts, responses, or rationale.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.**\n\n**Implementation**\n- **Location and creation.** `UsageLog::start` (`src/authoring/usage.rs`) creates `<state>/authoring/usage/<run-id>.json`.\n  - It uses `create_dir_all`, then `create_new(true)` on a file named after a unique run id (nanosecond time, pid and sequence). Each run therefore gets its own record.\n  - The state root comes from `config::state_root` via `usage_state_root`. That function creates the directories and reports a failure before any model request.\n- **Required fields.** `UsageRecord` carries all of these:\n  - `version` (1), `run_id`, `project_root`, `subject` (the full name) and `subject_kind`.\n  - `backend` and `model`, set in `configured_record` once the config is resolved.\n  - `start_time_ms` and `end_time_ms`, with `end_time_ms` set only by `finish`.\n  - `outcome`, `determination` and `evidence_written`.\n  - `evidence_output`, set to `file` or `stdout` in `author_evidence_with_output`.\n- **Determination kind.** `Judgment::kind()` yields `true`, `false` or `FIXME`. `assess` stores only that kind, so FIXME entry text never reaches the record.\n- **Evidence written.** `evidence_written` becomes true only after a successful file or stdout write (`configured_assessment`) or after the batch writer calls `PendingAssessment::persisted`. A failed write leaves it false while keeping the accepted determination.\n- **Distinguishable outcomes.**\n  - A record starts as `unfinished` and is saved immediately.\n  - `finish` sets `completed`, `failed` or `cancelled`. Interruption maps to `cancelled`.\n  - A crash or kill leaves the record `unfinished` with no end time.\n- **Outside the project.** `usage_state_root` plus `resolved_location` refuse a state root inside the project, resolving symlinks, before creating anything. This applies in both file and stdout modes.\n- **No content stored.** Only counts, sizes, hashes-free metadata and fixed tool names are persisted. `tool_name` maps unknown model-supplied names to `unknown`. Prompts, responses, rationale and source text are never serialized.\n- **Failures are reported.** Failures to create or save usage are reported, with the evidence-written status in the message. Nothing claims history was recorded when it was not.\n- **Marking.** The usage-writing code paths are marked with `{impl}` for this requirement. I found no unmarked code that writes usage.\n\n**Tests**\n- `usage_record_identifies_its_run_and_unusable_state_is_reported` (`tests/authoring_cli.rs`) checks:\n  - the file is named after `run_id`;\n  - `version`, `project_root`, `subject`, `subject_kind`, `backend`, `model` and `evidence_output`;\n  - start and end times;\n  - unusable or undeterminable state locations fail with no stdout and no evidence write.\n- `usage_state_inside_the_project_is_refused_before_creating_it` covers file and stdout modes. It checks the error, that nothing is created inside the project, and that evidence is unchanged.\n- `stdout_emits_only_evidence_json_without_changing_project_files` covers true, false and FIXME, with and without existing evidence. It asserts `evidence_output == \"stdout\"`, `evidence_written == true` and the determination kind.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` asserts that the secret requirement text, definition text, source payload, rationale, credential and FIXME text `#125` are absent from the record.\n- Failure and cancellation paths:\n  - `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` covers failed outcomes in both output modes, with `evidence_written` false and no determination.\n  - `failed_evidence_write_keeps_the_accepted_judgment_in_usage` covers a determination kept when the write fails.\n  - `explicit_untracked_reads_abort_without_another_request_or_evidence_write` and the batch tests cover failed assessments next to completed ones.\n  - The `cancelled_request_persists_elapsed_time_and_incomplete_totals` unit test covers the `unfinished` to `cancelled` transition, and the batch interruption test covers cancellation end to end.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` and `input_metadata_counts_components_and_reads_without_persisting_source` cover content-free storage.\n- The Bedrock test and the live Bedrock test check backend and model recording.\n- The batch tests check that each assessment gets its own record (6 and 7 records) and mixed outcomes.\n\n**Minor observations (not gaps)**\n- `subject_kind` stays null if the subject cannot be resolved before the record is made. The requirement does not demand a kind in that case.\n- The extra fields for inputs, requests and tokens belong to the sibling usage requirements.",
+  "rationale": "**Judgment: the sources satisfy `requirements.authoring.usage_storage`.**\n\n**Implementation**\n- **Location and creation.** `UsageLog::start` (`src/authoring/usage.rs:84`) takes the state root from `config::state_root`. That function implements `state_location`: XDG_STATE_HOME or `$HOME/.local/state/habeas` on Unix, and `%LOCALAPPDATA%/habeas/state` on Windows. `start` creates `authoring/usage/` and then a new file `<run-id>.json` with `create_new`, so each assessment gets its own record. The run id is nanoseconds, pid and a sequence number. Directory or file failures are reported with the path.\n- **Fields.** `UsageRecord` (`usage.rs:14`) has all the required fields:\n  - `version`, `run_id`, `project_root`, `subject` (the full name) and `subject_kind`;\n  - `start_time_ms`, and `end_time_ms` once finished;\n  - `backend` and `model`, set in `configured_record` once known;\n  - `outcome`, `determination` and `evidence_written`.\n- **Determination kind.** `Judgment::kind()` returns only `\"true\"`, `\"false\"` or `\"FIXME\"`, so FIXME entry text never reaches the record. The extra fields (inputs, requests, tokens, tools, elapsed time) belong to `usage_inputs` and `usage_requests`, and those definitions carry their own `{impl}` markers.\n- **Output destination.** `author_evidence_with_output` sets `evidence_output` to `file` or `stdout` and saves it before any model work. `configured_assessment` sets `evidence_written = true` only after the file or stdout write succeeds. The batch path does the same in `PendingAssessment::persisted`, and `evidence_output` stays at its default of `file` there.\n- **Outside the project.** `usage_state_root` and `resolved_location` resolve symlinks and refuse a state root inside the project. They do this before any directory is created, and in both file and stdout modes.\n- **Failures.** If the state location cannot be determined or created, the command errors before any model request. If saving the final usage fails, the error says so and states whether evidence was written.\n- **Run status.** A record starts as `unfinished` with no end time. Runs end as `completed`, `failed` or `cancelled`: `failed` is `PendingAssessment::failed`, and `finish(outcome)` is called from the signal and error paths. A record from a killed process therefore stays `unfinished`, which meets the \"failed, cancelled or unfinished remain distinguishable\" obligation.\n- **Content-free.** Records hold only counts, sizes and metadata. Unknown tool names are mapped to `\"unknown\"`, so model-supplied text is not stored.\n- **Marking.** The code that implements the requirement is marked `{impl}`. The `UsageLog` struct is marked only with `{cite}`, but it is a plain holder and implements no obligation of its own. I found no unmarked code that implements part of the requirement.\n\n**Tests**\n- `tests/authoring_cli.rs: usage_record_identifies_its_run_and_unusable_state_is_reported` covers:\n  - the file name matching `run_id`;\n  - version, project root, subject, kind, backend, model, `evidence_output` and start/end times;\n  - an unusable or undeterminable state location, which fails with a diagnostic, no stdout and no new evidence.\n- `usage_state_inside_the_project_is_refused_before_creating_it` covers the refusal in both file and stdout modes, and checks that the directory is not created.\n- `stdout_emits_only_evidence_json_without_changing_project_files` covers true, false and FIXME in stdout mode, with `evidence_output = \"stdout\"`, `evidence_written = true`, and the determination kind recorded.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks that the record contains no requirement, definition or source text, no rationale, no credential and no `#125`.\n- Failure cases:\n  - `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` (failed, `evidence_written` false, no determination);\n  - `failed_evidence_write_keeps_the_accepted_judgment_in_usage` (determination recorded but `evidence_written` false);\n  - `explicit_untracked_reads_abort_without_another_request_or_evidence_write`.\n- The unit test `cancelled_request_persists_elapsed_time_and_incomplete_totals` checks the `unfinished` initial state, the `cancelled` outcome and a set end time.\n- `input_metadata_counts_components_and_reads_without_persisting_source` and `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` check that no source or model text is persisted.\n- The batch tests in `tests/authoring_batch.rs` check one record per assessment, mixed `completed` and `failed` outcomes, and `evidence_written` flags. Other tests cover Bedrock, workspace configuration and the live Bedrock run.\n- The Windows path layout is handled with `cfg!(windows)` in the test helpers.\n\n**Minor observations (not gaps)**\n- `subject_kind` stays null if a run fails before the subject is resolved, which matches \"when known\".\n- A failed stdout write is not directly tested, but the file-write failure test exercises the same flag logic.\n\nThe documentation in `md/reference.md` describes the location and the `evidence_output`/`evidence_written` fields.",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_storage",
@@ -245,27 +245,182 @@
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
-      "hash": "372d4143227c94e60be30077a9386da7eb61c0791690cc9b8d28686c026fda5d"
+      "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]",
+      "hash": "a436e51ccb4fe213290a40ac0af45e0175a792038893d08e534cef2dd0138006"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path]",
+      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path_from]",
+      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root]",
+      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root_from]",
+      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[absolute_directory]",
+      "hash": "82024e470bc377bbc0fc64f0702e8c445d30df5022d152673e1130e82fb5d222"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[required_directory]",
+      "hash": "7fd086d548e3f55c4cd745817f63b4e4a11a1706958da3fa786d8de1c9499a72"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_user_config]",
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[InputUsage]",
+      "hash": "0700e5ace38d9149dd28c6dce787c33e372e6108ad2b928509e78e502c848814"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[RequestUsage]",
+      "hash": "ced83e15e260c181021d844579a30aeeda5d1949371e81106a0de9b3d5d85281"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[TokenCounts]",
+      "hash": "4b5cbb91ce295d288e0a77be2fa693d7f9f932ae8d91307d787a07b9dc4cd610"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageLog]",
+      "hash": "47563b8f9d08c59d7a72077f05df1f683abf8d789dd2030d7961441cf2dcae3c"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]",
+      "hash": "cdda383a8e8779839f1f53fa1969bd7794111e9e37f5b46cd9a6cfec4935c515"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[prepared]",
+      "hash": "8e5bed403e6901175d1262a63c8961cc3fc3449eeffba81f88ca15ddedc44745"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[begin_request]",
+      "hash": "b8fda53efe81ae7f8eefa5a83482a89bab71e2871480b183a7a7476fd98377fc"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[end_request]",
+      "hash": "d9c2e3d64af15bc7e9a3166e69d0ecbb0787b3531240ae510969c4d0df9d090b"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[tool]",
+      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[skipped_tool]",
+      "hash": "b75aa1847cab3fc7573d68ed6e4d3c7f29417a61e17d8c51ee756d3d88de8cdb"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "7831c5c754d1d5c4e9c4caab0d56d16c899fdc67761e9e775651a18e347274a3"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Recording%20results]/section[Usage%20history]",
+      "hash": "546ff5ad3a9765c8afb926c98516916ce4d53e2c4ec32c8410b720f0e135da1e"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@b9ad51f029df",
+      "hash": "b9ad51f029df0e9b3352de6ee80b9fc5085d69b914654d0181d2570afbfc446f"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@a5eb9cdffbce",
+      "hash": "a5eb9cdffbce8b59ff0b6bc52bf79c4bba1be795b1e1e0a4facee1be9def0aa2"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@5fce6f8b0f71",
+      "hash": "5fce6f8b0f718a3191fd06b9d137a4d7e97b067a3422b3c97e2a46142bbfd085"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@34072261f783",
+      "hash": "34072261f783e90507393611161d8db1b3cd112e85ee5e22459dbc9005b52048"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@18dc39a869d7",
+      "hash": "18dc39a869d79efeb360785e63c656bdc3fa8ff5bc7365b86167012bfa4d4014"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@d3e0d9ac0ad2",
+      "hash": "d3e0d9ac0ad2ee9e013d5071a145d5488e0d5b5b2b58097bf4c7aeb5fd7b9f58"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@a9968c074203",
+      "hash": "a9968c07420370d4c23496cf012df352f182c9d64ba9a3600e530d06a9c96e45"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@932d0226c309",
+      "hash": "932d0226c3090d47855b9b026b4ffa716d7872a488e9d7a83f7a6b05fb955dbc"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@bf004211229c",
+      "hash": "bf004211229cb4035b27140a2de8e0971c31027846ff274d8fa94f471d8f26ae"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "struct[BatchOutcome]",
+      "hash": "55dd549065b9fcb4f504bfdd8aebd152e5140cbabdd264afa3f42a0013dd6bc3"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all_with_options]",
+      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]",
-      "hash": "37e48cc1515b97a14a38ca10ba6cbcbc9388841b3da9abc899d1466ae928e302"
+      "item": "struct[PendingAssessment]",
+      "hash": "7bf1a9e1e151e73bd0479a1abafbd02269c3bac9a2b1211140ce53c4c77e3dac"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
-      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
+      "item": "impl[PendingAssessment]",
+      "hash": "58eca1f55681587adbff8cf82af2f46a8a8a08c6f6b69db82422cc4520dfdc16"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[a_read_through_a_symlink_leaving_the_project_aborts_the_assessment]",
-      "hash": "1df670f93bf1d9b07a6ea4db60253668d18da22620b7b75721c79ebb02623066"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[retry_fixture]",
-      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]",
+      "hash": "9ac1c1d3ac02496e7624fc5576d50ae375d37cfd20413fbb7c1d0b9af6f83cc4"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -281,11 +436,6 @@
       "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[completed_requests_and_the_run_record_elapsed_time]",
       "hash": "ac1b77ebdc426848487304a971bc85e7493cb8f87248dafbfe1fcf64106bae0a"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
-      "hash": "37588f8c9898b87e7bf916d29d4e976c7fd477d38b5eadc671dda7e03d866e0e"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The code marked `{impl}` covers every obligation, and the tests exercise the main cases and boundaries. I found no acknowledged FIXMEs or other gaps.\n\n**Obligations in the requirement text**\n1. A definition selection continues to select requirements and named examples, and never named definitions.\n2. Definitions referenced by selected texts are captured as separate definition inputs, whether or not their names match the selection.\n3. Sharing a selection's name prefix alone does not make a definition a dependency.\n\n**Implementation**\n- **Selection excludes named definitions.**\n  - `InputSelector::resolve` (`src/inputs.rs`, `Requirements` arm) skips every `DefinitionKind::Term` and returns an error when nothing matches (\"matches no requirement or example\").\n  - The same rule is applied in `source_input` (`src/authoring/inputs.rs`), `status_markdown_with_options` and `info_markdown` (`src/commands.rs`), and the authoring `references` tool. `preprocess_book` (`src/lib.rs`) leaves terms out of the ordered requirement/example list that drives detail pages.\n- **Referenced definitions are captured separately.**\n  - `terms::direct_references` (`src/terms.rs`) collects `{term}` references from the subject text and from each input.\n  - For a `Requirements` input it scans only the bodies of the selected declarations.\n  - `close_dependencies` expands the set transitively and reports unresolved terms.\n  - `update_inputs` (`src/add_input.rs`) writes each dependency as its own `Definition` input.\n  - `definition_inputs` (`src/authoring/inputs.rs`) does the same for authoring.\n  - `validate_dependencies` (`src/terms.rs`) requires exactly one definition input per dependency.\n- **Prefix is not a dependency.** The dependency set comes only from `{term}` references and the transitive closure over them. The glob match is never used to pull in definitions, so a definition that merely shares the prefix is never captured.\n- **Marking.** The `{impl}` markers are on the functions that carry out these behaviors. Neighboring code that applies the same rule, such as `additional_definitions` and the `references` tool, is covered by the marked functions or by other definitions it implements. I found no behavior outside the requirement.\n\n**Tests**\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` (`tests/definitions.rs`):\n  - The glob `rules.*` matches only `rules.ready`, and the selected text contains no definition.\n  - The captured definitions are exactly `glossary.a`, `glossary.b` (a transitive dependency) and `rules.used`. `rules.used` is referenced but is a definition matching the selection's prefix. `rules.unrelated` shares the prefix, is not referenced, and is never captured.\n- `selections_match_requirements_and_examples_but_never_named_definitions` (`tests/definitions.rs`):\n  - A requirement and an example are both selected, and an unreferenced definition that matches the glob is not captured.\n  - Selecting a definition by its exact name fails with \"matches no requirement or example\".\n  - The `status` and `info` CLI commands exclude the matching definition, and `info rules.used` fails.\n- `requirements_reads_select_requirements_and_examples_but_not_definitions` (`src/authoring/tools.rs`) covers the authoring `habeas` read tool. Its glob result excludes definitions, and its exact-name selection of a definition errors.\n\nTogether these cover the positive case, both exclusion boundaries (glob and exact name), transitive capture, the prefix-sharing non-dependency, and failure cases, across the capture, CLI and authoring paths.",
+  "rationale": "**Judgment: the requirement is satisfied.** The marked implementation covers each obligation, and the tests cover the main points of the design space.\n\n**Implementation**\n\n- **Selecting only requirements and examples.** `InputSelector::resolve` (`src/inputs.rs`, `Requirements` arm) skips every `DefinitionKind::Term` and keeps only names that match the glob via `definition_glob::matches`. A name without `*` matches exactly that one name, because the matcher is a literal token match. A glob that matches nothing returns \"matches no requirement or example\". Named definitions therefore never appear in `matches`, `ranges` or `text`.\n- **Other selection paths apply the same rule.**\n  - `source_input` in `src/authoring/inputs.rs` filters terms out before its read-permission checks.\n  - `status_markdown_with_options` and `info_markdown` in `src/commands.rs` skip terms and report \"no definitions match\" when nothing is left.\n- **Capturing referenced definitions as separate inputs.**\n  - `direct_references` in `src/terms.rs` scans the bodies of the selected declarations in a `Requirements` input. It also scans the subject text and other inputs.\n  - `close_dependencies` expands those terms to a fixed point.\n  - `update_inputs` in `src/add_input.rs` writes one separate `definition` input for each required term, whether or not the term's name matches the glob.\n  - The authoring path does the same through `definition_inputs`.\n  - `validate_dependencies` requires exactly one definition input per required term.\n- **No prefix-based dependency.** Dependencies come only from `{term}` references. The glob never feeds into them, so sharing a name prefix cannot make a definition a dependency.\n- **Marking.** The code that implements the requirement carries `{impl}` markers, including `preprocess_book`. The `status` and `info` markers go slightly beyond the requirement's literal \"requirements input\" scope. That is over-marking, not an unmarked gap.\n- **Unmarked selection-like code.** The authoring `references` tool filters terms out of its own selection and is marked for `definition_globs`. It is not a requirements input, so I do not count it as a gap.\n\n**Tests**\n\n- `tests/definitions.rs::globs_exclude_terms_but_capture_referenced_terms_outside_the_glob`\n  - The glob `rules.*` matches only `rules.ready`, so the definitions `rules.used` and `rules.unrelated` are not selected.\n  - The recorded selected text contains no `{definition}` block.\n  - The captured definition inputs are exactly `glossary.a`, `glossary.b` (a transitive dependency) and `rules.used`. `glossary.a` is referenced from outside the glob. `rules.unrelated` shares the prefix but is not captured.\n  - Validation raises no error about `rules.unrelated`.\n- `tests/definitions.rs::selections_match_requirements_and_examples_but_never_named_definitions`\n  - Both the requirement and the example are matched, and the name-matching definition `rules.used` is not.\n  - Selecting a definition by its exact name gives \"matches no requirement or example\".\n  - `habeas status rules.*` and `habeas info rules.*` exclude the definition.\n  - `habeas info rules.used` fails.\n- `src/authoring/tools.rs::requirements_reads_select_requirements_and_examples_but_not_definitions`\n  - The authoring `habeas` tool matches the requirement and the example, and returns no additional definitions.\n  - Selecting an unreferenced definition by exact name errors.\n\nThe tests also cover boundaries and failure cases: an exact name, a glob, a prefix-sharing unreferenced definition, a transitive dependency, an empty match, and the CLI paths.",
   "inputs": [
     {
       "requirements": "requirements.definitions.selection",
@@ -98,6 +98,11 @@
       ]
     },
     {
+      "file": "src/add_input.rs",
+      "item": "fn[add_definition_inputs]",
+      "hash": "6bb48b108821fa5a7e69bfc11db67f51a55bab9622a6979b2eb34d9f1ab8dfa3"
+    },
+    {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
       "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
@@ -153,9 +158,19 @@
       "hash": "46cf865541205df9442b76c33f4a0e4c6e7d52b9b9d6d9ada3335c34cb63a1ea"
     },
     {
+      "file": "src/outline/mod.rs",
+      "item": "fn[disambiguate]",
+      "hash": "4f93539b56502754c40a21623f297d7cc4e1e1b6ae2a7f357346031e9db431fa"
+    },
+    {
       "file": "src/rust_coverage.rs",
       "item": "fn[missing_function_references]",
-      "hash": "d111e2c751c573871d70748ea4ad6ceb354c506408d013246cf531086e84238e"
+      "hash": "d4b988e82c7d1e3abc42602ad05d26d1bdb8eff836fd3e308d2ea1fb1e0c1bd4"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[an_example_counts_only_when_it_references_a_requirement]",
+      "hash": "c65d65ed91711c7879e9394dee4f6a6af6c5d95e22c39cae3f669b9f9f3ce00b"
     },
     {
       "file": "src/terms.rs",
@@ -176,6 +191,11 @@
       "file": "src/authoring/tools.rs",
       "item": "fn[read]",
       "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "032c8c68261b55784929b1a92d8c2806a7cbbd71028ebde50790220a6f44595e"
     },
     {
       "file": "src/evidence.rs",
@@ -223,49 +243,14 @@
       "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
-      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
+      "file": "src/definition_glob.rs",
+      "item": "fn[validate]",
+      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
-      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[record_inputs]",
-      "hash": "2b4b1c437218feacfb819597643fe1a6ab99035b71b6001fd0a5cc1751ffbe50"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_selector]",
-      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[parse_file]",
-      "hash": "60bcb250ef0b20cccfac78923540d1637b80fbea9c68d624ec1f775aca96cb29"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]",
-      "hash": "226a8998e2615bfe9b49fd657ac0e381c8b8429d6b761d8585cb7e94b5950c98"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_path]",
-      "hash": "df1f61c7b3a4bd67529fce5edc8c58f199c3183a6fa85569da97539acef0c39a"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "032c8c68261b55784929b1a92d8c2806a7cbbd71028ebde50790220a6f44595e"
+      "file": "src/definition_glob.rs",
+      "item": "fn[matches]",
+      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
     }
   ]
 }

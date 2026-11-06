@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose an `outline` tool with this interface:\n\n```text\noutline({ file: String }) -> Array<OutlineEntry>\n\nOutlineEntry {\n    item: String,\n    kind: String,\n    name: String?,\n    line_start: Integer,\n    line_end: Integer,\n    children: Array<OutlineEntry>,\n}\n```\n\nThe tool MUST return the outline of a permitted file in a supported language\nunder {cite}`requirements.references.outlines`, with each node's selector under\n{cite}`requirements.references.outline_selectors`, its kind, its name when it is\nnamed, and its current inclusive line range, nested by outline ancestry. Results\nMUST contain no source text and MUST NOT become evidence inputs; the model reads\nthe nodes it relies on with the `habeas` tool. For a file using the plain-text\nprofile, the outline lists its `line` nodes. Explicitly requesting an excluded\nfile MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.",
   "determination": true,
-  "rationale": "**Judgment: the `outline` tool requirement is satisfied.**\n\n**Implementation**\n- **Advertised interface:** `definitions()` in `src/authoring/tools.rs` advertises an `outline` tool. Its only parameter is `file: string`, it is required, and `additionalProperties` is false. The description names the item selector, kind, name, line range and \"no source text\", and says results are not evidence inputs.\n- **Dispatch:** `dispatch` routes `\"outline\"` to `outline()`. Malformed or missing arguments (`check_keys`, `string`) and an unknown file become ordinary tool errors.\n- **Permitted files only:** `outline()` calls `AssessmentSources::parse_file` (`src/authoring/inputs.rs`), which runs `access.file(...)` first.\n  - Excluded or denied files return `PermissionDenied`, which `dispatch` leaves unchanged so the assessment aborts under `read_denial`.\n  - A request outside the project that no rule permits is turned into a plain tool error by `recoverable_outside_request`, as `read_denial` specifies.\n  - Disallow rules still abort.\n- **Result shape:** `outline_entries` recursively emits `{item, kind, name, line_start, line_end, children}`.\n  - `item` is the node selector, produced by the outline module under `outline_selectors`.\n  - `name` comes from `display_name()`, which is `Option`, so unnamed nodes give null.\n  - The line range is inclusive.\n  - Nesting follows the outline tree's children, i.e. outline ancestry.\n  - No source text is included.\n  - `ToolDelivery.inputs` is empty, so nothing becomes an evidence input.\n- **Languages:** the plain-text profile (`line` nodes for non-blank lines) and the language profiles come from the shared `OutlineCache` parser. That parser is assessed under `requirements.references.outlines`, not here. Files with syntax errors surface the parse error as a recoverable tool error.\n- **Marking:** the `{impl}` markers are on the tool definition, dispatch, `outline`, `outline_entries`, `parse_file`, `recoverable_outside_request` and `display_name`.\n- **Unspecified behavior:** I found none in the marked code beyond what this requirement and its cited definitions specify.\n\n**Tests**\n- `outline_lists_nested_nodes_without_text_or_inputs` covers the main behavior:\n  - Exact JSON for a Rust file, including nesting (`impl[Thing]` with child `fn[run]`), kinds, names and inclusive line ranges. The doc-comment attachment is checked (the struct starts at line 1), and the doc text is absent from the result.\n  - The empty `inputs` vector.\n  - Plain-text profile: only non-blank lines are listed, with kind `line`, null name and a `line@…` selector.\n  - Failure cases: a missing file and missing arguments both return errors.\n  - A `habeas.toml` disallow of the file gives `PermissionDenied`.\n- `outline_tool_is_advertised_with_a_required_file_argument` checks the schema and the description phrases.\n- `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` checks that an outline request for an external file is a non-`PermissionDenied` \"outside the project\" error and records no inputs. It also checks that a matching disallow still aborts.\n\n**Remaining gaps**\n- There is no tool-level test for a syntax-error file or for percent-encoded or `#N` selectors in the tool output.\n- Those behaviors belong to the shared outline and selector code, which have their own requirements and tests.\n- This is a minor gap and does not undermine the tool's own obligations.",
+  "rationale": "**Verdict: the `outline` tool meets the requirement.** I read the marked source and tests. I did not open `src/outline/mod.rs` beyond `display_name`, or `access.file`, so the outline-content and denial claims below rest on the tool code and its tests.\n\n**Implementation**\n- **Advertisement:** `definitions()` in `src/authoring/tools.rs` declares an `outline` tool. Its schema has a required string `file` and `additionalProperties:false`. Its description covers the item selector, kind, name (null when anonymous), line range, language outlines, the plain-text `line` profile, \"no source text\", and \"not evidence inputs\".\n- **Dispatch:** `dispatch` routes `\"outline\"` to `fn outline`, which calls `check_keys` and `string(args,\"file\")`. It then calls `AssessmentSources::parse_file` in `src/authoring/inputs.rs`.\n- **Denial handling:** `parse_file` first calls `self.access.file(...)`, so an explicitly requested excluded file becomes a `PermissionDenied` error that aborts the assessment, as `read_denial` requires. An unpermitted path outside the project becomes a recoverable error through `recoverable_outside_request`.\n- **No evidence inputs:** `outline` returns `ToolDelivery { inputs: Vec::new() }`, so results never become evidence inputs.\n- **Output shape:** `outline_entries` recursively emits `item` (the selector), `kind`, `name` (from `display_name()`, `None` for anonymous nodes), `line_start`, `line_end` and `children`. The entries are the children of the root node, nested by ancestry, and no source text is emitted.\n- **Plain text and parse failures:** The plain-text `line` profile and the selector, hash and language profile semantics come from the outline module (`requirements.references.outlines` and `requirements.references.outline_selectors`), which this requirement only cites. A parse error, such as a syntax error, is returned as a recoverable tool error.\n- **Marking:** every piece of code that implements the tool carries an `{impl}` marker for `outline_tool`. That covers `definitions`, `dispatch`, `outline`, `outline_entries`, `parse_file`, `recoverable_outside_request` and `display_name`. I found no unmarked implementing code and no unspecified extra behavior.\n\n**Tests** (`src/authoring/tools.rs`)\n- **`outline_tool_is_advertised_with_a_required_file_argument`:** checks the exact schema and the description phrases.\n- **`outline_lists_nested_nodes_without_text_or_inputs`:**\n  - Asserts the exact JSON for a Rust file: the struct with its doc comment included in the line range, and an `impl` with a nested `fn`. It also asserts that no doc text leaks into the result.\n  - Asserts that `inputs` is empty.\n  - Covers plain text: blank lines are skipped, the kind is `line`, the name is null, the selector starts with `line@`, and the line numbers are right.\n  - Covers failure cases: a missing file and missing arguments both error.\n  - Covers denial: a workspace disallow on the file yields `PermissionDenied`.\n- **`unpermitted_requests_outside_the_project_are_recoverable_tool_errors`:** covers the outside-project case, which gives a recoverable error and adds no inputs. It also covers the disallow case, which still aborts.\n\n**Minor gap, not blocking:** there is no tool-level test of a syntax-error file. That behavior belongs to `requirements.references.outlines`, and the tool simply passes the error through as a tool error.",
   "inputs": [
     {
       "requirements": "requirements.authoring.outline_tool",
@@ -133,7 +133,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
+      "hash": "aa14a49b4870c3defa4253018d1624300934052ebdef5d5a9199570c18a0a7b8"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -171,149 +171,9 @@
       "hash": "f9cab472d1d6ee208162d3b7efb25db749bdf61eae364e23e8ff935c5d04848e"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@e1f72b0ff927",
-      "hash": "e1f72b0ff927b84b9330bf2862b7f33ee8526b4ced8475735c2d0d791d89280f"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@b9fce3e500fd",
-      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@005abb79b847",
-      "hash": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@ef65439d8cc7",
-      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[PathPolicy]",
-      "hash": "deec21bca0141b9262967d0feccc1b312fa13f1529416611a7c9e4557b42e0f5"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]",
-      "hash": "3cbf909ef188ad797d961bb616d0f75643b592e1115e1fa24e951f6c977dc916"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[SourceAccess]",
-      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]",
-      "hash": "a333d5b62ee51cf26f663e644e85ce078964da3313643cf62ec1af22ad7a3069"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[matches_rule]",
-      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[requested_location]",
-      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[OutsideProject]",
-      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[OutsideProject/std::fmt::Display]",
-      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[OutsideProject/std::error::Error]",
-      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "struct[AssessmentSources]",
-      "hash": "9c5d8ba90a9b834e29500213852a01ff2bee426f13f73ed4d335d359cd2b76f3"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
-      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
-      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_selector]",
-      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[additional_definitions]",
-      "hash": "e3388ed319591fc0df5b8e46fb83dff637a95befa4eff8d8e597d4410c6b963c"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_selector]",
-      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[source_input]",
-      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[insert_selector]",
-      "hash": "54d9a173878107f95099d460a21bc217892ddadd5bab92477695cfd3f3b84496"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[reference_selector]",
-      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[definition_inputs]",
-      "hash": "cd3f67cdd56cbd6d5733e8033921f0c837d23f6bd725097b44171ffe48a317ba"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
     }
   ]
 }

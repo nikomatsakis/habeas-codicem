@@ -1,7 +1,7 @@
 {
   "requirement": "When `habeas author` assesses a subject with existing evidence, that evidence\nMUST only determine whether the subject needs assessment. Its inputs,\ndetermination, and rationale MUST NOT contribute to the mandatory input set\ndefined by {cite}`requirements.authoring.mandatory_inputs` or otherwise be\nsupplied to the model. A new assessment's evidence MUST record only the inputs\nsupplied to it, so sources that an earlier assessment read but that no longer\nexist or are no longer relevant cannot block or shape reassessment.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.**\n\n**Implementation**\n- `AssessmentSources::prepare` (src/authoring/inputs.rs:43-182) builds the mandatory set only from these sources:\n  - the subject itself,\n  - the subject's `{cite}` targets,\n  - `{impl}`/`{test}` sites and anchors that point at the subject,\n  - the terminology those inputs bring in.\n- It never reads `evidence/<subject>.json`, so an earlier record's inputs, determination and rationale cannot enter the mandatory set. The comment \"Existing evidence only decides whether to reassess; its inputs are not carried forward\" matches the code.\n- `recorded: Vec::new()` starts empty. `assess` (src/authoring/mod.rs:449-579) calls `record_inputs` only for inputs actually delivered: the mandatory set plus tool deliveries, and only after a provider response. The evidence is built from `sources.recorded_inputs()`. A new record therefore holds only what was supplied in the new run, and stale or removed sources cannot block or shape reassessment.\n- `author_all_with_options` (src/authoring/batch.rs:33-185) uses `LoadedDetailEvidence::load` and its `EvidenceState` solely to decide whether a subject needs assessment. Valid, Fixme and DeterminationFalse records are left unchanged. It passes only the subject name to `prepare_assessment`, so the old record's content is not forwarded to the model.\n- `omit_generated_evidence`, `generated_evidence_path` and `generated_evidence_selector` keep generated `evidence/` content, including symlink aliases, out of the mandatory set by default. Explicit workspace allow and disallow rules are respected. `source_input` and `prepare` enforce read denial. The `{impl}` markers are present on all of these.\n- `configured_assessment` (the single-subject path) does not read old evidence either.\n\n**Tests** (src/authoring/inputs.rs)\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` (481-566) writes an old record that contains a false determination, a rationale and a `notes.txt` input. It asserts that:\n  - the mandatory inputs omit `notes.txt` and the old rationale,\n  - the recorded inputs are empty.\n- `unresolvable_earlier_inputs_do_not_block_reassessment` (568-596) puts missing files, a removed Rust item and a removed requirement in the old record. `prepare` still succeeds, and the result is exactly the subject input.\n- `earlier_evidence_inputs_and_judgments_are_not_carried_forward` (598-625) asserts that the supplied inputs contain no `evidence/` path, no old source and no old judgment. It also asserts that the old file is left unchanged.\n- Related tests cover generated-evidence omission, default exclusion, symlink aliases, explicit allow and disallow aborts (inputs.rs:899-991, tools.rs:823-948).\n\n**Gaps and risks**\n- There is no end-to-end test through `assess` or the batch path that checks the final persisted record. `prepare` and `recorded_inputs` are tested, and the code path from them to the record is short.\n- With an explicit workspace allow of `evidence/`, the model's tools could read an old record. That follows `requirements.configuration.evidence_paths` and `requirements.authoring.mandatory_inputs`, not this requirement.\n- Neither affects the judgment.",
+  "rationale": "## Judgment\n\nThe sources satisfy `requirements.ci.authoring_inputs`. The requirement has three obligations. I found each implemented and tested.\n\n### 1. Existing evidence only decides whether to assess\n- `author_all_with_options` (`src/authoring/batch.rs`) loads each non-term definition's record with `LoadedDetailEvidence::load`. It uses only the resulting `EvidenceState` to choose between \"unchanged\" (Valid, Fixme, DeterminationFalse) and \"needs assessment\" (Missing or Invalid). Nothing from the record's inputs, determination or rationale is passed on to the assessment. A record whose earlier inputs no longer resolve becomes Invalid, so it is reassessed rather than blocking.\n- The single-subject path (`author_evidence_with_output` → `configured_assessment` → `configured_record`) never reads an existing record. It writes a fresh one.\n\n### 2. Earlier evidence does not enter the mandatory input set or the model request\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the mandatory set only from:\n  - the subject itself,\n  - the subject's `{cite}` targets,\n  - `{impl}`/`{test}` reference sites,\n  - anchors,\n  - terminology dependencies.\n\n  It never opens `evidence/<subject>.json`. A comment in the code says so: \"Existing evidence only decides whether to reassess; its inputs are not carried forward.\"\n- Generated output under `evidence/` is omitted from mandatory inputs by default. This is done by `omit_generated_evidence` (`src/authoring/access.rs`), `generated_evidence_path`, `generated_evidence_selector` and the reference and anchor filters in `prepare`. The explicit-allow and disallow cases follow `requirements.authoring.mandatory_inputs`. That requirement is where the contribution is defined, and the code here cites it.\n\n### 3. A new assessment's evidence records only the inputs supplied to it\n- `prepare` starts `recorded` empty. `assess` (`src/authoring/mod.rs`) calls `record_inputs` only with the mandatory inputs and tool deliveries that were actually sent in a response turn. The evidence JSON is built from `sources.recorded_inputs()`.\n\n### Implementation marking\n- The `{impl}` markers cover the places that carry out this behaviour: `prepare`, `source_input`, the generated-evidence helpers, `omit_generated_evidence`, `assess` and the batch selector.\n- `LoadedDetailEvidence::load`, used by the batch selector, is a shared state loader. It implements `requirements.index.state` and `requirements.ci.outcomes`, so it is rightly not marked for this requirement.\n- I found no unmarked behaviour that belongs to this requirement and no behaviour outside it.\n\n### Tests\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` seeds a false record with a distinctive rationale and a stale `notes.txt` input. It asserts that the mandatory inputs contain neither, and that `recorded_inputs` is empty after `prepare`.\n- `unresolvable_earlier_inputs_do_not_block_reassessment` seeds a record whose inputs point at a missing file, a removed Rust item and a removed requirement. It asserts that `prepare` succeeds and yields only the subject.\n- `earlier_evidence_inputs_and_judgments_are_not_carried_forward` seeds a record whose inputs include `evidence/…json` and a source file. It asserts that neither the old rationale nor those paths appear, and that the record is not modified.\n- `tests/authoring_cli.rs` (`ollama_cli_delivers_sources_records_fixme…`) uses a pre-existing record containing `OLD_RATIONALE_MUST_NOT_REACH_MODEL`. It asserts that the initial prompt omits it and that the written evidence contains only delivered inputs. This test is not tagged for this requirement, but it supports it end to end.\n- `tests/authoring_batch.rs` covers batch selection from evidence state:\n  - a current false judgment is preserved;\n  - a record whose source changed is reauthored;\n  - the other records are left byte-identical.\n\n  These tests are tagged `requirements.authoring.batch` and `requirements.ci.determination`, not this requirement.\n- Test coverage includes the boundaries and failure cases: an unresolvable earlier input, a record in the generated `evidence/` directory, an unknown subject, and no mutation of the old record. A symlink-alias test for the omission rule is not among the supplied inputs. That rule is owned by `mandatory_inputs`, so I do not count its absence against this requirement.\n\nNo gaps are acknowledged or found.",
   "inputs": [
     {
       "requirements": "requirements.ci.authoring_inputs",
@@ -93,11 +93,6 @@
     },
     {
       "file": "src/authoring/batch.rs",
-      "item": "use@d3e0d9ac0ad2",
-      "hash": "d3e0d9ac0ad2ee9e013d5071a145d5488e0d5b5b2b58097bf4c7aeb5fd7b9f58"
-    },
-    {
-      "file": "src/authoring/batch.rs",
       "item": "use@a9968c074203",
       "hash": "a9968c07420370d4c23496cf012df352f182c9d64ba9a3600e530d06a9c96e45"
     },
@@ -152,9 +147,9 @@
       "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
     },
     {
-      "file": "src/commands.rs",
-      "item": "use@097679089ee4",
-      "hash": "097679089ee490481bfa4772c67f1b6c258759f0e3134263d387613c3706d3f4"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
+      "hash": "d696dfac1be95318e44b6ab09df3e942cddecf150df34029ef7ab988e95a6442"
     },
     {
       "file": "src/commands.rs",
@@ -178,11 +173,6 @@
     },
     {
       "file": "src/commands.rs",
-      "item": "fn[status_markdown]",
-      "hash": "106287a492ab2c60f028eae735d60d56ab6d5bca5f70953f9c500225fb4d5e5f"
-    },
-    {
-      "file": "src/commands.rs",
       "item": "fn[status_markdown_with_options]",
       "hash": "ac77fa61b31ea5613c156fd24c5a3def26886c1365f5638b46f3aa11b15dcfd8"
     },
@@ -190,11 +180,6 @@
       "file": "src/commands.rs",
       "item": "fn[info_markdown]",
       "hash": "a9830dc8abda6a1630b308950385476f56d0ff614c9da33c26053edf3b8290f9"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "enum[EvidenceState]",
-      "hash": "6a845f420dc533ad3dcb656d3188d9eb1bc4ad724b5a843930aae6967a5697a3"
     },
     {
       "file": "src/index.rs",
@@ -222,29 +207,24 @@
       "hash": "d55ef7a30f775cb673eed234ff863550ce9e090a37e6eba509b7ff53085577ab"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "fn[recorded_input]",
-      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
+      "file": "src/authoring/mod.rs",
+      "item": "enum[EvidenceOutput]",
+      "hash": "cab30597e013082ecb5998ce9a0870adf314fe31f1abc4a3df1df7da41516fde"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence]",
+      "hash": "f6bba8aa9a5bb04e6b600c81cdb9ff1f13f7a7044b0605bcc8e12867dbaef5ca"
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[write_record]",
-      "hash": "b3b6686669040f0112a6ea09a74591eea0fd401fee4ea1ffcc59c3a7a517916d"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_output]",
+      "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
-      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[generated_evidence_references_are_omitted_by_default]",
-      "hash": "ea1f47438ed79131e5835a50a8dbb99ce9a857b91958a6629036e6bf78fd3687"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -252,19 +232,219 @@
       "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
+      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
-      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[start]",
-      "hash": "cd20e8dedb70eb0dcd2819c9047ae13cd38bce7f08b9f3f1f7959bb1a9a165cf"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[findings_make_false_and_fixme_records_invalid]",
+      "hash": "a004e4b148aa0dd5473012ef0bec678d14efc5d0daa13c8abb33b95791eddca4"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[negative_assessment_records_additional_reads_and_fails_validation]",
+      "hash": "0ac40fef47ad1b9b7d7799c819d2dd60a2ee6881ef2431ceb57025d79cce44b5"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template]",
+      "hash": "f4999174fdabc687a8a04f3a46735a38d6702c276fa730ec0a8f7b930a7245f4"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[stdout_emits_only_evidence_json_without_changing_project_files]",
+      "hash": "753338b292a85b536df354e8e5f9b9121cf87b9fe3bcf562088561104e2ea455"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "enum[Behavior]",
+      "hash": "dfcc05e5d939a0164a18df57410fc6b272d00b0493a0569256aab3b151ab0d1c"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "struct[Server]",
+      "hash": "a2d9f987d406fbe5f1721f5acae3c9c71cb029aea46e92532ac32d5b83cb2dc7"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Server]/fn[start]",
+      "hash": "4d78af6d1b47a120ad44b8b0f10754e62a53f5b64f47f79f9a4a8465b52659e5"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Server]/fn[start_with]",
+      "hash": "1b354fd94cb0193f19cb5a86ceadc69d382a437dc6847142cb4aa91e7ad2cefb"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Server]/fn[subjects]",
+      "hash": "27c1c09879161a42ac78e1bd489025f5dfa247f6a6e708249ec8a857ba8764be"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[serve]",
+      "hash": "da0c441cba60aaf1d5b9987dbe0b20f3d2239d648bffc8d8e7e4aa4ee347c7cb"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "struct[Fixture]",
+      "hash": "e1307993996e8c4ae5a9f0d83016707ea5af5577f5dcf7033cca2125c924cf78"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "2abd61bf181092cf6b92510567cd78b74e382e59f42483dfa9ac64be0690abd4"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run]",
+      "hash": "66f433dbce2d00c2fd405a27da5c1a672f55c4fb796f2fca3780a69e57eac54e"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[command]",
+      "hash": "7967ba5df4f15dee0bdf3a56316dcc57f0e244f27c56dce5022a52c3c213844a"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run_in_pty]",
+      "hash": "40d87b871076683d3fd69b0ea42a468c83100b01291f3ea8cd6bd0375425cb40"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run_in_pty_with_args]",
+      "hash": "d5743ba8cc8ae65f67cc740181164483b659f6353914f5fbf6f10a224f249207"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[evidence]",
+      "hash": "055a3f28e1af49b2d3a7a657a8a15a52779ccf31414b6e7e26ace1465387142c"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[usage]",
+      "hash": "ba4526362e66709b97a9cdba50634b6a32c326367470720368f154fe5a100070"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
+      "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[ollama_batches_are_serial_by_default]",
+      "hash": "a5101e530004e2e082992ebac366ba931366d77b57a2e7b030e7043b947dc141"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
+      "hash": "2f783bcf3d834f9ccc927e6516b705adfa4853ea5b72df0ad38c0bb69e1d3cd1"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
+      "hash": "6875494dd66dbcbedcdbc3696c6843224f1edade4c866f9faabf3223fbd08462"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_reports_false_rationales_only_when_verbose]",
+      "hash": "7921c1deb2c83dd0f1516eaca86f9b8d4b933a0d6b3c56b05db80b260f649300"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[verbose_false_rationale_is_readable_above_terminal_progress]",
+      "hash": "e0d9ccf5ff084e1e67d97090fbdca5809cf56f51edacd9a62cd9f50e1cdd2dc2"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[dumb_terminal_keeps_plain_batch_diagnostics]",
+      "hash": "dc9ecf73c70789e9341ff68668d7578bfa0654076622487c5bafd839bb5e4149"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]",
+      "hash": "1a92f700ba506a8cb5b70bb00380535d3fc0b446fe4e267587e0dfc776617993"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[assert_interruption_stops_the_batch]",
+      "hash": "6ca8a932c36e420ee1b1d15ab2c62bb918827ca88395102d7affef3c182aa02b"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[denied_read_aborts_only_its_assessment_and_runs_queued_assessments]",
+      "hash": "89fa89a34652a79b4d81484a49d0a83603cf7175ec826411f9243341aa1a9dbd"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[denied_read_preserves_in_flight_assessments_and_their_evidence]",
+      "hash": "18752ee80ce8a21d0f6c24d417cbe38b44a76f617dae75726f4d3620b691c377"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
+      "hash": "9300f6549623070b5a2e95fd53360844a1c336981a2c4c32416a0a500db17d37"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_stdout_is_rejected_before_authoring]",
+      "hash": "786cb76d7f97049b29578897face51fea380960f064e3ca456b69f4d1fb23210"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
+      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
+      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[author_rejects_unknown_subjects_and_conflicting_targets]",
+      "hash": "0dd4a56540fd2b15377ce2087a9199695057d03342cf851ca37260fa4c7c2f32"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bundled_skills_direct_the_agent_to_the_authoring_harness]",
+      "hash": "369135676aab9d16051760a8dc117f2623b62b4f2b65c5ad74759ff034425c44"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[provider_rejection_of_inference_options_is_reported]",
+      "hash": "9fe3fdaba0abd95abf9f89268b8f887096a3133ff7293e72ef55fd5e1a934ebb"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
+      "hash": "481e3d75bfef6134f7c6435db78acd1a683a5264afe57bff61afabaf466d1254"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]",
+      "hash": "faac10d0f6016f3f8f3edd34c2304e4930eed364a0b115faeef738c38bf019f9"
     }
   ]
 }

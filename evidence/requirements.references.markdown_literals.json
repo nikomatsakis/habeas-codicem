@@ -1,7 +1,7 @@
 {
   "requirement": "In Markdown, escaped roles and role-looking text in inline code, fenced code, or raw HTML MUST remain literal and MUST NOT count as references. Raw HTML means an HTML block, an HTML comment, or an inline HTML tag including its attributes; text between inline tags is ordinary Markdown. A `{req}` directive inside a fenced code example and a legacy inline `{req}` role MUST NOT define a requirement.",
   "determination": true,
-  "rationale": "**Judgment: `requirements.references.markdown_literals` is satisfied.** The implementation covers every obligation, and the tests cover each one. I did not run the tests.\n\n## Implementation\n\nAll Markdown reference scanning goes through `reference_roles(content, true)` in `src/lib.rs`. The callers are:\n- `replace_references`\n- `collect_references_with_progress` in `src/evidence.rs`\n- `terms::referenced_terms`\n- `AssessmentSources::prepare` in `src/authoring/inputs.rs`\n- `DefinitionEdges::current` in `src/index.rs`\n\nI found no Markdown scanning that bypasses it. Each obligation maps to code as follows:\n\n- **Inline code, fenced code and indented code stay literal.**\n  - `protected_ranges` runs the pulldown-cmark parser with offsets.\n  - It protects `Start(Tag::CodeBlock)` ranges, which cover the whole block, and `Event::Code` ranges.\n  - `reference_roles` skips any `{` inside a protected range (`is_protected`).\n- **Raw HTML stays literal.**\n  - `protected_ranges` also protects `Event::Html` and `Event::InlineHtml`.\n  - `Html` covers HTML blocks and block-level comments.\n  - `InlineHtml` covers inline tags, including their attributes, and inline comments.\n  - Text between inline tags is not an HTML event, so it stays ordinary Markdown, as the requirement says.\n- **Escaped roles stay literal.** `is_escaped` skips a `{` preceded by an odd number of backslashes. An even number is an escaped backslash, so the role stays live.\n- **A `{req}` directive inside a fenced code example does not define a requirement.**\n  - `definition_blocks` collects the code-block ranges.\n  - It rejects any opening fence line that overlaps one (`overlaps_protected`), so a directive in a code example never opens a definition.\n  - It also ignores code-protected lines when looking for the closing fence.\n- **A legacy inline `{req}` role does not define a requirement.** Definitions come only from colon-fence lines. `{req}` is never among the recognised role prefixes (`impl`, `cite`, `test`, `term`).\n\nEvery function implementing the requirement carries an `{impl}` marker: `definition_blocks`, `overlaps_protected`, `reference_roles`, `protected_ranges`, `is_protected` and `is_escaped`. The extra protection of the first line of `{definition}` blocks in `reference_roles` is specified by `requirements.definitions.declaration`, which that function also marks as implemented. I found no unmarked implementing code and no unspecified behaviour attributable to this requirement.\n\n## Tests\n\n- **`code_examples_and_legacy_roles_remain_literal`** checks four things:\n  - `{req}` inside inline code stays literal.\n  - A `:::{req}` inside a fenced block stays literal.\n  - A legacy `{req}` role defines nothing.\n  - A real directive still renders.\n- **`markdown_examples_and_escaped_references_stay_literal`** runs a full book preprocess. A role in inline code, in a fenced block and escaped with a backslash all stay as written, and no badge is produced.\n- **`roles_in_raw_html_stay_literal`** covers:\n  - an HTML block;\n  - a block-level HTML comment;\n  - an inline comment;\n  - an attribute value;\n  - text between inline tags, which is the only role that counts.\n\n  It also asserts that with `markdown=false` all five roles count.\n- **`colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal`** checks that an inline legacy `{req}` role is not a definition.\n- **`references_in_requirement_bodies_are_scanned_as_markdown`** checks that a fenced example inside a requirement body is not counted.\n- **`source_references_are_covered_by_evidence_inputs`** (in `src/evidence.rs`) checks validation end to end. Roles in inline code and in a fence in a Markdown file are not collected as references.\n\n**Untested but implemented:** the even-backslash case in `is_escaped`, and indented code blocks. Neither is a distinct obligation of the requirement text, and the code handles both correctly by construction. This is a minor gap and not a reason to withhold the judgment.",
+  "rationale": "**Judgment:** the implementation and tests satisfy `requirements.references.markdown_literals`.\n\n**Implementation**\n- `protected_ranges` (src/lib.rs) parses the Markdown with pulldown-cmark. It protects every code block (`Tag::CodeBlock`), every inline code span (`Event::Code`), every HTML block or comment line (`Event::Html`), and every inline HTML tag or inline comment (`Event::InlineHtml`).\n  - Inline tags are protected only as the tag itself, attributes included. Text between tags is not protected, which matches \"text between inline tags is ordinary Markdown\".\n- `reference_roles` (src/lib.rs) skips any `{` that `is_escaped` or `is_protected`.\n  - `is_escaped` counts the preceding backslashes and treats an odd count as escaped, so `\\\\{role}` is correctly not escaped.\n  - Protection applies only when `markdown` is true. Rust and other non-Markdown sources are scanned plainly, which is intended.\n- The reference scanners all go through `reference_roles`, so the rule applies everywhere:\n  - source reference collection (`collect_references_with_progress`)\n  - badge rendering (`replace_references`)\n  - example validation\n  - term dependencies\n  - authoring inputs\n- `definition_blocks` (src/lib.rs) recognises only colon-fence directives (`:::{req}`, `:::{example}`, `:::{definition}`), and skips an opening fence that overlaps a `code_ranges` entry through `overlaps_protected`. This gives the two definition rules:\n  - A `{req}` directive inside a fenced code example does not define a requirement.\n  - A legacy inline `` {req}`name` `` role never defines a requirement, because only colon-fence openers are parsed.\n- The functions that carry out the requirement are marked `{impl}`:\n  - `definition_blocks`\n  - `overlaps_protected`\n  - `reference_roles`\n  - `protected_ranges`\n  - `is_protected`\n  - `is_escaped`\n- I found no unmarked code implementing this behaviour. The Term-option range protection inside `reference_roles` belongs to the definitions requirements, which that function also marks `{impl}`.\n\n**Tests**\n- `code_examples_and_legacy_roles_remain_literal` covers three cases: an inline code span, a fenced `:::{req}` directive in a code block, and a legacy `{req}` role. All three stay literal, and a real directive still renders.\n- `markdown_examples_and_escaped_references_stay_literal` renders a book with a role in inline code, in a fenced block, and escaped with a backslash. It asserts that all three remain literal and no badge is produced.\n- `roles_in_raw_html_stay_literal` covers an HTML block, a block comment, an inline comment, and an attribute value. All are literal. The role between `<em>` tags is the only match. With `markdown=false` the same text yields 5 references.\n- `colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal` asserts that a legacy inline `{req}` role defines nothing.\n- `references_in_requirement_bodies_are_scanned_as_markdown` shows a role in a fenced block inside a requirement body is ignored while a normal one counts.\n- `source_references_are_covered_by_evidence_inputs` (src/evidence.rs) checks repository-level collection ignores roles in inline code and fenced code in a `.md` file.\n\nThe tests cover the positive and negative boundaries. The one gap I noted is minor: an even number of backslashes before a role (`\\\\{role}`) is not tested directly, although `is_escaped` handles it correctly.",
   "inputs": [
     {
       "requirements": "requirements.references.markdown_literals",
@@ -86,6 +86,11 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "fn[example_references_requirement]",
+      "hash": "f7d0664925dc513458f9de3168c803e6556559588b56fbd398012b04747337f3"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "fn[collect_references_with_progress]",
       "hash": "93d27acc2c376f3ff8d2049397cd679c542efd3b5a1c423ec4fe08ba9ad3eebb"
     },
@@ -126,11 +131,6 @@
     },
     {
       "file": "src/lib.rs",
-      "item": "mod[tests]/fn[badge_urls_percent_encode_punctuation_and_html_is_escaped]",
-      "hash": "a02f9993407e4b126296024fd2b346c73ac25dd17b0746a68fa588d5c42aa467"
-    },
-    {
-      "file": "src/lib.rs",
       "item": "mod[tests]/fn[a_longer_colon_fence_contains_a_shorter_nested_directive]",
       "hash": "48241c78c8ebcc8a2969ade9b5d82ed7e09ea8225d2789e75644247e11ff4634"
     },
@@ -145,9 +145,14 @@
       "hash": "d8dab25168a4d67c1274736db9149173fd11603ac66ea08e6ce214014b9ab48f"
     },
     {
+      "file": "src/outline/mod.rs",
+      "item": "fn[parse_with]",
+      "hash": "c78942451f3a6a9f5d1bd6b05e3d80b0884e352f10a15719b190429c78a96f60"
+    },
+    {
       "file": "src/rust_coverage.rs",
       "item": "fn[missing_function_references]",
-      "hash": "d111e2c751c573871d70748ea4ad6ceb354c506408d013246cf531086e84238e"
+      "hash": "d4b988e82c7d1e3abc42602ad05d26d1bdb8eff836fd3e308d2ea1fb1e0c1bd4"
     },
     {
       "file": "src/terms.rs",
@@ -158,221 +163,6 @@
       "file": "src/terms.rs",
       "item": "fn[direct_references]",
       "hash": "98ea11a7e7fa5ffc06d25053633f2e9e32a04916216708d865d62bd6ed744df9"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[project]",
-      "hash": "fe2cd844de1cb0683bc9efd3c89dbc2d56b8880a80f3235a5dbb4b36ce6c5c80"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
-      "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "dcf7e54a23dcebb99ce3fc2313f72289801e3f03afde66f9e24e01ea8e632d13"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_tool_is_advertised_with_an_optional_selection]",
-      "hash": "0b9d07088af9ce09ea4d5960f92c0f29d97a6cd1f3f335fb4adb37985be7c3f1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
-      "hash": "3a95e96496e59dc43099c9706020e030bcea1e25af3006c617f702a65cdf5ae6"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
-      "hash": "5d0928cbdeb6b36d33988b6bfca1b888ee083a1856d238c6856a16344ef82cc1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
-      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
-      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
-      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
-      "hash": "ebe3e1849fc7abacd0b1b60e8992a85eacb41d2c04bf4194fb99ca50a278797d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[a_false_determination_fails_only_its_own_record_with_its_rationale]",
-      "hash": "e462067423cb9ee5d18cc29623b31ead903a22123ce8961a62a5446fa790b2cd"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[changed_requirement_text_names_the_record_and_location_with_a_diff]",
-      "hash": "442781e8cf4b0bf058e05036291478774ec9fa0cb5f6f24ebbc06007e71479b1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirement_bodies_are_compared_without_surrounding_whitespace]",
-      "hash": "e113eb48763e0c67a3bbc7a55fb0b1a678848c9d22d2bd5af76d94377cbb9f6b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[invalid_full_names_from_chapter_paths_are_reported_and_not_defined]",
-      "hash": "e2fff805c66e6f492d56304ccbc6970051f932a8d4cba86cf0a4c76b1a8468fb"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reports_a_missing_closing_colon_fence]",
-      "hash": "19b3ac6850dfc44a2c723659bed481f9b0dd98ade185280faae0563ce5a9ccc5"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are]",
-      "hash": "e673f2245f08808625b5f7b92b270fc21e5f458b6eb4d6a6db4537b8b901b2de"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[example_errors_include_duplicates_invalid_bodies_and_missing_tests]",
-      "hash": "9f02ce33a1d46580a920cfca89d4b49954da52eb4092e9dbf1afd16cb6d8def4"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[examples_may_reference_their_requirement_with_cite_or_test]",
-      "hash": "451412f474cd9b36586be50ad390d80223ce3c473bcc8bb22a6f5d8cde9b6cd2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
-      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
-      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
-      "hash": "f82e8f406792901475f63965518987bf91583e36486e9491ae3bf7af471c127e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[marker_accepts_long_fences_and_ignores_examples]",
-      "hash": "c69b1f71521c8909cce7b88c732e3ddc8f2112b3d3c1525138e425bec413777b"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
-      "hash": "7c8d01bf4965121af7b3b98692c5407a0a47611448986c92edfce95d33bf5c59"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[repeated_index_markers_fail_with_a_clear_error]",
-      "hash": "fbc36a3ee23916abf027014c3959870000470c64230257d39bb1db2d0ec40bae"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[generated_detail_path_cannot_replace_a_chapter]",
-      "hash": "3202b1717afc420b649ce2c1abbaee8200fa7df46d02176794a81add5d890595"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
-      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
-      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[every_definition_gets_a_nested_detail_page_without_an_index]",
-      "hash": "3e906a14371c35629b213fac262d1e70c6934d80947d042c71707aaef299738f"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[chapter_path_prefixes_the_requirement_name]",
-      "hash": "b0fa7c20effd3d40786e299ed71bd9bee0c023ae4c97f1d179cac8b2de49c46e"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[chapters_with_invalid_namespaces_define_nothing_in_the_book]",
-      "hash": "3b32aabb528eb1f1ff24c864c2f3336ab11ccdd3278571e483cdd2759287fed8"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[reference_link_targets_are_escaped]",
-      "hash": "0d58110fe1e1508df78ccd52ba1532dc94e08e59630fa1479b90239fc9c5052f"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[references_in_nested_chapters_link_to_the_requirement_definition]",
-      "hash": "3e8f75e4a6b8ee80976b96da5055891ac3625e999241009b8f9e6eb33656bcd5"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[definitions]",
-      "hash": "65866836139f2ff410592e6c4fc6ada7bb4a9e75b97d2d530245e9c204bb2709"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[finds_uncited_functions_without_using_enclosing_or_string_references]",
-      "hash": "b707b4cf148516e3b47217e474889a688002037b2f3647cd7896c8a24414fad4"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[checks_trait_test_helper_and_nested_functions_separately]",
-      "hash": "bd320cbf33ed73373b2e16e22a3b7265566cda6dbe589bbe6315febcf6c0f3bc"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[locates_functions_after_unicode_text]",
-      "hash": "9530c2f8a1e5893ec5d3fa85a6ded2a0d64b82f5afdb9f73622d4b4f76074d8e"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[structs_enums_and_unions_need_references_attached_or_inside]",
-      "hash": "80ad250f6e96ec348bacacddb150c1a1ef849bff07a1ddb3cce2237a33dd6eea"
     }
   ]
 }
