@@ -245,3 +245,11 @@ Code was changed instead of the requirement in these cases:
   still-matched definitions whose text changed.
 - `requirements.references.targets`: reference discovery skips `.git` and
   `target` at any depth.
+
+## requirements.ci.coverage (commit 3010f22)
+
+**Old:** "Every requirement defined by a fenced `{req}` directive … MUST have an evidence file named `evidence/<full-requirement-name>.json`. … Habeas MUST apply this rule to its own requirements in this chapter."
+
+**New:** "Repository validation MUST check that every requirement defined by a fenced `{req}` directive … has an evidence file named `evidence/<full-requirement-name>.json`, and MUST report each requirement whose evidence file is missing. …" (the "apply this rule to its own requirements" sentence was removed).
+
+**Reason:** the old text described repository state, so reviewers tried to list `evidence/`, which authoring excludes, and the assessment aborted. The obligation is now on the validation code that enforces the rule. Requested by the user.

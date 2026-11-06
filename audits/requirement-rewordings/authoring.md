@@ -307,3 +307,11 @@ for permanent errors and defers transient ones to the backoff requirement.
 "`ProviderBackoff::next_delay` … treats HTTP 429 and `ThrottlingException` as
 transient and retries them … So a throttled assessment never ends in the
 failure path … The two requirements contradict each other".
+
+## `requirements.authoring.provider_backoff` — retry temporary unavailability and unanswered requests (commit 69997e4)
+
+**Old:** "When a provider reports transient throttling through HTTP 429 or a Bedrock `ThrottlingException`, the harness MUST wait and retry the same completion request, retaining…"
+
+**New:** "When a provider reports a transient failure, the harness MUST wait and retry the same completion request. Transient failures are throttling, reported through HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability, reported through HTTP 500, 502, 503, or 504 or a Bedrock `ServiceUnavailableException`, `InternalServerException`, or `ModelNotReadyException`; and a request with no response after ten minutes, which the harness MUST abandon. The retry MUST retain…" The backoff window now doubles "after each consecutive transient failure".
+
+**Reason:** a full authoring run lost four assessments to Bedrock `503 Service Unavailable` and one waited about four hours on a request that never returned. The obligation is broadened, not weakened. Requested by the user.
