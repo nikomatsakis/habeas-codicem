@@ -1040,4 +1040,220 @@ mod tests {
             "{inputs:#?}"
         );
     }
+
+    // {test}`requirements.authoring.submission`
+    #[test]
+    fn submissions_accept_exactly_a_judgment_and_a_nonempty_rationale() {
+        for (determination, expected) in [
+            (json!(true), Judgment::True),
+            (json!(false), Judgment::False),
+            (
+                json!({"FIXME": ["#125", "gap"]}),
+                Judgment::Fixme(vec!["#125".into(), "gap".into()]),
+            ),
+        ] {
+            let (judgment, rationale) =
+                submission(&json!({"determination": determination, "rationale": "**Done.**"}))
+                    .unwrap();
+            assert_eq!(judgment, expected);
+            assert_eq!(rationale, "**Done.**");
+        }
+        for arguments in [
+            json!("true"),
+            json!([true, "rationale"]),
+            json!({}),
+            json!({"rationale": "Missing determination."}),
+            json!({"determination": true}),
+            json!({"determination": true, "rationale": "Extra.", "confidence": 1}),
+            json!({"determination": "true", "rationale": "String judgment."}),
+            json!({"determination": 1, "rationale": "Numeric judgment."}),
+            json!({"determination": null, "rationale": "Null judgment."}),
+            json!({"determination": {"FIXME": []}, "rationale": "Empty FIXME."}),
+            json!({"determination": {"FIXME": "#1"}, "rationale": "Not an array."}),
+            json!({"determination": {"FIXME": [""]}, "rationale": "Empty entry."}),
+            json!({"determination": {"FIXME": ["  "]}, "rationale": "Blank entry."}),
+            json!({"determination": {"FIXME": [1]}, "rationale": "Numeric entry."}),
+            json!({"determination": {"FIXME": ["#1"], "note": "x"}, "rationale": "Extra key."}),
+            json!({"determination": {}, "rationale": "Empty object."}),
+            json!({"determination": true, "rationale": ""}),
+            json!({"determination": true, "rationale": " \n\t"}),
+            json!({"determination": true, "rationale": 7}),
+        ] {
+            assert!(submission(&arguments).is_err(), "accepted {arguments}");
+        }
+    }
+
+    // {test}`requirements.authoring.submission`
+    #[test]
+    fn submit_judgment_is_advertised_with_exactly_its_two_fields() {
+        let definitions = serde_json::to_value(tool_definitions().unwrap()).unwrap();
+        let submit = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "submit_judgment")
+            .expect("submit_judgment is advertised");
+        let parameters = &submit["parameters"];
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["additionalProperties"], false);
+        assert_eq!(
+            parameters["required"],
+            json!(["determination", "rationale"])
+        );
+        assert_eq!(
+            parameters["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["determination", "rationale"]
+        );
+        assert_eq!(
+            parameters["properties"]["rationale"],
+            json!({"type": "string", "minLength": 1})
+        );
+        assert_eq!(
+            parameters["properties"]["determination"]["oneOf"][0],
+            json!({"type": "boolean"})
+        );
+        assert!(
+            submit["description"]
+                .as_str()
+                .unwrap()
+                .contains("exactly once")
+        );
+    }
+
+    /// Returns one scripted response per request; each response is a list of
+    /// tool calls.
+    // {test}`requirements.authoring.submission`
+    struct ScriptedProvider {
+        turns: Vec<Vec<(&'static str, Value)>>,
+        requests: RefCell<usize>,
+    }
+
+    impl CompletionProvider for ScriptedProvider {
+        // {test}`requirements.authoring.submission`
+        async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let turn = *self.requests.borrow();
+            *self.requests.borrow_mut() += 1;
+            let calls = self.turns[turn]
+                .iter()
+                .enumerate()
+                .map(|(index, (name, arguments))| {
+                    AssistantContent::ToolCall(ToolCall::from_wire(
+                        format!("call-{turn}-{index}"),
+                        ToolFunction::new(ToolName::new(*name).unwrap(), arguments.clone()),
+                    ))
+                })
+                .collect();
+            Ok(CompletionResponse::new(
+                calls,
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.authoring.submission`
+    #[tokio::test]
+    async fn a_submission_finishes_the_assessment_wherever_it_arrives() {
+        let read = json!({"file": "src/lib.rs", "item": "fn[work]"});
+        let submit = json!({"determination": false, "rationale": "Gaps remain."});
+        let invalid = json!({"determination": "false", "rationale": "Gaps remain."});
+        for (turns, accepted, requests) in [
+            // After earlier tool turns.
+            (
+                vec![
+                    vec![("habeas", read.clone())],
+                    vec![("habeas", read.clone())],
+                    vec![("submit_judgment", submit.clone())],
+                ],
+                true,
+                3,
+            ),
+            // Alongside other tool calls in the same response, before or after
+            // them: the submission finishes and the other calls are skipped.
+            (
+                vec![vec![
+                    ("habeas", read.clone()),
+                    ("submit_judgment", submit.clone()),
+                ]],
+                true,
+                1,
+            ),
+            (
+                vec![vec![
+                    ("submit_judgment", submit.clone()),
+                    ("ripgrep", json!({"pattern": "work"})),
+                ]],
+                true,
+                1,
+            ),
+            // Multiple submissions anywhere in one response fail even when the
+            // first is valid, and invalid arguments fail without a retry.
+            (
+                vec![vec![
+                    ("submit_judgment", submit.clone()),
+                    ("habeas", read.clone()),
+                    ("submit_judgment", submit.clone()),
+                ]],
+                false,
+                1,
+            ),
+            (
+                vec![
+                    vec![("habeas", read.clone())],
+                    vec![("submit_judgment", invalid.clone())],
+                    vec![("submit_judgment", submit.clone())],
+                ],
+                false,
+                2,
+            ),
+        ] {
+            let project = inputs::tests::project();
+            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let provider = ScriptedProvider {
+                turns: turns.clone(),
+                requests: RefCell::default(),
+            };
+            let result = assess(&provider, &mut sources, &mut usage).await;
+            assert_eq!(*provider.requests.borrow(), requests, "{turns:?}");
+            let record = serde_json::to_value(&usage.record).unwrap();
+            if accepted {
+                let (judgment, evidence) = result.unwrap();
+                assert_eq!(judgment, Judgment::False);
+                assert_eq!(evidence["rationale"], "Gaps remain.");
+                let last = turns.last().unwrap();
+                if last.len() > 1 {
+                    // The other calls in the submitting response were skipped,
+                    // not run, so they delivered no inputs.
+                    let skipped = record["tool_skipped"].as_object().unwrap();
+                    assert_eq!(
+                        skipped.values().filter_map(Value::as_u64).sum::<u64>(),
+                        1,
+                        "{record:#}"
+                    );
+                    assert!(record["tool_failures"].as_object().unwrap().is_empty());
+                    assert!(
+                        evidence["inputs"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|input| input["file"] != "src/lib.rs"),
+                        "{evidence}"
+                    );
+                }
+            } else {
+                assert!(result.is_err(), "{turns:?}");
+            }
+        }
+    }
 }

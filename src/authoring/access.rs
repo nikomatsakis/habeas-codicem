@@ -178,6 +178,7 @@ impl SourceAccess {
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.authoring.read_denial`
+    // {impl}`requirements.authoring.text_search`
     pub(crate) fn file(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let target = self.path(root, relative)?;
         if !target.is_file() {

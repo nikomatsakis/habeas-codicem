@@ -49,7 +49,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
@@ -422,7 +422,17 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
                         Ok(true)
                     }),
                 );
-                if searched.is_err() || lines.is_empty() {
+                if let Err(error) = searched {
+                    *failure.lock().expect("search failure lock") = Some(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "ripgrep failed to search {}: {error}",
+                            entry.path().display()
+                        ),
+                    ));
+                    return ignore::WalkState::Quit;
+                }
+                if lines.is_empty() {
                     return ignore::WalkState::Continue;
                 }
                 match relative_path(&sources.root, entry.path()) {
@@ -2021,5 +2031,156 @@ mod tests {
             json!(["// needle in a comment", "fn after() {}"])
         );
         assert!(search.result["inputs"][0]["hash"].is_string());
+    }
+
+    // {test}`requirements.authoring.text_search`
+    #[test]
+    fn ripgrep_tool_is_advertised_with_its_interface_and_conventions() {
+        let definitions = definitions();
+        let ripgrep = definitions
+            .iter()
+            .find(|definition| definition["name"] == "ripgrep")
+            .expect("ripgrep tool is advertised");
+        assert_eq!(
+            ripgrep["parameters"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string", "default": "."},
+                    "context": {"type": "integer", "minimum": 0, "default": 5}
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            })
+        );
+        let description = ripgrep["description"].as_str().unwrap();
+        for phrase in [
+            "ripgrep regex syntax",
+            "case-sensitive",
+            "normal ignore rules",
+            "default 5",
+            "zero means matches only",
+            "Overlapping windows are merged",
+            "innermost outline nodes",
+            "a match in a comment returns the node the comment belongs to",
+            "source text",
+            "required terminology",
+            "No matches returns empty arrays",
+            "Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden",
+            "Workspace disallow rules win",
+            "denied explicit requests for project paths abort the assessment",
+        ] {
+            assert!(description.contains(phrase), "{phrase:?} in {description}");
+        }
+    }
+
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.authoring.delivered_inputs`
+    #[test]
+    fn search_supplies_terminology_clamps_at_eof_and_reports_failures() {
+        let root = project();
+        fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} value\n:phrase: value\nA useful value.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "fn first() {{}}\n\n// {}\nfn needle() {{}}\n",
+                role("term", "terms.value")
+            ),
+        )
+        .unwrap();
+        // An allowed hidden directory is searched; an unallowed one is not.
+        fs::create_dir_all(root.path().join(".generated")).unwrap();
+        fs::write(root.path().join(".generated/out.txt"), "needle allowed\n").unwrap();
+        fs::create_dir_all(root.path().join(".other")).unwrap();
+        fs::write(root.path().join(".other/out.txt"), "needle hidden\n").unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['.generated']\n",
+        )
+        .unwrap();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"fn needle","path":"src","context":5}),
+        )
+        .unwrap();
+        // The window around the last line stops at the end of the file.
+        let items = search.result["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| input["item"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(items, ["fn[first]", "fn[needle]"]);
+        assert_eq!(search.result["inputs"][1]["line_end"], 4);
+        assert_eq!(
+            search.result["inputs"][1]["text"],
+            json!(["// {term}`terms.value`", "fn needle() {}"])
+        );
+        // Terminology the matched sources use is supplied and recorded.
+        assert_eq!(search.result["definitions"][0]["definition"], "terms.value");
+        sources.record_inputs(&search.inputs);
+        let recorded = sources.recorded_inputs();
+        assert!(
+            recorded
+                .iter()
+                .any(|input| input["definition"] == "terms.value"),
+            "{recorded:?}"
+        );
+        assert!(
+            recorded.contains(
+                &crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[needle]").unwrap()
+            ),
+            "{recorded:?}"
+        );
+        let hidden = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle (allowed|hidden)","context":0}),
+        )
+        .unwrap();
+        let files = hidden.result["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| input["file"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(files, [".generated/out.txt"]);
+        // Invalid arguments are explanatory tool errors.
+        for (arguments, message) in [
+            (json!({}), "pattern must be a string"),
+            (json!({"pattern": 1}), "pattern must be a string"),
+            (json!({"pattern":"x","path":1}), "path must be a string"),
+            (
+                json!({"pattern":"x","context":1.5}),
+                "context must be a nonnegative integer",
+            ),
+            (
+                json!({"pattern":"x","extra":true}),
+                "unexpected tool argument \"extra\"",
+            ),
+            (json!({"pattern":"("}), "invalid ripgrep pattern"),
+        ] {
+            let error = dispatch(&sources, "ripgrep", &arguments).err().unwrap();
+            assert!(error.to_string().contains(message), "{arguments}: {error}");
+        }
+        // A matched file that cannot be parsed fails the search with an
+        // explanatory error rather than silently dropping the match.
+        fs::write(root.path().join("src/broken.rs"), "fn needle( {\n").unwrap();
+        let error = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"fn needle","path":"src"}),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("syntax error"), "{error}");
     }
 }
