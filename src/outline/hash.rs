@@ -2,8 +2,8 @@
 
 use sha2::{Digest, Sha256};
 
-/// Feeds a length-prefixed, tagged encoding of grammar node kinds, leaf token
-/// text, and node ends into SHA-256.
+/// Feeds a length-prefixed, tagged encoding of grammar node kinds, node ends,
+/// and the words of text pieces into SHA-256. Whitespace is never encoded.
 // {impl}`requirements.references.structural_hash`
 pub(crate) struct Encoder {
     hasher: Sha256,
@@ -50,11 +50,18 @@ impl Encoder {
         self.hasher.update(b"E");
     }
 
-    /// Adds one leaf token's text.
+    /// Adds one text piece, a leaf token's text or text no child token
+    /// covers, as its ordered list of whitespace-separated words, each
+    /// encoded separately. A piece that is only whitespace adds nothing.
     // {impl}`requirements.references.structural_hash`
-    pub(crate) fn text(&mut self, text: &str) {
-        self.close_prose();
-        self.field(b'T', text.as_bytes());
+    pub(crate) fn words(&mut self, text: &str) {
+        let mut words = text.split_whitespace().peekable();
+        if words.peek().is_some() {
+            self.close_prose();
+        }
+        for word in words {
+            self.field(b'T', word.as_bytes());
+        }
     }
 
     /// Adds the words of one piece of hashed comment prose to the run of
@@ -81,10 +88,12 @@ impl Encoder {
     }
 }
 
-/// The SHA-256 digest of text, as lowercase hex.
+/// The hash of a `line` node: the word rule over the line's text.
 // {impl}`requirements.references.structural_hash`
-pub(crate) fn digest(text: &str) -> String {
-    hex(&Sha256::digest(text.as_bytes()))
+pub(crate) fn line(text: &str) -> String {
+    let mut encoder = Encoder::new();
+    encoder.words(text);
+    encoder.finish()
 }
 
 // {impl}`requirements.references.structural_hash`

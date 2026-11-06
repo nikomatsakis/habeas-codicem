@@ -146,11 +146,9 @@ pub(crate) static PROFILE: Profile = Profile {
     extensions: &["rs"],
     language: Some(|| tree_sitter_rust::LANGUAGE.into()),
     kinds: KINDS,
-    fallback: "item",
     is_comment,
     hashes_comment: is_doc_comment,
     comment_prose: doc_prose,
     comment_binds_to_container: is_inner_doc_comment,
     attaches,
-    prose: false,
 };

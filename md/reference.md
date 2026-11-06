@@ -399,7 +399,7 @@ Rust selectors use syntactic ancestry within one repository-relative file, under
 
 ## Outlines
 
-Habeas reads sources as outlines: trees of nodes chosen by a per-language profile from a pinned tree-sitter grammar. The file extension picks the profile; every other text file uses the plain-text profile. Each outline has a root node for the whole file. Grammar nodes a profile does not map are transparent, so their outline descendants appear under the nearest outline ancestor. A top-level grammar node that contains no outline node becomes an anonymous node of the profile's fallback kind, so top-level code always lies in some node below the root. Comments are never outline nodes. {cite}`requirements.references.outlines`
+Habeas reads sources as outlines: trees of nodes chosen by a per-language profile from a pinned tree-sitter grammar. The file extension picks the profile; every other text file uses the plain-text profile. Each outline has a root node for the whole file. Grammar nodes a profile does not map are transparent, so their outline descendants appear under the nearest outline ancestor. Source in no mapped node, such as a top-level statement no profile maps or Markdown front matter, belongs to the root; profiles have no fallback kinds. Comments are never outline nodes. {cite}`requirements.references.outlines`
 
 ### Selectors
 
@@ -407,11 +407,11 @@ A selector is a `/`-separated path of segments from the root; the empty selector
 
 ### Hashes
 
-A node's structural hash is the SHA-256 digest of a length-prefixed encoding of the kinds of its named grammar nodes, node boundaries, and its leaf token text, in source order, including siblings the profile attaches to it. Whitespace between tokens and comments the profile does not hash are excluded. In Markdown, and inside hashed comments, leaf text is hashed as whitespace-separated words, so reflowing prose does not change the hash. A `line` node's hash is the digest of the line's text without surrounding whitespace. The identity hash is computed the same way but also skips the node's outline descendants, with their attached siblings, so editing a nested function does not change its parent's selector. {cite}`requirements.references.structural_hash`
+A node's structural hash is the SHA-256 digest of a length-prefixed encoding of the kinds of its named grammar nodes, node boundaries, and, in source order, its text pieces, including siblings the profile attaches to it. A text piece is a leaf token's text or text inside a node that no child token covers, such as TOML string contents, YAML block scalars, or Markdown inline text. In every language, each text piece is hashed as its ordered list of whitespace-separated words, each encoded separately: whitespace is never hashed, so `"a  b"` and `"a b"` hash alike but `"ab"` differs, and reflowing prose does not change the hash. Comments the profile does not hash are excluded; for a hashed comment only its text is hashed, without delimiters such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`, so reflowing a doc comment across lines keeps the hash. A `line` node's hash uses the same word rule over the line's text. The identity hash is computed the same way but also skips the node's outline descendants, with their attached siblings, so editing a nested function does not change its parent's selector. {cite}`requirements.references.structural_hash`
 
 ### Comments
 
-A comment, or a run of comments on consecutive lines with nothing else between them, belongs to the smallest node whose line range contains it. Within that node, it belongs instead to the single child that starts on the line after it ends or ends on the line before it starts. A run adjacent to two children belongs to the next child after it. A run adjacent to no child belongs to the containing node, or, at the top level, to the next top-level node, or to the root when nothing follows. A comment following code on the same line is a run by itself, and belongs to the node on that line. A Rust inner doc comment (`//!`, `/*!`) belongs to the node enclosing it. A node's line range runs from its earliest attached sibling or owned comment to its last line or owned comment. {cite}`requirements.references.outline_comments`
+A comment, or a run of comments on consecutive lines with nothing else between them, belongs to the smallest node whose line range contains it. Within that node, it belongs instead to the single child that starts on the line after it ends or ends on the line before it starts. A run adjacent to two children belongs to the next child after it. A run adjacent to no child belongs to the containing node, or, at the top level, to the next top-level node, or to the root when nothing follows. A comment following code on the same line is a run by itself, and belongs to the node on that line. A Rust inner doc comment (`//!`, `/*!`) belongs to the smallest node containing it, which is the root at file level. A node's line range runs from its earliest attached sibling or owned comment to its last line or owned comment. {cite}`requirements.references.outline_comments`
 
 ### Outline profiles
 
@@ -427,28 +427,21 @@ A comment, or a run of comments on consecutive lines with nothing else between t
 | | | `extern` | `foreign_mod_item` | ABI string, `Rust` when absent |
 | | | `extern-crate` | `extern_crate_declaration` | `name` |
 | | | `use` | `use_declaration` | anonymous |
-| | | `item` | fallback | anonymous |
 | Python | `.py`, `.pyi` | `def` | `function_definition` | `name` |
 | | | `class` | `class_definition` | `name` |
-| | | `stmt` | fallback | anonymous |
 | TypeScript | `.ts`, `.mts`, `.cts`, `.tsx` | `function` | `function_declaration`, `generator_function_declaration`, `function_signature` | `name` |
 | | | `class` | `class_declaration`, `abstract_class_declaration` | `name` |
 | | | `method` | `method_definition`, `method_signature`, `abstract_method_signature` | `name` |
 | | | `interface`, `type`, `enum` | `interface_declaration`, `type_alias_declaration`, `enum_declaration` | `name` |
 | | | `namespace` | `internal_module`, `module` | `name` |
-| | | `stmt` | fallback | anonymous |
 | CSS | `.css` | `rule` | `rule_set` | selector list, whitespace collapsed |
 | | | `media`, `supports` | `media_statement`, `supports_statement` | query text, whitespace collapsed |
 | | | `keyframes` | `keyframes_statement` | keyframes name |
-| | | `stmt` | fallback | anonymous |
 | Markdown | `.md`, `.markdown` | `section` | `section` | heading text, whitespace collapsed; anonymous before the first heading |
-| | | `block` | fallback, such as front matter | anonymous |
 | TOML | `.toml` | `table` | `table`, `table_array_element` | key as written |
 | | | `pair` | `pair` | key as written |
-| | | `item` | fallback | anonymous |
 | YAML | `.yml`, `.yaml` | `pair` | `block_mapping_pair`, `flow_pair` | `key` as written |
 | | | `item` | `block_sequence_item` | anonymous |
-| | | `node` | fallback | anonymous |
 | Plain text | any other | `line` | each non-blank line | anonymous |
 
 Profile details:

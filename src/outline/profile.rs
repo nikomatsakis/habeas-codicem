@@ -61,9 +61,6 @@ pub(crate) struct Profile {
     pub(crate) language: Option<fn() -> Language>,
     /// Kind table.
     pub(crate) kinds: &'static [KindRule],
-    /// Anonymous kind given to a top-level grammar node that contains no
-    /// outline node, so every top-level construct lies in a non-root node.
-    pub(crate) fallback: &'static str,
     /// Whether a grammar node is a comment.
     pub(crate) is_comment: fn(Node<'_>, &str) -> bool,
     /// Whether a comment is part of structural hashes.
@@ -76,8 +73,6 @@ pub(crate) struct Profile {
     pub(crate) comment_binds_to_container: fn(Node<'_>, &str) -> bool,
     /// Whether a preceding grammar sibling attaches to the next outline node.
     pub(crate) attaches: fn(Node<'_>, &str) -> bool,
-    /// Whether leaf text is prose, hashed as whitespace-separated words.
-    pub(crate) prose: bool,
 }
 
 impl std::fmt::Debug for Profile {

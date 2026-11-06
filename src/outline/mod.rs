@@ -247,8 +247,10 @@ fn plain_text(profile: &'static Profile, source: &str, lines: &LineIndex) -> Out
         if line.is_empty() {
             continue;
         }
-        root_hash.text(line);
-        let hash = hash::digest(line);
+        root_hash.kind("line");
+        root_hash.words(line);
+        root_hash.end();
+        let hash = hash::line(line);
         let segment = Segment::base("line", &Label::Hash(hash[..HASH_DIGITS].to_owned()));
         let node = nodes.len();
         nodes[0].children.push(node);
@@ -364,15 +366,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         !self.is_comment(node) && self.profile.rule(node).is_some()
     }
 
-    /// Whether any descendant maps to an outline node.
-    // {impl}`requirements.references.outlines`
-    fn contains_mapped(&self, node: Node<'_>) -> bool {
-        let mut cursor = node.walk();
-        node.children(&mut cursor).any(|child| {
-            !self.is_comment(child) && (self.maps(child) || self.contains_mapped(child))
-        })
-    }
-
     // {impl}`requirements.references.outline_comments`
     fn record_comment(&mut self, node: Node<'_>) {
         self.comments.push(DraftComment {
@@ -462,17 +455,10 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                     .collect::<Vec<_>>();
                 let draft = self.push(rule.kind, name, declaration_byte, parent, child, attached);
                 self.walk(child, draft);
-            } else if parent == 0 && child.is_named() && !self.contains_mapped(child) {
-                let draft = self.push(
-                    self.profile.fallback,
-                    None,
-                    child.start_byte(),
-                    parent,
-                    child,
-                    Vec::new(),
-                );
-                self.walk(child, draft);
             } else {
+                // Unmapped grammar nodes are transparent; source in no mapped
+                // node belongs to the nearest outline ancestor, ultimately
+                // the root.
                 self.walk(child, parent);
             }
         }
@@ -536,39 +522,26 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             encoder.kind(node.kind());
         }
         if node.child_count() == 0 {
-            self.encode_text(encoder, text(node, self.source), false);
+            encoder.words(text(node, self.source));
         } else {
-            // Some grammars, such as Markdown's, leave text between child
-            // tokens unlexed; it is still part of the node's leaf text.
+            // Text inside a node that no child token covers, such as TOML
+            // string contents, YAML block scalars, or Markdown inline text,
+            // is a text piece of its own.
             let mut position = node.start_byte();
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if let Some(gap) = self.source.get(position..child.start_byte()) {
-                    self.encode_text(encoder, gap, true);
+                    encoder.words(gap);
                 }
                 self.encode(encoder, child, index, identity);
                 position = position.max(child.end_byte());
             }
             if let Some(gap) = self.source.get(position..node.end_byte()) {
-                self.encode_text(encoder, gap, true);
+                encoder.words(gap);
             }
         }
         if node.is_named() {
             encoder.end();
-        }
-    }
-
-    /// Hashes leaf text: prose and unlexed gaps (`words`) as an ordered list
-    /// of words, other text as written unless it is only whitespace. Hashed
-    /// comments are encoded as prose by [`Self::encode`].
-    // {impl}`requirements.references.structural_hash`
-    fn encode_text(&self, encoder: &mut Encoder, text: &str, words: bool) {
-        if self.profile.prose || words {
-            for word in text.split_whitespace() {
-                encoder.text(word);
-            }
-        } else if !text.trim().is_empty() {
-            encoder.text(text);
         }
     }
 

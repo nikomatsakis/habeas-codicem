@@ -41,13 +41,11 @@ const TYPESCRIPT: Profile = Profile {
     extensions: &["ts", "mts", "cts"],
     language: Some(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
     kinds: KINDS,
-    fallback: "stmt",
     is_comment: kind_is_comment,
     hashes_comment: never,
     comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
     attaches: never,
-    prose: false,
 };
 
 // {impl}`requirements.references.outlines`

@@ -36,11 +36,9 @@ pub(crate) static PROFILE: Profile = Profile {
     extensions: &["md", "markdown"],
     language: Some(|| tree_sitter_md::LANGUAGE.into()),
     kinds: KINDS,
-    fallback: "block",
     is_comment,
     hashes_comment: never,
     comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
     attaches: never,
-    prose: true,
 };

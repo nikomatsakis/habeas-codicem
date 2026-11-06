@@ -22,11 +22,9 @@ pub(crate) static PROFILE: Profile = Profile {
     extensions: &["py", "pyi"],
     language: Some(|| tree_sitter_python::LANGUAGE.into()),
     kinds: KINDS,
-    fallback: "stmt",
     is_comment: kind_is_comment,
     hashes_comment: never,
     comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
     attaches,
-    prose: false,
 };

@@ -213,9 +213,73 @@ fn editing_a_doc_comment_word_changes_the_hash() {
         run_hash("/// Returns  the\n/// count.\nfn run() {}\n"),
         original
     );
-    assert_ne!(
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn string_literals_hash_as_words() {
+    assert_eq!(
         run_hash("fn run() { \"ab cd\"; }\n"),
         run_hash("fn run() { \"ab  cd\"; }\n")
+    );
+    assert_ne!(
+        run_hash("fn run() { \"ab cd\"; }\n"),
+        run_hash("fn run() { \"abcd\"; }\n")
+    );
+    let pair = |source: &str| {
+        let outline = outline("a.toml", source);
+        outline.nodes[outline.resolve("pair[a]").unwrap()]
+            .structural_hash
+            .clone()
+    };
+    assert_eq!(pair("a = \"a  b\"\n"), pair("a = \"a b\"\n"));
+    assert_ne!(pair("a = \"a b\"\n"), pair("a = \"ab\"\n"));
+    let block = |source: &str| {
+        let outline = outline("a.yml", source);
+        outline.nodes[outline.resolve("pair[a]").unwrap()]
+            .structural_hash
+            .clone()
+    };
+    let original = block("a: |\n  one two\n  three\n");
+    assert_eq!(block("a: |\n  one   two\n    three\n"), original);
+    assert_eq!(block("a: |\n  one\n  two three\n"), original);
+    assert_ne!(block("a: |\n  onetwo\n  three\n"), original);
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn reflowing_markdown_paragraphs_keeps_the_hash() {
+    let section = |source: &str| {
+        let outline = outline("a.md", source);
+        outline.nodes[outline.resolve("section[H]").unwrap()]
+            .structural_hash
+            .clone()
+    };
+    let original = section("# H\n\nThe quick brown\nfox jumps.\n");
+    assert_eq!(section("# H\n\nThe quick\nbrown fox jumps.\n"), original);
+    assert_eq!(section("# H\n\nThe quick brown fox jumps.\n"), original);
+    assert_ne!(section("# H\n\nThe quick brownfox jumps.\n"), original);
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
+    let module = |source: &str| {
+        let outline = outline("src/lib.rs", source);
+        outline.nodes[outline.resolve("mod[m]").unwrap()]
+            .structural_hash
+            .clone()
+    };
+    let original = module("mod m {\n    //! one two\n    //! three\n}\n");
+    assert_eq!(
+        module("mod m {\n    //! one\n    //! two three\n}\n"),
+        original
+    );
+    assert_eq!(module("mod m {\n    /*! one two three */\n}\n"), original);
+    assert_ne!(module("mod m {\n    //! one two\n}\n"), original);
+    assert_eq!(
+        run_hash("/**\n * a b\n * c\n */\nfn run() {}\n"),
+        run_hash("/// a\n/// b c\nfn run() {}\n")
     );
 }
 
@@ -374,10 +438,12 @@ fn plain_text_lines_are_interchangeable_anonymous_nodes() {
     );
     assert_eq!(selectors[0], selectors[2]);
     assert_eq!(outline.resolve(&selectors[0]).unwrap(), 1);
-    assert_eq!(
-        outline.nodes[2].structural_hash,
-        super::hash::digest("beta")
-    );
+    assert_eq!(outline.nodes[2].structural_hash, super::hash::line("beta"));
+    let spaced = super::parse(Path::new("notes.txt"), "two  words\n").unwrap();
+    let single = super::parse(Path::new("notes.txt"), "two words\n").unwrap();
+    let joined = super::parse(Path::new("notes.txt"), "twowords\n").unwrap();
+    assert_eq!(spaced.nodes[1].selector, single.nodes[1].selector);
+    assert_ne!(single.nodes[1].selector, joined.nodes[1].selector);
     assert_eq!(outline.innermost_at_line(2), [0]);
     assert_eq!(outline.innermost_at_line(3), [2]);
 }
@@ -397,14 +463,20 @@ fn python_profile_outlines_defs_classes_and_statements() {
     let outline = outline("a.py", source);
     assert_eq!(
         summary(&outline),
-        [
-            "stmt@ 1-1",
-            "def[f] 2-5",
-            "class[C] 6-8",
-            "class[C]/def[m] 7-8",
-            "stmt@ 9-10"
-        ]
+        ["def[f] 2-5", "class[C] 6-8", "class[C]/def[m] 7-8",]
     );
+    assert_eq!(
+        outline.owner_at_line(1),
+        0,
+        "a top-level import maps to the root"
+    );
+    assert_eq!(
+        outline.owner_at_line(10),
+        0,
+        "a top-level `if` maps to the root"
+    );
+    assert_eq!(outline.innermost_at_line(9), [0]);
+    assert_eq!(outline.nodes_for_lines(9..=10, false), [0]);
 }
 
 // {test}`requirements.references.outlines`
@@ -427,7 +499,6 @@ fn typescript_profile_outlines_declarations() {
             "enum[E]",
             "namespace[N]",
             "namespace[N]/function[g]",
-            "stmt"
         ]
     );
     let tsx = super::parse(Path::new("a.tsx"), "function App() { return <div/>; }\n").unwrap();
@@ -446,7 +517,6 @@ fn css_profile_names_rules_by_normalized_selectors() {
             "media[(max-width:%20600px)] 4-4",
             "media[(max-width:%20600px)]/rule[a] 4-4",
             "keyframes[spin] 5-5",
-            "stmt@ 6-6"
         ]
     );
 }
@@ -459,7 +529,6 @@ fn markdown_profile_nests_sections_by_heading() {
     assert_eq!(
         summary(&outline),
         [
-            "block@ 1-3",
             "section@ 4-5",
             "section[Head%20*one*] 6-10",
             "section[Head%20*one*]/section[Sub] 8-10"
@@ -576,4 +645,55 @@ fn markdown_hashes_include_paragraph_text_between_punctuation_tokens() {
         hash("# Skill\nUse   ready.\n"),
         "whitespace is not hashed"
     );
+}
+
+// {test}`requirements.references.outlines`
+// {test}`requirements.references.outline_comments`
+#[test]
+fn file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root() {
+    let source = "//! Crate docs.\n//! More.\nfn a() {}\n";
+    let lines = outline("src/lib.rs", source);
+    assert_eq!(comment_owner(&lines, source, "Crate docs"), "");
+    assert_eq!(comment_owner(&lines, source, "More"), "");
+    assert_eq!(lines.owner_at_line(1), 0);
+    let a = &lines.nodes[lines.resolve("fn[a]").unwrap()];
+    assert_eq!((a.line_start, a.line_end), (3, 3));
+    let source = "/*! Crate docs. */\nfn a() {}\n";
+    let block = outline("src/lib.rs", source);
+    assert_eq!(comment_owner(&block, source, "Crate docs"), "");
+    let markdown = outline("a.md", "---\ntitle: x\n---\n# H\n");
+    assert_eq!(
+        markdown.owner_at_line(2),
+        0,
+        "front matter maps to the root"
+    );
+}
+
+// {test}`requirements.references.outlines`
+#[test]
+fn no_profile_invents_fallback_kinds() {
+    let sources = [
+        ("src/lib.rs", "use a::b;\nfn f() {}\n"),
+        ("a.py", "import os\nx = 1\nif x:\n    pass\n"),
+        ("a.ts", "const h = () => 1;\nimport x from \"y\";\n"),
+        ("a.css", "@import \"x.css\";\n@charset \"utf-8\";\n"),
+        ("a.md", "---\ntitle: x\n---\n"),
+        ("a.toml", "a = 1\n"),
+        ("a.yml", "- 1\n- 2\n"),
+        ("a.yml", "plain scalar\n"),
+    ];
+    for (path, source) in sources {
+        let outline = outline(path, source);
+        for node in &outline.nodes[1..] {
+            assert!(
+                !matches!(node.kind, "stmt" | "block" | "node")
+                    && !(node.kind == "item" && !path.ends_with(".yml")),
+                "{path}: fallback kind {:?}",
+                node.selector
+            );
+        }
+    }
+    assert_eq!(outline("a.py", "x = 1\n").nodes.len(), 1);
+    assert_eq!(outline("a.ts", "const h = 1;\n").nodes.len(), 1);
+    assert_eq!(outline("a.yml", "plain scalar\n").nodes.len(), 1);
 }

@@ -8,11 +8,9 @@ pub(crate) static PROFILE: Profile = Profile {
     extensions: &[],
     language: None,
     kinds: &[],
-    fallback: "line",
     is_comment: kind_is_comment,
     hashes_comment: never,
     comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
     attaches: never,
-    prose: false,
 };
