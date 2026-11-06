@@ -186,6 +186,7 @@ impl AssessmentSources {
 
     // {impl}`requirements.authoring.delivered_inputs`
     // {impl}`requirements.ci.outline_inputs`
+    // {impl}`requirements.definitions.authoring_inputs`
     pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {
         for input in inputs {
             let input = recorded_input(input);

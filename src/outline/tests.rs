@@ -705,7 +705,12 @@ fn comment_runs_follow_the_same_rules_in_every_language() {
     // Every language has a run before a node, a trailing comment, a comment
     // after its container's last node, and a top-level tail comment that
     // belongs to the root.
-    let cases: &[(&str, &str, &[(&str, &str)])] = &[
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let cases: &[Case] = &[
         (
             "a.py",
             "# lead one\n# lead two\ndef f():\n    pass  # trailing f\nclass C:\n    def m(self):\n        pass\n    # before n\n    def n(self):\n        pass\n# tail\n",
