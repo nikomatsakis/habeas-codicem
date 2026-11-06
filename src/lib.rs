@@ -952,7 +952,10 @@ mod tests {
         // Only nested paths drop these segments.
         assert_eq!(chapter_namespace(Path::new("index.md")), "index");
         assert_eq!(chapter_namespace(Path::new("reqs.md")), "reqs");
-        assert_eq!(chapter_namespace(Path::new("other/reqs/a.md")), "other.reqs.a");
+        assert_eq!(
+            chapter_namespace(Path::new("other/reqs/a.md")),
+            "other.reqs.a"
+        );
 
         let rendered = replace_definitions(
             ":::{req} tui.table\nThe table MUST be visible.\n:::",
@@ -1010,7 +1013,15 @@ mod tests {
         assert_eq!(rendered, source);
 
         for name in [
-            "", "a..b", ".a", "a.", "a b", "caf\u{e9}", "a/b", "a&b", "a`b",
+            "",
+            "a..b",
+            ".a",
+            "a.",
+            "a b",
+            "caf\u{e9}",
+            "a/b",
+            "a&b",
+            "a`b",
         ] {
             assert!(!super::valid_name(name), "{name:?} is invalid");
         }
@@ -1254,6 +1265,37 @@ mod tests {
             "Intro.\n\n:::{note}\nNested.\n:::\n"
         );
         assert!(content[blocks[0].end..].contains("Outside."));
+    }
+
+    // {test}`requirements.ci.span`
+    #[test]
+    fn closing_fences_allow_no_trailing_text_and_fences_allow_three_spaces_of_indent() {
+        let content = ":::{req} ready\nBody.\n:::foo\nStill body.\n::: \n\nAfter.";
+        let blocks = definition_blocks(content);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].closed);
+        assert_eq!(
+            &content[blocks[0].body_start..blocks[0].body_end],
+            "Body.\n:::foo\nStill body.\n",
+            "a colon line with trailing text does not close the body; trailing whitespace may"
+        );
+
+        let indented = "   :::{req} ready\nBody.\n   :::\n";
+        let blocks = definition_blocks(indented);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].closed);
+        assert_eq!(
+            &indented[blocks[0].body_start..blocks[0].body_end],
+            "Body.\n"
+        );
+        assert!(definition_blocks("    :::{req} ready\nBody.\n:::\n").is_empty());
+        let unclosed = definition_blocks(":::{req} ready\nBody.\n    :::\n");
+        assert_eq!(unclosed.len(), 1);
+        assert!(
+            !unclosed[0].closed,
+            "a four-space-indented fence does not close"
+        );
+        assert!(definition_blocks(":::{req}ready\nBody.\n:::\n").is_empty());
     }
 
     // {test}`requirements.examples.definition`

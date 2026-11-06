@@ -193,6 +193,88 @@ fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {
     }
 }
 
+// {test}`requirements.ci.input_containment`
+#[test]
+fn definition_and_requirements_inputs_obey_containment_for_declaring_files() {
+    let temp = fixture();
+    let root = temp.path().join("project");
+    fs::create_dir(root.join("md/private")).unwrap();
+    fs::write(
+        root.join("md/private/terms.md"),
+        ":::{req} secret\nSecret.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n",
+    )
+    .unwrap();
+    let term = json!([
+        ":::{definition} term",
+        ":phrase: term",
+        "",
+        "A term.",
+        ":::"
+    ]);
+    let inputs = vec![
+        json!({"definition": "private.terms.term", "text": term}),
+        json!({
+            "requirements": "private.terms.*",
+            "matches": ["private.terms.secret"],
+            "text": [":::{req} secret", "Secret.", ":::"],
+        }),
+    ];
+    write_inputs(&root, inputs.clone());
+    let own_errors = |root: &Path| {
+        validate_repository(root)
+            .unwrap()
+            .errors
+            .into_iter()
+            .filter(|error| error.starts_with("evidence/rules.ready.json"))
+            .collect::<Vec<_>>()
+    };
+    assert!(own_errors(&root).is_empty(), "{:?}", own_errors(&root));
+
+    fs::write(
+        root.join("habeas.toml"),
+        "version = 1\n[evidence]\ndisallow = ['md/private']\n",
+    )
+    .unwrap();
+    let errors = own_errors(&root);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors[0].contains("inputs[0]") && errors[0].contains("disallowed"));
+    assert!(errors[1].contains("inputs[1]") && errors[1].contains("disallowed"));
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.contains("md/private/terms.md"))
+    );
+}
+
+// {test}`requirements.ci.input_containment`
+#[cfg(unix)]
+#[test]
+fn unreadable_and_missing_inputs_are_reported() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = fixture();
+    let root = temp.path().join("project");
+    fs::write(root.join("locked.txt"), "secret\n").unwrap();
+    let input = outline(&root, "locked.txt", "");
+    fs::set_permissions(root.join("locked.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+    let missing = json!({"file": "gone.txt", "item": "", "hash": "0".repeat(64)});
+    write_inputs(&root, vec![input, missing]);
+    let errors = validate_repository(&root).unwrap().errors.join("\n");
+    // A privileged user can read the file regardless of its mode.
+    let unreadable = fs::read(root.join("locked.txt")).is_err();
+    fs::set_permissions(root.join("locked.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        errors.contains("inputs[1]: cannot open gone.txt"),
+        "{errors}"
+    );
+    if unreadable {
+        assert!(
+            errors.contains("inputs[0]: cannot read locked.txt"),
+            "{errors}"
+        );
+    }
+}
+
 // {test}`requirements.ci.orphans`
 #[test]
 fn nested_evidence_files_are_reported() {
