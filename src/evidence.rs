@@ -482,7 +482,14 @@ fn collect_definitions(
 
     for (name, definition) in &definitions {
         if definition.kind == DefinitionKind::Example
-            && !example_references_requirement(definition, &definitions)
+            && !reference_roles(&definition.text, true)
+                .into_iter()
+                .any(|reference| {
+                    matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)
+                        && definitions
+                            .get(reference.name)
+                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)
+                })
         {
             errors.push(format!(
                 "{}: example {name} must reference at least one requirement with {{cite}} or {{test}}",
@@ -495,8 +502,8 @@ fn collect_definitions(
 }
 
 /// Whether an example's text has a valid `{cite}` or `{test}` reference to a
-/// requirement.
-// {impl}`requirements.examples.definition`
+/// requirement, as Rust item coverage requires of a cited example. Definition
+/// collection reports such examples itself.
 // {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn example_references_requirement(
     example: &Declaration,
