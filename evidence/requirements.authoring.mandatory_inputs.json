@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST construct each assessment's mandatory input set by combining\nthe contributions specified by the requirements applicable to that subject and\nits inputs. A requirement that contributes inputs MUST cite this requirement and\ndefine which sources it contributes and when. The harness MUST include every\napplicable contribution, deduplicate identical selections, and report\nunresolvable mandatory inputs before inference. The complete set MUST be supplied\nin the initial model request.\nGenerated output under project-root `evidence/`, including symlink aliases, MUST\nbe omitted from mandatory inputs when the default exclusion applies. An explicit\nworkspace allow MUST permit those selections; an explicit disallow MUST abort\nunder {cite}`requirements.authoring.read_denial`.",
-  "determination": false,
-  "rationale": "**Verdict: false.** The core assembly of the mandatory input set is implemented and tested. The evidence-exclusion obligations are not.\n\n**What is covered**\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) combines the subject declaration, `{cite}` targets, `{impl}`/`{test}` source nodes and anchors, then adds transitive term definitions.\n- `insert_selector` deduplicates selections, and `definition_inputs` skips inputs already present.\n- Unresolvable or denied inputs return an error from `prepare`. `configured_record` in `src/authoring/mod.rs` calls `prepare` before `RigProvider::connect`, so the failure comes before inference.\n- `initial_prompt` and `assess` put the full set into the first request.\n- Each contributing requirement cites `mandatory_inputs`: `authoring_input`, `examples.authoring_inputs`, `references.authoring_inputs`, `definitions.authoring_inputs` and `ci.authoring_inputs`.\n- The unit tests in `inputs.rs` cover the combined bundle, dedup, edges that leave versus enter the subject, anchors, outline-node contributions, an unresolvable earlier evidence input, a staging failure, and a disallow abort.\n- `tests/authoring_cli.rs` checks the CLI path end to end.\n\n**Gaps**\n1. **Anchors under `evidence/` abort instead of being omitted.**\n   - The requirement says generated output under `evidence/`, including symlink aliases, MUST be omitted from mandatory inputs when the default exclusion applies.\n   - In `prepare`, every anchor first goes through `access.file(&root, anchor.file)`. `SourceAccess::path` returns `PermissionDenied` for a generated-evidence path unless an allow rule matches.\n   - That error is propagated with `?`, so the later omission step (`generated_evidence_selector` → `omit_generated_evidence`) is never reached for the default case.\n   - `omit_generated_evidence` only has an effect after the anchor check has already passed, which happens only when an allow rule exists. In that case it returns false and the file is included.\n   - An `:impl:` or `:test:` anchor pointing into `evidence/`, or a symlink alias to it, therefore aborts the assessment instead of being dropped.\n2. **No tests for the evidence-specific clauses.**\n   - No test shows an `evidence/` selection being omitted by default.\n   - No test shows an explicit allow permitting it.\n   - No test shows a symlink alias being omitted.\n   - No test shows a disallow on `evidence/` aborting.\n   - The evidence-related tests only check that old evidence JSON is not carried forward. The only disallow test targets `md/requirements.md`.\n3. **Unrequired behavior in the `{impl}` code.** `generated_evidence_selector` omits only `Outline` selectors, and `omit_generated_evidence` returns false when a disallow matches (the later read then aborts). That is consistent with the requirement, but it leaves the anchor path in gap 1 inconsistent with it.\n\nNo FIXME acknowledgements exist for these gaps, so the result is `false`.",
+  "determination": true,
+  "rationale": "**Determination: true.** The code implements each obligation of `requirements.authoring.mandatory_inputs`, and the tests cover the main cases. I found two small gaps, listed at the end, that I did not count against it.\n\n**Contributing requirements cite this requirement.**\n- `md/requirements.md:24`, `md/requirements/examples.md:20`, `md/requirements/references.md:194`, `md/requirements/definitions.md:59` and `md/requirements/ci.md:154` each cite it and state which sources they contribute and when.\n- The requirements, examples and references rules cover the subject declaration, `{cite}`d declarations, `{impl}`/`{test}` sources and anchors. The definitions rule covers term dependencies. The ci rule says existing evidence contributes nothing.\n\n**Implementation.** `AssessmentSources::prepare` in `src/authoring/inputs.rs:42-181` builds the set.\n- **Subject and cites:** It starts with the subject declaration and adds the declaration of each `{cite}` the subject makes. It skips `{impl}`/`{test}` edges that leave the subject. The `{impl}`/`{test}` sources that point at the subject come from `collect_references`. `reference_selector` turns each one into a Markdown declaration, an outline node, or a whole plain-text file. Anchors are added too.\n- **Deduplication:** `insert_selector` removes identical selectors. Term dependencies from `definition_inputs` (`terms::dependencies`) are also deduplicated.\n- **Evidence omission:** `omit_generated_evidence`, `generated_evidence_path` and `generated_evidence_selector` omit `evidence/` outputs, including symlink aliases. They keep an explicitly allowed path, and an explicit disallow aborts. Existing evidence is never read into the set.\n- **Unresolvable inputs:** `source_input` and `SourceAccess::file` return errors (denial, outside project root, unstaged, missing, unparsable). These propagate out of `prepare` in `configured_record` (`src/authoring/mod.rs:318`) before `RigProvider::connect` and before any request.\n- **Initial request:** `initial_prompt` (`src/authoring/mod.rs:356`) puts the complete `mandatory_inputs()` array into the first request. `assess` records those same inputs once the first response arrives.\n\n**Tests** in `src/authoring/inputs.rs`, `src/authoring/tools.rs` and `tests/authoring_cli.rs`:\n- **Combination and edge direction:** `bundle_combines_direct_references_terms_and_current_existing_selectors` checks the combination. `only_edges_leaving_the_subject_contribute_inputs` checks which edges contribute.\n- **Deduplication:** `anchored_files_contribute_root_node_inputs` anchors the same file with both `:impl:` and `:test:`. It asserts exactly one input for that file.\n- **Existing evidence:** `earlier_evidence_inputs_and_judgments_are_not_carried_forward` and `unresolvable_earlier_inputs_do_not_block_reassessment`.\n- **Unresolvable or denied inputs:** `mandatory_git_inputs_require_staging_declarations_sources_and_terms`, `disallowed_mandatory_inputs_abort_preparation`, `unreadable_or_denied_anchors_fail_before_inference` and `mandatory_inputs_outside_the_project_still_abort`.\n- **Generated evidence:** `generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed` covers omission by default, the symlink alias, explicit allow, and explicit disallow aborting. `generated_evidence_references_are_omitted_by_default` covers references.\n- **Initial request:** the CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks that the first request contains the requirement, definition and implementation/test sources.\n\n**Minor gaps, not counted against it.**\n- `reference_selector` carries `{impl}` markers for `references.authoring_inputs` and `references.outline_comments` but not for this requirement. That is acceptable because it implements the contribution rule in references, not the combination logic here.\n- `unreadable_or_denied_anchors_fail_before_inference` is marked as a test of `references.anchors` and `read_denial` rather than this requirement, though it does exercise the \"report unresolvable inputs before inference\" obligation.",
   "inputs": [
     {
       "requirements": "requirements.authoring.mandatory_inputs",
@@ -47,6 +47,14 @@
         "affected assessment.",
         "Malformed tool arguments and ordinary read failures MUST retain their existing",
         "recoverable tool-error behavior.",
+        "",
+        "A dispatched model request naming a path outside the project root, before",
+        "symlinks are resolved, that no workspace allow rule or generated-output rule",
+        "permits MUST be treated as an ordinary read failure rather than an abort: it",
+        "MUST return an explanatory tool error, add no evidence input, and let the",
+        "assessment continue. An explicit workspace disallow matching such a path MUST",
+        "still abort. A mandatory input naming such a path, and a request inside the",
+        "project whose symlink target leaves it, MUST still abort.",
         ":::"
       ]
     },
@@ -68,7 +76,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
+      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -151,6 +159,16 @@
       "hash": "dcf7e54a23dcebb99ce3fc2313f72289801e3f03afde66f9e24e01ea8e632d13"
     },
     {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
+      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_references_are_omitted_by_default]",
+      "hash": "ea1f47438ed79131e5835a50a8dbb99ce9a857b91958a6629036e6bf78fd3687"
+    },
+    {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
       "hash": "bd02de1eea84805ffdba0b1bc76bb6156b1a2d6436801239dbc54a37865c39f8"
@@ -163,7 +181,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
+      "hash": "f8340e9a96b5dad7f636316ee5cc43e0ba60b76f46521d79b3bdc6e253306d04"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[mandatory_inputs_outside_the_project_still_abort]",
+      "hash": "7f6e8d8f4b7dbb70bf1f566d57271d75b7cb1080fbb3d1c67eede7faf39f6b64"
     },
     {
       "file": "src/evidence.rs",
@@ -181,9 +204,24 @@
       "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
     },
     {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[References]",
+      "hash": "45d28e2ba8209acf969ae23d46633809af4d3b3aa2e0312c0adbf517add48acb"
+    },
+    {
       "file": "md/requirements.md",
       "item": "section[Requirements]/section[Requirements%20as%20authoring%20inputs]",
       "hash": "1462eb58c0114feda25cbd70b5a9ab6a22bbc8abe2c97bfa546650ed510b88e8"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Request%20evidence%20inputs:%20`habeas`]",
+      "hash": "0f74eb362f5674000bf1f7d946c4ffa165e33639f9bc760e4c7a46dbe20a54d4"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Search%20file%20contents:%20`ripgrep`]",
+      "hash": "321459b8c802b65f8fda7a5a188c95004fab9a4ac395fdfe4e94f8f2c8553aed"
     },
     {
       "file": "md/requirements/authoring.md",
@@ -217,153 +255,83 @@
     },
     {
       "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "e5e1e753f5af5b1cb73d5f609d795407bfb68c769920aeb976957346db13aec5"
+    },
+    {
+      "file": "md/requirements/references.md",
       "item": "section[References%20and%20Rust%20items]/section[References%20as%20authoring%20inputs]",
       "hash": "129b55e097d757c1290d72bb678ff4f026ad559804142069bb7500986fe3cc22"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@e1f72b0ff927",
-      "hash": "e1f72b0ff927b84b9330bf2862b7f33ee8526b4ced8475735c2d0d791d89280f"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@420a7d4fdb66",
+      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
     },
     {
-      "file": "src/authoring/access.rs",
+      "file": "src/authoring/inputs.rs",
       "item": "use@0aa5aad345a4",
       "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
     },
     {
-      "file": "src/authoring/access.rs",
+      "file": "src/authoring/inputs.rs",
       "item": "use@95d18074761c",
       "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@b9fce3e500fd",
-      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@005abb79b847",
-      "hash": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@ef65439d8cc7",
-      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@af5af7ca9b21",
+      "hash": "af5af7ca9b21b459949168a24caa4a5918639b9884d390487f8cdfaa36b95032"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "struct[PathPolicy]",
-      "hash": "deec21bca0141b9262967d0feccc1b312fa13f1529416611a7c9e4557b42e0f5"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@4acd7fec4c4a",
+      "hash": "4acd7fec4c4a06f684055207db032e20d650cbfd84049329791caa29f3d7944a"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]",
-      "hash": "3cbf909ef188ad797d961bb616d0f75643b592e1115e1fa24e951f6c977dc916"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@782c060760b9",
+      "hash": "782c060760b922de459dc31229fd1dcc89e3b6d85a3892a80f77ca889290c196"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "struct[SourceAccess]",
-      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@3a464b643804",
+      "hash": "3a464b643804f06381e422e4a1a7154097db7f65a49504935a85a0e6b9fa8c70"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]",
-      "hash": "8237cdecabc4cc74e98cf079bf320f20c058cdeef6996777ad501c8d39f8e1c3"
+      "file": "src/authoring/inputs.rs",
+      "item": "enum[AssessmentKind]",
+      "hash": "9bd1851dbc93e4f08073b9381a305ca2be7a7571300b7d3ebcc1a24b36f61ee8"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[matches_rule]",
-      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentKind]",
+      "hash": "d4d564e0460b2cb970dd1dcb3ce9381286f57d181db4e6141d944e2b84b13a0b"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[requested_location]",
-      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]",
+      "hash": "226a8998e2615bfe9b49fd657ac0e381c8b8429d6b761d8585cb7e94b5950c98"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[tracked_sources]",
-      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[generated_roots]",
-      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[discover_generated_roots]",
-      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
       "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "enum[Behavior]",
-      "hash": "dfcc05e5d939a0164a18df57410fc6b272d00b0493a0569256aab3b151ab0d1c"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
-      "hash": "49a37589f20de14d662421cdc3a473dc73813bfc2f4df71ab09846154d6d62d5"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[add_input_external_sources_respect_allow_and_disallow]",
-      "hash": "12f59ac3e3447f501afca1733d7956f6fea7216a54e8e9f3455f66a16b6679c4"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
-      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
-      "hash": "4a1e5484da50abc6d54cccb531029d25ed1996e173f5eb014ecdfa9e69dcc20f"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
-      "hash": "1c52e2de8994a9792a83f6f9e2c6f2861d432ea65327adca6a9ec5dd4c477f1e"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]",
-      "hash": "87cd0850f43eabc90395b43268a523fe6563bcb31a65d2960dad988d77e7aabd"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]",
-      "hash": "666c657e7eefe99ac693087326725a1c73db4fadef23e4ad1e85ca58269a8b9a"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
-      "hash": "baacb5cc86251bd76c65ad8fec4dc09f9f19043f1c0f74bb881f83ea6b22ac16"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
-      "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
     }
   ]
 }

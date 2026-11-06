@@ -1,7 +1,7 @@
 {
-  "requirement": "When a mandatory input or dispatched model read is denied by source-access\npolicy, the assessment MUST abort and report the denied path and reason to its caller.\nIt MUST NOT return the denial to the model as a recoverable tool result or make\nanother model request for that assessment. An untracked-file diagnostic MUST\nexplain that the caller can stage the file with `git add` or configure a workspace\nallow rule; the harness MUST NOT stage or permit the file itself.\n\nThe aborted assessment MUST NOT write evidence or emit evidence JSON. Its usage\nrecord MUST identify the failure and any failed tool call. In a batch, other\nassessments MUST continue, including queued assessments, and their successful\nwrites MUST be retained. The command MUST return a nonzero exit status after\nthe batch finishes. Discovery and search MAY omit denied candidates without\naborting, but explicitly requesting a denied file or directory MUST abort the\naffected assessment.\nMalformed tool arguments and ordinary read failures MUST retain their existing\nrecoverable tool-error behavior.",
+  "requirement": "When a mandatory input or dispatched model read is denied by source-access\npolicy, the assessment MUST abort and report the denied path and reason to its caller.\nIt MUST NOT return the denial to the model as a recoverable tool result or make\nanother model request for that assessment. An untracked-file diagnostic MUST\nexplain that the caller can stage the file with `git add` or configure a workspace\nallow rule; the harness MUST NOT stage or permit the file itself.\n\nThe aborted assessment MUST NOT write evidence or emit evidence JSON. Its usage\nrecord MUST identify the failure and any failed tool call. In a batch, other\nassessments MUST continue, including queued assessments, and their successful\nwrites MUST be retained. The command MUST return a nonzero exit status after\nthe batch finishes. Discovery and search MAY omit denied candidates without\naborting, but explicitly requesting a denied file or directory MUST abort the\naffected assessment.\nMalformed tool arguments and ordinary read failures MUST retain their existing\nrecoverable tool-error behavior.\n\nA dispatched model request naming a path outside the project root, before\nsymlinks are resolved, that no workspace allow rule or generated-output rule\npermits MUST be treated as an ordinary read failure rather than an abort: it\nMUST return an explanatory tool error, add no evidence input, and let the\nassessment continue. An explicit workspace disallow matching such a path MUST\nstill abort. A mandatory input naming such a path, and a request inside the\nproject whose symlink target leaves it, MUST still abort.",
   "determination": true,
-  "rationale": "**Verdict: the sources satisfy `requirements.authoring.read_denial`.** One minor edge case is noted at the end. I read the code and tests; I did not run them.\n\n**How each obligation is implemented**\n- **Denials are typed.** `src/authoring/access.rs` `SourceAccess::path` and `file` return `io::ErrorKind::PermissionDenied` through `denied()` for every policy denial. These cover disallow rules (`PathPolicy::check_disallow`), workspace credentials, generated evidence, paths outside the project, and untracked files or directories. Messages include the requested path and the reason.\n- **Untracked diagnostics.** The untracked-file message says to \"use git add to stage it or add an explicit habeas.toml allow rule\". The untracked-directory message says \"use git add to stage sources or update habeas.toml\". The harness only reads the Git index (`tracked_sources`) and never stages or permits a file.\n- **Mandatory inputs abort preparation.** In `src/authoring/inputs.rs`, `AssessmentSources::prepare` and `source_input` use `?` on `access.file`, covering reference sources, anchors, requirements, definitions and resolved ranges. `configured_record` calls `prepare` before `RigProvider::connect` and `assess`, so no model request is made. Errors are `PermissionDenied` and name the path.\n- **Dispatched reads abort.** In `assess` (`src/authoring/mod.rs`), a tool error of kind `PermissionDenied` returns `Err(error)` immediately, after `usage.tool(name, true)`. No tool result is sent to the model and no further request is made. Other errors, including malformed arguments and missing files, become `error_result` values and the loop continues.\n- **Discovery and search omit denied candidates.** `list_files`, `search` and `references` skip denied entries or files. An explicit denied `path` goes through `project_path` or `access.path` and aborts.\n- **No evidence on abort.** `assess` returns `Err`, so no record is built. `prepare_assessment` and `author_evidence_with_output` call `usage.finish(\"failed\")` with the error. Evidence is written only for successful `PendingAssessment`s in `batch.rs`.\n- **Batch behavior.** `cancel_on_error` cancels the batch only for `Interrupted`, so a denial fails just its own assessment. In-flight and queued assessments continue, successful writes are kept, and `main` returns an error (nonzero exit) once failures exist, after the batch finishes.\n\n**Test coverage**\n- **Policy layer.** The `access.rs` tests check disallow-wins, credentials, symlink and `..` redirection, and that an unrelated `OUT_DIR` is denied while ordinary reads stay available.\n- **Mandatory-input denial.** `inputs.rs` tests (`disallowed_mandatory_inputs_abort_preparation`, `unreadable_or_denied_anchors_fail_before_inference`, `mandatory_git_inputs_require_staging…`) check the `PermissionDenied` kind, the path in the message, and the `git add` guidance.\n- **Tool-level denials.** `tools.rs` tests cover `habeas`, `outline`, `list_files` and `ripgrep` for untracked, generated-evidence, disallowed and symlink cases. They also confirm that discovery omits denied entries.\n- **Single-assessment CLI.** `tests/authoring_cli.rs::explicit_untracked_reads_abort_without_another_request_or_evidence_write` covers `habeas`, `ripgrep` and `list_files`. It checks nonzero exit, empty stdout, unchanged evidence, exactly one model request, `outcome=failed`, the failed tool call recorded in `tool_failures`, and `evidence_written=false`.\n- **Batch.** `tests/authoring_batch.rs` has two tests: `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence`. They check that other and queued assessments complete with evidence, no evidence is written for the denied one, usage records the failure and the failed tool call, and the exit is nonzero.\n- **Recoverable errors.** `ollama_cli_delivers_sources…` sends a read of a missing `absent.txt` and checks that it comes back as a tool result, a recorded tool failure, and a completed run.\n\n**Minor edge case (not an acknowledged FIXME, and not enough to fail the requirement)**\n- The abort test in `assess` keys on `ErrorKind::PermissionDenied`. An OS-level EACCES from `read_dir` or `canonicalize` would take the same path, even though it is not a source-access policy denial. This is untested.\n- Most ordinary failures, such as not found, parse errors and bad arguments, use other kinds and stay recoverable.\n\n**Implementation marking**\n- The denial-related code carries `{impl}` markers. Pass-through helpers such as `dispatch` and `read_lines` only propagate the errors.",
+  "rationale": "The sources satisfy `requirements.authoring.read_denial`. Every obligation has marked `{impl}` code and a covering test, and I found no unmarked partial implementation or unspecified behavior.\n\n**Policy and denial classification (`src/authoring/access.rs`)**\n- `SourceAccess::path` and `file` run `check_disallow` first. An explicit disallow therefore wins, including for alias or symlink targets and for ancestors traversed before a redirect.\n- Policy denials come back as `PermissionDenied`.\n- The untracked-file diagnostic says \"use git add to stage it or add an explicit habeas.toml allow rule\". Directories get a similar message. Nothing in the code stages or allows a file.\n- A lexically outside-the-project path that no rule permits gets an `OutsideProject` error, which `recoverable_outside_request` turns into an ordinary error.\n- A path inside the project whose symlink target leaves it is a plain `denied` error, so it still aborts.\n- A mandatory input outside the project still returns `PermissionDenied`, so it aborts.\n\n**Abort path**\n- In `assess` (`src/authoring/mod.rs`), `tools::dispatch` runs `recoverable_outside_request`. Only `PermissionDenied` errors abort, and the denial is never returned to the model as a tool result.\n- Malformed arguments and ordinary read failures stay `Other` errors, which become recoverable tool errors.\n- `usage.tool(..., true)` is recorded before the abort, so the usage record names the failed tool call.\n- `prepare_assessment` records the outcome as \"failed\" and returns the error with the usage path.\n- Mandatory-input denials fail in `AssessmentSources::prepare` through `access.file`, before any model request.\n- No evidence is written, because the failure never reaches `write_record`.\n\n**Batch behavior**\n- `author_all_with_options` collects failures, and `cancel_on_error` cancels only on `Interrupted`. A denial therefore does not stop other or queued assessments.\n- `main` returns an error, and so a nonzero exit, after the batch finishes if any assessment failed.\n\n**Discovery and search**\n- Directory walks in `list_files` and `search` skip denied candidates silently.\n- An explicitly requested denied path goes through `project_path` and `access.path`, so it aborts.\n\n**Tests**\n- `src/authoring/inputs.rs`:\n  - Disallowed mandatory inputs abort.\n  - Untracked mandatory inputs abort with a `git add` message.\n  - Denied anchors abort.\n  - Generated-evidence anchors are omitted by default but abort when disallowed.\n- `src/authoring/tools.rs`:\n  - Outside-project requests are recoverable for all five tools.\n  - An outside-project request that matches a disallow rule still aborts.\n  - A mandatory input outside the project aborts.\n  - Disallowed descendants and Cargo output directories abort.\n  - Untracked files and symlink aliases of untracked files abort.\n- `src/authoring/access.rs`:\n  - Disallow wins for alias targets.\n  - Disallowed ancestors and `..` handling are covered.\n  - Credentials are denied.\n- `tests/authoring_cli.rs`: for `habeas`, `ripgrep` and `list_files`, an untracked read gives a nonzero exit, empty stdout, unchanged evidence, exactly one model request, and a usage record with outcome \"failed\" and a tool failure.\n- `tests/authoring_batch.rs`: with a denied read in one assessment, the others and the queued one still complete, and their evidence is kept. The failed one writes none, its path appears in stderr, the exit is nonzero, and the usage record shows the failure and the failed tool call.\n\n**Minor observations (not gaps)**\n- The batch-level test exercises a denial from a model tool call rather than from a mandatory input. Both go through the same failure path in `author_all_with_options`, and the unit tests cover the mandatory-input case.\n- A duplicated `{impl}` comment on `OutsideProject` is harmless.",
   "inputs": [
     {
       "requirements": "requirements.authoring.read_denial",
@@ -26,6 +26,14 @@
         "affected assessment.",
         "Malformed tool arguments and ordinary read failures MUST retain their existing",
         "recoverable tool-error behavior.",
+        "",
+        "A dispatched model request naming a path outside the project root, before",
+        "symlinks are resolved, that no workspace allow rule or generated-output rule",
+        "permits MUST be treated as an ordinary read failure rather than an abort: it",
+        "MUST return an explanatory tool error, add no evidence input, and let the",
+        "assessment continue. An explicit workspace disallow matching such a path MUST",
+        "still abort. A mandatory input naming such a path, and a request inside the",
+        "project whose symlink target leaves it, MUST still abort.",
         ":::"
       ]
     },
@@ -37,7 +45,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "633e94e0bfaf8edbc4e4892768672ffa57410694e16bbfc774a7a1bba3079cf4"
+      "hash": "6e0a0e59238c31798ac3e76fa0a480691a52dfd3f961d9761ec56830b0948d9b"
     },
     {
       "file": "src/authoring/access.rs",
@@ -46,8 +54,18 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::fmt::Display]/fn[fmt]",
+      "hash": "c1af44d85f08a99054deed1735038ce6bd33f98402228d9234a005b059eb0146"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
     },
     {
       "file": "src/authoring/access.rs",
@@ -92,7 +110,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
+      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -120,6 +138,11 @@
       "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
     },
     {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
+      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
+    },
+    {
       "file": "src/authoring/mod.rs",
       "item": "impl[PendingAssessment]/fn[failed]",
       "hash": "3f4ce9f8ba6a11a7051dc44262d6874b939929cd29cc397252ab2ccf435c20c7"
@@ -142,12 +165,17 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
+      "hash": "f8340e9a96b5dad7f636316ee5cc43e0ba60b76f46521d79b3bdc6e253306d04"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
+      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "8b2b50b389ec315e5ce7fd86d95edaaad3a09f45dcfd278686d6af779a476fc7"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -200,6 +228,16 @@
       "hash": "204a1e1b56a975bbf449d5e38f893f680bc0563c1b4ffcd65c9544c0461b1eff"
     },
     {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
+      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[mandatory_inputs_outside_the_project_still_abort]",
+      "hash": "7f6e8d8f4b7dbb70bf1f566d57271d75b7cb1080fbb3d1c67eede7faf39f6b64"
+    },
+    {
       "file": "src/main.rs",
       "item": "fn[main]",
       "hash": "209601c59434068ecff945202b701ec4cd80c8208b01012a83ee35625c7f0f94"
@@ -236,113 +274,123 @@
     },
     {
       "file": "src/authoring/access.rs",
+      "item": "use@e1f72b0ff927",
+      "hash": "e1f72b0ff927b84b9330bf2862b7f33ee8526b4ced8475735c2d0d791d89280f"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@95d18074761c",
+      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@b9fce3e500fd",
+      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@005abb79b847",
+      "hash": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@ef65439d8cc7",
+      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PathPolicy]",
+      "hash": "deec21bca0141b9262967d0feccc1b312fa13f1529416611a7c9e4557b42e0f5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "3cbf909ef188ad797d961bb616d0f75643b592e1115e1fa24e951f6c977dc916"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[SourceAccess]",
+      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]",
-      "hash": "8237cdecabc4cc74e98cf079bf320f20c058cdeef6996777ad501c8d39f8e1c3"
+      "hash": "ecac5f53614daa737173885275e4613df5e9d31bb6352e66d7a0953c05dde898"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[matches_rule]",
-      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[println]",
+      "hash": "af52d26510d1062d13ad4fd96217dd3ca253b0f04493d7f1cd38476e0669d5fd"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[requested_location]",
-      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[finish]",
+      "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageRecord]",
+      "hash": "62f87e958bce86f096870fd381f6412988268344de7eb23c5762ff6c72309137"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+      "file": "src/authoring/usage.rs",
+      "item": "struct[InputUsage]",
+      "hash": "0700e5ace38d9149dd28c6dce787c33e372e6108ad2b928509e78e502c848814"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[tracked_sources]",
-      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[start]",
+      "hash": "c17a45260649764a47ed1f355267f8c78a83539022b722a81fd76971409cc394"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[end_request]",
+      "hash": "d9c2e3d64af15bc7e9a3166e69d0ecbb0787b3531240ae510969c4d0df9d090b"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[tool]",
+      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]",
-      "hash": "42f0b875e669fd61a5db29324859768fb99d8e96a666cade3e46e464fa92cdd7"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[skipped_tool]",
+      "hash": "b75aa1847cab3fc7573d68ed6e4d3c7f29417a61e17d8c51ee756d3d88de8cdb"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_path]",
-      "hash": "df1f61c7b3a4bd67529fce5edc8c58f199c3183a6fa85569da97539acef0c39a"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[finish]",
+      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_selector]",
-      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch]",
-      "hash": "7e252081e666e82ce2e550a18e17b95fc52f0e9eee30a2f6a3f6e7df5b3119bb"
+      "file": "src/outline/hash.rs",
+      "item": "impl[Encoder]",
+      "hash": "4f19eff1a57440b5e30e1ea825e6d7f343ed64e9595010f3785afabc027f0ec4"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+      "file": "src/outline/hash.rs",
+      "item": "fn[line]",
+      "hash": "9d2d7cf4430cf3ef76dad85fa7cef2bebef8b50d1706b0c3422e35b6f3abdff0"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[fixture]",
-      "hash": "fc7d08e42eeae1be9be41fb4672e615c6ba7a52beaa1d0f620ed0c9a37268bee"
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[encode]",
+      "hash": "4596826ed11aa6757e772cf8d3505de4aaa7c7b8acba93882a1a7215c3b1b715"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[status_lists_nonvalid_requirements_and_all_option_in_name_order]",
-      "hash": "007e5bc1743b81fe5c0f6cc7245991c263471e21dfbc885a4c02939f8773f4c8"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[info_renders_exact_and_glob_matches_as_markdown_without_an_index]",
-      "hash": "ad225732d2ece2c8fd904dd848c3647bdc2285e0321478ca6c21691fd35cabc6"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[live_test_prerequisites_are_checked_without_inference]",
-      "hash": "770b952012098e53f6bff69f257bde5937b89263032d02160ed4b2e4e72b51a4"
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "item": "fn[malformed_fixme_is_invalid_and_reports_the_required_shape]",
-      "hash": "fc5cd988b02f7fdcf79497b8e2eeb5bf7fc1fb1fce74a6b2464ac8a8c32f51d8"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[reference_selector]",
-      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[definition_inputs]",
-      "hash": "cd3f67cdd56cbd6d5733e8033921f0c837d23f6bd725097b44171ffe48a317ba"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]",
-      "hash": "8be9e3e48e811bb50e18e421f2a6c532d461f1aec49698ceee672336d8608d6b"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
+      "hash": "730ff51b4a17e9c916fbe7463187ba0511ab4bc94ea117741d0c7088f52c7a41"
     }
   ]
 }
