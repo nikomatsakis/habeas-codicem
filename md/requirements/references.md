@@ -108,23 +108,28 @@ reversible. Line numbers MUST NOT form part of a selector.
 :::
 
 :::{req} structural_hash
-A node's structural hash MUST be the SHA-256 digest of its outline-relevant
-structure: the kinds of its named grammar nodes and the text of its leaf tokens,
-in source order, including siblings its profile attaches to it. It MUST exclude
-whitespace and comments, except comment kinds its profile includes; the Rust
-profile MUST include doc comments. A `line` node's hash MUST be the digest of the
-line's text. A node's identity hash MUST be computed the same way but MUST also
-exclude its outline descendants, so editing a descendant does not change its
-ancestors' selectors.
+A node's structural hash MUST be the SHA-256 digest of an unambiguous encoding of
+its outline-relevant structure: the kinds of its named grammar nodes and the text
+of its leaf tokens, in source order, including siblings its profile attaches to
+it. It MUST exclude whitespace and comments, except comment kinds its profile
+includes; the Rust profile MUST include doc comments. Prose, namely Markdown
+text and hashed comments, MUST be hashed as its sequence of
+whitespace-separated words, so reflowing it does not change the hash; code
+string literals MUST be hashed as written. A `line` node's hash MUST be the
+digest of the line's text without leading and trailing whitespace. A node's
+identity hash MUST be computed the same way but MUST also exclude its outline
+descendants and their attached siblings, so editing a descendant does not change
+its ancestors' selectors.
 :::
 
 :::{req} outline_comments
-In every supported language, a comment MUST belong to the smallest outline node
-it appears within, other than the root. Otherwise it MUST belong to an adjacent
-node: one that starts on the line after the comment ends, or ends on the line
-before the comment starts. A comment adjacent to two nodes, or to none, MUST
-belong to the next node after it in the file, and to the root node when no node
-follows. A reference in a comment MUST count for the node it belongs to under
+In every supported language, comments on consecutive lines with no other source
+between them MUST form one comment run. A comment that follows source on the
+same line MUST form a run by itself and MUST belong to the innermost outline node
+containing that line. Any other run MUST belong to the next outline node that
+starts after it within the smallest node containing it; when that container has
+no such node, the run MUST belong to the container, which is the root node at top
+level. A reference in a comment MUST count for the node its run belongs to under
 {cite}`requirements.references.rust_item_coverage` and
 {cite}`requirements.references.authoring_inputs`.
 :::
