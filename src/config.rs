@@ -949,38 +949,57 @@ pub fn resolve_authoring_with_workspace_from(
     }
     let authoring = user.and_then(|config| config.authoring.as_ref());
     let local = workspace.and_then(|workspace| workspace.config.authoring.as_ref());
-    let diagnostic_path = workspace.map_or(path, |workspace| workspace.path.as_path());
+    let workspace_path = workspace.map(|workspace| workspace.path.as_path());
+    // Errors that concern both files name the workspace file, when there is
+    // one, and also list every file that was searched.
+    let diagnostic_path = workspace_path.unwrap_or(path);
+    let searched = match workspace_path {
+        Some(workspace_path) => format!(
+            "searched {} and {}",
+            path.display(),
+            workspace_path.display()
+        ),
+        None => format!("searched {}", path.display()),
+    };
     if authoring.is_none() && local.is_none() {
         return Err(invalid(
             diagnostic_path,
             "authoring",
-            format!("no authoring configuration; {CONFIG_EXAMPLES}"),
+            format!("no authoring configuration ({searched}); {CONFIG_EXAMPLES}"),
         ));
     }
+    // Each selection records the file it came from, so an unknown name is
+    // reported against the file that chose it.
     let selected = explicit
+        .map(|name| (name, diagnostic_path))
         .or_else(|| {
             authoring?
                 .projects
                 .get(&project_root)
-                .map(|selection| selection.config.as_str())
+                .map(|selection| (selection.config.as_str(), path))
         })
-        .or_else(|| local.and_then(|local| local.default.as_deref()))
-        .or_else(|| authoring.and_then(|authoring| authoring.default.as_deref()))
-        .ok_or_else(|| {
-            invalid(
-                diagnostic_path,
-                "authoring",
-                format!("no configuration selected; {CONFIG_EXAMPLES}"),
-            )
-        })?;
+        .or_else(|| {
+            local
+                .and_then(|local| local.default.as_deref())
+                .zip(workspace_path)
+        })
+        .or_else(|| {
+            authoring
+                .and_then(|authoring| authoring.default.as_deref())
+                .map(|name| (name, path))
+        });
+    let Some((selected, selection_path)) = selected else {
+        return Err(invalid(
+            diagnostic_path,
+            "authoring",
+            format!("no configuration selected ({searched}); {CONFIG_EXAMPLES}"),
+        ));
+    };
     let configured = local
         .and_then(|local| local.configs.get(selected))
         .map(|config| {
             (
-                workspace
-                    .expect("local configuration has a file")
-                    .path
-                    .as_path(),
+                workspace_path.expect("local configuration has a file"),
                 config,
             )
         })
@@ -991,9 +1010,9 @@ pub fn resolve_authoring_with_workspace_from(
         });
     let (source_path, config) = configured.ok_or_else(|| {
         invalid(
-            diagnostic_path,
+            selection_path,
             "authoring",
-            format!("unknown configuration {selected:?}; {CONFIG_EXAMPLES}"),
+            format!("unknown configuration {selected:?} ({searched}); {CONFIG_EXAMPLES}"),
         )
     })?;
     Ok(ResolvedAuthoringConfig {

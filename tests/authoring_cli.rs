@@ -1687,3 +1687,34 @@ fn usage_write_failures_are_reported_without_claiming_recorded_history() {
         );
     }
 }
+
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.credentials`
+#[test]
+fn missing_or_empty_api_key_env_fails_before_any_model_request() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
+    for value in [None, Some("")] {
+        let mut command = fixture.command();
+        match value {
+            None => command.env_remove("HABEAS_TEST_MODEL_KEY"),
+            Some(value) => command.env("HABEAS_TEST_MODEL_KEY", value),
+        };
+        let output = command.args(["author", SUBJECT]).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{value:?}: {stderr}");
+        assert!(
+            stderr.contains("HABEAS_TEST_MODEL_KEY"),
+            "{value:?}: {stderr}"
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "{value:?}: the model endpoint was contacted"
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.evidence).unwrap(),
+            fixture.original
+        );
+    }
+}

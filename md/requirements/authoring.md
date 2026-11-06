@@ -848,6 +848,7 @@ Do not combine `credentials` with `aws_profile`, or `api_key` with `api_key_env`
 The active workspace file is excluded from model source reads when it contains
 literal credentials, unless you explicitly allow it. Such an allow exposes its
 contents to the model and records them as evidence inputs.
+{impl}`requirements.authoring.credentials`
 
 ## Recording results
 

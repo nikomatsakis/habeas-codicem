@@ -40,11 +40,12 @@ impl ProviderBackoff {
         let transient = if error.kind() == io::ErrorKind::TimedOut {
             true
         } else {
+            // Either signal is enough: AWS JSON services may report a
+            // throttling or unavailability code with another status, such as
+            // `ThrottlingException` with HTTP 400.
             let report = provider?.report();
-            match report.http_status {
-                Some(429 | 500 | 502 | 503 | 504) => true,
-                Some(status) if status >= 400 => false,
-                _ => matches!(
+            matches!(report.http_status, Some(429 | 500 | 502 | 503 | 504))
+                || matches!(
                     report.code.as_deref(),
                     Some(
                         "ThrottlingException"
@@ -52,8 +53,7 @@ impl ProviderBackoff {
                             | "InternalServerException"
                             | "ModelNotReadyException"
                     )
-                ),
-            }
+                )
         };
         if !transient {
             return None;
@@ -140,10 +140,27 @@ impl RigProvider {
 // {impl}`requirements.authoring.usage_requests`
 // {impl}`requirements.authoring.provider_backoff`
 async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
+    bedrock_sdk_loader(
+        config,
+        aws_config::defaults(aws_config::BehaviorVersion::latest()),
+    )
+    .load()
+    .await
+}
+
+// {impl}`requirements.authoring.rig_configuration_mapping`
+// {impl}`requirements.authoring.configuration_precedence`
+// {impl}`requirements.authoring.credentials`
+// {impl}`requirements.authoring.provider_backoff`
+/// Applies a Bedrock record to an SDK loader, leaving every omitted value to
+/// the loader's standard resolution.
+fn bedrock_sdk_loader(
+    config: &BedrockConfig,
+    loader: aws_config::ConfigLoader,
+) -> aws_config::ConfigLoader {
     // Keep each provider attempt visible to the usage ledger. An SDK retry
     // would otherwise be hidden inside one recorded request.
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .retry_config(aws_config::retry::RetryConfig::disabled());
+    let mut loader = loader.retry_config(aws_config::retry::RetryConfig::disabled());
     if let Some(profile) = &config.aws_profile {
         loader = loader.profile_name(profile);
     }
@@ -162,7 +179,7 @@ async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
             "Habeas configuration",
         ));
     }
-    loader.load().await
+    loader
 }
 
 impl CompletionProvider for RigProvider {
@@ -326,7 +343,6 @@ mod tests {
         for (status, code) in [
             (Some(400), Some("ValidationException")),
             (Some(403), Some("AccessDeniedException")),
-            (Some(400), Some("ThrottlingException")),
             (Some(501), None),
             (None, None),
         ] {
@@ -344,6 +360,33 @@ mod tests {
         assert!(
             ProviderBackoff::default()
                 .next_delay(&io::Error::new(io::ErrorKind::TimedOut, "no response"))
+                .is_some()
+        );
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    #[test]
+    fn transient_bedrock_codes_retry_whatever_their_http_status() {
+        for (status, code) in [
+            (Some(400), "ThrottlingException"),
+            (Some(400), "ServiceUnavailableException"),
+            (Some(501), "InternalServerException"),
+            (Some(424), "ModelNotReadyException"),
+        ] {
+            assert!(
+                ProviderBackoff::default()
+                    .next_delay(&io::Error::other(provider_error(status, Some(code))))
+                    .is_some(),
+                "{status:?} {code}"
+            );
+        }
+        // A permanent code does not override a transient status.
+        assert!(
+            ProviderBackoff::default()
+                .next_delay(&io::Error::other(provider_error(
+                    Some(503),
+                    Some("ValidationException")
+                )))
                 .is_some()
         );
     }
@@ -421,6 +464,65 @@ mod tests {
         assert_eq!(credentials.secret_access_key(), "test-secret");
         assert_eq!(credentials.session_token(), Some("test-session"));
         assert_eq!(sdk.region().unwrap().as_ref(), "us-west-2");
+    }
+
+    // {test}`requirements.authoring.configuration_precedence`
+    #[tokio::test]
+    #[allow(deprecated)] // The non-deprecated profile-file names live in `aws-runtime`.
+    async fn omitted_bedrock_profile_and_region_use_standard_sdk_resolution() {
+        use aws_config::profile::profile_file::{ProfileFileKind, ProfileFiles};
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("config");
+        let credentials_file = dir.path().join("credentials");
+        std::fs::write(
+            &config_file,
+            "[default]\nregion = eu-west-1\n[profile other]\nregion = ap-south-1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &credentials_file,
+            "[default]\naws_access_key_id = DEFAULT_KEY\naws_secret_access_key = default\n\
+             [other]\naws_access_key_id = OTHER_KEY\naws_secret_access_key = other\n",
+        )
+        .unwrap();
+        let files = ProfileFiles::builder()
+            .with_file(ProfileFileKind::Config, &config_file)
+            .with_file(ProfileFileKind::Credentials, &credentials_file)
+            .build();
+        let standard = || {
+            aws_config::defaults(aws_config::BehaviorVersion::latest()).profile_files(files.clone())
+        };
+        let habeas = |text: &str| {
+            let config: BedrockConfig = toml::from_str(text).unwrap();
+            bedrock_sdk_loader(&config, standard()).load()
+        };
+        async fn resolved(sdk: aws_config::SdkConfig) -> (Option<String>, String) {
+            let key = sdk
+                .credentials_provider()
+                .unwrap()
+                .provide_credentials()
+                .await
+                .unwrap()
+                .access_key_id()
+                .to_owned();
+            (sdk.region().map(|region| region.to_string()), key)
+        }
+
+        // Omitted values resolve exactly as the SDK would with no override.
+        let omitted = resolved(habeas("model = 'test'").await).await;
+        assert_eq!(omitted, resolved(standard().load().await).await);
+        // An explicit profile is the one the SDK resolves from.
+        let profile = resolved(habeas("model = 'test'\naws_profile = 'other'").await).await;
+        assert_eq!(
+            profile,
+            resolved(standard().profile_name("other").load().await).await
+        );
+        // An explicit region overrides whatever the profile or environment says.
+        let region =
+            resolved(habeas("model = 'test'\naws_profile = 'other'\nregion = 'us-east-2'").await)
+                .await;
+        assert_eq!(region.0.as_deref(), Some("us-east-2"));
+        assert_eq!(region.1, profile.1);
     }
 
     // {test}`requirements.authoring.configuration_storage`

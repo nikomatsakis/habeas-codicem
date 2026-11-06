@@ -275,7 +275,7 @@ Profiles and environment references are preferred. Literal Bedrock
 `credentials` or Ollama `api_key` values are supported but not recommended in
 workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).
 {cite}`requirements.authoring.configuration_precedence`
-{cite}`requirements.authoring.credentials`
+{impl}`requirements.authoring.credentials`
 
 Run from the project:
 

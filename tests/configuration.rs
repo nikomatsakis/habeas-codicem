@@ -545,6 +545,75 @@ fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
     );
 }
 
+// {test}`requirements.authoring.configuration_precedence`
+#[test]
+fn unknown_selections_name_the_file_that_made_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let user_path = root.join("user.toml");
+    let workspace_path = root.join("habeas.toml");
+    let user_text = user_path.to_str().unwrap();
+    let workspace_text = workspace_path.to_str().unwrap();
+    fs::write(
+        &workspace_path,
+        "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\n",
+    )
+    .unwrap();
+    let mut workspace = load_workspace_config(&root).unwrap().unwrap();
+    let mut user = UserConfig::parse(
+        "version = 1\n[authoring]\ndefault = 'user-default'\n[authoring.configs.other]\nbackend = 'ollama'\nmodel = 'm'\n",
+        &user_path,
+    )
+    .unwrap();
+    let resolve = |user: &UserConfig,
+                   workspace: Option<&habeas::config::LoadedWorkspaceConfig>,
+                   explicit: Option<&str>| {
+        resolve_authoring_with_workspace_from(&user_path, Some(user), workspace, &root, explicit)
+            .unwrap_err()
+            .to_string()
+    };
+
+    // A dangling user default is reported against the user file even though a
+    // workspace file exists, and both searched files are listed.
+    let error = resolve(&user, Some(&workspace), None);
+    assert!(error.starts_with(&format!("{user_text}: ")), "{error}");
+    assert!(error.contains("\"user-default\""), "{error}");
+    assert!(error.contains(workspace_text), "{error}");
+    assert!(error.contains("editing-the-file"), "{error}");
+
+    // So is a dangling project selection, which outranks the default.
+    user.authoring.as_mut().unwrap().projects.insert(
+        root.clone(),
+        habeas::config::ProjectSelection {
+            config: "project-choice".into(),
+        },
+    );
+    let error = resolve(&user, Some(&workspace), None);
+    assert!(error.starts_with(&format!("{user_text}: ")), "{error}");
+    assert!(error.contains("\"project-choice\""), "{error}");
+    user.authoring.as_mut().unwrap().projects.clear();
+
+    // A dangling workspace default is reported against the workspace file.
+    workspace.config.authoring.as_mut().unwrap().default = Some("gone".into());
+    let error = resolve(&user, Some(&workspace), None);
+    assert!(error.starts_with(&format!("{workspace_text}: ")), "{error}");
+    assert!(error.contains("\"gone\""), "{error}");
+    assert!(error.contains(user_text), "{error}");
+
+    // An unknown `--config` name was searched for in both files.
+    let error = resolve(&user, Some(&workspace), Some("absent"));
+    assert!(error.contains("\"absent\""), "{error}");
+    assert!(
+        error.contains(user_text) && error.contains(workspace_text),
+        "{error}"
+    );
+
+    // With no workspace file, only the user file is named.
+    let error = resolve(&user, None, Some("absent"));
+    assert!(error.starts_with(&format!("{user_text}: ")), "{error}");
+    assert!(!error.contains(workspace_text), "{error}");
+}
+
 // {test}`requirements.authoring.credentials`
 // {test}`requirements.authoring.configuration_serialization`
 // {test}`requirements.configuration.serialization`

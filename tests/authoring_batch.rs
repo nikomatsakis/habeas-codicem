@@ -571,6 +571,7 @@ fn ollama_batches_are_serial_by_default() {
     assert_eq!(server.requests.0.lock().unwrap().peak, 1);
 }
 
+// {test}`requirements.authoring.concurrency`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.reporting`
 // {test}`requirements.authoring.usage_storage`
