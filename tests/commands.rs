@@ -1234,3 +1234,87 @@ fn definition_glob_lists_a_requirement_and_an_example_in_info_and_status() {
     );
     assert!(!status.contains("`bar.other`"), "{status}");
 }
+
+// {test}`requirements.cli.add_input_item`
+#[test]
+fn add_input_item_selects_nodes_by_name_line_across_languages() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("md")).unwrap();
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+    fs::write(
+        temp.path().join("md/rules.md"),
+        ":::{req} ready\nReady.\n:::\n\n## Notes\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "impl<T: Clone>\n    From<T> for Wrapper\n{\n    fn from(_: T) -> Self { Wrapper }\n}\n#[cfg(test)]\nuse std::fmt;\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("src/broken.rs"), "fn broken( {\n").unwrap();
+    fs::write(temp.path().join("settings.toml"), "[server]\nport = 1\n").unwrap();
+    let add = |location: &str| {
+        habeas(
+            temp.path(),
+            &[
+                "add-input",
+                "--for-requirement",
+                "rules.ready",
+                "--item",
+                location,
+            ],
+        )
+    };
+    let record = temp.path().join("evidence/rules.ready.json");
+    // The wrapped impl is declared on its name's line, not on `impl`.
+    let output = add("src/lib.rs:1");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(!record.exists());
+    let mut expected = Vec::new();
+    for (location, file, items) in [
+        ("src/lib.rs:2", "src/lib.rs", vec!["impl[Wrapper/From<T>]"]),
+        // The anonymous `use` is declared on its own line, not its attribute's.
+        ("src/lib.rs:7", "src/lib.rs", vec![]),
+        (
+            "settings.toml:2",
+            "settings.toml",
+            vec!["table[server]/pair[port]"],
+        ),
+        ("md/rules.md:5", "md/rules.md", vec!["section[Notes]"]),
+    ] {
+        let output = add(location);
+        assert!(output.status.success(), "{location}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if items.is_empty() {
+            let line = location.rsplit_once(':').unwrap().1.parse().unwrap();
+            let nodes = habeas::outline_inputs_for_lines(temp.path(), file, line, line).unwrap();
+            assert!(nodes[0]["item"].as_str().unwrap().starts_with("use@"));
+            expected.extend(nodes);
+        }
+        for item in items {
+            assert!(stdout.contains(item), "{location}: {stdout}");
+            expected.push(habeas::outline_input(temp.path(), file, item).unwrap());
+        }
+    }
+    let recorded: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    assert_eq!(recorded["inputs"], json!(expected));
+    let before = fs::read(&record).unwrap();
+    for (location, message) in [
+        ("src/lib.rs:6", "no outline node is declared on this line"),
+        ("src/lib.rs:0", "no outline node is declared on this line"),
+        ("src/lib.rs:99", "no outline node is declared on this line"),
+        ("src/broken.rs:1", "syntax error"),
+    ] {
+        let output = add(location);
+        assert!(!output.status.success(), "{location}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{location}: {stderr}");
+        assert_eq!(fs::read(&record).unwrap(), before, "{location}");
+    }
+}

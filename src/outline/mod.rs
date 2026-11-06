@@ -420,9 +420,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                     .find(|child| kinds.contains(&child.kind()));
                 child.map(named)
             }
-            NameRule::Custom(rule) => {
-                rule(node, self.source).map(|parts| (parts, node.start_byte()))
-            }
+            NameRule::Custom(rule) => rule(node, self.source),
         }
     }
 

@@ -7,14 +7,17 @@ use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never, normal
 /// Names an at-rule by its normalised prelude: the text between the at-keyword
 /// and the block.
 // {impl}`requirements.references.outlines`
-fn prelude_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
+// {impl}`requirements.cli.add_input_item`
+fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let keyword = node.child(0)?;
     let mut cursor = node.walk();
     let block = node
         .children(&mut cursor)
         .find(|child| child.kind() == "block")?;
-    let prelude = normalized(source.get(keyword.end_byte()..block.start_byte())?);
-    (!prelude.is_empty()).then(|| vec![prelude])
+    let raw = source.get(keyword.end_byte()..block.start_byte())?;
+    let start = keyword.end_byte() + (raw.len() - raw.trim_start().len());
+    let prelude = normalized(raw);
+    (!prelude.is_empty()).then(|| (vec![prelude], start))
 }
 
 // {impl}`requirements.references.outlines`
@@ -25,12 +28,16 @@ fn is_comment(node: Node<'_>, source: &str) -> bool {
 
 /// Names a rule set by its normalised selector list.
 // {impl}`requirements.references.outlines`
-fn selectors_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
+// {impl}`requirements.cli.add_input_item`
+fn selectors_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let selectors = node
         .named_children(&mut cursor)
         .find(|child| child.kind() == "selectors")?;
-    Some(vec![normalized(text(selectors, source))])
+    Some((
+        vec![normalized(text(selectors, source))],
+        selectors.start_byte(),
+    ))
 }
 
 // {impl}`requirements.references.outlines`

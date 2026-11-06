@@ -13,9 +13,10 @@ pub(crate) enum NameRule {
     /// Named by the first named child whose kind is listed, as written.
     FirstChild(&'static [&'static str]),
     /// Named by a profile-specific rule returning the name's parts, which are
-    /// joined by an unencoded `/` in the segment. `None` makes the node
-    /// anonymous.
-    Custom(fn(Node<'_>, &str) -> Option<Vec<String>>),
+    /// joined by an unencoded `/` in the segment, and the byte where the name
+    /// begins in the source (the node's start when the name is not written
+    /// there). `None` makes the node anonymous.
+    Custom(fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>),
 }
 
 /// One row of a profile's kind table.

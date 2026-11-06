@@ -6,17 +6,24 @@ use super::profile::{KindRule, NameRule, Profile, text};
 
 /// Names an impl by its syntactic self type and optional trait path.
 // {impl}`requirements.references.rust_item_selectors`
-fn impl_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
-    let self_type = text(node.child_by_field_name("type")?, source).to_owned();
+// {impl}`requirements.cli.add_input_item`
+fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
+    let self_type = node.child_by_field_name("type")?;
+    let name = text(self_type, source).to_owned();
+    // The name begins at whichever of the trait and self type comes first.
     Some(match node.child_by_field_name("trait") {
-        Some(path) => vec![self_type, text(path, source).to_owned()],
-        None => vec![self_type],
+        Some(path) => (
+            vec![name, text(path, source).to_owned()],
+            path.start_byte().min(self_type.start_byte()),
+        ),
+        None => (vec![name], self_type.start_byte()),
     })
 }
 
 /// Names an extern block by its ABI string, `Rust` when absent.
 // {impl}`requirements.references.rust_item_selectors`
-fn extern_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
+// {impl}`requirements.cli.add_input_item`
+fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let modifier = node
         .named_children(&mut cursor)
@@ -31,9 +38,14 @@ fn extern_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
             .named_children(&mut cursor)
             .find(|child| child.kind() == "string_content")
             .map_or_else(String::new, |content| text(content, source).to_owned());
-        Some(content)
+        Some((content, literal.start_byte()))
     });
-    Some(vec![abi.unwrap_or_else(|| "Rust".to_owned())])
+    // Without an ABI string the name is not written, so the block is declared
+    // where it starts.
+    Some(match abi {
+        Some((abi, byte)) => (vec![abi], byte),
+        None => (vec!["Rust".to_owned()], node.start_byte()),
+    })
 }
 
 /// Whether a grammar node sits directly in an item list.

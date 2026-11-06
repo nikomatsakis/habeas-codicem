@@ -978,3 +978,80 @@ fn yaml_comments_before_a_key_belong_to_that_key_not_the_previous_one() {
     assert_eq!(owners.len(), 1, "{owners:?}");
     assert_eq!(outline.nodes[owners[0]].selector, "pair[jobs]/pair[second]");
 }
+
+// {test}`requirements.cli.add_input_item`
+#[test]
+fn nodes_are_declared_on_their_name_line_or_where_their_syntax_starts() {
+    let declared = |path: &str, source: &str| {
+        let outline = outline(path, source);
+        (1..=source.lines().count())
+            .map(|line| {
+                outline
+                    .declared_on_line(line)
+                    .into_iter()
+                    .map(|index| {
+                        regex::Regex::new("@[0-9a-f]{12}")
+                            .unwrap()
+                            .replace_all(&outline.nodes[index].selector, "@")
+                            .into_owned()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let none = Vec::<String>::new();
+    // A wrapped impl header is declared where its name begins, not on the
+    // `impl` line; an anonymous `use` is declared where its own syntax
+    // starts, after its attached doc comment and attribute.
+    assert_eq!(
+        declared(
+            "src/lib.rs",
+            "impl<T: Clone, U: Default>\n    Convert<T> for Wrapper<U>\n{\n    fn run() {}\n}\n/// Imports.\n#[cfg(test)]\nuse std::fmt;\nextern \"C\" {}\nextern\n    \"system\" {}\n",
+        ),
+        [
+            none.clone(),
+            vec!["impl[Wrapper<U>/Convert<T>]".to_owned()],
+            none.clone(),
+            vec!["impl[Wrapper<U>/Convert<T>]/fn[run]".to_owned()],
+            none.clone(),
+            none.clone(),
+            none.clone(),
+            vec!["use@".to_owned()],
+            vec!["extern[C]".to_owned()],
+            none.clone(),
+            vec!["extern[system]".to_owned()],
+        ]
+    );
+    // An extern block without an ABI string names no source text, so it is
+    // declared where it starts.
+    assert_eq!(
+        declared("src/lib.rs", "#[link(name = \"m\")]\nextern {}\n"),
+        [none.clone(), vec!["extern[Rust]".to_owned()]]
+    );
+    // Markdown sections are declared on their heading text.
+    assert_eq!(
+        declared("md/doc.md", "# Intro\n\nText.\n\n## Usage\n"),
+        [
+            vec!["section[Intro]".to_owned()],
+            none.clone(),
+            none.clone(),
+            none.clone(),
+            vec!["section[Intro]/section[Usage]".to_owned()],
+        ]
+    );
+    // CSS rules and at-rules are declared on the line where their selectors or
+    // prelude begin.
+    assert_eq!(
+        declared(
+            "style.css",
+            "@media\n  (min-width: 1px) {\n  a,\n  b { color: red; }\n}\n",
+        ),
+        [
+            none.clone(),
+            vec!["media[(min-width:%201px)]".to_owned()],
+            vec!["media[(min-width:%201px)]/rule[a,%20b]".to_owned()],
+            none.clone(),
+            none.clone(),
+        ]
+    );
+}

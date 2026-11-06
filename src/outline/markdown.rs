@@ -7,13 +7,17 @@ use super::profile::{KindRule, NameRule, Profile, never, normalized, text};
 /// Names a section by its heading's normalised text; a section without a
 /// heading, before the first heading, is anonymous.
 // {impl}`requirements.references.outlines`
-fn heading_name(node: Node<'_>, source: &str) -> Option<Vec<String>> {
+// {impl}`requirements.cli.add_input_item`
+fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let heading = node
         .named_children(&mut cursor)
         .find(|child| matches!(child.kind(), "atx_heading" | "setext_heading"))?;
     let content = heading.child_by_field_name("heading_content")?;
-    Some(vec![normalized(text(content, source))])
+    Some((
+        vec![normalized(text(content, source))],
+        content.start_byte(),
+    ))
 }
 
 /// HTML comment blocks are Markdown's comments.
