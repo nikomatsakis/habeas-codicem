@@ -1,7 +1,7 @@
 {
   "requirement": "The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace\ntable MUST serialize WorkspaceAuthoringConfig. Each\n`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with\n`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same\ntable. Backend-specific inference options MUST appear in its `options` subtable.\nWithin a present user authoring section, `configs` MUST be present but MAY be empty;\nworkspace `configs` MAY be omitted, allowing a workspace default to select a\nnamed user configuration.\nomitted `projects` and `options` tables MUST deserialize as empty maps.\nSerialization MUST follow the common rules in\n{cite}`requirements.configuration.serialization`.",
-  "determination": false,
-  "rationale": "**Verdict:** The implementation looks substantially correct, but the {impl} marking is incomplete and the tests miss some design-space points. I am therefore not choosing true. There are no FIXME acknowledgements in the sources.\n\n**What is correct**\n- The serde model in `src/config.rs` matches the requirement:\n  - `UserAuthoringConfig.configs` has no default and is not skipped on output, so it must be present and may be empty.\n  - `WorkspaceAuthoringConfig.configs` is `default` and `skip_serializing_if = \"BTreeMap::is_empty\"`, so a workspace may omit it.\n  - `projects` and `options` default to empty maps and are skipped on output.\n  - `AuthoringConfig` flattens `BackendConfig`, which is tagged `backend = \"bedrock\"` or `\"ollama\"`. The variant fields therefore sit in the same table, and inference options sit in the `options` subtable.\n  - Optional fields such as `endpoint`, `concurrency` and `aws_profile` are skipped when `None`, so defaults are not materialized.\n- `UserConfig::to_toml`, `WorkspaceConfig::to_toml` and `UserConfig::parse` carry {impl} for this requirement.\n- Tests in `tests/configuration.rs` cover these points:\n  - `backend_configuration_round_trips_without_materializing_defaults` covers both backends, the options subtable, omitted `projects`, omitted `endpoint` and `options`, and round-trip equality.\n  - `authoring_concurrency_defaults_overrides_and_invalid_values` shows `concurrency` is omitted unless set and round-trips when set.\n  - `invalid_schema_and_feature_values_report_the_configuration_path` covers a missing `configs` (error) and `configs = {}` (valid).\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers a workspace with `default` only: `configs` is omitted on serialization and the file round-trips.\n  - `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` round-trips workspace configs with credentials.\n\n**Gaps**\n1. **Missing {impl} on workspace parsing.** `WorkspaceConfig::parse` (`src/config.rs`, around lines 245–252) deserializes the workspace `[authoring]` table. That includes the optional `configs` and the empty-map defaults for `options`. It is marked only for `workspace_structure`, `loading` and `credentials`, not for `configuration_serialization`. By the \"implementation marked completely\" criterion, this is a gap.\n2. **Unmarked serde definitions.** The serde-attributed types (`UserAuthoringConfig`, `WorkspaceAuthoringConfig`, `AuthoringConfig`, `BackendConfig`, `BedrockConfig`, `OllamaConfig`) define the table layout. This is the core of the requirement, but they carry no {impl} marker for it.\n3. **Test gaps.**\n   - There is no round-trip of a user configuration with `configs = {}`. That is the one case where \"present but empty\" must survive serialization as well as parsing.\n   - There is no round-trip of a populated `projects` table.\n   - There is no round-trip of an explicit `endpoint` or of a Bedrock `region`, `aws_profile` or `credentials` table in a user configuration.\n   - There is no check that a workspace `configs` table with `options` omitted deserializes to an empty map and re-serializes without it.",
+  "determination": true,
+  "rationale": "**Judgment: the sources satisfy the requirement.** The implementation matches every clause. The tests cover most of the design space, but they miss two serialization cases that I judged minor.\n\n**Implementation (`src/config.rs`)**\n- `UserAuthoringConfig` is the `[authoring]` table for user configuration. Its `configs` field has no `default` and no `skip_serializing_if`. It is therefore required on parse and always written, which gives \"present but MAY be empty\".\n- `WorkspaceAuthoringConfig` has `configs` with `default` and `skip_serializing_if = \"BTreeMap::is_empty\"`. Workspace `configs` can be omitted, so a workspace default can name a user configuration.\n- `AuthoringConfig` flattens `BackendConfig`. That enum is `#[serde(tag = \"backend\", rename_all = \"lowercase\")]` over `Bedrock` and `Ollama`. Each variant's fields therefore sit in the same `[authoring.configs.<name>]` table, with `backend = \"bedrock\"` or `\"ollama\"`.\n- Backend inference options are a `BTreeMap<String, OptionValue>` named `options`. It becomes an `options` subtable and defaults to an empty map when omitted.\n- `projects` also defaults to an empty map when omitted.\n- All optional fields use `skip_serializing_if = \"Option::is_none\"` or an empty-map check. Defaults such as the Ollama endpoint and concurrency are not materialized.\n- Resolved credentials stay out of the serialized structs: `ResolvedAuthoringConfig` is separate, and `api_key_env` is stored by name only.\n- `{impl}` markers are on `UserConfig::parse`, `UserConfig::to_toml`, `WorkspaceConfig::parse` and `WorkspaceConfig::to_toml`. `to_toml` validates before it serializes. That behavior is specified by other requirements.\n\n**Tests (`tests/configuration.rs`)**\n- `backend_configuration_round_trips_without_materializing_defaults`:\n  - It covers a Bedrock config with `aws_profile`, `region` and a rich `options` subtable (floats, ints, bools, arrays, nested maps).\n  - It covers an Ollama config with no options.\n  - It checks that omitted `projects` and `options` are empty and that no `endpoint` or `concurrency` is materialized.\n  - It checks that the serialized form re-parses equal.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` checks explicit versus omitted `concurrency` for both backends, serialization round trip and invalid values.\n- `invalid_schema_and_feature_values_report_the_configuration_path`:\n  - It rejects a present `[authoring]` without `configs`.\n  - It accepts `configs = {}`.\n  - It rejects an unknown backend, unknown fields and bad option values.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` shows a workspace `authoring` with only `default` leaves `configs` empty, omits `configs` on serialization and round-trips.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` round-trips a workspace config with Bedrock `credentials` subtable and Ollama `api_key`.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values` checks `api_key_env` is serialized by name only, not the resolved value.\n\n**Minor gaps**\n- No test serializes an empty user `configs` table and re-parses it.\n- No test serializes a non-empty user `projects` map.\n- No test round-trips a workspace config with `options`.\n- By construction these behave correctly, because the same serde types and attributes are used and `configs` is never skipped. I did not treat them as defects.",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration_serialization",
@@ -57,6 +57,7 @@
         "    // {impl}`requirements.authoring.configuration_serialization`",
         "    // {impl}`requirements.authoring.concurrency`",
         "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.configuration.serialization`",
         "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
         "        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, \"\")?;",
         "        config.validate(path)?;",
@@ -74,6 +75,24 @@
         "        self.validate(Path::new(\"user configuration\"))?;",
         "        toml::to_string_pretty(self)",
         "            .map_err(|error| invalid(Path::new(\"user configuration\"), \"\", error))",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/config.rs",
+      "rust_item": "impl[WorkspaceConfig]/fn[parse]",
+      "text": [
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let table = parse_document(text, path)?;",
+        "        validate_workspace_common(&table, path)?;",
+        "        let config: Self = decode(toml::Value::Table(table), path, \"\")?;",
+        "        config.validate(path)?;",
+        "        Ok(config)",
         "    }"
       ]
     },
@@ -305,6 +324,7 @@
         "// {test}`requirements.authoring.configuration_serialization`",
         "// {test}`requirements.configuration.serialization`",
         "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.authoring.configuration_structure`",
         "#[test]",
         "fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {",
         "    let path = Path::new(\"habeas.toml\");",
@@ -370,9 +390,132 @@
     },
     {
       "file": "src/config.rs",
-      "line_start": 12,
-      "line_end": 85,
+      "line_start": 36,
+      "line_end": 42,
       "text": [
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct WorkspaceAuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub default: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 98,
+      "line_end": 104,
+      "text": [
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct UserAuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub default: Option<String>,",
+        "    pub configs: BTreeMap<String, AuthoringConfig>,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 113,
+      "line_end": 119,
+      "text": [
+        "}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "pub struct AuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub concurrency: Option<NonZeroUsize>,",
+        "    #[serde(flatten)]"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 122,
+      "line_end": 128,
+      "text": [
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(tag = \"backend\", rename_all = \"lowercase\")]",
+        "pub enum BackendConfig {",
+        "    Bedrock(BedrockConfig),",
+        "    Ollama(OllamaConfig),",
+        "}"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 211,
+      "line_end": 217,
+      "text": [
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.authoring.concurrency`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.configuration.serialization`"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 222,
+      "line_end": 228,
+      "text": [
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    pub fn to_toml(&self) -> io::Result<String> {",
+        "        self.validate(Path::new(\"user configuration\"))?;",
+        "        toml::to_string_pretty(self)"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 247,
+      "line_end": 253,
+      "text": [
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let table = parse_document(text, path)?;"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 259,
+      "line_end": 265,
+      "text": [
+        "",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    pub fn to_toml(&self) -> io::Result<String> {",
+        "        self.validate(Path::new(\"workspace configuration\"))?;",
+        "        toml::to_string_pretty(self).map_err(|_| {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 1,
+      "line_end": 620,
+      "text": [
+        "//! Saved configuration and resolution for evidence authoring.",
+        "",
+        "use std::collections::BTreeMap;",
+        "use std::ffi::OsString;",
+        "use std::fmt;",
+        "use std::fs;",
+        "use std::io;",
+        "use std::num::NonZeroUsize;",
+        "use std::path::{Component, Path, PathBuf};",
+        "",
+        "use serde::{Deserialize, Serialize, de::DeserializeOwned};",
         "",
         "const CONFIG_EXAMPLES: &str = \"see md/requirements/authoring.md#editing-the-file\";",
         "",
@@ -441,331 +584,6 @@
         "    pub fn expose_secret(&self) -> &str {",
         "        &self.0",
         "    }",
-        "}",
-        "",
-        "impl fmt::Debug for SecretString {",
-        "    // {impl}`requirements.authoring.credentials`",
-        "    // {impl}`requirements.authoring.configuration_structure`",
-        "    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 90,
-      "line_end": 96,
-      "text": [
-        "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]",
-        "#[serde(deny_unknown_fields)]",
-        "pub struct BedrockCredentials {",
-        "    pub access_key_id: SecretString,",
-        "    pub secret_access_key: SecretString,",
-        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
-        "    pub session_token: Option<SecretString>,"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 145,
-      "line_end": 145,
-      "text": [
-        "#[serde(deny_unknown_fields)]"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 99,
-      "line_end": 99,
-      "text": [
-        "// {test}`requirements.authoring.configuration_structure`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 149,
-      "line_end": 149,
-      "text": [
-        ""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 194,
-      "line_end": 206,
-      "text": [
-        "            && subject == \"example requirements.alpha_case\");",
-        "    let determination = match (behavior, subject.as_str()) {",
-        "        (Behavior::MixedJudgments, \"requirement requirements.alpha\") => json!(false),",
-        "        (Behavior::MixedJudgments, \"requirement requirements.beta\") => json!({\"FIXME\": [\"#123\"]}),",
-        "        _ => json!(true),",
-        "    };",
-        "    let rationale = if matches!(behavior, Behavior::MixedJudgments)",
-        "        && subject == \"requirement requirements.alpha\"",
-        "    {",
-        "        \"Fixture false rationale:\\n\\n- The implementation omits a boundary case.\\n- Add an assertion for that case.\".to_owned()",
-        "    } else {",
-        "        format!(",
-        "            \"Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs.\""
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 164,
-      "line_end": 176,
-      "text": [
-        "        let original = json!({\"requirement\":REQUIREMENT,\"determination\":false,",
-        "            \"rationale\":\"OLD_RATIONALE_MUST_NOT_REACH_MODEL\", \"inputs\":[]})",
-        "        .to_string();",
-        "        let evidence = project.join(format!(\"evidence/{SUBJECT}.json\"));",
-        "        fs::write(&evidence, &original).unwrap();",
-        "        fs::write(config.join(\"habeas/config.toml\"), format!(",
-        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = '{MODEL}'\\nendpoint = '{endpoint}'\\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\\n[authoring.configs.mock.options]\\ntemperature = 0.25\\nnum_ctx = 4096\\nthink = false\\n\")).unwrap();",
-        "        Self {",
-        "            temp,",
-        "            project,",
-        "            config,",
-        "            state,",
-        "            evidence,"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 641,
-      "line_end": 653,
-      "text": [
-        "// {test}`requirements.authoring.persistence`",
-        "// {test}`requirements.authoring.delivered_inputs`",
-        "// {test}`requirements.authoring.usage_storage`",
-        "// {test}`requirements.authoring.reporting`",
-        "#[test]",
-        "fn stdout_emits_only_evidence_json_without_changing_project_files() {",
-        "    for (determination, kind, existing_evidence, verbose) in [",
-        "        (json!(true), \"true\", true, false),",
-        "        (json!(false), \"false\", true, false),",
-        "        (json!({\"FIXME\":[\"#125\"]}), \"FIXME\", true, false),",
-        "        (json!(true), \"true\", false, false),",
-        "        (json!(false), \"false\", true, true),",
-        "        (json!(true), \"true\", true, true),"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 100,
-      "line_end": 143,
-      "text": [
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.authoring.concurrency`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn backend_configuration_round_trips_without_materializing_defaults() {",
-        "    let source = r#\"",
-        "version = 1",
-        "[authoring]",
-        "default = \"Cloud\"",
-        "[authoring.configs.Cloud]",
-        "backend = \"bedrock\"",
-        "model = \"arn:aws:bedrock:us-west-2:123:inference-profile/exact-id\"",
-        "aws_profile = \"research\"",
-        "region = \"us-west-2\"",
-        "[authoring.configs.Cloud.options]",
-        "temperature = 0.2",
-        "max_tokens = 777",
-        "enabled = true",
-        "labels = [\"a\", \"b\"]",
-        "[authoring.configs.Cloud.options.custom]",
-        "arbitrary = \"provider-defined\"",
-        "[authoring.configs.local]",
-        "backend = \"ollama\"",
-        "model = \"tiny:latest\"",
-        "\"#;",
-        "    let path = Path::new(\"settings.toml\");",
-        "    let config = UserConfig::parse(source, path).unwrap();",
-        "    let authoring = config.authoring.as_ref().unwrap();",
-        "    assert!(authoring.projects.is_empty());",
-        "    let local = &authoring.configs[\"local\"].backend;",
-        "    let BackendConfig::Ollama(ollama) = local else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert_eq!(ollama.endpoint(), \"http://localhost:11434\");",
-        "    assert_eq!(ollama.endpoint, None);",
-        "    assert!(ollama.options.is_empty());",
-        "    assert_eq!(local.model_ref().model, \"tiny:latest\");",
-        "    assert_eq!(local.model_ref().backend, BackendKind::Ollama);",
-        "    let json = authoring.configs[\"Cloud\"].backend.options_json().unwrap();",
-        "    assert_eq!(json[\"custom\"][\"arbitrary\"], \"provider-defined\");",
-        "    assert_eq!(json[\"max_tokens\"], 777);",
-        "    let serialized = config.to_toml().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 153,
-      "line_end": 165,
-      "text": [
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn authoring_concurrency_defaults_overrides_and_invalid_values() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"config.toml\");",
-        "    for backend in [\"bedrock\", \"ollama\"] {",
-        "        let base =",
-        "            format!(\"version = 1\\n[authoring.configs.model]\\nbackend = '{backend}'\\nmodel = 'm'\\n\");",
-        "        let defaults = UserConfig::parse(&base, &path).unwrap();",
-        "        let resolved ="
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 192,
-      "line_end": 221,
-      "text": [
-        "            assert!(error.contains(&path.display().to_string()), \"{error}\");",
-        "            assert!(error.contains(\"concurrency\"), \"{error}\");",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.authoring.rig_configuration_mapping`",
-        "#[test]",
-        "fn explicit_project_and_default_selections_choose_whole_configs() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let root = dir.path().canonicalize().unwrap();",
-        "    let config_path = root.join(\"config.toml\");",
-        "    let mut config = UserConfig::parse(",
-        "        r#\"",
-        "version = 1",
-        "[authoring]",
-        "default = \"default\"",
-        "[authoring.configs.default]",
-        "backend = \"bedrock\"",
-        "model = \"cloud-id\"",
-        "aws_profile = \"named\"",
-        "[authoring.configs.project]",
-        "backend = \"ollama\"",
-        "model = \"project:tag\"",
-        "endpoint = \"http://server:11434\"",
-        "[authoring.configs.explicit]",
-        "backend = \"ollama\"",
-        "model = \"explicit:tag\""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 267,
-      "line_end": 305,
-      "text": [
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "#[test]",
-        "fn invalid_schema_and_feature_values_report_the_configuration_path() {",
-        "    let path = Path::new(\"/settings/habeas/config.toml\");",
-        "    for source in [",
-        "        \"version = 2\",",
-        "        \"version = '1'\",",
-        "        \"\",",
-        "        \"version = 1\\nunknown = true\",",
-        "        \"version = 1\\n[authoring]\",",
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\ndefault = '_bad'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = ''\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\nunknown = true\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'unsupported'\\nmodel = 'm'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'BAD=KEY'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
-        "    ] {",
-        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
-        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
-        "    }",
-        "    let valid = UserConfig::parse(\"version = 1\\n[authoring]\\nconfigs = {}\", path).unwrap();",
-        "    assert!(valid.authoring.unwrap().configs.is_empty());",
-        "}",
-        "",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.credentials`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn ollama_authentication_resolves_separately_and_rejects_missing_values() {",
-        "    let config = UserConfig::parse(",
-        "        \"version = 1\\n[authoring.configs.remote]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'MODEL_KEY'\",",
-        "        Path::new(\"config.toml\"),",
-        "    ).unwrap();",
-        "    let BackendConfig::Ollama(ollama) =",
-        "        &config.authoring.as_ref().unwrap().configs[\"remote\"].backend"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 54,
-      "line_end": 66,
-      "text": [
-        "        if explicit.is_some() {",
-        "            return Err(",
-        "                format!(\"HABEAS_LIVE_CONFIG={name:?} must select a Bedrock configuration\").into(),",
-        "            );",
-        "        }",
-        "    }",
-        "    let name = authoring.configs.iter().find_map(|(name, config)| {",
-        "        matches!(config.backend, BackendConfig::Bedrock(_)).then_some(name)",
-        "    });",
-        "    name.map(|name| {",
-        "        config::resolve_authoring_from(&path, user.as_ref(), &root, Some(name)).map_err(Into::into)",
-        "    })",
-        "    .transpose()"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 241,
-      "line_end": 253,
-      "text": [
-        "        ci.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&ci.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&ci.stderr).contains(\"skipping live Bedrock test: CI is set\"));",
-        "    let malformed = skip_probe(root).output().unwrap();",
-        "    assert!(!malformed.status.success());",
-        "    assert!(",
-        "        String::from_utf8_lossy(&malformed.stdout)",
-        "            .contains(\"cannot select live Bedrock configuration\")",
-        "    );",
-        "",
-        "    fs::remove_file(&config_path).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 268,
-      "line_end": 280,
-      "text": [
-        "                .contains(\"no Bedrock authoring configuration\")",
-        "        );",
-        "        assert!(",
-        "            !String::from_utf8_lossy(&missing_config.stderr).contains(\"skipping live Bedrock test\")",
-        "        );",
-        "    }",
-        "    fs::remove_file(&config_path).unwrap();",
-        "    let explicit_missing = skip_probe(root)",
-        "        .env(\"HABEAS_LIVE_CONFIG\", \"missing\")",
-        "        .output()",
-        "        .unwrap();",
-        "    assert!(!explicit_missing.status.success());",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 80,
-      "line_end": 330,
-      "text": [
         "}",
         "",
         "impl fmt::Debug for SecretString {",
@@ -903,6 +721,7 @@
         "    // {impl}`requirements.authoring.configuration_serialization`",
         "    // {impl}`requirements.authoring.concurrency`",
         "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.configuration.serialization`",
         "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
         "        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, \"\")?;",
         "        config.validate(path)?;",
@@ -935,6 +754,8 @@
         "    // {impl}`requirements.configuration.workspace_structure`",
         "    // {impl}`requirements.configuration.loading`",
         "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.configuration.serialization`",
         "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
         "        let table = parse_document(text, path)?;",
         "        validate_workspace_common(&table, path)?;",
@@ -1011,454 +832,6 @@
         "            .map(|value| {",
         "                value",
         "                    .clone()",
-        "                    .try_into()",
-        "                    .map_err(|error| invalid(path, \"habeas\", error))",
-        "            })",
-        "            .transpose()",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 80,
-      "line_end": 84,
-      "text": [
-        "    assert!(config.authoring.is_none());",
-        "    assert_eq!(fs::read_to_string(&path).unwrap(), original);",
-        "    assert_eq!(",
-        "        UserConfig::parse(&config.to_toml().unwrap(), &path).unwrap(),",
-        "        config"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 125,
-      "line_end": 129,
-      "text": [
-        "model = \"tiny:latest\"",
-        "\"#;",
-        "    let path = Path::new(\"settings.toml\");",
-        "    let config = UserConfig::parse(source, path).unwrap();",
-        "    let authoring = config.authoring.as_ref().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 138,
-      "line_end": 142,
-      "text": [
-        "    assert_eq!(local.model_ref().model, \"tiny:latest\");",
-        "    assert_eq!(local.model_ref().backend, BackendKind::Ollama);",
-        "    let json = authoring.configs[\"Cloud\"].backend.options_json().unwrap();",
-        "    assert_eq!(json[\"custom\"][\"arbitrary\"], \"provider-defined\");",
-        "    assert_eq!(json[\"max_tokens\"], 777);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 170,
-      "line_end": 174,
-      "text": [
-        "                .map(|n| n.get())",
-        "                .unwrap_or(1)",
-        "        } else {",
-        "            1",
-        "        };"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 177,
-      "line_end": 181,
-      "text": [
-        "",
-        "        let configured = UserConfig::parse(&format!(\"{base}concurrency = 7\\n\"), &path).unwrap();",
-        "        let resolved =",
-        "            resolve_authoring_from(&path, Some(&configured), dir.path(), Some(\"model\")).unwrap();",
-        "        assert_eq!(resolved.concurrency.unwrap().get(), 7);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 226,
-      "line_end": 230,
-      "text": [
-        "    assert_eq!(",
-        "        resolve_authoring_from(&config_path, Some(&config), &root, None)",
-        "            .unwrap()",
-        "            .name,",
-        "        \"default\""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 279,
-      "line_end": 283,
-      "text": [
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\ndefault = '_bad'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = ''\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\nunknown = true\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'unsupported'\\nmodel = 'm'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'BAD=KEY'\","
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 310,
-      "line_end": 314,
-      "text": [
-        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
-        "    assert_eq!(",
-        "        ollama",
-        "            .api_key_from(|name| (name == \"MODEL_KEY\").then(|| OsString::from(\"private-value\")))",
-        "            .unwrap()"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 42,
-      "line_end": 46,
-      "text": [
-        "        .or_else(|| {",
-        "            authoring",
-        "                .projects",
-        "                .get(&root)",
-        "                .map(|entry| entry.config.as_str())"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 144,
-      "line_end": 148,
-      "text": [
-        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
-        "#[serde(deny_unknown_fields)]",
-        "pub struct OllamaConfig {",
-        "    pub model: String,",
-        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 40,
-      "line_end": 98,
-      "text": [
-        "            })",
-        "        };",
-        "        assert_eq!(",
-        "            user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".config/habeas/config.toml\")",
-        "        );",
-        "        assert_eq!(",
-        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".local/state/habeas\")",
-        "        );",
-        "    }",
-        "    let windows = |name: &str| match name {",
-        "        \"APPDATA\" => Some(config.as_os_str().to_owned()),",
-        "        \"LOCALAPPDATA\" => Some(state.as_os_str().to_owned()),",
-        "        _ => None,",
-        "    };",
-        "    assert_eq!(",
-        "        user_config_path_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.configuration.structure`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"user.toml\");",
-        "    assert!(load_user_config(&path).unwrap().is_none());",
-        "    assert!(!path.exists());",
-        "    let original = \"# keep this comment\\nversion = 1\\n\";",
-        "    fs::write(&path, original).unwrap();",
-        "    let config = load_user_config(&path).unwrap().unwrap();",
-        "    assert!(config.authoring.is_none());",
-        "    assert_eq!(fs::read_to_string(&path).unwrap(), original);",
-        "    assert_eq!(",
-        "        UserConfig::parse(&config.to_toml().unwrap(), &path).unwrap(),",
-        "        config",
-        "    );",
-        "    let book = \"[book]\\nsrc = 'docs'\\n\";",
-        "    assert!(",
-        "        ProjectConfig::from_book_toml(book, &path)",
-        "            .unwrap()",
-        "            .is_none()",
-        "    );",
-        "    assert_eq!(",
-        "        ProjectConfig::from_book_toml(&format!(\"{book}\\n[habeas]\\n\"), &path).unwrap(),",
-        "        Some(ProjectConfig {})",
-        "    );",
-        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 222,
-      "line_end": 262,
-      "text": [
-        "\"#,",
-        "        &config_path,",
-        "    )",
-        "    .unwrap();",
-        "    assert_eq!(",
-        "        resolve_authoring_from(&config_path, Some(&config), &root, None)",
-        "            .unwrap()",
-        "            .name,",
-        "        \"default\"",
-        "    );",
-        "    config.authoring.as_mut().unwrap().projects.insert(",
-        "        root.clone(),",
-        "        habeas::config::ProjectSelection {",
-        "            config: \"project\".to_owned(),",
-        "        },",
-        "    );",
-        "    let project =",
-        "        resolve_authoring_from(&config_path, Some(&config), &root.join(\".\"), None).unwrap();",
-        "    assert_eq!(project.name, \"project\");",
-        "    assert_eq!(project.project_root, root);",
-        "    let BackendConfig::Ollama(ollama) = project.backend else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert_eq!(ollama.endpoint(), \"http://server:11434\");",
-        "    let explicit =",
-        "        resolve_authoring_from(&config_path, Some(&config), &root, Some(\"explicit\")).unwrap();",
-        "    let BackendConfig::Ollama(ollama) = explicit.backend else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert_eq!(ollama.model, \"explicit:tag\");",
-        "    assert_eq!(ollama.endpoint, None);",
-        "    let error = resolve_authoring_from(&config_path, Some(&config), &root, Some(\"DEFAULT\"))",
-        "        .unwrap_err()",
-        "        .to_string();",
-        "    assert!(error.contains(\"DEFAULT\"));",
-        "    assert!(error.contains(\"config.toml\"));",
-        "    assert!(error.contains(\"editing-the-file\"));",
-        "    assert!(",
-        "        resolve_authoring_from(&config_path, None, &root, None)",
-        "            .unwrap_err()",
-        "            .to_string()"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 147,
-      "line_end": 147,
-      "text": [
-        "    pub model: String,"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 82,
-      "line_end": 82,
-      "text": [
-        "    assert_eq!("
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 142,
-      "line_end": 142,
-      "text": [
-        "    assert_eq!(json[\"max_tokens\"], 777);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 175,
-      "line_end": 175,
-      "text": [
-        "        assert_eq!(resolved.effective_concurrency(), expected);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 182,
-      "line_end": 182,
-      "text": [
-        "        assert_eq!(resolved.effective_concurrency(), 7);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 315,
-      "line_end": 315,
-      "text": [
-        "            .as_deref(),"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 296,
-      "line_end": 318,
-      "text": [
-        "// {test}`requirements.authoring.credentials`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn ollama_authentication_resolves_separately_and_rejects_missing_values() {",
-        "    let config = UserConfig::parse(",
-        "        \"version = 1\\n[authoring.configs.remote]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'MODEL_KEY'\",",
-        "        Path::new(\"config.toml\"),",
-        "    ).unwrap();",
-        "    let BackendConfig::Ollama(ollama) =",
-        "        &config.authoring.as_ref().unwrap().configs[\"remote\"].backend",
-        "    else {",
-        "        panic!(\"wrong backend\")",
-        "    };",
-        "    assert!(ollama.api_key_from(|_| None).is_err());",
-        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
-        "    assert_eq!(",
-        "        ollama",
-        "            .api_key_from(|name| (name == \"MODEL_KEY\").then(|| OsString::from(\"private-value\")))",
-        "            .unwrap()",
-        "            .as_deref(),",
-        "        Some(\"private-value\")",
-        "    );",
-        "    let serialized = config.to_toml().unwrap();"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 715,
-      "line_end": 721,
-      "text": [
-        "        }",
-        "    }",
-        "    Ok(None)",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 747,
-      "line_end": 753,
-      "text": [
-        "            .unwrap_or_default();",
-        "        invalid(path, \"\", format!(\"invalid TOML syntax{position}\"))",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.authoring.credentials`"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 275,
-      "line_end": 293,
-      "text": [
-        "        \"version = '1'\",",
-        "        \"\",",
-        "        \"version = 1\\nunknown = true\",",
-        "        \"version = 1\\n[authoring]\",",
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\ndefault = '_bad'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = ''\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\nunknown = true\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'unsupported'\\nmodel = 'm'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'BAD=KEY'\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
-        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
-        "    ] {",
-        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();",
-        "        assert!(error.contains(\"/settings/habeas/config.toml\"), \"{error}\");",
-        "    }",
-        "    let valid = UserConfig::parse(\"version = 1\\n[authoring]\\nconfigs = {}\", path).unwrap();",
-        "    assert!(valid.authoring.unwrap().configs.is_empty());",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 357,
-      "line_end": 363,
-      "text": [
-        "        closest.config.evidence.as_ref().unwrap().disallow,",
-        "        vec![Path::new(\"private\")]",
-        "    );",
-        "    assert_eq!(fs::read_to_string(&path).unwrap(), text);",
-        "    let serialized = closest.config.to_toml().unwrap();",
-        "    assert!(!serialized.contains(\"configs\"));",
-        "    assert_eq!("
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 528,
-      "line_end": 534,
-      "text": [
-        "// {test}`requirements.authoring.credentials`",
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.configuration.serialization`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]",
-        "fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {",
-        "    let path = Path::new(\"habeas.toml\");"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 539,
-      "line_end": 545,
-      "text": [
-        "        \"PRIVATE_ACCESS_KEY\",",
-        "        \"PRIVATE_SECRET_KEY\",",
-        "        \"PRIVATE_SESSION\",",
-        "        \"PRIVATE_OLLAMA_KEY\",",
-        "    ] {",
-        "        assert!(!debug.contains(secret), \"{debug}\");",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 557,
-      "line_end": 563,
-      "text": [
-        "    );",
-        "    for invalid_source in [",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = ['PRIVATE_OLLAMA_KEY']\\n\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 'PRIVATE_OLLAMA_KEY' unexpected\\n\",",
-        "        \"version = 1\\n[authoring.configs.cloud]\\nbackend = 'bedrock'\\nmodel = 'm'\\ncredentials = 'PRIVATE_SECRET_KEY'\\n\",",
-        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key = 123456789\\n\",",
-        "    ] {"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 582,
-      "line_end": 587,
-      "text": [
-        "        ),",
-        "        source.replace(",
-        "            \"secret_access_key = 'PRIVATE_SECRET_KEY'\",",
-        "            \"secret_access_key = ''\",",
-        "        ),",
-        "        source.replace(\"session_token = 'PRIVATE_SESSION'\", \"session_token = ''\"),"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 325,
-      "line_end": 520,
-      "text": [
         "                    .try_into()",
         "                    .map_err(|error| invalid(path, \"habeas\", error))",
         "            })",
@@ -1654,149 +1027,490 @@
         "    }",
         "",
         "    // {impl}`requirements.authoring.configuration_precedence`",
-        "    // {impl}`requirements.configuration.serialization`"
+        "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub fn api_key_from(",
+        "        &self,",
+        "        lookup: impl Fn(&str) -> Option<OsString>,",
+        "    ) -> io::Result<Option<String>> {",
+        "        if let Some(key) = &self.api_key {",
+        "            return Ok(Some(key.expose_secret().to_owned()));",
+        "        }",
+        "        self.api_key_env.as_ref().map(|name| {",
+        "            lookup(name)",
+        "                .filter(|value| !value.is_empty())",
+        "                .and_then(|value| value.into_string().ok())",
+        "                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,",
+        "                    format!(\"authoring api_key_env {name:?} must name a set, nonempty UTF-8 environment variable\")))",
+        "        }).transpose()",
+        "    }",
+        "}",
+        "",
+        "impl ResolvedAuthoringConfig {",
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    pub fn model_ref(&self) -> ModelRef {",
+        "        self.backend.model_ref()",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.concurrency`",
+        "    pub fn effective_concurrency(&self) -> usize {",
+        "        self.concurrency",
+        "            .map(NonZeroUsize::get)",
+        "            .unwrap_or_else(|| match &self.backend {",
+        "                BackendConfig::Bedrock(_) => std::thread::available_parallelism()",
+        "                    .map(NonZeroUsize::get)",
+        "                    .unwrap_or(1),",
+        "                BackendConfig::Ollama(_) => 1,",
+        "            })",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.user_location`",
+        "pub fn user_config_path() -> io::Result<PathBuf> {",
+        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.user_location`",
+        "pub fn user_config_path_from(",
+        "    platform: ConfigPlatform,",
+        "    lookup: impl Fn(&str) -> Option<OsString>,",
+        ") -> io::Result<PathBuf> {",
+        "    let base = match platform {",
+        "        ConfigPlatform::Windows => required_directory(&lookup, \"APPDATA\")?,",
+        "        ConfigPlatform::Unix => match absolute_directory(&lookup, \"XDG_CONFIG_HOME\") {",
+        "            Some(path) => path,",
+        "            None => required_directory(&lookup, \"HOME\")?.join(\".config\"),",
+        "        },",
+        "    };",
+        "    Ok(base.join(\"habeas/config.toml\"))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.state_location`",
+        "pub fn state_root() -> io::Result<PathBuf> {",
+        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.state_location`",
+        "pub fn state_root_from(",
+        "    platform: ConfigPlatform,",
+        "    lookup: impl Fn(&str) -> Option<OsString>,",
+        ") -> io::Result<PathBuf> {",
+        "    match platform {",
+        "        ConfigPlatform::Windows => {",
+        "            Ok(required_directory(&lookup, \"LOCALAPPDATA\")?.join(\"habeas/state\"))",
+        "        }",
+        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
+        "            Some(path) => path.join(\"habeas\"),",
+        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),",
+        "        }),",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.user_location`",
+        "// {impl}`requirements.configuration.state_location`",
+        "fn absolute_directory(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {",
+        "    lookup(name)",
+        "        .map(PathBuf::from)",
+        "        .filter(|path| path.is_absolute())",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.user_location`",
+        "// {impl}`requirements.configuration.state_location`",
+        "fn required_directory(",
+        "    lookup: &impl Fn(&str) -> Option<OsString>,",
+        "    name: &str,",
+        ") -> io::Result<PathBuf> {",
+        "    absolute_directory(lookup, name).ok_or_else(|| {",
+        "        io::Error::new(",
+        "            io::ErrorKind::NotFound,",
+        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
+        "        )"
       ]
     },
     {
       "file": "tests/configuration.rs",
-      "line_start": 320,
-      "line_end": 365,
+      "line_start": 128,
+      "line_end": 132,
       "text": [
-        "    assert!(!serialized.contains(\"private-value\"));",
+        "    let config = UserConfig::parse(source, path).unwrap();",
+        "    let authoring = config.authoring.as_ref().unwrap();",
+        "    assert!(authoring.projects.is_empty());",
+        "    let local = &authoring.configs[\"local\"].backend;",
+        "    let BackendConfig::Ollama(ollama) = local else {"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 230,
+      "line_end": 234,
+      "text": [
+        "        \"default\"",
+        "    );",
+        "    config.authoring.as_mut().unwrap().projects.insert(",
+        "        root.clone(),",
+        "        habeas::config::ProjectSelection {"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 284,
+      "line_end": 288,
+      "text": [
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nvalue = nan\",",
+        "        \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'm'\\n[authoring.configs.local.options]\\nmodel = 'override'\",",
+        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\",",
+        "    ] {",
+        "        let error = UserConfig::parse(source, path).unwrap_err().to_string();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 456,
+      "line_end": 460,
+      "text": [
+        "    );",
+        "",
+        "    user.authoring.as_mut().unwrap().projects.insert(",
+        "        root.clone(),",
+        "        habeas::config::ProjectSelection {"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 481,
+      "line_end": 485,
+      "text": [
+        "    .unwrap();",
+        "    assert_eq!(explicit.name, \"workspace\");",
+        "    user.authoring.as_mut().unwrap().projects.clear();",
+        "    workspace.config.authoring.as_mut().unwrap().default = Some(\"user\".into());",
+        "    let user_reference = resolve_authoring_with_workspace_from("
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 42,
+      "line_end": 46,
+      "text": [
+        "        .or_else(|| {",
+        "            authoring",
+        "                .projects",
+        "                .get(&root)",
+        "                .map(|entry| entry.config.as_str())"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 190,
+      "line_end": 262,
+      "text": [
+        "                .unwrap_err()",
+        "                .to_string();",
+        "            assert!(error.contains(&path.display().to_string()), \"{error}\");",
+        "            assert!(error.contains(\"concurrency\"), \"{error}\");",
+        "        }",
+        "    }",
         "}",
         "",
-        "// {test}`requirements.configuration.workspace_location`",
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.authoring.configuration_structure`",
-        "// {test}`requirements.configuration.workspace_structure`",
+        "// {test}`requirements.authoring.configuration_precedence`",
+        "// {test}`requirements.authoring.configuration_storage`",
+        "// {test}`requirements.authoring.rig_configuration_mapping`",
+        "#[test]",
+        "fn explicit_project_and_default_selections_choose_whole_configs() {",
+        "    let dir = tempfile::tempdir().unwrap();",
+        "    let root = dir.path().canonicalize().unwrap();",
+        "    let config_path = root.join(\"config.toml\");",
+        "    let mut config = UserConfig::parse(",
+        "        r#\"",
+        "version = 1",
+        "[authoring]",
+        "default = \"default\"",
+        "[authoring.configs.default]",
+        "backend = \"bedrock\"",
+        "model = \"cloud-id\"",
+        "aws_profile = \"named\"",
+        "[authoring.configs.project]",
+        "backend = \"ollama\"",
+        "model = \"project:tag\"",
+        "endpoint = \"http://server:11434\"",
+        "[authoring.configs.explicit]",
+        "backend = \"ollama\"",
+        "model = \"explicit:tag\"",
+        "\"#,",
+        "        &config_path,",
+        "    )",
+        "    .unwrap();",
+        "    assert_eq!(",
+        "        resolve_authoring_from(&config_path, Some(&config), &root, None)",
+        "            .unwrap()",
+        "            .name,",
+        "        \"default\"",
+        "    );",
+        "    config.authoring.as_mut().unwrap().projects.insert(",
+        "        root.clone(),",
+        "        habeas::config::ProjectSelection {",
+        "            config: \"project\".to_owned(),",
+        "        },",
+        "    );",
+        "    let project =",
+        "        resolve_authoring_from(&config_path, Some(&config), &root.join(\".\"), None).unwrap();",
+        "    assert_eq!(project.name, \"project\");",
+        "    assert_eq!(project.project_root, root);",
+        "    let BackendConfig::Ollama(ollama) = project.backend else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert_eq!(ollama.endpoint(), \"http://server:11434\");",
+        "    let explicit =",
+        "        resolve_authoring_from(&config_path, Some(&config), &root, Some(\"explicit\")).unwrap();",
+        "    let BackendConfig::Ollama(ollama) = explicit.backend else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert_eq!(ollama.model, \"explicit:tag\");",
+        "    assert_eq!(ollama.endpoint, None);",
+        "    let error = resolve_authoring_from(&config_path, Some(&config), &root, Some(\"DEFAULT\"))",
+        "        .unwrap_err()",
+        "        .to_string();",
+        "    assert!(error.contains(\"DEFAULT\"));",
+        "    assert!(error.contains(\"config.toml\"));",
+        "    assert!(error.contains(\"editing-the-file\"));",
+        "    assert!(",
+        "        resolve_authoring_from(&config_path, None, &root, None)",
+        "            .unwrap_err()",
+        "            .to_string()"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 265,
+      "line_end": 265,
+      "text": [
+        "[authoring.projects.\"/absolute/path/to/project\"]"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 712,
+      "line_end": 712,
+      "text": [
+        "[authoring.projects.\"/absolute/path/to/project\"]"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 22,
+      "line_end": 22,
+      "text": [
+        "The same user configuration MUST be usable across projects. Its location MUST"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 226,
+      "line_end": 226,
+      "text": [
+        "    pub fn to_toml(&self) -> io::Result<String> {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 263,
+      "line_end": 263,
+      "text": [
+        "    pub fn to_toml(&self) -> io::Result<String> {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 348,
+      "line_end": 348,
+      "text": [
+        "            let setting = format!(\"authoring.projects.{}\", root.display());"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 83,
+      "line_end": 83,
+      "text": [
+        "        UserConfig::parse(&config.to_toml().unwrap(), &path).unwrap(),"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 130,
+      "line_end": 130,
+      "text": [
+        "    assert!(authoring.projects.is_empty());"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 143,
+      "line_end": 143,
+      "text": [
+        "    let serialized = config.to_toml().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 176,
+      "line_end": 176,
+      "text": [
+        "        assert!(!defaults.to_toml().unwrap().contains(\"concurrency\"));"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 183,
+      "line_end": 183,
+      "text": [
+        "        let serialized = configured.to_toml().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 232,
+      "line_end": 232,
+      "text": [
+        "    config.authoring.as_mut().unwrap().projects.insert("
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 286,
+      "line_end": 286,
+      "text": [
+        "        \"version = 1\\n[authoring]\\nconfigs = {}\\n[authoring.projects.relative]\\nconfig = 'local'\","
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 318,
+      "line_end": 318,
+      "text": [
+        "    let serialized = config.to_toml().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 361,
+      "line_end": 361,
+      "text": [
+        "    let serialized = closest.config.to_toml().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 458,
+      "line_end": 458,
+      "text": [
+        "    user.authoring.as_mut().unwrap().projects.insert("
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 483,
+      "line_end": 483,
+      "text": [
+        "    user.authoring.as_mut().unwrap().projects.clear();"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 548,
+      "line_end": 548,
+      "text": [
+        "        WorkspaceConfig::parse(&config.to_toml().unwrap(), path).unwrap(),"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 50,
+      "line_end": 98,
+      "text": [
+        "    }",
+        "    let windows = |name: &str| match name {",
+        "        \"APPDATA\" => Some(config.as_os_str().to_owned()),",
+        "        \"LOCALAPPDATA\" => Some(state.as_os_str().to_owned()),",
+        "        _ => None,",
+        "    };",
+        "    assert_eq!(",
+        "        user_config_path_from(ConfigPlatform::Windows, windows).unwrap(),",
+        "        config.join(\"habeas/config.toml\")",
+        "    );",
+        "    assert_eq!(",
+        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
+        "        state.join(\"habeas/state\")",
+        "    );",
+        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
+        "}",
+        "",
+        "// {test}`requirements.configuration.structure`",
         "// {test}`requirements.configuration.loading`",
         "// {test}`requirements.configuration.serialization`",
         "#[test]",
-        "fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {",
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let project = temp.path().join(\"project\");",
-        "    let nested = project.join(\"nested/deep\");",
-        "    fs::create_dir_all(&nested).unwrap();",
-        "    let outer = temp.path().join(\"habeas.toml\");",
-        "    fs::write(&outer, \"version = 1\\n[evidence]\\nallow = ['outer']\\n\").unwrap();",
-        "    let inherited = load_workspace_config(&project).unwrap().unwrap();",
-        "    assert_eq!(inherited.path, outer);",
-        "    assert_eq!(inherited.root, temp.path().canonicalize().unwrap());",
-        "    let path = project.join(\"nested/habeas.toml\");",
-        "    let text = \"# preserved\\nversion = 1\\n[authoring]\\ndefault = 'cloud'\\n[evidence]\\ndisallow = ['private']\\n\";",
-        "    fs::write(&path, text).unwrap();",
-        "    let closest = load_workspace_config(&nested).unwrap().unwrap();",
-        "    assert_eq!(closest.path, path);",
-        "    assert_eq!(closest.root, path.parent().unwrap());",
+        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
+        "    let dir = tempfile::tempdir().unwrap();",
+        "    let path = dir.path().join(\"user.toml\");",
+        "    assert!(load_user_config(&path).unwrap().is_none());",
+        "    assert!(!path.exists());",
+        "    let original = \"# keep this comment\\nversion = 1\\n\";",
+        "    fs::write(&path, original).unwrap();",
+        "    let config = load_user_config(&path).unwrap().unwrap();",
+        "    assert!(config.authoring.is_none());",
+        "    assert_eq!(fs::read_to_string(&path).unwrap(), original);",
+        "    assert_eq!(",
+        "        UserConfig::parse(&config.to_toml().unwrap(), &path).unwrap(),",
+        "        config",
+        "    );",
+        "    let book = \"[book]\\nsrc = 'docs'\\n\";",
         "    assert!(",
-        "        closest",
-        "            .config",
-        "            .authoring",
-        "            .as_ref()",
+        "        ProjectConfig::from_book_toml(book, &path)",
         "            .unwrap()",
-        "            .configs",
-        "            .is_empty()",
+        "            .is_none()",
         "    );",
-        "    assert!(closest.config.evidence.as_ref().unwrap().allow.is_empty());",
         "    assert_eq!(",
-        "        closest.config.evidence.as_ref().unwrap().disallow,",
-        "        vec![Path::new(\"private\")]",
+        "        ProjectConfig::from_book_toml(&format!(\"{book}\\n[habeas]\\n\"), &path).unwrap(),",
+        "        Some(ProjectConfig {})",
         "    );",
-        "    assert_eq!(fs::read_to_string(&path).unwrap(), text);",
-        "    let serialized = closest.config.to_toml().unwrap();",
-        "    assert!(!serialized.contains(\"configs\"));",
-        "    assert_eq!(",
-        "        WorkspaceConfig::parse(&serialized, &path).unwrap(),",
-        "        closest.config"
+        "    assert!(ProjectConfig::from_book_toml(\"[habeas]\\nversion = 1\\n\", &path).is_err());",
+        "}",
+        ""
       ]
     },
     {
-      "file": "src/config.rs",
-      "line_start": 710,
-      "line_end": 766,
+      "file": "tests/configuration.rs",
+      "line_start": 296,
+      "line_end": 322,
       "text": [
-        "                return Err(io::Error::new(",
-        "                    error.kind(),",
-        "                    format!(\"{}: {error}\", path.display()),",
-        "                ));",
-        "            }",
-        "        }",
-        "    }",
-        "    Ok(None)",
+        "// {test}`requirements.authoring.credentials`",
+        "// {test}`requirements.configuration.serialization`",
+        "#[test]",
+        "fn ollama_authentication_resolves_separately_and_rejects_missing_values() {",
+        "    let config = UserConfig::parse(",
+        "        \"version = 1\\n[authoring.configs.remote]\\nbackend = 'ollama'\\nmodel = 'm'\\napi_key_env = 'MODEL_KEY'\",",
+        "        Path::new(\"config.toml\"),",
+        "    ).unwrap();",
+        "    let BackendConfig::Ollama(ollama) =",
+        "        &config.authoring.as_ref().unwrap().configs[\"remote\"].backend",
+        "    else {",
+        "        panic!(\"wrong backend\")",
+        "    };",
+        "    assert!(ollama.api_key_from(|_| None).is_err());",
+        "    assert!(ollama.api_key_from(|_| Some(OsString::new())).is_err());",
+        "    assert_eq!(",
+        "        ollama",
+        "            .api_key_from(|name| (name == \"MODEL_KEY\").then(|| OsString::from(\"private-value\")))",
+        "            .unwrap()",
+        "            .as_deref(),",
+        "        Some(\"private-value\")",
+        "    );",
+        "    let serialized = config.to_toml().unwrap();",
+        "    assert!(serialized.contains(\"MODEL_KEY\"));",
+        "    assert!(!serialized.contains(\"private-value\"));",
         "}",
-        "",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()> {",
-        "    if table.get(\"version\").and_then(toml::Value::as_integer) != Some(1) {",
-        "        return Err(invalid(path, \"version\", \"expected version = 1\"));",
-        "    }",
-        "    if let Some(key) = table",
-        "        .keys()",
-        "        .find(|key| !matches!(key.as_str(), \"version\" | \"authoring\" | \"evidence\"))",
-        "    {",
-        "        return Err(invalid(path, key, \"unknown workspace configuration field\"));",
-        "    }",
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.authoring.credentials`",
-        "fn parse_document(text: &str, path: &Path) -> io::Result<toml::Table> {",
-        "    toml::from_str(text).map_err(|error: toml::de::Error| {",
-        "        let position = error",
-        "            .span()",
-        "            .map(|span| {",
-        "                let prefix = text.get(..span.start).unwrap_or(text);",
-        "                let line = prefix.bytes().filter(|byte| *byte == b'\\n').count() + 1;",
-        "                let column = prefix.rsplit('\\n').next().unwrap_or(\"\").chars().count() + 1;",
-        "                format!(\" at line {line}, column {column}\")",
-        "            })",
-        "            .unwrap_or_default();",
-        "        invalid(path, \"\", format!(\"invalid TOML syntax{position}\"))",
-        "    })",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "// {impl}`requirements.authoring.credentials`",
-        "fn decode<T: DeserializeOwned>(value: toml::Value, path: &Path, setting: &str) -> io::Result<T> {",
-        "    let mut secrets = Vec::new();",
-        "    credential_values(&value, false, &mut secrets);",
-        "    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));",
-        "    value.try_into().map_err(|mut error: toml::de::Error| {",
-        "        error.set_input(None);",
-        "        let mut message = error.to_string();",
-        "        for secret in secrets {",
-        "            if !secret.is_empty() {",
-        "                message = message",
-        "                    .replace(&format!(\"{secret:?}\"), \"<redacted>\")",
-        "                    .replace(&secret, \"<redacted>\");",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 928,
-      "line_end": 945,
-      "text": [
-        "            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')",
-        "    {",
-        "        return Err(invalid(",
-        "            path,",
-        "            setting,",
-        "            \"configuration names must match [A-Za-z0-9][A-Za-z0-9_-]*\",",
-        "        ));",
-        "    }",
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.loading`",
-        "fn invalid(path: &Path, setting: &str, message: impl std::fmt::Display) -> io::Error {",
-        "    io::Error::new(",
-        "        io::ErrorKind::InvalidInput,",
-        "        format!(\"{}: {setting}: {message}\", path.display()),",
-        "    )",
-        "}"
+        ""
       ]
     }
   ]

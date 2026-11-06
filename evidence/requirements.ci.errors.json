@@ -1,7 +1,7 @@
 {
   "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The code accumulates every failed check into one error list instead of stopping at the first failure, and two tests exercise multi-error runs.\n\n**Implementation**\n- `inspect_repository_with_progress` (src/evidence.rs, marked `{impl}` with `inspect_repository`) runs every phase in order and pushes each failure onto one shared `errors` vector. It never returns early on a validation failure.\n  - The phases are workspace config loading, `book.toml` source lookup, definition collection, evidence-file schema/content validation, orphan and missing-evidence checks, reference validation and coverage, and Rust-function citation coverage.\n  - Only real I/O failures, such as `canonicalize` on the root, return `Err`.\n- Each helper reports its failure and carries on:\n  - `book_source_dir` records the error and falls back to `md`.\n  - `collect_definitions` uses `continue` for unreadable chapters and invalid names. It still reports duplicates, empty text, a missing closing fence, bad term declarations, and examples with no requirement reference.\n  - `files_with_extension` and `collect_references_with_progress` record directory, entry and read errors and then `continue`.\n  - `validate_evidence_file` pushes every field-level error rather than stopping. Its early returns only apply when the file is unreadable, not valid JSON, or not an object, and no further checks can run on such a file.\n  - `validate_input` and `validate_resolved_input` return `None` for one bad input only, so the other inputs and files are still checked.\n  - `validate_references` and `validate_rust_functions` also accumulate errors.\n- Messages are built with `DefinitionKind::noun` (src/lib.rs, marked `{impl}`), which supplies the \"requirement\" and \"example\" wording. They begin with the file or source location, in line with the `validation_error` definition.\n- `habeas::validate()` reports all collected errors together in one panic message. Its `{impl}` marker is for `requirements.integration.validate`, not this requirement, but that function only passes through what the inspection collects.\n\n**Tests**\n- `collects_missing_orphan_format_false_and_changed_line_errors` creates many different failures in one repository and asserts that every one appears in a single report. The failures are:\n  - orphan evidence, invalid JSON, and missing evidence;\n  - changed requirement text and a false determination;\n  - changed input text and schema errors (wrong types, missing fields, bad line numbers);\n  - a duplicate definition and an empty definition.\n- `inspection_progress_preserves_validation_and_finishes_each_phase` mixes broken JSON, an unparsable Rust file, and an uncited function. It asserts that all of them are reported together, including errors from later phases. It also checks that the progress-reporting path produces the same errors as the plain path.\n\nTogether these tests cover the design space: multiple errors from several phases, and from several kinds of check, in one run.\n\nI found no unspecified behaviour in the marked code and no unmarked code implementing this requirement, apart from the `validate()` point above.",
+  "rationale": "**Verdict:** the requirement is met. Validation keeps going after a failed check and collects every failure it finds into one report. The one gap I see is minor and does not change the verdict (see the end).\n\n**Implementation**\n- `inspect_repository` and `inspect_repository_with_progress` (`src/evidence.rs`) are marked `{impl}` for `requirements.ci.errors`. They build one `errors: Vec<String>` and run every phase in sequence:\n  - workspace config load (a failure is pushed, not returned);\n  - `book_source_dir`;\n  - `collect_definitions`;\n  - evidence-file validation;\n  - coverage;\n  - reference collection and validation;\n  - Rust-citation validation.\n  No phase returns early on a failure from an earlier one.\n- Each phase handles its own failures by recording a message and moving on.\n  - `book_source_dir` records the problem and falls back to `md`.\n  - `collect_definitions` records an invalid name, a missing fence, an unsupported option, empty text or a duplicate, then keeps scanning.\n  - `files_with_extension` and `collect_references_with_progress` record I/O errors per directory or entry and `continue`.\n  - `validate_evidence_file` and its helpers push every schema, text, determination, rationale, dependency and input error they find.\n  - The early `return`s in these helpers are local. They only skip checks that depend on a value that failed to parse, such as invalid JSON, a non-object, or a missing field that later checks need.\n  - `validate_references` records every unmatched or uncovered reference and every anchor failure.\n- The only `?` on the main path is `fs::canonicalize(root)`, an environmental I/O failure on the root itself. That is not a failed validation check.\n- `DefinitionKind::noun` in `src/lib.rs` is marked `{impl}`. It supplies the wording for these error messages, so the marking is harmless.\n- Each message names the affected file or location and the failed check, in the form the `validation_error` definition describes.\n\n**Tests**\n- `collects_missing_orphan_format_false_and_changed_line_errors` is marked `{test}`. One run produces:\n  - an orphan evidence file;\n  - invalid JSON;\n  - a missing evidence file;\n  - changed requirement text and changed input text, with diffs;\n  - a false determination;\n  - several schema errors;\n  - a duplicate definition;\n  - an empty requirement.\n  It asserts that all of these appear together.\n- `inspection_progress_preserves_validation_and_finishes_each_phase` is also marked `{test}`. It runs a repository with broken JSON, an unparsable Rust file and an uncited function. It asserts that all of those errors are reported together, and that discovery errors are tracked separately.\n- Further tests in `src/evidence.rs` check the unclosed-fence error, option errors and the example-evidence errors, which also exercise continuation after an error.\n\n**Minor gap:** no test puts a `book.toml` error and a downstream error in the same run.",
   "inputs": [
     {
       "requirements": "requirements.ci.errors",
@@ -122,8 +122,9 @@
         "        }",
         "    }",
         "",
-        "    validate_references(&root, &definitions, &mut errors, &mut progress);",
-        "    // {impl}`requirements.references.rust_function_coverage`",
+        "    let references = collect_references_with_progress(&root, &mut errors, &mut progress);",
+        "    validate_references(&root, &definitions, &references, &mut errors, &mut progress);",
+        "    // {impl}`requirements.references.rust_item_coverage`",
         "    progress(InspectionProgress {",
         "        stage: \"Rust citations\",",
         "        completed: 0,",
@@ -152,6 +153,7 @@
         "            errors,",
         "        },",
         "        definitions,",
+        "        references,",
         "        discovery_errors,",
         "    })",
         "}"
@@ -385,1051 +387,316 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1,
-      "line_end": 80,
+      "line_start": 45,
+      "line_end": 47,
       "text": [
-        "use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};",
-        "use std::fs;",
-        "use std::io;",
-        "use std::path::{Component, Path, PathBuf};",
-        "",
-        "use serde_json::{Map, Value};",
-        "use toml_edit::DocumentMut;",
-        "",
-        "use crate::inputs::{InputSelector, ResolvedInput};",
-        "use crate::judgment::Judgment;",
-        "use crate::{",
-        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
-        "    reference_roles, valid_name,",
-        "};",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "#[derive(Debug)]",
-        "pub struct EvidenceReport {",
-        "    pub requirements: usize,",
-        "    pub examples: usize,",
-        "    pub evidence_files: usize,",
-        "    pub errors: Vec<String>,",
-        "}",
-        "",
-        "pub(crate) struct Declaration {",
-        "    pub(crate) kind: DefinitionKind,",
-        "    pub(crate) text: String,",
-        "    pub(crate) source: String,",
-        "    pub(crate) file: String,",
-        "    pub(crate) line_start: usize,",
-        "    pub(crate) line_end: usize,",
-        "    pub(crate) raw_lines: Vec<String>,",
-        "}",
-        "",
+        "impl Anchor {",
+        "    /// Resolve the anchored file, returning its canonical path and line count.",
+        "    // {impl}`requirements.references.anchors`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 49,
+      "line_end": 56,
+      "text": [
+        "        if self.file.is_empty() {",
+        "            return Err(\"anchor path must be nonempty\".to_owned());",
+        "        }",
+        "        let (path, content) = crate::inputs::read_project_file(root, &self.file)?;",
+        "        let line_count = content.lines().count();",
+        "        if line_count == 0 {",
+        "            return Err(format!(",
+        "                \"{} is empty, so no input can contain it\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 74,
+      "line_end": 76,
+      "text": [
         "// {impl}`requirements.integration.report_api`",
         "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
-        "    Ok(inspect_repository(root)?.report)",
-        "}",
-        "",
-        "pub(crate) struct RepositoryInspection {",
-        "    pub(crate) definitions: BTreeMap<String, Declaration>,",
-        "    pub(crate) report: EvidenceReport,",
-        "    pub(crate) discovery_errors: Vec<String>,",
-        "}",
-        "",
-        "/// Progress within one inspection phase; discovery has no known total.",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]",
-        "pub(crate) struct InspectionProgress {",
-        "    pub(crate) stage: &'static str,",
-        "    pub(crate) completed: usize,",
-        "    pub(crate) total: Option<usize>,",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.ci.definition_errors`",
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    if errors.is_empty() {",
-        "        Ok(definitions)",
-        "    } else {",
-        "        Err(io::Error::new(",
-        "            io::ErrorKind::InvalidData,",
-        "            errors.join(\"\\n\"),",
-        "        ))",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`"
+        "    Ok(inspect_repository(root)?.report)"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 36,
-      "line_end": 36,
-      "text": [
-        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 57,
-      "line_end": 58,
-      "text": [
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 81,
-      "line_end": 81,
-      "text": [
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 95,
-      "line_end": 95,
-      "text": [
-        "pub(crate) fn inspect_repository_with_progress("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 99,
+      "line_start": 97,
       "line_end": 99,
       "text": [
-        "    let root = fs::canonicalize(root)?;"
+        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 130,
-      "line_end": 130,
+      "line_start": 120,
+      "line_end": 122,
       "text": [
-        "            .expect(\"evidence file is inside evidence directory\");"
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    inspect_repository_with_progress(root, |_| {})"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 205,
-      "line_end": 205,
+      "line_start": 134,
+      "line_end": 136,
       "text": [
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {"
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository_with_progress(",
+        "    root: &Path,"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 215,
-      "line_end": 215,
+      "line_start": 138,
+      "line_end": 140,
       "text": [
-        "                            return root.join(\"md\");"
+        ") -> io::Result<RepositoryInspection> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    progress(InspectionProgress {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 256,
+      "line_end": 258,
+      "text": [
+        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
+        "                            return root.join(\"md\");",
+        "                        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 266,
+      "line_end": 268,
+      "text": [
+        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
+        "                            return root.join(\"md\");",
+        "                        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 274,
+      "line_end": 276,
+      "text": [
+        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
+        "                return root.join(\"md\");",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 281,
+      "line_end": 283,
+      "text": [
+        "            ));",
+        "            return root.join(\"md\");",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 291,
+      "line_end": 293,
+      "text": [
+        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
+        "        return root.join(\"md\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 516,
+      "line_end": 518,
+      "text": [
+        "            errors.push(format!(\"{label}: cannot read evidence: {error}\"));",
+        "            return;",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 523,
+      "line_end": 525,
+      "text": [
+        "            errors.push(format!(\"{label}: invalid JSON: {error}\"));",
+        "            return;",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 528,
+      "line_end": 530,
+      "text": [
+        "        errors.push(format!(\"{label}: expected a JSON object\"));",
+        "        return;",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 629,
+      "line_end": 631,
+      "text": [
+        "        errors.push(format!(\"{label}: expected a JSON object\"));",
+        "        return None;",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 637,
+      "line_end": 639,
+      "text": [
+        "        let (Some(rust_file), Some(rust_item), Some(text)) = (rust_file, rust_item, text) else {",
+        "            return None;",
+        "        };"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 643,
+      "line_end": 645,
+      "text": [
+        "        };",
+        "        return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 650,
+      "line_end": 654,
+      "text": [
+        "        let (Some(definition), Some(text)) = (definition, text) else {",
+        "            return None;",
+        "        };",
+        "        return validate_resolved_input(",
+        "            root,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 676,
+      "line_end": 678,
+      "text": [
+        "            if names.len() != values.len() {",
+        "                return None;",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 687,
+      "line_end": 689,
+      "text": [
+        "        let (Some(requirements), Some(matches), Some(text)) = (requirements, matches, text) else {",
+        "            return None;",
+        "        };"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 692,
+      "line_end": 694,
+      "text": [
+        "        };",
+        "        return validate_resolved_input(",
+        "            root,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 738,
+      "line_end": 743,
+      "text": [
+        "        errors.push(format!(\"{label}: line_end must be at least line_start\"));",
+        "        return None;",
+        "    }",
+        "    let (Some(file), Some(start), Some(end), Some(text)) = (file, start, end, text) else {",
+        "        return None;",
+        "    };"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 767,
+      "line_end": 769,
+      "text": [
+        ") -> Option<Vec<String>> {",
+        "    let values = array_field(object, \"text\", label, errors)?;",
+        "    if values.is_empty() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 800,
+      "line_end": 802,
+      "text": [
+        "            errors.push(format!(\"{label}: {error}\"));",
+        "            return None;",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 849,
+      "line_end": 851,
+      "text": [
+        "            errors.push(format!(\"{label}: {error}\"));",
+        "            return;",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 861,
+      "line_end": 863,
+      "text": [
+        "        ));",
+        "        return;",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1258,
+      "line_end": 1260,
+      "text": [
+        "    else {",
+        "        return Vec::new();",
+        "    };"
       ]
     },
     {
       "file": "src/evidence.rs",
       "line_start": 225,
-      "line_end": 225,
-      "text": [
-        "                            return root.join(\"md\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 233,
-      "line_end": 233,
-      "text": [
-        "                return root.join(\"md\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 240,
-      "line_end": 240,
-      "text": [
-        "            return root.join(\"md\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 250,
-      "line_end": 250,
-      "text": [
-        "        return root.join(\"md\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 259,
-      "line_end": 259,
-      "text": [
-        "fn collect_definitions("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 269,
-      "line_end": 269,
-      "text": [
-        "            .expect(\"chapter file is inside md directory\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 366,
-      "line_end": 366,
-      "text": [
-        "fn files_with_extension("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 423,
-      "line_end": 423,
-      "text": [
-        "fn validate_evidence_file("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 435,
-      "line_end": 435,
-      "text": [
-        "            return;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 442,
-      "line_end": 442,
-      "text": [
-        "            return;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 447,
-      "line_end": 447,
-      "text": [
-        "        return;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 539,
-      "line_end": 539,
-      "text": [
-        "fn validate_input("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 548,
-      "line_end": 548,
-      "text": [
-        "        return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 556,
-      "line_end": 556,
-      "text": [
-        "            return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 562,
-      "line_end": 562,
-      "text": [
-        "        return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 569,
-      "line_end": 569,
-      "text": [
-        "            return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 571,
-      "line_end": 571,
-      "text": [
-        "        return validate_resolved_input("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 595,
-      "line_end": 595,
-      "text": [
-        "                return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 606,
-      "line_end": 606,
-      "text": [
-        "            return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 611,
-      "line_end": 611,
-      "text": [
-        "        return validate_resolved_input("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 627,
-      "line_end": 627,
-      "text": [
-        "fn validate_file_range_input("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 657,
-      "line_end": 657,
-      "text": [
-        "        return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 660,
-      "line_end": 660,
-      "text": [
-        "        return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 681,
-      "line_end": 681,
-      "text": [
-        "fn text_field("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 686,
-      "line_end": 686,
-      "text": [
-        "    let values = array_field(object, \"text\", label, errors)?;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 705,
-      "line_end": 705,
-      "text": [
-        "fn validate_resolved_input("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 718,
-      "line_end": 718,
-      "text": [
-        "            return None;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 753,
-      "line_end": 753,
-      "text": [
-        "fn validate_input_lines("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 766,
-      "line_end": 766,
-      "text": [
-        "            return;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 778,
-      "line_end": 778,
-      "text": [
-        "        return;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 797,
-      "line_end": 797,
-      "text": [
-        "fn compact_diff(recorded: &[&str], current: &[&str]) -> String {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 824,
-      "line_end": 824,
-      "text": [
-        "fn check_keys("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 838,
-      "line_end": 838,
-      "text": [
-        "fn string_field<'a>("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 858,
-      "line_end": 858,
-      "text": [
-        "fn positive_integer_field("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 880,
-      "line_end": 880,
-      "text": [
-        "fn array_field<'a>("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 900,
-      "line_end": 900,
-      "text": [
-        "fn display_path(root: &Path, path: &Path) -> String {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 926,
-      "line_end": 926,
-      "text": [
-        "fn validate_references("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1020,
-      "line_end": 1020,
-      "text": [
-        "pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1026,
-      "line_end": 1026,
-      "text": [
-        "fn collect_references_with_progress("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1132,
-      "line_end": 1132,
-      "text": [
-        "fn evidence_input_ranges("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1142,
-      "line_end": 1142,
-      "text": [
-        "        return Vec::new();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1175,
-      "line_end": 1179,
-      "text": [
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1184,
-      "line_end": 1184,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1199,
-      "line_end": 1199,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1215,
-      "line_end": 1215,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1219,
-      "line_end": 1222,
-      "text": [
-        "                fs::write(root.join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "                fs::write(root.join(\"src/broken.rs\"), \"fn {\").unwrap();",
-        "                fs::write(root.join(\"src/lib.rs\"), \"fn retained() {}\\n\").unwrap();",
-        "                fs::write(root.join(\"src/binary.dat\"), [0xff]).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1224,
-      "line_end": 1224,
-      "text": [
-        "            let expected = super::inspect_repository(root).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1228,
-      "line_end": 1228,
-      "text": [
-        "                    .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1290,
-      "line_end": 1292,
-      "text": [
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1296,
-      "line_end": 1296,
-      "text": [
-        "                .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1313,
-      "line_end": 1313,
-      "text": [
-        "        let temp = TempDir::new().unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1322,
-      "line_end": 1322,
-      "text": [
-        "            fs::write(&path, configuration).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1330,
-      "line_end": 1330,
-      "text": [
-        "        fs::remove_file(&path).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1353,
-      "line_end": 1353,
-      "text": [
-        "            fs::write(&path, configuration).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1377,
-      "line_end": 1377,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1393,
-      "line_end": 1393,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1395,
-      "line_end": 1395,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1419,
-      "line_end": 1419,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1443,
-      "line_end": 1443,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1448,
-      "line_end": 1448,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1459,
-      "line_end": 1460,
-      "text": [
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1462,
-      "line_end": 1462,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1497,
-      "line_end": 1497,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1504,
-      "line_end": 1505,
-      "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
-        "        fs::write(temp.path().join(\"md/notes.md\"), &notes).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1529,
-      "line_end": 1529,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1531,
-      "line_end": 1531,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1544,
-      "line_end": 1544,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1548,
-      "line_end": 1548,
-      "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1559,
-      "line_end": 1559,
-      "text": [
-        "                    \"text\": [source.lines().next().unwrap()]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1564,
-      "line_end": 1564,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1566,
-      "line_end": 1566,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1593,
-      "line_end": 1593,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1606,
-      "line_end": 1606,
-      "text": [
-        "            .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1609,
-      "line_end": 1609,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1623,
-      "line_end": 1623,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1634,
-      "line_end": 1634,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1636,
-      "line_end": 1636,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1659,
-      "line_end": 1659,
-      "text": [
-        "            .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1670,
-      "line_end": 1670,
-      "text": [
-        "            .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1672,
-      "line_end": 1672,
-      "text": [
-        "            let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1692,
-      "line_end": 1692,
-      "text": [
-        "        fs::write(temp.path().join(\"md/rules.md\"), &chapter).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1695,
-      "line_end": 1695,
-      "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1706,
-      "line_end": 1706,
-      "text": [
-        "                    \"text\": [chapter.lines().nth(7).unwrap()]"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1711,
-      "line_end": 1711,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1730,
-      "line_end": 1732,
-      "text": [
-        "                            chapter.lines().nth(6).unwrap(),",
-        "                            chapter.lines().nth(7).unwrap(),",
-        "                            chapter.lines().nth(8).unwrap(),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1734,
-      "line_end": 1736,
-      "text": [
-        "                            chapter.lines().nth(2).unwrap(),",
-        "                            chapter.lines().nth(3).unwrap(),",
-        "                            chapter.lines().nth(4).unwrap()"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1743,
-      "line_end": 1743,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1745,
-      "line_end": 1745,
-      "text": [
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1751,
-      "line_end": 1752,
-      "text": [
-        "        let old = fs::read_to_string(&example_path).unwrap();",
-        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1754,
-      "line_end": 1755,
-      "text": [
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1758,
-      "line_end": 1758,
-      "text": [
-        "        fs::write(&example_path, &old).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1763,
-      "line_end": 1764,
-      "text": [
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1769,
-      "line_end": 1769,
-      "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1774,
-      "line_end": 1775,
-      "text": [
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1781,
-      "line_end": 1781,
-      "text": [
-        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1783,
-      "line_end": 1784,
-      "text": [
-        "        fs::write(&example_path, evidence.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1788,
-      "line_end": 1788,
-      "text": [
-        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1791,
-      "line_end": 1791,
-      "text": [
-        "            .unwrap()"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1793,
-      "line_end": 1793,
-      "text": [
-        "            .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1795,
-      "line_end": 1796,
-      "text": [
-        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1803,
-      "line_end": 1804,
-      "text": [
-        "        fs::remove_file(&example_path).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1817,
-      "line_end": 1817,
-      "text": [
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1822,
-      "line_end": 1822,
-      "text": [
-        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1834,
-      "line_end": 1835,
-      "text": [
-        "        fs::write(&path, record(json!([]))).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1867,
-      "line_end": 1868,
-      "text": [
-        "        .unwrap();",
-        "        let report = validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1880,
-      "line_end": 1880,
-      "text": [
-        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1891,
-      "line_end": 1892,
-      "text": [
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1913,
-      "line_end": 1914,
-      "text": [
-        "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 200,
-      "line_end": 540,
-      "text": [
+      "line_end": 520,
+      "text": [
+        "        .filter(|definition| definition.kind == DefinitionKind::Example)",
+        "        .count();",
+        "    let requirements = definitions",
+        "        .values()",
+        "        .filter(|definition| definition.kind == DefinitionKind::Requirement)",
+        "        .count();",
+        "    Ok(RepositoryInspection {",
+        "        report: EvidenceReport {",
+        "            requirements,",
+        "            examples,",
+        "            evidence_files: evidence_files.len(),",
+        "            errors,",
+        "        },",
+        "        definitions,",
+        "        references,",
+        "        discovery_errors,",
+        "    })",
         "}",
         "",
         "// {impl}`requirements.ci.book_source`",
@@ -1489,6 +756,7 @@
         "// {impl}`requirements.ci.identifiers`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.references.anchors`",
         "fn collect_definitions(",
         "    root: &Path,",
         "    md_root: &Path,",
@@ -1513,7 +781,8 @@
         "            }",
         "        };",
         "        let namespace = chapter_namespace(relative);",
-        "        for block in definition_blocks(&content) {",
+        "        let blocks = definition_blocks(&content);",
+        "        for block in &blocks {",
         "            let line = content[..block.start]",
         "                .bytes()",
         "                .filter(|byte| *byte == b'\\n')",
@@ -1536,7 +805,41 @@
         "                ));",
         "            }",
         "            // {impl}`requirements.ci.span`",
-        "            let text = content[block.body_start..block.body_end].trim().to_owned();",
+        "            // {impl}`requirements.references.anchors`",
+        "            let text = crate::without_options(&content, block.body_start..block.body_end, &blocks)",
+        "                .trim()",
+        "                .to_owned();",
+        "            let mut anchors = Vec::new();",
+        "            for option in &block.options {",
+        "                let kind = match (block.kind, option.name.as_str()) {",
+        "                    (DefinitionKind::Requirement, \"impl\") => ReferenceKind::Impl,",
+        "                    (DefinitionKind::Requirement | DefinitionKind::Example, \"test\") => {",
+        "                        ReferenceKind::Test",
+        "                    }",
+        "                    _ => {",
+        "                        errors.push(format!(",
+        "                            \"{label}:{}: {} {name} has unsupported option :{}:\",",
+        "                            option.line,",
+        "                            block.kind.noun(),",
+        "                            option.name",
+        "                        ));",
+        "                        continue;",
+        "                    }",
+        "                };",
+        "                if option.value.is_empty() {",
+        "                    errors.push(format!(",
+        "                        \"{label}:{}: {} {name} has an :{}: option without a file path\",",
+        "                        option.line,",
+        "                        block.kind.noun(),",
+        "                        option.name",
+        "                    ));",
+        "                    continue;",
+        "                }",
+        "                anchors.push(Anchor {",
+        "                    kind,",
+        "                    file: option.value.clone(),",
+        "                });",
+        "            }",
         "            if text.is_empty() {",
         "                errors.push(format!(",
         "                    \"{source}: {} {name} has no text\",",
@@ -1551,18 +854,22 @@
         "            }",
         "            match definitions.entry(name.clone()) {",
         "                Entry::Vacant(slot) => {",
-        "                    let raw_lines = content[block.start..block.end]",
-        "                        .lines()",
-        "                        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
-        "                        .collect::<Vec<_>>();",
+        "                    // {impl}`requirements.references.anchors`",
+        "                    let raw_lines =",
+        "                        crate::without_options(&content, block.start..block.end, &blocks)",
+        "                            .lines()",
+        "                            .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
+        "                            .collect::<Vec<_>>();",
+        "                    let line_count = content[block.start..block.end].lines().count();",
         "                    slot.insert(Declaration {",
         "                        kind: block.kind,",
         "                        text,",
         "                        source,",
         "                        file: label.clone(),",
         "                        line_start: line,",
-        "                        line_end: line + raw_lines.len().saturating_sub(1),",
+        "                        line_end: line + line_count.saturating_sub(1),",
         "                        raw_lines,",
+        "                        anchors,",
         "                    });",
         "                }",
         "                Entry::Occupied(previous) => errors.push(format!(",
@@ -1668,6 +975,14 @@
         "            return;",
         "        }",
         "    };",
+        "    let value: Value = match serde_json::from_str(&content) {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 520,
+      "line_end": 900,
+      "text": [
         "    let value: Value = match serde_json::from_str(&content) {",
         "        Ok(value) => value,",
         "        Err(error) => {",
@@ -1769,15 +1084,6 @@
         "// {impl}`requirements.ci.rust_item_inputs`",
         "// {impl}`requirements.ci.requirements_inputs`",
         "// {impl}`requirements.definitions.inputs`",
-        "fn validate_input(",
-        "    root: &Path,"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 539,
-      "line_end": 800,
-      "text": [
         "fn validate_input(",
         "    root: &Path,",
         "    definitions: &BTreeMap<String, Declaration>,",
@@ -1944,6 +1250,7 @@
         "// {impl}`requirements.ci.rust_item_inputs`",
         "// {impl}`requirements.ci.requirements_inputs`",
         "// {impl}`requirements.definitions.inputs`",
+        "// {impl}`requirements.ci.diagnostics`",
         "fn validate_resolved_input(",
         "    root: &Path,",
         "    definitions: &BTreeMap<String, Declaration>,",
@@ -1992,6 +1299,7 @@
         "// {impl}`requirements.ci.inputs`",
         "// {impl}`requirements.ci.input_containment`",
         "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.ci.diagnostics`",
         "fn validate_input_lines(",
         "    root: &Path,",
         "    file: &str,",
@@ -2039,28 +1347,150 @@
         "fn compact_diff(recorded: &[&str], current: &[&str]) -> String {",
         "    let prefix = recorded",
         "        .iter()",
-        "        .zip(current.iter())"
+        "        .zip(current.iter())",
+        "        .take_while(|(old, new)| old == new)",
+        "        .count();",
+        "    let suffix = recorded[prefix..]",
+        "        .iter()",
+        "        .rev()",
+        "        .zip(current[prefix..].iter().rev())",
+        "        .take_while(|(old, new)| old == new)",
+        "        .count();",
+        "    let removed = &recorded[prefix..recorded.len() - suffix];",
+        "    let added = &current[prefix..current.len() - suffix];",
+        "    let mut diff = String::new();",
+        "    for (mark, lines) in [(\"-\", removed), (\"+\", added)] {",
+        "        for line in lines.iter().take(8) {",
+        "            diff.push_str(&format!(\"\\n{mark} {line}\"));",
+        "        }",
+        "        if lines.len() > 8 {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 920,
-      "line_end": 1170,
+      "line_start": 900,
+      "line_end": 1300,
       "text": [
+        "        if lines.len() > 8 {",
+        "            diff.push_str(&format!(\"\\n{mark} ... {} more lines\", lines.len() - 8));",
+        "        }",
+        "    }",
+        "    diff",
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "fn check_keys(",
+        "    object: &Map<String, Value>,",
+        "    expected: &[&str],",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") {",
+        "    for key in object.keys() {",
+        "        if !expected.contains(&key.as_str()) {",
+        "            errors.push(format!(\"{label}: unexpected field {key:?}\"));",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "fn string_field<'a>(",
+        "    object: &'a Map<String, Value>,",
+        "    key: &str,",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Option<&'a str> {",
+        "    match object.get(key) {",
+        "        Some(Value::String(value)) => Some(value),",
+        "        Some(_) => {",
+        "            errors.push(format!(\"{label}: {key} must be a string\"));",
+        "            None",
+        "        }",
+        "        None => {",
+        "            errors.push(format!(\"{label}: missing field {key:?}\"));",
+        "            None",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "fn positive_integer_field(",
+        "    object: &Map<String, Value>,",
+        "    key: &str,",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Option<usize> {",
+        "    match object.get(key) {",
+        "        Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {",
+        "            Some(value) if value > 0 => Some(value),",
+        "            _ => {",
+        "                errors.push(format!(\"{label}: {key} must be a positive integer\"));",
+        "                None",
+        "            }",
+        "        },",
+        "        None => {",
+        "            errors.push(format!(\"{label}: missing field {key:?}\"));",
+        "            None",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.schema`",
+        "fn array_field<'a>(",
+        "    object: &'a Map<String, Value>,",
+        "    key: &str,",
+        "    label: &str,",
+        "    errors: &mut Vec<String>,",
+        ") -> Option<&'a Vec<Value>> {",
+        "    match object.get(key) {",
+        "        Some(Value::Array(values)) => Some(values),",
+        "        Some(_) => {",
+        "            errors.push(format!(\"{label}: {key} must be an array\"));",
+        "            None",
+        "        }",
+        "        None => {",
+        "            errors.push(format!(\"{label}: missing field {key:?}\"));",
+        "            None",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn display_path(root: &Path, path: &Path) -> String {",
+        "    path.strip_prefix(root)",
+        "        .unwrap_or(path)",
+        "        .display()",
+        "        .to_string()",
+        "}",
+        "",
+        "pub(crate) struct SourceReference {",
+        "    pub(crate) name: String,",
+        "    pub(crate) kind: ReferenceKind,",
+        "    pub(crate) file: PathBuf,",
+        "    pub(crate) line: usize,",
+        "}",
+        "",
+        "struct InputRange {",
+        "    file: PathBuf,",
+        "    line_start: usize,",
+        "    line_end: usize,",
+        "}",
+        "",
         "// {impl}`requirements.references.evidence_coverage`",
         "// {impl}`requirements.references.targets`",
         "// {impl}`requirements.examples.evidence`",
         "// {impl}`requirements.definitions.references`",
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.authoring.progress`",
+        "// {impl}`requirements.references.anchors`",
         "fn validate_references(",
         "    root: &Path,",
         "    definitions: &BTreeMap<String, Declaration>,",
+        "    references: &[SourceReference],",
         "    errors: &mut Vec<String>,",
         "    progress: &mut impl FnMut(InspectionProgress),",
         ") {",
-        "    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();",
-        "    for reference in collect_references_with_progress(root, errors, progress) {",
+        "    let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();",
+        "    for reference in references {",
         "        let target = definitions.get(&reference.name);",
         "        if reference.kind == ReferenceKind::Term {",
         "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {",
@@ -2105,6 +1535,10 @@
         "            && !references",
         "                .iter()",
         "                .any(|reference| reference.kind == ReferenceKind::Test)",
+        "            && !definition",
+        "                .anchors",
+        "                .iter()",
+        "                .any(|anchor| anchor.kind == ReferenceKind::Test)",
         "            && fs::read_to_string(&evidence_file)",
         "                .ok()",
         "                .and_then(|content| serde_json::from_str::<Value>(&content).ok())",
@@ -2136,6 +1570,33 @@
         "                    display_path(root, &reference.file),",
         "                    reference.line",
         "                ));",
+        "            }",
+        "        }",
+        "        // An anchor is an edge to the complete file, so one input must contain",
+        "        // every line of it.",
+        "        for anchor in &definition.anchors {",
+        "            match anchor.complete_file(root) {",
+        "                Ok((path, line_count)) => {",
+        "                    if !inputs.iter().any(|input| {",
+        "                        input.file == path && input.line_start <= 1 && line_count <= input.line_end",
+        "                    }) {",
+        "                        errors.push(format!(",
+        "                            \"{}: no input contains the complete file {} (lines 1-{line_count}) anchored by :{}: on {} {name}\",",
+        "                            display_path(root, &evidence_file),",
+        "                            anchor.file,",
+        "                            anchor.kind.label(),",
+        "                            definition.kind.noun()",
+        "                        ));",
+        "                    }",
+        "                }",
+        "                Err(error) => errors.push(format!(",
+        "                    \"{}: :{}: anchor {} on {} {name} at {} does not resolve to a readable, permitted file: {error}\",",
+        "                    display_path(root, &evidence_file),",
+        "                    anchor.kind.label(),",
+        "                    anchor.file,",
+        "                    definition.kind.noun(),",
+        "                    definition.source",
+        "                )),",
         "            }",
         "        }",
         "    }",
@@ -2295,15 +1756,28 @@
         "mod tests {",
         "    use std::fs;",
         "",
-        "    use serde_json::json;",
+        "    use serde_json::{Value, json};",
         "    use tempfile::TempDir;",
-        ""
+        "",
+        "    use super::validate_repository;",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    fn fixture() -> TempDir {",
+        "        let temp = TempDir::new().unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"src/main.rs\"),",
+        "            \"// first line\\n// second line\\n\",",
+        "        )"
       ]
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 69,
-      "line_end": 73,
+      "line_start": 89,
+      "line_end": 93,
       "text": [
         "        match bytes[position] {",
         "            b'\\\\' => position = (position + 2).min(bytes.len()),",
@@ -2314,8 +1788,8 @@
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 81,
-      "line_end": 85,
+      "line_start": 101,
+      "line_end": 105,
       "text": [
         "    let mut position = start + 1;",
         "    if position >= bytes.len() {",
@@ -2326,8 +1800,8 @@
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 107,
-      "line_end": 111,
+      "line_start": 127,
+      "line_end": 131,
       "text": [
         "        Some([b'r', ..]) => start + 1,",
         "        Some([b'b' | b'c', b'r', ..]) => start + 2,",
@@ -2338,8 +1812,8 @@
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 115,
-      "line_end": 119,
+      "line_start": 135,
+      "line_end": 139,
       "text": [
         "    }",
         "    if bytes.get(position) != Some(&b'\"') {",
@@ -2350,8 +1824,8 @@
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 124,
-      "line_end": 128,
+      "line_start": 144,
+      "line_end": 148,
       "text": [
         "                .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))",
         "        {",
@@ -2362,340 +1836,348 @@
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 188,
-      "line_end": 192,
+      "line_start": 212,
+      "line_end": 216,
       "text": [
-        "    for (index, comment) in comments.iter().enumerate().rev() {",
-        "        if comment.end > position {",
-        "            continue;",
+        "        if source[comment.clone()].starts_with(\"//!\") || source[comment.clone()].starts_with(\"/*!\")",
+        "        {",
+        "            break;",
         "        }",
-        "        if source[comment.clone()].starts_with(\"//!\") || source[comment.clone()].starts_with(\"/*!\")"
+        "        let line_start = source[..comment.start]"
       ]
     },
     {
       "file": "src/rust_coverage.rs",
-      "line_start": 218,
-      "line_end": 222,
+      "line_start": 220,
+      "line_end": 228,
+      "text": [
+        "            && !source[line_start..comment.start].trim().is_empty()",
+        "        {",
+        "            break;",
+        "        }",
+        "        let gap = &source[comment.end..position];",
+        "        if !gap.trim().is_empty() || gap.bytes().filter(|byte| *byte == b'\\n').count() > 1 {",
+        "            break;",
+        "        }",
+        "        indices.push(index);"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 238,
+      "line_end": 242,
       "text": [
         "    definitions: &BTreeMap<String, Declaration>,",
-        ") -> Result<Vec<(usize, String)>, syn::Error> {",
+        ") -> Result<Vec<(usize, &'static str, String)>, syn::Error> {",
         "    let syntax = syn::parse_file(source)?;",
         "    let mut collector = FunctionCollector {",
         "        functions: Vec::new(),"
       ]
     },
     {
-      "file": "src/rust_coverage.rs",
-      "line_start": 235,
-      "line_end": 239,
-      "text": [
-        "        if source[comment.clone()].starts_with(\"//!\") || source[comment.clone()].starts_with(\"/*!\")",
-        "        {",
-        "            continue;",
-        "        }",
-        "        if owners[comment_index].is_none() {"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 252,
-      "line_end": 256,
-      "text": [
-        "    for (comment_index, owner) in owners.iter().enumerate() {",
-        "        let Some(function_index) = owner else {",
-        "            continue;",
-        "        };",
-        "        if reference_roles(&source[comments[comment_index].clone()], false)"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 285,
-      "line_end": 289,
-      "text": [
-        "                    display_path(root, &directory)",
-        "                ));",
-        "                continue;",
-        "            }",
-        "        };"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 296,
-      "line_end": 300,
-      "text": [
-        "                        display_path(root, &directory)",
-        "                    ));",
-        "                    continue;",
-        "                }",
-        "            };"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 307,
-      "line_end": 311,
-      "text": [
-        "                        display_path(root, &path)",
-        "                    ));",
-        "                    continue;",
-        "                }",
-        "            };"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 328,
-      "line_end": 332,
+      "file": "src/add_input.rs",
+      "line_start": 7,
+      "line_end": 11,
       "text": [
         "",
-        "// {impl}`requirements.references.rust_function_coverage`",
-        "pub(crate) fn validate_rust_functions(",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,"
+        "use crate::DefinitionKind;",
+        "use crate::evidence::{Declaration, inspect_repository};",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "use crate::rust_items::parse_items;"
       ]
     },
     {
-      "file": "src/rust_coverage.rs",
-      "line_start": 345,
-      "line_end": 349,
+      "file": "src/add_input.rs",
+      "line_start": 30,
+      "line_end": 34,
       "text": [
-        "                discovery_errors.push(error.clone());",
-        "                errors.push(error);",
-        "                continue;",
-        "            }",
-        "        };"
+        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;",
+        "    let definitions = &inspection.definitions;",
+        "    let selectors = selectors_for_mode(&root, mode)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 12,
+      "line_end": 16,
+      "text": [
+        "use crate::DefinitionKind;",
+        "use crate::config;",
+        "use crate::evidence::{InspectionProgress, inspect_repository_with_progress};",
+        "use crate::index::{EvidenceState, LoadedDetailEvidence};",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "line_start": 44,
+      "line_end": 48,
+      "text": [
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut progress = BatchProgress::new(options.verbose);",
+        "    let inspection = inspect_repository_with_progress(&root, |update| progress.inspect(update))?;",
+        "    if !inspection.discovery_errors.is_empty() {",
+        "        return Err(io::Error::other(inspection.discovery_errors.join(\"\\n\")));"
       ]
     },
     {
       "file": "src/authoring/progress.rs",
-      "line_start": 120,
-      "line_end": 143,
+      "line_start": 124,
+      "line_end": 128,
       "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.progress`",
-        "    // {impl}`requirements.authoring.batch`",
         "    // {impl}`requirements.authoring.reporting`",
         "    pub(super) fn failed(&mut self, label: &str, error: &impl std::fmt::Display) {",
         "        self.errors += 1;",
         "        self.println(&format!(\"{label}: {error}\"));",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.progress`",
-        "    pub(super) fn refresh(&self, active: usize, queued: usize) {",
-        "        if let Some(bar) = &self.bar {",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "line_start": 133,
+      "line_end": 139,
+      "text": [
         "            bar.set_message(format!(",
         "                \"{active} active · {queued} queued | true {} · false {} · FIXME {} · errors {}\",",
         "                self.positive, self.negative, self.fixme, self.errors,",
         "            ));",
         "            bar.set_position((self.positive + self.negative + self.fixme + self.errors) as u64);",
         "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.progress`",
-        "    // {impl}`requirements.authoring.batch`",
-        "    pub(super) fn println(&self, message: &str) {"
+        "    }"
       ]
     },
     {
       "file": "src/commands.rs",
-      "line_start": 57,
-      "line_end": 69,
+      "line_start": 5,
+      "line_end": 9,
       "text": [
-        "            continue;",
-        "        }",
-        "        if glob.is_some_and(|glob| !definition_glob::matches(glob, name)) {",
-        "            continue;",
+        "use crate::definition_glob;",
+        "use crate::escape_html;",
+        "use crate::evidence::inspect_repository;",
+        "use crate::fixme::FixmeSummary;",
+        "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 34,
+      "line_end": 38,
+      "text": [
+        "    verbose: bool,",
+        ") -> io::Result<String> {",
+        "    let inspection = inspect_repository(root)?;",
+        "    if let Some(glob) = glob {",
+        "        definition_glob::validate(glob)"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 61,
+      "line_end": 65,
+      "text": [
         "        }",
         "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);",
         "        for error in evidence.errors() {",
         "            associated_errors.insert(error.clone());",
-        "        }",
-        "        fixmes.add(name, definition.kind.noun(), evidence.fixme_entries());",
-        "        if !all && evidence.state() == EvidenceState::Valid {",
-        "            continue;",
         "        }"
       ]
     },
     {
       "file": "src/commands.rs",
-      "line_start": 72,
-      "line_end": 86,
+      "line_start": 76,
+      "line_end": 82,
       "text": [
-        "        }",
-        "",
-        "        rows.push((",
-        "            format!(\"`{name}` ({})\", definition.kind.noun()),",
         "            evidence.state().label(),",
         "        ));",
         "        if !evidence.errors().is_empty() {",
         "            findings.push_str(&format!(\"\\n### `{name}`\\n\\n<pre><code>\"));",
         "            findings.push_str(&escape_html(&evidence.errors().join(\"\\n\\n\")));",
         "            findings.push_str(\"</code></pre>\\n\");",
-        "        }",
-        "    }",
-        "",
-        "    let fixmes = fixmes.render(verbose);",
-        "    if rows.is_empty() {"
+        "        }"
       ]
     },
     {
       "file": "src/commands.rs",
-      "line_start": 95,
-      "line_end": 107,
+      "line_start": 99,
+      "line_end": 103,
       "text": [
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        output.push_str(&render_evidence_table(&rows));",
-        "    }",
-        "",
         "    let other_findings = inspection",
         "        .report",
         "        .errors",
         "        .iter()",
-        "        .filter(|error| !associated_errors.contains(error.as_str()))",
-        "        .collect::<Vec<_>>();",
-        "    output.push_str(&fixmes);",
-        "    if !findings.is_empty() {",
-        "        output.push_str(\"\\n## Validation findings\\n\");"
+        "        .filter(|error| !associated_errors.contains(error.as_str()))"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 126,
+      "line_end": 130,
+      "text": [
+        "// {impl}`requirements.references.definition_globs`",
+        "pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {",
+        "    let inspection = inspect_repository(root)?;",
+        "    definition_glob::validate(selector)",
+        "        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 69,
-      "line_end": 81,
+      "line_start": 73,
+      "line_end": 78,
       "text": [
-        "    }",
-        "}",
         "",
         "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 113,
+      "line_end": 117,
+      "text": [
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.authoring.batch`",
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {"
+        "// {impl}`requirements.examples.evidence`"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 83,
-      "line_end": 95,
+      "line_start": 119,
+      "line_end": 124,
       "text": [
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    inspect_repository_with_progress(root, |_| {})",
         "}",
-        "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 127,
+      "line_end": 131,
+      "text": [
         "// {impl}`requirements.authoring.batch`",
         "// {impl}`requirements.authoring.progress`",
         "// {impl}`requirements.ci.errors`",
         "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository_with_progress("
+        "// {impl}`requirements.examples.evidence`"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1184,
-      "line_end": 1196,
+      "line_start": 133,
+      "line_end": 137,
       "text": [
-        "        .unwrap();",
-        "        temp",
-        "    }",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository_with_progress(",
+        "    root: &Path,",
+        "    mut progress: impl FnMut(InspectionProgress),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1286,
+      "line_end": 1290,
+      "text": [
+        "    use tempfile::TempDir;",
         "",
+        "    use super::validate_repository;",
+        "",
+        "    // {test}`requirements.integration.report_api`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1305,
+      "line_end": 1309,
+      "text": [
         "    // {test}`requirements.authoring.progress`",
         "    // {test}`requirements.integration.report_api`",
         "    // {test}`requirements.ci.errors`",
         "    #[test]",
-        "    fn inspection_progress_preserves_validation_and_finishes_each_phase() {",
-        "        let temp = fixture();",
-        "        let root = temp.path();",
-        "        fs::write(",
-        "            root.join(\"md/requirements.md\"),"
+        "    fn inspection_progress_preserves_validation_and_finishes_each_phase() {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1229,
-      "line_end": 1250,
+      "line_start": 1339,
+      "line_end": 1346,
       "text": [
-        "            assert_eq!(inspected.report.requirements, expected.report.requirements);",
-        "            assert_eq!(inspected.report.examples, expected.report.examples);",
-        "            assert_eq!(",
-        "                inspected.report.evidence_files,",
+        "                fs::write(root.join(\"src/binary.dat\"), [0xff]).unwrap();",
+        "            }",
+        "            let expected = super::inspect_repository(root).unwrap();",
+        "            let mut updates = Vec::new();",
+        "            let inspected =",
+        "                super::inspect_repository_with_progress(root, |update| updates.push(update))",
+        "                    .unwrap();",
+        "            assert_eq!(inspected.report.requirements, expected.report.requirements);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1350,
+      "line_end": 1354,
+      "text": [
         "                expected.report.evidence_files",
         "            );",
         "            assert_eq!(inspected.report.errors, expected.report.errors);",
         "            assert_eq!(inspected.discovery_errors, expected.discovery_errors);",
-        "            assert_eq!(",
-        "                inspected.definitions.keys().collect::<Vec<_>>(),",
-        "                expected.definitions.keys().collect::<Vec<_>>()",
-        "            );",
-        "            assert_eq!(inspected.report.requirements, 1);",
+        "            assert_eq!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1359,
+      "line_end": 1363,
+      "text": [
         "            assert_eq!(inspected.report.examples, 0);",
         "            if invalid {",
         "                let errors = inspected.report.errors.join(\"\\n\");",
         "                for error in [",
-        "                    \"invalid JSON\",",
-        "                    \"cannot parse Rust source\",",
-        "                    \"src/lib.rs:1: function retained has no requirement or example citation\",",
-        "                ] {",
-        "                    assert!(errors.contains(error), \"missing {error:?}: {errors}\");"
+        "                    \"invalid JSON\","
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1254,
-      "line_end": 1266,
+      "line_start": 1375,
+      "line_end": 1379,
       "text": [
-        "                    discovery.contains(\"src/broken.rs\")",
-        "                        && discovery.contains(\"cannot parse Rust source\"),",
-        "                    \"{discovery}\"",
-        "                );",
         "                assert!(!discovery.contains(\"retained\"), \"{discovery}\");",
         "            } else {",
         "                assert!(inspected.report.errors.is_empty());",
         "            }",
-        "            assert!(updates.iter().any(|update| update.total.is_none()));",
-        "            assert!(updates.iter().all(|update| {",
-        "                update",
-        "                    .total",
-        "                    .map_or(update.completed == 0, |total| update.completed <= total)"
+        "            assert!(updates.iter().any(|update| update.total.is_none()));"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1291,
-      "line_end": 1303,
+      "line_start": 1410,
+      "line_end": 1416,
       "text": [
-        "        fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
         "        let mut updates = Vec::new();",
         "        let inspected =",
         "            super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))",
         "                .unwrap();",
         "        assert!(inspected.report.errors.is_empty());",
         "        for stage in [\"evidence files\", \"reference coverage\"] {",
-        "            assert!(",
-        "                updates.contains(&super::InspectionProgress {",
-        "                    stage,",
-        "                    completed: 0,",
-        "                    total: Some(0),"
+        "            assert!("
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1392,
-      "line_end": 1408,
+      "line_start": 1510,
+      "line_end": 1521,
       "text": [
-        "        )",
         "        .unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
@@ -2707,100 +2189,68 @@
         "    // {test}`requirements.integration.report_api`",
         "    // {test}`requirements.ci.errors`",
         "    // {test}`requirements.ci.diagnostics`",
-        "    // {test}`requirements.ci.input_containment`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    // {test}`requirements.ci.orphans`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.determination`"
+        "    // {test}`requirements.ci.input_containment`"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1457,
-      "line_end": 1469,
+      "line_start": 1577,
+      "line_end": 1582,
       "text": [
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
         "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
         "        let errors = report.errors.join(\"\\n\");",
         "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\","
+        "            \"no matching requirement\","
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1526,
-      "line_end": 1538,
+      "line_start": 1646,
+      "line_end": 1651,
       "text": [
-        "            })",
-        "            .to_string(),",
-        "        )",
         "        .unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "    }",
-        "",
-        "    // {test}`requirements.references.targets`",
-        "    // {test}`requirements.references.evidence_coverage`",
-        "    #[test]",
-        "    fn reports_unknown_references_and_uncovered_lines() {"
+        ""
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1561,
-      "line_end": 1574,
+      "line_start": 1681,
+      "line_end": 1687,
       "text": [
-        "            })",
-        "            .to_string(),",
-        "        )",
         "        .unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
         "        let errors = report.errors.join(\"\\n\");",
         "        assert_eq!(report.errors.len(), 2, \"{errors}\");",
         "        assert!(",
-        "            errors.contains(&format!(",
-        "                \"src/main.rs:3: {unknown} has no matching requirement\"",
-        "            )),",
-        "            \"{errors}\"",
-        "        );"
+        "            errors.contains(&format!("
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1605,
-      "line_end": 1617,
+      "line_start": 1724,
+      "line_end": 1730,
       "text": [
-        "            )",
-        "            .unwrap();",
         "        }",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
         "        assert_eq!(report.requirements, 2);",
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "    }",
-        "",
-        "    // {test}`requirements.ci.span`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn reports_a_missing_closing_colon_fence() {"
+        ""
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1633,
-      "line_end": 1649,
+      "line_start": 1751,
+      "line_end": 1762,
       "text": [
-        "        )",
         "        .unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
@@ -2812,19 +2262,14 @@
         "            \"{:?}\",",
         "            report.errors",
         "        );",
-        "    }",
-        "",
-        "    // {test}`requirements.ci.fence_lengths`",
-        "    #[test]",
-        "    fn validates_four_or_more_colon_fences_and_longer_closers() {"
+        "    }"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1669,
-      "line_end": 1683,
+      "line_start": 1787,
+      "line_end": 1796,
       "text": [
-        "            )",
         "            .unwrap();",
         "",
         "            let report = validate_repository(temp.path()).unwrap();",
@@ -2834,17 +2279,13 @@
         "                \"{opening} ... {closing}: {:?}\",",
         "                report.errors",
         "            );",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.examples.definition`",
-        "    // {test}`requirements.examples.evidence`"
+        "        }"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1743,
-      "line_end": 1810,
+      "line_start": 1860,
+      "line_end": 1868,
       "text": [
         "        .unwrap();",
         "",
@@ -2854,304 +2295,305 @@
         "        assert_eq!(report.evidence_files, 2);",
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "",
-        "        let old = fs::read_to_string(&example_path).unwrap();",
-        "        let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        uncovered[\"inputs\"] = json!([]);",
-        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
-        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
-        "        fs::write(&example_path, &old).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
-        "            test_source.replace(\"assert!(true)\", \"assert!(false)\"),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"input text changed at src/main.rs:1-3\"),",
-        "            \"{errors}\"",
-        "        );",
-        "        fs::write(temp.path().join(\"src/main.rs\"), &test_source).unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"md/rules.md\"),",
-        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),",
-        "        )",
-        "        .unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"requirements glob matches changed\"),",
-        "            \"{errors}\"",
-        "        );",
-        "",
-        "        let mut evidence: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        evidence[\"example\"] = \"Outdated.\".into();",
-        "        fs::write(&example_path, evidence.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
-        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
-        "",
-        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();",
-        "        let example_text = wrong_field",
-        "            .as_object_mut()",
-        "            .unwrap()",
-        "            .remove(\"example\")",
-        "            .unwrap();",
-        "        wrong_field[\"requirement\"] = example_text;",
-        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");",
-        "        assert!(",
-        "            errors.contains(\"unexpected field \\\"requirement\\\"\"),",
-        "            \"{errors}\"",
-        "        );",
-        "",
-        "        fs::remove_file(&example_path).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
-        "    }",
-        "",
-        "    // {test}`requirements.references.evidence_coverage`",
-        "    // {test}`requirements.references.targets`",
-        "    #[test]"
+        "        let old = fs::read_to_string(&example_path).unwrap();"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1829,
-      "line_end": 1841,
+      "line_start": 1870,
+      "line_end": 1874,
       "text": [
-        "                \"inputs\": inputs",
-        "            })",
-        "            .to_string()",
-        "        };",
-        "        let path = temp.path().join(\"evidence/rules.ready.json\");",
-        "        fs::write(&path, record(json!([]))).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors;",
-        "        let uncovered: Vec<_> = errors",
-        "            .iter()",
-        "            .filter(|error| error.contains(\"no input covers\"))",
-        "            .collect();",
-        "        assert_eq!(uncovered.len(), 2, \"{errors:#?}\");",
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1879,
+      "line_end": 1883,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"input text changed at src/main.rs:1-3\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1890,
+      "line_end": 1894,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(",
+        "            errors.contains(\"requirements glob matches changed\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1899,
+      "line_end": 1903,
+      "text": [
+        "        evidence[\"example\"] = \"Outdated.\".into();",
+        "        fs::write(&example_path, evidence.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"example text changed\"), \"{errors}\");",
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1911,
+      "line_end": 1915,
+      "text": [
+        "        wrong_field[\"requirement\"] = example_text;",
+        "        fs::write(&example_path, wrong_field.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing field \\\"example\\\"\"), \"{errors}\");",
         "        assert!("
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1863,
-      "line_end": 1875,
+      "line_start": 1919,
+      "line_end": 1923,
       "text": [
-        "                \"line_end\": 6,",
-        "                \"text\": lines[2..6]",
-        "            }])),",
+        "",
+        "        fs::remove_file(&example_path).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1950,
+      "line_end": 1954,
+      "text": [
+        "        let path = temp.path().join(\"evidence/rules.ready.json\");",
+        "        fs::write(&path, record(json!([]))).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors;",
+        "        let uncovered: Vec<_> = errors",
+        "            .iter()"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1983,
+      "line_end": 1988,
+      "text": [
         "        )",
         "        .unwrap();",
         "        let report = validate_repository(temp.path()).unwrap();",
         "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
         "    }",
-        "",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    // {test}`requirements.examples.definition`",
-        "    // {test}`requirements.examples.evidence`",
-        "    #[test]"
+        ""
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1886,
-      "line_end": 1898,
+      "line_start": 2007,
+      "line_end": 2011,
       "text": [
-        "                \"rationale\": \"No test has been cited yet.\",",
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
         "        )",
         "        .unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
         "        for detail in [",
-        "            \"duplicate requirement rules.repeated; first declared at md/rules.md:1\",",
-        "            \"duplicate example rules.repeated; first declared at md/rules.md:1\",",
-        "            \"duplicate example rules.case; first declared at md/rules.md:13\",",
-        "            \"example rules.empty has no text\",",
-        "            \"example rules.empty must reference at least one requirement with {cite} or {test}\","
+        "            \"duplicate requirement rules.repeated; first declared at md/rules.md:1\","
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1908,
-      "line_end": 1920,
+      "line_start": 2029,
+      "line_end": 2033,
       "text": [
-        "    fn examples_may_reference_their_requirement_with_cite_or_test() {",
-        "        let temp = fixture();",
-        "        let chapter = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} tested\\nGiven ready. TEST`rules.ready`\\n:::\\n\\n:::{example} cited\\nGiven ready. CITE`rules.ready`\\n:::\\n\\n:::{example} nested\\nLike the tested case. CITE`rules.tested`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\")",
         "            .replace(\"TEST\", \"{test}\");",
         "        fs::write(temp.path().join(\"md/rules.md\"), chapter).unwrap();",
         "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
         "        assert!(",
-        "            !errors.contains(\"example rules.tested must reference\"),",
-        "            \"{errors}\"",
+        "            !errors.contains(\"example rules.tested must reference\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2093,
+      "line_end": 2097,
+      "text": [
+        "            json!([skill(2)]),",
         "        );",
+        "        let errors = validate_repository(root).unwrap().errors.join(\"\\n\");",
+        "        assert!(!errors.contains(\"text changed\"), \"{errors}\");",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2116,
+      "line_end": 2125,
+      "text": [
+        "            json!([skill(2)]),",
+        "        );",
+        "        let report = validate_repository(root).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "",
+        "        // Changing the anchored file makes the evidence stale.",
+        "        fs::write(root.join(\"skills/ready.md\"), \"# Skill\\nUse ready now.\\n\").unwrap();",
+        "        let errors = validate_repository(root).unwrap().errors.join(\"\\n\");",
         "        assert!(",
-        "            !errors.contains(\"example rules.cited must reference\"),"
+        "            errors.contains(\"evidence/requirements.ready.json: inputs[0]: input text changed at skills/ready.md:1-2\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 2137,
+      "line_end": 2141,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        for expected in [",
+        "            \"md/requirements.md:2: requirement requirements.ready has unsupported option :phrase:\","
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 141,
-      "line_end": 153,
+      "line_start": 9,
+      "line_end": 13,
       "text": [
-        "    // {impl}`requirements.index.state`",
-        "    // {impl}`requirements.ci.outcomes`",
-        "    pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {",
-        "        let evidence_path = root.join(\"evidence\").join(format!(\"{name}.json\"));",
+        "use serde_json::Value;",
+        "",
+        "use crate::evidence::{Declaration, SourceReference, inspect_repository};",
+        "use crate::inputs::{InputSelector, SourceRange};",
+        "use crate::markdown::render_evidence_table;"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 153,
+      "line_end": 157,
+      "text": [
         "        let prefix = format!(\"evidence/{name}.json:\");",
         "        let mut errors = report",
         "            .errors",
         "            .iter()",
-        "            .filter(|error| error.starts_with(&prefix))",
-        "            .cloned()",
-        "            .collect::<Vec<_>>();",
-        "        // {impl}`requirements.index.invalid_detail`",
-        "        let record = match fs::read_to_string(&evidence_path) {"
+        "            .filter(|error| error.starts_with(&prefix))"
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 199,
-      "line_end": 211,
+      "line_start": 211,
+      "line_end": 215,
       "text": [
-        "    pub(crate) fn state(&self) -> EvidenceState {",
-        "        self.state",
-        "    }",
-        "",
         "    // {impl}`requirements.index.state`",
         "    pub(crate) fn errors(&self) -> &[String] {",
         "        &self.errors",
         "    }",
-        "",
-        "    // {impl}`requirements.cli.status`",
-        "    // {impl}`requirements.index.detail_format`",
-        "    pub(crate) fn fixme_entries(&self) -> &[String] {",
-        "        &self.fixme_entries"
+        ""
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 214,
-      "line_end": 226,
+      "line_start": 226,
+      "line_end": 230,
       "text": [
-        "    // {impl}`requirements.index.detail_format`",
-        "    // {impl}`requirements.cli.info`",
-        "    fn borrowed(&self) -> DetailEvidence<'_> {",
-        "        DetailEvidence {",
         "            state: self.state,",
         "            record: self.record.as_deref(),",
         "            errors: &self.errors,",
         "            fixme_entries: &self.fixme_entries,",
-        "        }",
-        "    }",
-        "}",
-        "",
-        "impl EvidenceState {"
+        "        }"
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 483,
-      "line_end": 497,
+      "line_start": 339,
+      "line_end": 343,
       "text": [
-        "    for line in definition_text.lines() {",
-        "        content.push_str(\"> \");",
-        "        content.push_str(line);",
-        "        content.push('\\n');",
+        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
+        "        let source_links = SourceLinks::from_config(&config)?;",
+        "        let inspection = inspect_repository(root)?;",
+        "        let report = &inspection.report;",
+        "        let sources = RenderSources {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 672,
+      "line_end": 678,
+      "text": [
         "    }",
         "",
         "    if !detail_evidence.errors.is_empty() {",
         "        content.push_str(\"\\n## Validation findings\\n\\n<pre><code>\");",
         "        content.push_str(&escape_html(&detail_evidence.errors.join(\"\\n\\n\")));",
         "        content.push_str(\"</code></pre>\\n\");",
-        "    }",
-        "",
-        "    let parsed = detail_evidence",
-        "        .record",
-        "        .and_then(|record| serde_json::from_str::<Value>(record).ok());"
+        "    }"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1281,
+      "line_end": 1285,
+      "text": [
+        "                \"line_start\": 26,",
+        "                \"line_end\": 37,",
+        "                \"text\": [\"pub fn validate_repository() {}\"]",
+        "            }]",
+        "        })"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 32,
-      "line_end": 51,
+      "line_start": 21,
+      "line_end": 25,
       "text": [
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd",
-        "        .ancestors()",
+        "",
+        "pub use add_input::{InputMode, InputTarget, add_input};",
+        "pub use evidence::{EvidenceReport, validate_repository};",
+        "",
+        "/// Validate the current Cargo and mdBook project for use in a Cargo test."
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 35,
+      "line_end": 40,
+      "text": [
         "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
         "        .expect(\"cannot find Cargo and mdBook project root\");",
         "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
         "    if !report.errors.is_empty() {",
         "        panic!(",
-        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\",",
-        "            report.requirements,",
+        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\","
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 42,
+      "line_end": 47,
+      "text": [
         "            report.examples,",
         "            report.evidence_files,",
         "            report.errors.len(),",
         "            report.errors.join(\"\\n- \")",
         "        );",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.examples.definition`",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]"
+        "    }"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 53,
-      "line_end": 65,
+      "line_start": 57,
+      "line_end": 61,
       "text": [
-        "    Requirement,",
-        "    Example,",
-        "    Term,",
-        "}",
         "",
         "impl DefinitionKind {",
         "    // {impl}`requirements.ci.errors`",
         "    // {impl}`requirements.examples.evidence`",
-        "    // {impl}`requirements.definitions.declaration`",
-        "    pub(crate) fn noun(self) -> &'static str {",
-        "        match self {",
-        "            Self::Requirement => \"requirement\",",
-        "            Self::Example => \"example\","
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 15,
-      "line_end": 36,
-      "text": [
-        "mod index;",
-        "mod inputs;",
-        "pub mod judgment;",
-        "mod rust_coverage;",
-        "mod rust_items;",
-        "mod terms;",
-        "",
-        "pub use add_input::{InputMode, InputTarget, add_input};",
-        "pub use evidence::{EvidenceReport, validate_repository};",
-        "",
-        "/// Validate the current Cargo and mdBook project for use in a Cargo test.",
-        "///",
-        "/// Panics with all validation errors so an integration test can simply call",
-        "/// `habeas::validate()`.",
-        "#[track_caller]",
-        "pub fn validate() {",
-        "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd",
-        "        .ancestors()",
-        "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
-        "        .expect(\"cannot find Cargo and mdBook project root\");"
+        "    // {impl}`requirements.definitions.declaration`"
       ]
     }
   ]

@@ -25,7 +25,10 @@ In `requirements` mode, change requirements/examples under `md/` and leave their
 evidence pending for the authoring harness. Wait for owner approval of the current
 head before coding. In `implementation` mode, author code and tests, then run
 `cargo habeas author --all` (or installed `habeas author --all`) for the approved
-requirements; leave `md/` unchanged. The supervising agent must not write evidence
+requirements. Leave `md/` unchanged except for `:impl:`/`:test:` anchor option
+lines directly after a `{req}`/`{example}` opening fence (for example, updating
+an anchor path when moving an anchored file); the publisher rejects any other
+`md/` change in a code commit. The supervising agent must not write evidence
 JSON, judgments, rationales, or input snapshots itself or delegate manual evidence
 writing to another agent. If the harness lacks configuration or provider access,
 report the blocker rather than inventing evidence. Code commits do

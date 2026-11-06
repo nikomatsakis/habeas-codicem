@@ -16,6 +16,9 @@ for the single-subject command.
 :::
 
 :::{req} batch
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-evidence/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 `habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement
 and named example whose evidence is missing, stale, or invalid. It MUST preserve
 current records without invoking a model for them, including accepted FIXME

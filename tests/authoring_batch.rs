@@ -1088,7 +1088,7 @@ fn batch_stdout_is_rejected_before_authoring() {
 
 // {test}`requirements.authoring.batch`
 // {test}`requirements.ci.definition_errors`
-// {test}`requirements.references.rust_function_coverage`
+// {test}`requirements.references.rust_item_coverage`
 #[test]
 fn discovery_errors_fail_before_configuration_or_inference() {
     for (declarations, source, location, diagnostic) in [

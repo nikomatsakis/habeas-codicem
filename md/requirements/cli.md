@@ -50,6 +50,8 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::
 
 :::{req} info
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-evidence/SKILL.md
 `habeas info <selection>` MUST show the requirements and named examples matched by the {term}`requirements.references.definition_selection`. It MUST print matches in full-name order as Markdown with the same kind-labeled definition, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid selection or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement or named example.
 :::
 
@@ -71,18 +73,26 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 
 
 :::{req} bootstrap_skill
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 Habeas MUST bundle a skill for deriving initial requirements from an existing codebase. The skill MUST direct agents to read the code and tests, map every first-party test to at least one requirement or example, identify and map every source unit implementing end-user-visible functionality or interactions to a requirement, and report gaps rather than claim complete coverage without an independent inventory review.
 :::
 
 :::{req} requirements_review_skill
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
+:impl: assets/skills/habeas-evidence/SKILL.md
 The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.
 :::
 
 :::{req} behavior_review_guidance
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark code that implements part of a requirement with `{impl}` and tests that verify it with `{test}`, using `{cite}` only for related code that does neither, under {cite}`requirements.references.targets`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
 :::
 
 :::{req} internal_detail_guidance
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement scoped to one area of internal code, such as `internal.config_parsing`, rather than one catch-all requirement, obtain the user's agreement, mark the function with `{impl}`, and run `habeas author --all` for the harness to assess that requirement's evidence. That assessment MUST account for whether the requirement explains each implementing function's behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.
 :::
 

@@ -87,14 +87,29 @@ impl DefinitionKind {
     }
 }
 
+// {impl}`requirements.references.anchors`
 pub(crate) struct DefinitionBlock {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) body_start: usize,
+    /// Start of the body after any option lines.
+    pub(crate) text_start: usize,
     pub(crate) body_end: usize,
     pub(crate) name: String,
     pub(crate) kind: DefinitionKind,
     pub(crate) closed: bool,
+    pub(crate) options: Vec<DefinitionOption>,
+}
+
+/// An option line such as `:impl: src/skill.md` immediately after the opening
+/// fence of a `{req}` or `{example}` directive.
+// {impl}`requirements.references.anchors`
+pub(crate) struct DefinitionOption {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) line: usize,
+    pub(crate) name: String,
+    pub(crate) value: String,
 }
 
 pub(crate) struct Definition {
@@ -148,8 +163,11 @@ pub(crate) struct ReferenceMatch<'a> {
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.definitions.selection`
+// {impl}`requirements.index.detail_pages`
+// {impl}`requirements.references.anchors`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
+    let mut order = Vec::new();
     for chapter in book.chapters() {
         let Some(source_path) = chapter.source_path.as_deref().or(chapter.path.as_deref()) else {
             continue;
@@ -158,24 +176,38 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             continue;
         };
         let namespace = chapter_namespace(source_path);
-        for block in definition_blocks(&chapter.content) {
+        let blocks = definition_blocks(&chapter.content);
+        for block in &blocks {
             if !block.closed {
                 continue;
             }
             let name = full_requirement_name(&namespace, &block.name);
-            definitions.entry(name).or_insert_with(|| Definition {
-                path: render_path.to_path_buf(),
-                text: chapter.content[block.body_start..block.body_end]
+            if definitions.contains_key(&name) {
+                continue;
+            }
+            if block.kind != DefinitionKind::Term {
+                order.push(name.clone());
+            }
+            definitions.insert(
+                name,
+                Definition {
+                    path: render_path.to_path_buf(),
+                    text: without_options(
+                        &chapter.content,
+                        block.body_start..block.body_end,
+                        &blocks,
+                    )
                     .trim()
                     .to_owned(),
-                kind: block.kind,
-            });
+                    kind: block.kind,
+                },
+            );
         }
     }
-    let evidence_definitions = definitions
+    let evidence_definitions = order
         .iter()
-        .filter(|(_, d)| d.kind != DefinitionKind::Term)
-        .map(|(name, d)| {
+        .map(|name| {
+            let d = &definitions[name];
             (
                 name.clone(),
                 Definition {
@@ -186,10 +218,8 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             )
         })
         .collect();
-    let index = index::IndexPlan::find(book, &evidence_definitions)?;
-    if let Some(plan) = index.as_ref() {
-        plan.populate(book, root, &evidence_definitions)?;
-    }
+    let plan = index::DetailPlan::find(book, &evidence_definitions, &order)?;
+    plan.populate(book, root, &evidence_definitions)?;
 
     // {impl}`requirements.index.source_links`
     book.for_each_chapter_mut(|chapter| {
@@ -197,7 +227,7 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             || chapter
                 .path
                 .as_deref()
-                .is_some_and(|path| index.as_ref().is_some_and(|plan| plan.is_detail_path(path)))
+                .is_some_and(|path| plan.is_detail_path(path))
         {
             if let Some(path) = chapter.path.as_deref() {
                 chapter.content = replace_references(&chapter.content, path, &definitions);
@@ -214,7 +244,7 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             &chapter.content,
             &namespace,
             chapter.path.as_deref(),
-            index.as_ref(),
+            Some(&plan),
         );
         if let Some(path) = chapter.path.as_deref() {
             chapter.content = replace_references(&chapter.content, path, &definitions);
@@ -250,11 +280,12 @@ fn chapter_namespace(path: &Path) -> String {
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.examples.index`
+// {impl}`requirements.references.anchors`
 fn replace_definitions(
     content: &str,
     namespace: &str,
     current_path: Option<&Path>,
-    index: Option<&index::IndexPlan>,
+    plan: Option<&index::DetailPlan>,
 ) -> String {
     let mut result = String::with_capacity(content.len());
     let mut cursor = 0;
@@ -297,7 +328,7 @@ fn replace_definitions(
             },
         );
         let detail_href = current_path
-            .zip(index)
+            .zip(plan)
             .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))
             .map(|(current, path)| escape_html(&chapter_href(current, path, None)));
         let tag = if detail_href.is_some() { "a" } else { "span" };
@@ -308,9 +339,9 @@ fn replace_definitions(
         result.push('-');
         result.push_str(&escaped_name);
         result.push('"');
-        if let Some(href) = detail_href {
+        if let Some(href) = &detail_href {
             result.push_str(" href=\"");
-            result.push_str(&href);
+            result.push_str(href);
             result.push('"');
         }
         result.push('>');
@@ -318,12 +349,18 @@ fn replace_definitions(
         result.push_str("</");
         result.push_str(tag);
         result.push_str(">\n\n");
+        // Option lines such as anchors are metadata, not body text.
         result.push_str(&replace_definitions(
-            &content[block.body_start..block.body_end],
+            &content[block.text_start..block.body_end],
             namespace,
             current_path,
-            index,
+            plan,
         ));
+        if let Some(href) = &detail_href {
+            result.push_str("\n<p class=\"habeas-see-evidence\"><a href=\"");
+            result.push_str(href);
+            result.push_str("\">See evidence</a></p>\n");
+        }
         result.push('\n');
         cursor = block.end;
     }
@@ -473,6 +510,7 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.ci.fence_lengths`
+// {impl}`requirements.references.anchors`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     let code_ranges = Parser::new(content)
         .into_offset_iter()
@@ -530,18 +568,84 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
         } else {
             (content.len(), content.len(), false)
         };
+        // {impl}`requirements.references.anchors`
+        let mut options = Vec::new();
+        let mut text_start = body_start;
+        if kind != DefinitionKind::Term {
+            let body_lines = close_index.unwrap_or(lines.len());
+            for (offset, &(option_start, option_end, option)) in
+                lines[index + 1..body_lines].iter().enumerate()
+            {
+                let Some((option_name, value)) = option_line(option) else {
+                    break;
+                };
+                options.push(DefinitionOption {
+                    start: option_start,
+                    end: option_end,
+                    line: index + offset + 2,
+                    name: option_name.to_owned(),
+                    value: value.to_owned(),
+                });
+                text_start = option_end;
+            }
+        }
         blocks.push(DefinitionBlock {
             start,
             end,
             body_start,
+            text_start,
             body_end,
             name: name.to_owned(),
             kind,
             closed,
+            options,
         });
         index += 1;
     }
     blocks
+}
+
+/// Parse an option line of the form `:name: value`.
+// {impl}`requirements.references.anchors`
+fn option_line(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim_start_matches(' ').strip_prefix(':')?;
+    let (name, value) = rest.split_once(':')?;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        || !(value.is_empty() || value.starts_with(char::is_whitespace))
+    {
+        return None;
+    }
+    Some((name, value.trim()))
+}
+
+/// The text of `range` without the option lines of any definition block in it.
+// {impl}`requirements.references.anchors`
+// {impl}`requirements.ci.requirement_text`
+pub(crate) fn without_options(
+    content: &str,
+    range: Range<usize>,
+    blocks: &[DefinitionBlock],
+) -> String {
+    let mut options = blocks
+        .iter()
+        .flat_map(|block| &block.options)
+        .filter(|option| range.start <= option.start && option.end <= range.end)
+        .map(|option| option.start..option.end)
+        .collect::<Vec<_>>();
+    options.sort_by_key(|option| option.start);
+    let mut text = String::with_capacity(range.len());
+    let mut cursor = range.start;
+    for option in options {
+        if option.start >= cursor {
+            text.push_str(&content[cursor..option.start]);
+            cursor = option.end;
+        }
+    }
+    text.push_str(&content[cursor..range.end]);
+    text
 }
 
 // {impl}`requirements.ci.span`
@@ -689,8 +793,137 @@ mod tests {
         DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,
         reference_roles, replace_definitions, shield_badge,
     };
-    use mdbook_preprocessor::book::{Book, Chapter};
+    use mdbook_preprocessor::book::{Book, BookItem, Chapter};
     use std::path::Path;
+
+    // {test}`requirements.index.detail_pages`
+    fn book_root() -> tempfile::TempDir {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(root.path().join("md")).unwrap();
+        std::fs::write(root.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        root
+    }
+
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn anchor_options_are_metadata_not_body_text() {
+        let source = "::::{req} ready\n:impl: skills/ready.md\n:test: tests/ready.sh\nReady.\n\n:::{example} case\n:test: tests/case.sh\nA case.\n:::\n::::\n\n:::{req} plain\nText :impl: inline.\n\n:test: later.md\n:::\n";
+        let blocks = definition_blocks(source);
+        assert_eq!(blocks.len(), 3);
+        let options = |index: usize| {
+            blocks[index]
+                .options
+                .iter()
+                .map(|option| (option.name.as_str(), option.value.as_str(), option.line))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            options(0),
+            [
+                ("impl", "skills/ready.md", 2),
+                ("test", "tests/ready.sh", 3)
+            ]
+        );
+        assert_eq!(options(1), [("test", "tests/case.sh", 7)]);
+        // Only lines immediately after the opening fence are options.
+        assert!(options(2).is_empty());
+        assert_eq!(
+            super::without_options(source, blocks[0].body_start..blocks[0].body_end, &blocks)
+                .trim(),
+            "Ready.\n\n:::{example} case\nA case.\n:::"
+        );
+
+        let rendered = replace_definitions(source, "requirements", None, None);
+        assert!(!rendered.contains(":impl: skills"), "{rendered}");
+        assert!(!rendered.contains("skills/ready.md"), "{rendered}");
+        assert!(!rendered.contains("tests/case.sh"), "{rendered}");
+        assert!(rendered.contains("Text :impl: inline."), "{rendered}");
+        assert!(rendered.contains(":test: later.md"), "{rendered}");
+    }
+
+    // {test}`requirements.index.detail_pages`
+    // {test}`requirements.index.navigation`
+    // {test}`requirements.examples.index`
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn every_definition_gets_a_nested_detail_page_without_an_index() {
+        let mut book = Book::new();
+        let mut chapter = Chapter::new(
+            "Rules",
+            "# Rules\n\n:::{req} zeta\n:impl: notes.txt\nZeta.\n:::\n\n:::{example} alpha\nAlpha case. CITE`rules.zeta`\n:::\n\n:::{req} cli.mdbook\nMdbook.\n:::\n".replace("CITE", "{cite}"),
+            "rules.md",
+            Vec::new(),
+        );
+        chapter.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![2]));
+        chapter.sub_items.push(BookItem::Chapter(Chapter::new(
+            "Child",
+            "Child.".to_owned(),
+            "rules/child.md",
+            vec!["Rules".to_owned()],
+        )));
+        book.push_item(chapter);
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+
+        let rules = book.chapters().next().unwrap();
+        let pages = rules
+            .sub_items
+            .iter()
+            .filter_map(|item| match item {
+                BookItem::Chapter(chapter) => Some(chapter),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        // Definition order, after existing subchapters, titled by full name.
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| page.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Child", "rules.zeta", "rules.alpha", "rules.cli.mdbook"]
+        );
+        assert_eq!(
+            pages[1].path.as_deref(),
+            Some(Path::new("rules/rules.zeta.md"))
+        );
+        assert_eq!(pages[1].parent_names, ["Rules"]);
+        assert_eq!(
+            pages[2].number.as_deref().map(Vec::as_slice),
+            Some(&[2, 2][..])
+        );
+        for (kind, name) in [("req", "zeta"), ("example", "alpha"), ("req", "cli.mdbook")] {
+            let href = format!("rules/rules.{name}.html").replace(".md", "%2Emd");
+            assert!(
+                rules.content.contains(&format!(
+                    "id=\"habeas-{kind}-rules.{name}\" href=\"{href}\""
+                )),
+                "{}",
+                rules.content
+            );
+            assert!(
+                rules.content.contains(&format!(
+                    "<p class=\"habeas-see-evidence\"><a href=\"{href}\">See evidence</a></p>"
+                )),
+                "{}",
+                rules.content
+            );
+        }
+        assert_eq!(rules.content.matches("See evidence").count(), 3);
+        assert!(!rules.content.contains("notes.txt"));
+        assert!(pages[1].content.contains("> Zeta.\n"));
+        assert!(!pages[1].content.contains(":impl:"));
+        assert!(
+            pages[1]
+                .content
+                .contains("[View definition](../rules.html#habeas-req-rules.zeta)")
+        );
+        assert!(!pages[1].content.contains("Requirements index"));
+        assert!(
+            pages[3]
+                .content
+                .contains("[View definition](../rules.html#habeas-req-rules.cli%2Emdbook)")
+        );
+    }
 
     // {test}`requirements.ci.identifiers`
     #[test]
@@ -797,8 +1030,13 @@ mod tests {
             Vec::new(),
         ));
 
-        preprocess_book(&mut book, Path::new(".")).unwrap();
-        let chapters = book.chapters().collect::<Vec<_>>();
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        // Generated detail pages are titled by full name.
+        let chapters = book
+            .chapters()
+            .filter(|chapter| !chapter.name.contains('.'))
+            .collect::<Vec<_>>();
         assert!(
             chapters[0]
                 .content
@@ -829,8 +1067,12 @@ mod tests {
         ));
         book.push_item(Chapter::new("Guide", content, "guide.md", Vec::new()));
 
-        preprocess_book(&mut book, Path::new(".")).unwrap();
-        let guide = book.chapters().nth(1).unwrap();
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let guide = book
+            .chapters()
+            .find(|chapter| chapter.name == "Guide")
+            .unwrap();
         assert_eq!(guide.content.matches(&marker).count(), 3);
         assert!(!guide.content.contains("habeas-req-ref-impl"));
     }
@@ -903,8 +1145,13 @@ mod tests {
             "guides/deep.md",
             Vec::new(),
         ));
-        preprocess_book(&mut book, Path::new(".")).unwrap();
-        let chapters = book.chapters().collect::<Vec<_>>();
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        // Generated detail pages are titled by full name.
+        let chapters = book
+            .chapters()
+            .filter(|chapter| !chapter.name.contains('.'))
+            .collect::<Vec<_>>();
         assert!(
             chapters[0]
                 .content

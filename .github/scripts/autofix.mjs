@@ -121,13 +121,31 @@ async function safePRDiff(api, repo, pr, stage) {
   );
 }
 
+async function blobText(api, repo, blobSha) {
+  const blob = await api(repoPath(repo, `/git/blobs/${sha(blobSha)}`));
+  if (blob.encoding !== 'base64' || typeof blob.content !== 'string') throw new Error(`Unreadable blob ${blobSha}`);
+  return Buffer.from(blob.content, 'base64').toString('utf8');
+}
+
+// Code commits may only add, remove, or edit anchor option lines in md/, so the
+// approved requirements tree must match the head except for such lines.
 async function sameMdTree(api, repo, firstSha, secondSha) {
   async function mdTree(commitSha) {
-    return (await treeAtCommit(api, repo, commitSha)).filter(item => item.path.startsWith('md/'))
-      .map(item => `${item.path}\t${item.mode}\t${item.sha}`).sort();
+    return new Map((await treeAtCommit(api, repo, commitSha)).filter(item => item.path.startsWith('md/'))
+      .map(item => [item.path, item]));
   }
   const [first, second] = await Promise.all([mdTree(firstSha), mdTree(secondSha)]);
-  return JSON.stringify(first) === JSON.stringify(second);
+  if (first.size !== second.size) return false;
+  for (const [path, before] of first) {
+    const after = second.get(path);
+    if (!after || after.type !== before.type || after.mode !== before.mode) return false;
+    // Directory hashes follow their contents, which are compared entry by entry.
+    if (before.type === 'tree' || before.sha === after.sha) continue;
+    if (before.type !== 'blob' || before.mode !== '100644') return false;
+    const [beforeText, afterText] = await Promise.all([blobText(api, repo, before.sha), blobText(api, repo, after.sha)]);
+    if (!anchorOnlyChange(beforeText, afterText)) return false;
+  }
+  return true;
 }
 
 async function findPR(api, repo, issue) {
@@ -353,12 +371,72 @@ function implementationPathAllowed(path) {
   return true;
 }
 
-function verifyPaths(stage, paths) {
-  if (paths.length === 0) return;
-  const allowed = stage === 'requirements' ? proposalPathAllowed : implementationPathAllowed;
-  for (const path of paths) {
-    if (!allowed(path)) throw new Error(`Disallowed ${stage} path: ${path}`);
+const definitionFence = /^:{3,}\{(req|example)\}\s+\S/;
+const optionLine = /^:[A-Za-z][\w-]*:(\s.*)?$/;
+const anchorLine = /^:(impl|test): \S.*$/;
+const codeFence = /^\s{0,3}(`{3,}|~{3,})/;
+
+// Removes anchor option lines that sit directly after a `{req}`/`{example}`
+// opening fence (possibly after other option lines), outside code blocks.
+function withoutAnchorLines(text) {
+  const kept = [];
+  let code = null;
+  let options = false;
+  for (const line of text.split('\n')) {
+    if (code) {
+      const close = codeFence.exec(line);
+      if (close && close[1][0] === code[0] && close[1].length >= code.length && !line.trim().slice(close[1].length)) code = null;
+      kept.push(line);
+      continue;
+    }
+    const fence = codeFence.exec(line);
+    if (fence) {
+      code = fence[1];
+      options = false;
+      kept.push(line);
+      continue;
+    }
+    if (options && optionLine.test(line)) {
+      if (!anchorLine.test(line)) kept.push(line);
+      continue;
+    }
+    options = definitionFence.test(line);
+    kept.push(line);
   }
+  return kept.join('\n');
+}
+
+function anchorOnlyChange(before, after) {
+  if (typeof before !== 'string' || typeof after !== 'string' || before === after) return false;
+  return withoutAnchorLines(before) === withoutAnchorLines(after);
+}
+
+// In implementation mode, an md/ path is allowed only when `mdFiles[path]`
+// shows an existing Markdown file whose content differs only in anchor lines.
+function verifyPaths(stage, paths, mdFiles = {}) {
+  if (paths.length === 0) return;
+  for (const path of paths) {
+    if (stage === 'requirements' ? proposalPathAllowed(path) : implementationPathAllowed(path)) continue;
+    if (stage === 'implementation' && /^md\/.+\.md$/.test(path) && proposalPathAllowed(path) &&
+        Object.hasOwn(mdFiles, path) && anchorOnlyChange(mdFiles[path].before, mdFiles[path].after)) continue;
+    throw new Error(`Disallowed ${stage} path: ${path}`);
+  }
+}
+
+function blobAt(revision, path) {
+  try {
+    return execFileSync('git', ['show', `${revision}:${path}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+}
+
+function mdFilesFromGit(baseSha, paths) {
+  const files = {};
+  for (const path of paths.filter(item => item.startsWith('md/'))) {
+    files[path] = { before: blobAt(baseSha, path), after: blobAt('', path) };
+  }
+  return files;
 }
 
 function pathsFromGit() {
@@ -371,7 +449,7 @@ function checkModes(stage) {
     const match = /^(\d{6}) [0-9a-f]{40} \d\t(.*)$/.exec(item);
     if (!match) throw new Error(`Invalid index entry: ${item}`);
     if (!pathsFromGit().includes(match[2])) continue;
-    if (match[1] !== '100644' && !(stage === 'implementation' && match[1] === '100755')) {
+    if (match[1] !== '100644' && !(stage === 'implementation' && match[1] === '100755' && !match[2].startsWith('md/'))) {
       throw new Error(`Disallowed file mode for ${match[2]}: ${match[1]}`);
     }
   }
@@ -381,10 +459,10 @@ function modeBadge(stage) {
   return stage === 'requirements' ? '📝 Adjust requirements' : '🛠 Author code';
 }
 
-function publicationResult(plan, result, paths) {
+function publicationResult(plan, result, paths, mdFiles = {}) {
   if (!['requirements', 'implementation'].includes(result.stage)) throw new Error('Invalid output mode');
   if (plan.stage === 'requirements' && result.stage !== 'requirements') throw new Error('Requirements need owner approval');
-  verifyPaths(result.stage, paths);
+  verifyPaths(result.stage, paths, mdFiles);
   if (result.stage !== plan.stage && !paths.some(path => path.startsWith('md/'))) {
     throw new Error('Returning to requirements must include a proposal');
   }
@@ -460,7 +538,7 @@ async function publish() {
     execFileSync('git', ['apply', '--check', '--index', patch], { stdio: 'inherit' });
     execFileSync('git', ['apply', '--index', patch], { stdio: 'inherit' });
     const paths = pathsFromGit();
-    const publication = publicationResult(planned, result, paths);
+    const publication = publicationResult(planned, result, paths, mdFilesFromGit(planned.baseSha, paths));
     summary = `**${modeBadge(publication.stage)}**\n\n${report}`;
     checkModes(publication.stage);
     execFileSync('git', ['diff', '--cached', '--check'], { stdio: 'inherit' });
@@ -515,4 +593,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
 }
 
-export { isOwner, ownerLinks, proposalPathAllowed, implementationPathAllowed, verifyPaths, planForEvent, approvedOnHead, publicationResult, modeBadge };
+export { isOwner, ownerLinks, proposalPathAllowed, implementationPathAllowed, anchorOnlyChange, verifyPaths, planForEvent, approvedOnHead, publicationResult, modeBadge };

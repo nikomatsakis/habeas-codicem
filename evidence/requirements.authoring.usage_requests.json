@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record each provider request's outcome and available input/output\ntoken counts, including retries, with cached or reasoning-token counts when\nprovided. Missing measurements MUST be recorded as unavailable, not zero.\nRun totals MUST include request and tool-call counts by tool, elapsed time, and\navailable token usage, identifying incomplete totals without double counting\nprovider counters that overlap.",
-  "determination": false,
-  "rationale": "The behaviour is mostly implemented and well tested. The one gap I found is that `UsageLog::finish` is not marked as implementing this requirement.\n\n**What is implemented and covered**\n- `begin_request` and `end_request` in `src/authoring/usage.rs` record one entry per provider attempt, retries included. Each entry has an outcome (unfinished, completed or failed) and per-request elapsed time.\n- `TokenCounts::from_usage` stores input, output, cached-input, cache-creation and reasoning counts as `Option<u64>`. A missing measurement is `None` (null in the JSON), not zero.\n- `TokenCounts::sum` and `sum_counter` sum only measured values. Cached and reasoning counters are kept separate and never added into the input or output totals. The `complete` flag is false when any request lacks input or output tokens, or when an optional counter is measured for only some requests.\n- `tool` and `skipped_tool` keep per-tool call counts (via `tool_name`) and a total `tool_call_count`. The record also carries `request_count` and `elapsed_ms`.\n- `bedrock_sdk_config` disables hidden SDK retries, so every attempt appears in the ledger.\n- Tests cover:\n  - totals and subset handling (`token_totals_keep_subsets_separate_and_missing_counters_unknown`);\n  - partial failure and mixed optional counters (`partial_failure_retains_available_totals_and_optional_measurements`);\n  - cancellation (`cancelled_request_persists_elapsed_time_and_incomplete_totals`);\n  - tool outcomes (`tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text`);\n  - the 9-attempt throttled run (`throttled_requests_retry_unchanged_and_record_every_attempt`);\n  - CLI end-to-end runs for Ollama and Bedrock, and batch and denied-read runs.\n\n**Gap**\n- `UsageLog::finish` (`src/authoring/usage.rs`, about lines 248–261) carries only `{impl}` `usage_storage`. It does behaviour this requirement specifies:\n  - It sets an in-flight request's outcome to \"cancelled\" and records that request's elapsed time.\n  - It recomputes the token totals and the run's elapsed time.\n- Per the criteria, code implementing part of the requirement without an `{impl}` reference to it is a gap, and `finish` has none. The same applies to the `RequestUsage`, `TokenCounts` and `UsageRecord` data definitions, which carry no `{impl}` marker.\n\nThere are no FIXME markers acknowledging this, so I am returning false rather than a FIXME determination.",
+  "determination": true,
+  "rationale": "**Verdict:** the requirement is satisfied. I found no unacknowledged gaps.\n\n**Per-request records**\n- `assess` (`src/authoring/mod.rs`) calls `begin_request` and then `end_request` around every `provider.complete` call, including each retried attempt.\n- `begin_request` persists an `\"unfinished\"` request entry before the call, so a crash or cancellation still leaves a record.\n- `end_request` records `\"completed\"` when the provider returned a usage object and `\"failed\"` when it returned an error. It also records the per-request elapsed time and a `TokenCounts` value.\n- `finish` marks the active request `\"cancelled\"` and fixes its elapsed time on cancellation.\n- `bedrock_sdk_config` disables the AWS SDK's hidden retries. Each provider attempt is therefore its own ledger entry.\n- `TokenCounts::from_usage` copies input, output, cached-input, cache-creation and reasoning counters straight from rig's `Usage`. These are `Option<u64>`, so a missing measurement stays `null` and is never turned into zero.\n- A failed request gets `TokenCounts::default()`, which is all `None` with `complete=false`.\n\n**Run totals**\n- `TokenCounts::sum` and `sum_counter` build totals from the per-request records.\n- A counter is `None` if no request measured it. Otherwise it is the sum of the measured requests, so partial subtotals are kept.\n- `complete` is true only if every request has input and output counts and every optional counter is either measured in all requests or in none. An unfinished, failed or cancelled request therefore makes the total incomplete.\n- Cached, cache-creation and reasoning counters are tracked separately and never added into the input or output totals. This avoids double counting overlapping provider counters.\n- `tool`, `skipped_tool` and `tool_name` keep per-tool call counts, failure counts and skipped counts, plus a total `tool_call_count`. Unknown tool names collapse to `\"unknown\"`.\n- `request_count` and the run-level `elapsed_ms` are maintained on every save.\n\n**Tests**\n- `token_totals_keep_subsets_separate_and_missing_counters_unknown` checks that subset counters stay separate, that in-flight totals are incomplete, and that a failed request with no usage leaves measured subtotals intact with `complete=false`.\n- `partial_failure_retains_available_totals_and_optional_measurements` checks that absent optional counters stay `null`, and that mixed optional counters make the total incomplete.\n- `cancelled_request_persists_elapsed_time_and_incomplete_totals` covers cancellation, elapsed time and incomplete totals.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` covers per-tool counts, failures and skips.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` checks that 8 failed attempts and 1 completed attempt are all recorded, the failed ones with `tokens.complete=false`.\n- The CLI tests cover end-to-end totals. Ollama gives 22 input and 14 output tokens over 2 requests with 6 tool calls. Bedrock gives 38 input and 10 output tokens. The denied-read and untracked-read tests check the aborted and failed runs.\n\n**Residual notes (not gaps)**\n- The mapping of provider-missing counters to `None` depends on rig 0.44's `Usage` type. No provider-level test feeds a response with absent counters through the real Ollama or Bedrock mapping.\n- The comment that cached counters are \"subsets\" may not hold for every Bedrock model. This does not cause double counting, because those counters are never added to the input total.",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_requests",
@@ -37,6 +37,7 @@
         "// {impl}`requirements.authoring.source_tools`",
         "// {impl}`requirements.authoring.file_discovery`",
         "// {impl}`requirements.authoring.text_search`",
+        "// {impl}`requirements.ci.authoring_inputs`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -307,6 +308,7 @@
       "rust_item": "impl[UsageLog]/fn[end_request]",
       "text": [
         "    // {impl}`requirements.authoring.usage_requests`",
+        "    // {impl}`requirements.authoring.usage_inputs`",
         "    pub(super) fn end_request(",
         "        &mut self,",
         "        index: usize,",
@@ -369,6 +371,28 @@
         "        *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;",
         "        *self.record.tool_skipped.entry(name.to_owned()).or_default() += 1;",
         "        self.record.tool_call_count += 1;",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/authoring/usage.rs",
+      "rust_item": "impl[UsageLog]/fn[finish]",
+      "text": [
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {",
+        "        if let Some((index, started)) = self.active_request.take() {",
+        "            let request = &mut self.record.requests[index];",
+        "            request.elapsed_ms = started.elapsed().as_millis();",
+        "            if outcome == \"cancelled\" {",
+        "                request.outcome = \"cancelled\".into();",
+        "            }",
+        "        }",
+        "        self.record.tokens = TokenCounts::sum(&self.record.requests);",
+        "        self.record.outcome = outcome.to_owned();",
+        "        self.record.end_time_ms = Some(timestamp());",
+        "        self.record.elapsed_ms = self.started.elapsed().as_millis();",
+        "        self.save()",
         "    }"
       ]
     },
@@ -803,6 +827,7 @@
         "// {test}`requirements.authoring.usage_storage`",
         "// {test}`requirements.authoring.usage_inputs`",
         "// {test}`requirements.authoring.usage_requests`",
+        "// {test}`requirements.authoring.mandatory_inputs`",
         "#[test]",
         "fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {",
         "    let server = Server::start(vec![",
@@ -1239,689 +1264,9 @@
       ]
     },
     {
-      "requirements": "requirements.authoring.provider_backoff",
-      "matches": [
-        "requirements.authoring.provider_backoff"
-      ],
-      "text": [
-        ":::{req} provider_backoff",
-        "When a provider reports transient throttling through HTTP 429 or a Bedrock",
-        "`ThrottlingException`, the harness MUST wait and retry the same completion",
-        "request, retaining its prompt, history, tools, and pending inputs. It MUST NOT",
-        "restart the assessment or repeat already completed tool calls. A permanent",
-        "input/context-length error, authentication failure, or invalid request MUST",
-        "remain an error; mentioning tokens in an error message alone MUST NOT trigger",
-        "retries.",
-        "",
-        "The backoff window MUST start at one second and double after each consecutive",
-        "throttled attempt, up to sixty seconds. Each delay MUST be randomly selected",
-        "between half and all of that window to spread parallel retries. An available",
-        "provider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a",
-        "minimum delay even when longer than the window. A successful response MUST reset",
-        "backoff for the next completion request. There MUST be no retry-attempt limit;",
-        "interruption MUST cancel both the wait and further retries.",
-        "",
-        "Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.",
-        "Hidden SDK retries MUST remain disabled so the harness can account for attempts.",
-        "Transient retries MUST NOT be reported as finished judgments or terminal",
-        "assessment errors while recovery is still in progress. Pending inputs MUST be",
-        "recorded as evidence only after the request succeeds.",
-        "{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 64,
-      "line_end": 70,
-      "text": [
-        "                    .any(|path| matches_rule(rule, path, target))",
-        "        }) {",
-        "            return Err(denied(format!(",
-        "                \"{} is disallowed by habeas.toml rule {}; update the workspace evidence policy before retrying\",",
-        "                requested.display(),",
-        "                rule.display()",
-        "            )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 135,
-      "line_end": 141,
-      "text": [
-        "        }",
-        "        let lexical_request = normalize(&root.join(relative));",
-        "        if !lexical_request.starts_with(root) || !target.starts_with(root) {",
-        "            return Err(denied(format!(",
-        "                \"{} resolves outside the project; add an explicit habeas.toml allow rule before retrying\",",
-        "                relative.display()",
-        "            )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 144,
-      "line_end": 150,
-      "text": [
-        "            if target.is_dir() {",
-        "                if !self.has_source_under(root, &requested) || !self.has_source_under(root, &target)",
-        "                {",
-        "                    return Err(denied(format!(",
-        "                        \"{} contains no eligible sources; use git add to stage sources or update habeas.toml before retrying\",",
-        "                        relative.display()",
-        "                    )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 152,
-      "line_end": 158,
-      "text": [
-        "            } else {",
-        "                for path in [&lexical_request, &target] {",
-        "                    if !tracked.contains(path) {",
-        "                        return Err(denied(format!(",
-        "                            \"{} is not tracked by Git; use git add to stage it or add an explicit habeas.toml allow rule before retrying\",",
-        "                            path.strip_prefix(root).unwrap_or(path).display()",
-        "                        )));"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 54,
-      "line_end": 63,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.authoring.provider_backoff`",
-        "fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {",
-        "    let header = error",
-        "        .provider_response_headers()?",
-        "        .get(\"retry-after\")?",
-        "        .to_str()",
-        "        .ok()?",
-        "        .trim();"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 594,
-      "line_end": 604,
-      "text": [
-        "        let first = log.begin_request().unwrap();",
-        "        log.end_request(first, 2, None).unwrap();",
-        "        assert!(persisted(&log)[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        let retry = log.begin_request().unwrap();",
-        "        log.end_request(retry, 3, Some(&Usage::new())).unwrap();",
-        "        let value = persisted(&log);",
-        "        assert_eq!(value[\"inputs\"][0][\"submitted_in_request\"], first);",
-        "        assert_eq!(value[\"inputs\"][0][\"sent_in_request\"], retry);",
-        "        assert_eq!(value[\"request_count\"], 2);",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 83,
-      "line_end": 99,
-      "text": [
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    // {impl}`requirements.authoring.read_denial`",
-        "    pub(crate) fn failed(mut self, error: io::Error) -> io::Error {",
-        "        let outcome = if error.kind() == io::ErrorKind::Interrupted {",
-        "            \"cancelled\"",
-        "        } else {",
-        "            \"failed\"",
-        "        };",
-        "        match self.usage.finish(outcome) {",
-        "            Ok(()) => io::Error::new(",
-        "                error.kind(),",
-        "                format!(\"{error}; usage: {}\", self.usage.path.display()),",
-        "            ),",
-        "            Err(usage_error) => io::Error::new(",
-        "                error.kind(),",
-        "                format!("
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 153,
-      "line_end": 169,
-      "text": [
-        "            }",
-        "        }",
-        "    };",
-        "    let outcome = match &result {",
-        "        Ok(_) => \"completed\",",
-        "        Err(error) if error.kind() == io::ErrorKind::Interrupted => \"cancelled\",",
-        "        Err(_) => \"failed\",",
-        "    };",
-        "    usage.finish(outcome).map_err(|error| {",
-        "        let cause = result",
-        "            .as_ref()",
-        "            .err()",
-        "            .map_or(String::new(), |cause| format!(\"{cause}; \"));",
-        "        io::Error::new(",
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\","
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 233,
-      "line_end": 249,
-      "text": [
-        "                subject: subject.clone(),",
-        "                record,",
-        "                outcome,",
-        "                usage,",
-        "            })",
-        "        }",
-        "        Err(error) => {",
-        "            let outcome = if error.kind() == io::ErrorKind::Interrupted {",
-        "                \"cancelled\"",
-        "            } else {",
-        "                \"failed\"",
-        "            };",
-        "            usage.finish(outcome).map_err(|usage_error| {",
-        "                io::Error::new(",
-        "                    error.kind(),",
-        "                    format!(",
-        "                        \"{error}; cannot record usage at {}: {usage_error}\","
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 557,
-      "line_end": 573,
-      "text": [
-        "                Value::Null,",
-        "            ).with_finish_reason(FinishReason::ToolCalls))",
-        "        }",
-        "    }",
-        "",
-        "    struct ThrottledProvider {",
-        "        failures: usize,",
-        "        status: u16,",
-        "        code: &'static str,",
-        "        requests: RefCell<Vec<Value>>,",
-        "    }",
-        "",
-        "    impl CompletionProvider for ThrottledProvider {",
-        "        // {test}`requirements.authoring.provider_backoff`",
-        "        // {test}`requirements.authoring.usage_requests`",
-        "        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {",
-        "            self.requests"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 4,
-      "line_end": 20,
-      "text": [
-        "use rig_core::completion::{CompletionRequest, CompletionResponse};",
-        "use rig_core::error::ProviderError;",
-        "use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};",
-        "use rig_core::{DynModel, operation::Completion};",
-        "use serde_json::{Map, Value};",
-        "",
-        "use crate::config::{BackendConfig, BedrockConfig};",
-        "",
-        "pub(super) trait CompletionProvider {",
-        "    // {impl}`requirements.authoring.provider`",
-        "    async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;",
-        "}",
-        "",
-        "pub(super) struct ProviderBackoff {",
-        "    window: Duration,",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 78,
-      "line_end": 94,
-      "text": [
-        "impl RigProvider {",
-        "    // {impl}`requirements.authoring.provider`",
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    // {impl}`requirements.authoring.configuration_precedence`",
-        "    // {impl}`requirements.authoring.usage_requests`",
-        "    // {impl}`requirements.authoring.credentials`",
-        "    pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {",
-        "        let model = match config {",
-        "            BackendConfig::Bedrock(config) => {",
-        "                let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);",
-        "                rig_bedrock::client::BedrockRuntime::from(sdk)",
-        "                    .completion(&config.model)",
-        "                    .erase()",
-        "            }",
-        "            BackendConfig::Ollama(config) => {",
-        "                let mut provider = rig_core::providers::ollama::OllamaConfig::new()",
-        "                    .with_base_url(config.endpoint());"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 7,
-      "line_end": 23,
-      "text": [
-        "",
-        "use rig_core::completion::Usage;",
-        "use serde::Serialize;",
-        "use serde_json::Value;",
-        "",
-        "static SEQUENCE: AtomicU64 = AtomicU64::new(0);",
-        "",
-        "#[derive(Serialize)]",
-        "pub(super) struct UsageRecord {",
-        "    version: u32,",
-        "    run_id: String,",
-        "    project_root: PathBuf,",
-        "    subject: String,",
-        "    pub subject_kind: Option<String>,",
-        "    pub backend: Option<String>,",
-        "    pub model: Option<String>,",
-        "    start_time_ms: u128,"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 52,
-      "line_end": 77,
-      "text": [
-        "#[derive(Serialize)]",
-        "struct RequestUsage {",
-        "    outcome: String,",
-        "    elapsed_ms: u128,",
-        "    tokens: TokenCounts,",
-        "}",
-        "",
-        "#[derive(Default, Serialize)]",
-        "struct TokenCounts {",
-        "    input: Option<u64>,",
-        "    output: Option<u64>,",
-        "    cached_input: Option<u64>,",
-        "    cache_creation_input: Option<u64>,",
-        "    reasoning: Option<u64>,",
-        "    complete: bool,",
-        "}",
-        "",
-        "pub(super) struct UsageLog {",
-        "    pub record: UsageRecord,",
-        "    pub path: PathBuf,",
-        "    started: Instant,",
-        "    seen: BTreeSet<String>,",
-        "    active_request: Option<(usize, Instant)>,",
-        "}",
-        "",
-        "impl UsageLog {"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 240,
-      "line_end": 261,
-      "text": [
-        "    pub(super) fn skipped_tool(&mut self, name: &str) {",
-        "        let name = tool_name(name);",
-        "        *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;",
-        "        *self.record.tool_skipped.entry(name.to_owned()).or_default() += 1;",
-        "        self.record.tool_call_count += 1;",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {",
-        "        if let Some((index, started)) = self.active_request.take() {",
-        "            let request = &mut self.record.requests[index];",
-        "            request.elapsed_ms = started.elapsed().as_millis();",
-        "            if outcome == \"cancelled\" {",
-        "                request.outcome = \"cancelled\".into();",
-        "            }",
-        "        }",
-        "        self.record.tokens = TokenCounts::sum(&self.record.requests);",
-        "        self.record.outcome = outcome.to_owned();",
-        "        self.record.end_time_ms = Some(timestamp());",
-        "        self.record.elapsed_ms = self.started.elapsed().as_millis();",
-        "        self.save()",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 529,
-      "line_end": 549,
-      "text": [
-        "        log.end_request(",
-        "            first,",
-        "            2,",
-        "            Some(&Usage::new().input_tokens(2).output_tokens(3)),",
-        "        )",
-        "        .unwrap();",
-        "        let second = log.begin_request().unwrap();",
-        "        log.active_request = Some((second, Instant::now() - Duration::from_millis(12)));",
-        "        log.finish(\"cancelled\").unwrap();",
-        "        let cancelled = persisted(&log);",
-        "        assert_eq!(cancelled[\"outcome\"], \"cancelled\");",
-        "        assert!(!cancelled[\"end_time_ms\"].is_null());",
-        "        assert_eq!(cancelled[\"requests\"][second][\"outcome\"], \"cancelled\");",
-        "        assert!(",
-        "            cancelled[\"requests\"][second][\"elapsed_ms\"]",
-        "                .as_u64()",
-        "                .unwrap()",
-        "                >= 12",
-        "        );",
-        "        assert_eq!(cancelled[\"tokens\"][\"complete\"], false);",
-        "        assert_eq!(cancelled[\"tokens\"][\"input\"], 2);"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 82,
-      "line_end": 170,
-      "text": [
-        "    // {impl}`requirements.authoring.usage_requests`",
-        "    // {impl}`requirements.authoring.credentials`",
-        "    pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {",
-        "        let model = match config {",
-        "            BackendConfig::Bedrock(config) => {",
-        "                let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);",
-        "                rig_bedrock::client::BedrockRuntime::from(sdk)",
-        "                    .completion(&config.model)",
-        "                    .erase()",
-        "            }",
-        "            BackendConfig::Ollama(config) => {",
-        "                let mut provider = rig_core::providers::ollama::OllamaConfig::new()",
-        "                    .with_base_url(config.endpoint());",
-        "                if let Some(key) = config.api_key()? {",
-        "                    provider = provider.with_api_key(key);",
-        "                }",
-        "                provider.client().native_completion(&config.model).erase()",
-        "            }",
-        "        };",
-        "        Ok(Self {",
-        "            model,",
-        "            options: config.options_json()?,",
-        "            bedrock: matches!(config, BackendConfig::Bedrock(_)),",
-        "        })",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.rig_configuration_mapping`",
-        "// {impl}`requirements.authoring.configuration_precedence`",
-        "// {impl}`requirements.authoring.credentials`",
-        "// {impl}`requirements.authoring.usage_requests`",
-        "// {impl}`requirements.authoring.provider_backoff`",
-        "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
-        "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
-        "    // would otherwise be hidden inside one recorded request.",
-        "    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
-        "        .retry_config(aws_config::retry::RetryConfig::disabled());",
-        "    if let Some(profile) = &config.aws_profile {",
-        "        loader = loader.profile_name(profile);",
-        "    }",
-        "    if let Some(region) = &config.region {",
-        "        loader = loader.region(aws_config::Region::new(region.clone()));",
-        "    }",
-        "    if let Some(credentials) = &config.credentials {",
-        "        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(",
-        "            credentials.access_key_id.expose_secret(),",
-        "            credentials.secret_access_key.expose_secret(),",
-        "            credentials",
-        "                .session_token",
-        "                .as_ref()",
-        "                .map(|value| value.expose_secret().to_owned()),",
-        "            None,",
-        "            \"Habeas configuration\",",
-        "        ));",
-        "    }",
-        "    loader.load().await",
-        "}",
-        "",
-        "impl CompletionProvider for RigProvider {",
-        "    // {impl}`requirements.authoring.provider`",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    async fn complete(&self, mut request: CompletionRequest) -> io::Result<CompletionResponse> {",
-        "        let mut options = self",
-        "            .options",
-        "            .as_object()",
-        "            .expect(\"configuration options are a map\")",
-        "            .clone();",
-        "        if self.bedrock {",
-        "            apply_bedrock_options(&mut request, &mut options)?;",
-        "        }",
-        "        request.additional_params = (!options.is_empty()).then_some(Value::Object(options));",
-        "        let mut response = self.model.call(request).await.map_err(io::Error::other)?;",
-        "        if self.bedrock {",
-        "            normalize_bedrock_client_calls(&mut response)?;",
-        "        }",
-        "        Ok(response)",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.provider`",
-        "// {impl}`requirements.authoring.rig_configuration_mapping`",
-        "fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {",
-        "    // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.",
-        "    // Newer Claude responses explicitly identify client calls as \"tool_use\".",
-        "    for block in &mut response.choice {",
-        "        let AssistantContent::Opaque(opaque) = block else {",
-        "            continue;",
-        "        };"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 583,
-      "line_end": 585,
-      "text": [
-        "            JudgmentProvider(json!(true)).complete(request).await",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 286,
-      "line_end": 288,
-      "text": [
-        "                ProviderBackoff::default()",
-        "                    .next_delay(&io::Error::other(provider_error(status, code)))",
-        "                    .is_some()"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 337,
-      "line_end": 339,
-      "text": [
-        "        }",
-        "        let error = io::Error::other(with_retry_after(provider_error(Some(429), None), \"90\"));",
-        "        assert_eq!("
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 277,
-      "line_end": 284,
-      "text": [
-        "        Self {",
-        "            input: usage.input_tokens,",
-        "            output: usage.output_tokens,",
-        "            cached_input: usage.cached_input_tokens,",
-        "            cache_creation_input: usage.cache_creation_input_tokens,",
-        "            reasoning: usage.reasoning_tokens,",
-        "            complete: usage.input_tokens.is_some() && usage.output_tokens.is_some(),",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 394,
-      "line_end": 396,
-      "text": [
-        "        assert!(submitted[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
-        "        log.record.determination = Some(\"FIXME\".into());"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 427,
-      "line_end": 433,
-      "text": [
-        "            UsageLog::start(state.path(), Path::new(\"/project\"), \"requirements.case\").unwrap();",
-        "        let measured = Usage::new()",
-        "            .input_tokens(100)",
-        "            .output_tokens(20)",
-        "            .cached_input_tokens(30)",
-        "            .cache_creation_input_tokens(10)",
-        "            .reasoning_tokens(5);"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 471,
-      "line_end": 473,
-      "text": [
-        "            2,",
-        "            Some(&Usage::new().input_tokens(10).output_tokens(3)),",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 493,
-      "line_end": 495,
-      "text": [
-        "                1,",
-        "                Some(&Usage::new().input_tokens(10).output_tokens(3)),",
-        "            )"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 502,
-      "line_end": 507,
-      "text": [
-        "                Some(",
-        "                    &Usage::new()",
-        "                        .input_tokens(5)",
-        "                        .output_tokens(2)",
-        "                        .cached_input_tokens(0),",
-        "                ),"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 531,
-      "line_end": 533,
-      "text": [
-        "            2,",
-        "            Some(&Usage::new().input_tokens(2).output_tokens(3)),",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 597,
-      "line_end": 599,
-      "text": [
-        "        let retry = log.begin_request().unwrap();",
-        "        log.end_request(retry, 3, Some(&Usage::new())).unwrap();",
-        "        let value = persisted(&log);"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 14,
-      "line_end": 16,
-      "text": [
-        "#[derive(Serialize)]",
-        "pub(super) struct UsageRecord {",
-        "    version: u32,"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 68,
-      "line_end": 70,
-      "text": [
-        "",
-        "pub(super) struct UsageLog {",
-        "    pub record: UsageRecord,"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 428,
-      "line_end": 433,
-      "text": [
-        "        let measured = Usage::new()",
-        "            .input_tokens(100)",
-        "            .output_tokens(20)",
-        "            .cached_input_tokens(30)",
-        "            .cache_creation_input_tokens(10)",
-        "            .reasoning_tokens(5);"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 503,
-      "line_end": 507,
-      "text": [
-        "                    &Usage::new()",
-        "                        .input_tokens(5)",
-        "                        .output_tokens(2)",
-        "                        .cached_input_tokens(0),",
-        "                ),"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 24,
-      "line_end": 52,
-      "text": [
-        "    end_time_ms: Option<u128>,",
-        "    elapsed_ms: u128,",
-        "    outcome: String,",
-        "    pub determination: Option<String>,",
-        "    pub evidence_output: &'static str,",
-        "    pub evidence_written: bool,",
-        "    inputs: Vec<InputUsage>,",
-        "    requests: Vec<RequestUsage>,",
-        "    tool_calls: BTreeMap<String, usize>,",
-        "    tool_failures: BTreeMap<String, usize>,",
-        "    tool_skipped: BTreeMap<String, usize>,",
-        "    request_count: usize,",
-        "    tool_call_count: usize,",
-        "    tokens: TokenCounts,",
-        "}",
-        "",
-        "#[derive(Serialize)]",
-        "struct InputUsage {",
-        "    origin: String,",
-        "    kind: &'static str,",
-        "    bytes: usize,",
-        "    lines: usize,",
-        "    components: usize,",
-        "    unique: bool,",
-        "    submitted_in_request: Option<usize>,",
-        "    sent_in_request: Option<usize>,",
-        "}",
-        "",
-        "#[derive(Serialize)]"
-      ]
-    },
-    {
       "file": "src/authoring/usage.rs",
       "line_start": 1,
-      "line_end": 340,
+      "line_end": 330,
       "text": [
         "use std::collections::{BTreeMap, BTreeSet};",
         "use std::fs::{self, OpenOptions};",
@@ -2115,6 +1460,7 @@
         "    }",
         "",
         "    // {impl}`requirements.authoring.usage_requests`",
+        "    // {impl}`requirements.authoring.usage_inputs`",
         "    pub(super) fn end_request(",
         "        &mut self,",
         "        index: usize,",
@@ -2170,6 +1516,7 @@
         "    }",
         "",
         "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.authoring.usage_requests`",
         "    pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {",
         "        if let Some((index, started)) = self.active_request.take() {",
         "            let request = &mut self.record.requests[index];",
@@ -2250,19 +1597,908 @@
         "                total += value;",
         "            }",
         "        }",
-        "        (",
-        "            (measured > 0).then_some(total),",
-        "            measured == 0 || measured == requests.len(),",
-        "        )",
+        "        ("
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 1,
+      "line_end": 260,
+      "text": [
+        "use std::io;",
+        "use std::time::{Duration, SystemTime};",
+        "",
+        "use rig_core::completion::{CompletionRequest, CompletionResponse};",
+        "use rig_core::error::ProviderError;",
+        "use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};",
+        "use rig_core::{DynModel, operation::Completion};",
+        "use serde_json::{Map, Value};",
+        "",
+        "use crate::config::{BackendConfig, BedrockConfig};",
+        "",
+        "pub(super) trait CompletionProvider {",
+        "    // {impl}`requirements.authoring.provider`",
+        "    async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;",
+        "}",
+        "",
+        "pub(super) struct ProviderBackoff {",
+        "    window: Duration,",
+        "}",
+        "",
+        "impl Default for ProviderBackoff {",
+        "    // {impl}`requirements.authoring.provider_backoff`",
+        "    fn default() -> Self {",
+        "        Self {",
+        "            window: Duration::from_secs(1),",
+        "        }",
         "    }",
         "}",
         "",
+        "impl ProviderBackoff {",
+        "    // {impl}`requirements.authoring.provider_backoff`",
+        "    pub(super) fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {",
+        "        // Rig preserves HTTP status and Bedrock's exception code. Do not infer",
+        "        // throttling from \"tokens\" in a message: a too-large input cannot be",
+        "        // fixed by resending the same request.",
+        "        let provider = error.get_ref()?.downcast_ref::<ProviderError>()?;",
+        "        let report = provider.report();",
+        "        let throttled = match report.http_status {",
+        "            Some(429) => true,",
+        "            Some(status) if status >= 400 => false,",
+        "            _ => report.code.as_deref() == Some(\"ThrottlingException\"),",
+        "        };",
+        "        if !throttled {",
+        "            return None;",
+        "        }",
+        "",
+        "        let millis = self.window.as_millis() as u64;",
+        "        self.window = (self.window * 2).min(Duration::from_secs(60));",
+        "        // Equal jitter keeps parallel assessments from retrying in lockstep,",
+        "        // while ensuring each retry waits at least half the current window.",
+        "        let jittered = Duration::from_millis(fastrand::u64(millis / 2..=millis));",
+        "        Some(jittered.max(retry_after(provider, SystemTime::now()).unwrap_or_default()))",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {",
+        "    let header = error",
+        "        .provider_response_headers()?",
+        "        .get(\"retry-after\")?",
+        "        .to_str()",
+        "        .ok()?",
+        "        .trim();",
+        "    if let Ok(seconds) = header.parse() {",
+        "        return Some(Duration::from_secs(seconds));",
+        "    }",
+        "    httpdate::parse_http_date(header)",
+        "        .ok()",
+        "        .map(|deadline| deadline.duration_since(now).unwrap_or_default())",
+        "}",
+        "",
+        "pub(super) struct RigProvider {",
+        "    model: DynModel<Completion>,",
+        "    options: serde_json::Value,",
+        "    bedrock: bool,",
+        "}",
+        "",
+        "impl RigProvider {",
+        "    // {impl}`requirements.authoring.provider`",
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
+        "    // {impl}`requirements.authoring.configuration_precedence`",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {",
+        "        let model = match config {",
+        "            BackendConfig::Bedrock(config) => {",
+        "                let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);",
+        "                rig_bedrock::client::BedrockRuntime::from(sdk)",
+        "                    .completion(&config.model)",
+        "                    .erase()",
+        "            }",
+        "            BackendConfig::Ollama(config) => {",
+        "                let mut provider = rig_core::providers::ollama::OllamaConfig::new()",
+        "                    .with_base_url(config.endpoint());",
+        "                if let Some(key) = config.api_key()? {",
+        "                    provider = provider.with_api_key(key);",
+        "                }",
+        "                provider.client().native_completion(&config.model).erase()",
+        "            }",
+        "        };",
+        "        Ok(Self {",
+        "            model,",
+        "            options: config.options_json()?,",
+        "            bedrock: matches!(config, BackendConfig::Bedrock(_)),",
+        "        })",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.usage_requests`",
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
+        "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
+        "    // would otherwise be hidden inside one recorded request.",
+        "    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
+        "        .retry_config(aws_config::retry::RetryConfig::disabled());",
+        "    if let Some(profile) = &config.aws_profile {",
+        "        loader = loader.profile_name(profile);",
+        "    }",
+        "    if let Some(region) = &config.region {",
+        "        loader = loader.region(aws_config::Region::new(region.clone()));",
+        "    }",
+        "    if let Some(credentials) = &config.credentials {",
+        "        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(",
+        "            credentials.access_key_id.expose_secret(),",
+        "            credentials.secret_access_key.expose_secret(),",
+        "            credentials",
+        "                .session_token",
+        "                .as_ref()",
+        "                .map(|value| value.expose_secret().to_owned()),",
+        "            None,",
+        "            \"Habeas configuration\",",
+        "        ));",
+        "    }",
+        "    loader.load().await",
+        "}",
+        "",
+        "impl CompletionProvider for RigProvider {",
+        "    // {impl}`requirements.authoring.provider`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
+        "    async fn complete(&self, mut request: CompletionRequest) -> io::Result<CompletionResponse> {",
+        "        let mut options = self",
+        "            .options",
+        "            .as_object()",
+        "            .expect(\"configuration options are a map\")",
+        "            .clone();",
+        "        if self.bedrock {",
+        "            apply_bedrock_options(&mut request, &mut options)?;",
+        "        }",
+        "        request.additional_params = (!options.is_empty()).then_some(Value::Object(options));",
+        "        let mut response = self.model.call(request).await.map_err(io::Error::other)?;",
+        "        if self.bedrock {",
+        "            normalize_bedrock_client_calls(&mut response)?;",
+        "        }",
+        "        Ok(response)",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.provider`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {",
+        "    // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.",
+        "    // Newer Claude responses explicitly identify client calls as \"tool_use\".",
+        "    for block in &mut response.choice {",
+        "        let AssistantContent::Opaque(opaque) = block else {",
+        "            continue;",
+        "        };",
+        "        let Some(call) = opaque.item.get(\"toolUse\") else {",
+        "            continue;",
+        "        };",
+        "        if call.get(\"type\").and_then(Value::as_str) != Some(\"tool_use\") {",
+        "            continue;",
+        "        }",
+        "        let id = call",
+        "            .get(\"toolUseId\")",
+        "            .and_then(Value::as_str)",
+        "            .filter(|id| !id.is_empty())",
+        "            .ok_or_else(|| io::Error::other(\"Bedrock client tool call has no toolUseId\"))?;",
+        "        let name = call",
+        "            .get(\"name\")",
+        "            .and_then(Value::as_str)",
+        "            .ok_or_else(|| io::Error::other(\"Bedrock client tool call has no name\"))?;",
+        "        let name = ToolName::new(name).map_err(io::Error::other)?;",
+        "        let input = call",
+        "            .get(\"input\")",
+        "            .filter(|input| input.is_object())",
+        "            .ok_or_else(|| io::Error::other(\"Bedrock client tool call input must be an object\"))?;",
+        "        let recovered = ToolCall::from_wire(id, ToolFunction::new(name, input.clone()));",
+        "        // Keeping the native item preserves the original block for replay,",
+        "        // including its type, without disturbing signed reasoning or origin.",
+        "        *block = AssistantContent::ToolCall(recovered).with_native(opaque.item.clone());",
+        "    }",
+        "    Ok(())",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "fn apply_bedrock_options(",
+        "    request: &mut CompletionRequest,",
+        "    options: &mut Map<String, Value>,",
+        ") -> io::Result<()> {",
+        "    if options.contains_key(\"inferenceConfig\") {",
+        "        return Err(io::Error::new(",
+        "            io::ErrorKind::InvalidInput,",
+        "            \"Bedrock options.inferenceConfig is not a nested wrapper; put temperature, maxTokens, topP, and stopSequences directly in the options table\",",
+        "        ));",
+        "    }",
+        "    if let Some(value) = options.remove(\"temperature\") {",
+        "        request.temperature = Some(",
+        "            value",
+        "                .as_f64()",
+        "                .ok_or_else(|| option_type(\"temperature\", \"a number\"))?,",
+        "        );",
+        "    }",
+        "    if let Some(value) = options.remove(\"maxTokens\") {",
+        "        let tokens = value",
+        "            .as_u64()",
+        "            .filter(|value| i32::try_from(*value).is_ok())",
+        "            .ok_or_else(|| {",
+        "                option_type(",
+        "                    \"maxTokens\",",
+        "                    \"a nonnegative integer representable by Converse's signed 32-bit field\",",
+        "                )",
+        "            })?;",
+        "        request.max_tokens = Some(tokens);",
+        "    }",
+        "    if let Some(value) = options.remove(\"topP\") {",
+        "        request.options.top_p = Some(",
+        "            value",
+        "                .as_f64()",
+        "                .ok_or_else(|| option_type(\"topP\", \"a number\"))?,",
+        "        );",
+        "    }",
+        "    if let Some(value) = options.remove(\"stopSequences\") {",
+        "        request.options.stop = serde_json::from_value(value)",
+        "            .map_err(|_| option_type(\"stopSequences\", \"an array of strings\"))?;",
+        "    }",
+        "    Ok(())",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "fn option_type(name: &str, expected: &str) -> io::Error {",
+        "    io::Error::new(",
+        "        io::ErrorKind::InvalidInput,",
+        "        format!(\"Bedrock options.{name} must be {expected}\"),",
+        "    )",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    use super::*;",
+        "    use aws_sdk_bedrockruntime::config::ProvideCredentials;",
+        "    use rig_core::completion::{FinishReason, Usage};",
+        "    use rig_core::message::{Opaque, Origin, Reasoning, Text};",
+        "    use serde_json::json;",
+        "",
+        "    // {test}`requirements.authoring.provider_backoff`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 7,
+      "line_end": 11,
+      "text": [
+        "mod providers;",
+        "mod tools;",
+        "mod usage;",
+        "",
+        "pub use batch::{BatchOutcome, author_all, author_all_with_options};"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 25,
+      "line_end": 29,
+      "text": [
+        "use inputs::{AssessmentKind, AssessmentSources};",
+        "use providers::{CompletionProvider, RigProvider};",
+        "use usage::UsageLog;",
+        "",
+        "pub struct AuthoringOutcome {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 32,
+      "line_end": 36,
+      "text": [
+        "    pub model: String,",
+        "    pub evidence_path: Option<PathBuf>,",
+        "    pub usage_path: PathBuf,",
+        "    pub determination: Judgment,",
+        "    pub rationale: String,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 49,
+      "line_end": 53,
+      "text": [
+        "impl AuthoringSubject {",
+        "    // {impl}`requirements.authoring.batch`",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(crate) fn label(&self) -> String {",
+        "        let Self::Definition(name) = self;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 60,
+      "line_end": 64,
+      "text": [
+        "    pub(crate) record: Value,",
+        "    outcome: AuthoringOutcome,",
+        "    usage: UsageLog,",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 66,
+      "line_end": 78,
+      "text": [
+        "    // {impl}`requirements.authoring.batch`",
+        "    // {impl}`requirements.authoring.persistence`",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.configuration.state_location`",
+        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {",
+        "        self.usage.record.evidence_written = true;",
+        "        self.outcome.evidence_path = Some(path);",
+        "        self.usage.finish(\"completed\").map_err(|error| {",
+        "            io::Error::other(format!(",
+        "                \"cannot record usage at {} (evidence written: true): {error}\",",
+        "                self.usage.path.display()",
+        "            ))",
+        "        })?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 81,
+      "line_end": 85,
+      "text": [
+        "",
+        "    // {impl}`requirements.authoring.batch`",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.configuration.state_location`",
+        "    // {impl}`requirements.authoring.read_denial`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 90,
+      "line_end": 103,
+      "text": [
+        "            \"failed\"",
+        "        };",
+        "        match self.usage.finish(outcome) {",
+        "            Ok(()) => io::Error::new(",
+        "                error.kind(),",
+        "                format!(\"{error}; usage: {}\", self.usage.path.display()),",
+        "            ),",
+        "            Err(usage_error) => io::Error::new(",
+        "                error.kind(),",
+        "                format!(",
+        "                    \"{error}; cannot record failed usage at {}: {usage_error}\",",
+        "                    self.usage.path.display()",
+        "                ),",
+        "            ),"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 122,
+      "line_end": 126,
+      "text": [
+        "",
+        "// {impl}`requirements.authoring.invocation`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.configuration.state_location`",
+        "// {impl}`requirements.authoring.read_denial`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 136,
+      "line_end": 150,
+      "text": [
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other(",
+        "            \"authoring usage state must be outside the project repository\",",
+        "        ));",
+        "    }",
+        "    let mut usage = UsageLog::start(&state, &root, subject)?;",
+        "    usage.record.evidence_output = match output {",
+        "        EvidenceOutput::File => \"file\",",
+        "        EvidenceOutput::Stdout => \"stdout\",",
+        "    };",
+        "    usage.save()?;",
+        "    let result = tokio::select! {",
+        "        result = configured_assessment(&root, subject, selection, output, &mut usage) => result,",
+        "        signal = tokio::signal::ctrl_c() => {",
+        "            match signal {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 159,
+      "line_end": 163,
+      "text": [
+        "        Err(_) => \"failed\",",
+        "    };",
+        "    usage.finish(outcome).map_err(|error| {",
+        "        let cause = result",
+        "            .as_ref()"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 167,
+      "line_end": 173,
+      "text": [
+        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
+        "            format!(",
+        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
+        "                usage.path.display(),",
+        "                usage.record.evidence_written",
+        "            ),",
+        "        )"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 176,
+      "line_end": 180,
+      "text": [
+        "        io::Error::new(",
+        "            error.kind(),",
+        "            format!(\"{error}; usage: {}\", usage.path.display()),",
+        "        )",
+        "    })"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 182,
+      "line_end": 186,
+      "text": [
+        "",
+        "// {impl}`requirements.authoring.batch`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.configuration.state_location`",
+        "// {impl}`requirements.authoring.read_denial`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 197,
+      "line_end": 204,
+      "text": [
+        "    if fs::canonicalize(&state)?.starts_with(&root) {",
+        "        return Err(io::Error::other(",
+        "            \"authoring usage state must be outside the project repository\",",
+        "        ));",
+        "    }",
+        "    let mut usage = UsageLog::start(&state, &root, &subject.label())?;",
+        "    let result = tokio::select! {",
+        "        biased;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 209,
+      "line_end": 213,
+      "text": [
+        "            ))",
+        "        }",
+        "        result = configured_record(&root, subject, config, &mut usage) => result,",
+        "        signal = tokio::signal::ctrl_c() => {",
+        "            match signal {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 221,
+      "line_end": 228,
+      "text": [
+        "            let outcome = AuthoringOutcome {",
+        "                subject: subject.label(),",
+        "                backend: usage.record.backend.clone().expect(\"configured backend\"),",
+        "                model: usage.record.model.clone().expect(\"configured model\"),",
+        "                evidence_path: None,",
+        "                usage_path: usage.path.clone(),",
+        "                determination,",
+        "                rationale: record[\"rationale\"]"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 235,
+      "line_end": 239,
+      "text": [
+        "                record,",
+        "                outcome,",
+        "                usage,",
+        "            })",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 244,
+      "line_end": 253,
+      "text": [
+        "                \"failed\"",
+        "            };",
+        "            usage.finish(outcome).map_err(|usage_error| {",
+        "                io::Error::new(",
+        "                    error.kind(),",
+        "                    format!(",
+        "                        \"{error}; cannot record usage at {}: {usage_error}\",",
+        "                        usage.path.display()",
+        "                    ),",
+        "                )"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 255,
+      "line_end": 259,
+      "text": [
+        "            Err(io::Error::new(",
+        "                error.kind(),",
+        "                format!(\"{error}; usage: {}\", usage.path.display()),",
+        "            ))",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 264,
+      "line_end": 268,
+      "text": [
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.authoring.persistence`",
+        "async fn configured_assessment("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 271,
+      "line_end": 275,
+      "text": [
+        "    selection: Option<&str>,",
+        "    output: EvidenceOutput,",
+        "    usage: &mut UsageLog,",
+        ") -> io::Result<AuthoringOutcome> {",
+        "    let config = config::resolve_authoring(root, selection)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 278,
+      "line_end": 282,
+      "text": [
+        "        &AuthoringSubject::Definition(subject.to_owned()),",
+        "        &config,",
+        "        usage,",
+        "    )",
+        "    .await?;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 296,
+      "line_end": 307,
+      "text": [
+        "        }",
+        "    };",
+        "    usage.record.evidence_written = true;",
+        "    usage.save()?;",
+        "    Ok(AuthoringOutcome {",
+        "        subject: subject.into(),",
+        "        backend: usage.record.backend.clone().expect(\"configured backend\"),",
+        "        model: config.model_ref().model,",
+        "        evidence_path,",
+        "        usage_path: usage.path.clone(),",
+        "        determination,",
+        "        rationale: evidence[\"rationale\"]"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 315,
+      "line_end": 321,
+      "text": [
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.usage_inputs`",
+        "// {impl}`requirements.authoring.provider`",
+        "// {impl}`requirements.authoring.read_denial`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 324,
+      "line_end": 328,
+      "text": [
+        "    subject: &AuthoringSubject,",
+        "    config: &ResolvedAuthoringConfig,",
+        "    usage: &mut UsageLog,",
+        ") -> io::Result<(Judgment, Value)> {",
+        "    let model = config.model_ref();"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 331,
+      "line_end": 341,
+      "text": [
+        "        BackendKind::Ollama => \"ollama\",",
+        "    };",
+        "    usage.record.backend = Some(backend.into());",
+        "    usage.record.model = Some(model.model.clone());",
+        "    let AuthoringSubject::Definition(name) = subject;",
+        "    let mut sources = AssessmentSources::prepare(root, name)?;",
+        "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
+        "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
+        "    usage.save()?;",
+        "    let provider = RigProvider::connect(&config.backend)",
+        "        .await"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 347,
+      "line_end": 351,
+      "text": [
+        "            ))",
+        "        })?;",
+        "    assess(&provider, &mut sources, usage).await",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 414,
+      "line_end": 420,
+      "text": [
+        "// {impl}`requirements.authoring.delivered_inputs`",
+        "// {impl}`requirements.authoring.persistence`",
+        "// {impl}`requirements.authoring.usage_inputs`",
         "// {impl}`requirements.authoring.usage_requests`",
         "// {impl}`requirements.authoring.usage_storage`",
-        "fn tool_name(name: &str) -> &str {",
-        "    match name {",
-        "        \"habeas\" | \"ripgrep\" | \"list_files\" | \"references\" | \"submit_judgment\" => name,",
-        "        _ => \"unknown\","
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.read_denial`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 428,
+      "line_end": 432,
+      "text": [
+        "    provider: &impl CompletionProvider,",
+        "    sources: &mut AssessmentSources,",
+        "    usage: &mut UsageLog,",
+        ") -> io::Result<(Judgment, Value)> {",
+        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 435,
+      "line_end": 445,
+      "text": [
+        "    let mut backoff = providers::ProviderBackoff::default();",
+        "    loop {",
+        "        let index = usage.begin_request()?;",
+        "        let started = Instant::now();",
+        "        let response = provider.complete(request.clone()).await;",
+        "        usage.end_request(",
+        "            index,",
+        "            started.elapsed().as_millis(),",
+        "            response.as_ref().ok().map(|r| &r.usage),",
+        "        )?;",
+        "        let response = match response {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 471,
+      "line_end": 480,
+      "text": [
+        "            for call in &calls {",
+        "                if call.function.name.as_str() != \"submit_judgment\" {",
+        "                    usage.skipped_tool(call.function.name.as_str());",
+        "                }",
+        "            }",
+        "            if submissions.len() != 1 {",
+        "                for _ in &submissions {",
+        "                    usage.tool(\"submit_judgment\", true);",
+        "                }",
+        "                return Err(io::Error::other("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 483,
+      "line_end": 490,
+      "text": [
+        "            }",
+        "            let result = submission(&Value::Object(submissions[0].function.arguments.clone()));",
+        "            usage.tool(\"submit_judgment\", result.is_err());",
+        "            let (judgment, rationale) = result?;",
+        "            usage.record.determination = Some(judgment.kind().into());",
+        "            usage.save()?;",
+        "            let AssessmentKind::Definition(kind) = &sources.subject_kind;",
+        "            let evidence = json!({kind.noun(): sources.subject_text,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 510,
+      "line_end": 515,
+      "text": [
+        "            ) {",
+        "                Ok(delivery) => {",
+        "                    usage.tool(call.function.name.as_str(), false);",
+        "                    usage.prepared(call.function.name.as_str(), &delivery.inputs);",
+        "                    pending.extend(delivery.inputs);",
+        "                    results.push("
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 518,
+      "line_end": 522,
+      "text": [
+        "                }",
+        "                Err(error) => {",
+        "                    usage.tool(call.function.name.as_str(), true);",
+        "                    if error.kind() == io::ErrorKind::PermissionDenied {",
+        "                        return Err(error);"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 527,
+      "line_end": 531,
+      "text": [
+        "            }",
+        "        }",
+        "        usage.save()?;",
+        "        request.chat_history.push(Message::tool_results(results));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 571,
+      "line_end": 575,
+      "text": [
+        "    impl CompletionProvider for ThrottledProvider {",
+        "        // {test}`requirements.authoring.provider_backoff`",
+        "        // {test}`requirements.authoring.usage_requests`",
+        "        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {",
+        "            self.requests"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 597,
+      "line_end": 612,
+      "text": [
+        "        let sources = AssessmentSources::prepare(project.path(), \"requirements.ready\").unwrap();",
+        "        let state = tempfile::tempdir().unwrap();",
+        "        let mut usage =",
+        "            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();",
+        "        usage.prepared(\"mandatory\", sources.mandatory_inputs());",
+        "        (project, state, sources, usage)",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    // {test}`requirements.authoring.usage_requests`",
+        "    // {test}`requirements.authoring.usage_inputs`",
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn throttled_requests_retry_unchanged_and_record_every_attempt() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 616,
+      "line_end": 620,
+      "text": [
+        "        };",
+        "        let started = tokio::time::Instant::now();",
+        "        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();",
+        "        assert!(started.elapsed() >= Duration::from_millis(500));",
+        "        let requests = provider.requests.borrow();"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 623,
+      "line_end": 627,
+      "text": [
+        "        assert_eq!(record[\"inputs\"], json!(sources.mandatory_inputs()));",
+        "",
+        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();",
+        "        assert_eq!(log[\"request_count\"], 9);",
+        "        for attempt in 0..8 {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 640,
+      "line_end": 644,
+      "text": [
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn permanent_provider_failure_returns_without_waiting_or_retrying() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 648,
+      "line_end": 652,
+      "text": [
+        "        };",
+        "        let started = tokio::time::Instant::now();",
+        "        let error = assess(&provider, &mut sources, &mut usage)",
+        "            .await",
+        "            .unwrap_err();"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 659,
+      "line_end": 663,
+      "text": [
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn cancelling_during_backoff_prevents_another_request() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 669,
+      "line_end": 673,
+      "text": [
+        "            tokio::time::timeout(",
+        "                Duration::from_millis(100),",
+        "                assess(&provider, &mut sources, &mut usage),",
+        "            )",
+        "            .await"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 677,
+      "line_end": 681,
+      "text": [
+        "        assert_eq!(provider.requests.borrow().len(), 1);",
+        "        assert!(sources.recorded_inputs().is_empty());",
+        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();",
+        "        assert_eq!(log[\"request_count\"], 1);",
+        "        assert_eq!(log[\"requests\"][0][\"outcome\"], \"failed\");"
+      ]
+    },
+    {
+      "file": "Cargo.toml",
+      "line_start": 53,
+      "line_end": 56,
+      "text": [
+        "regex = \"1.13.1\"",
+        "rig-bedrock = \"0.44\"",
+        "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
+        "serde = { version = \"1.0.229\", features = [\"derive\"] }"
       ]
     }
   ]

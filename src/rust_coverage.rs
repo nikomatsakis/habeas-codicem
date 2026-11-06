@@ -10,24 +10,26 @@ use syn::visit::{self, Visit};
 use crate::evidence::Declaration;
 use crate::reference_roles;
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 struct Function {
+    kind: &'static str,
     name: String,
     line: usize,
     start: usize,
     end: usize,
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 struct FunctionCollector {
     functions: Vec<Function>,
 }
 
 impl FunctionCollector {
-    // {impl}`requirements.references.rust_function_coverage`
-    fn add(&mut self, name: &syn::Ident, span: Span) {
+    // {impl}`requirements.references.rust_item_coverage`
+    fn add(&mut self, kind: &'static str, name: &syn::Ident, span: Span) {
         let range = span.byte_range();
         self.functions.push(Function {
+            kind,
             name: name.to_string(),
             line: span.start().line,
             start: range.start,
@@ -37,32 +39,50 @@ impl FunctionCollector {
 }
 
 impl<'ast> Visit<'ast> for FunctionCollector {
-    // {impl}`requirements.references.rust_function_coverage`
+    // {impl}`requirements.references.rust_item_coverage`
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.add(&node.sig.ident, node.span());
+        self.add("function", &node.sig.ident, node.span());
         visit::visit_item_fn(self, node);
     }
 
-    // {impl}`requirements.references.rust_function_coverage`
+    // {impl}`requirements.references.rust_item_coverage`
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.add(&node.sig.ident, node.span());
+        self.add("function", &node.sig.ident, node.span());
         visit::visit_impl_item_fn(self, node);
     }
 
-    // {impl}`requirements.references.rust_function_coverage`
+    // {impl}`requirements.references.rust_item_coverage`
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        self.add(&node.sig.ident, node.span());
+        self.add("function", &node.sig.ident, node.span());
         visit::visit_trait_item_fn(self, node);
     }
 
-    // {impl}`requirements.references.rust_function_coverage`
+    // {impl}`requirements.references.rust_item_coverage`
     fn visit_foreign_item_fn(&mut self, node: &'ast syn::ForeignItemFn) {
-        self.add(&node.sig.ident, node.span());
+        self.add("function", &node.sig.ident, node.span());
         visit::visit_foreign_item_fn(self, node);
+    }
+
+    // {impl}`requirements.references.rust_item_coverage`
+    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        self.add("struct", &node.ident, node.span());
+        visit::visit_item_struct(self, node);
+    }
+
+    // {impl}`requirements.references.rust_item_coverage`
+    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        self.add("enum", &node.ident, node.span());
+        visit::visit_item_enum(self, node);
+    }
+
+    // {impl}`requirements.references.rust_item_coverage`
+    fn visit_item_union(&mut self, node: &'ast syn::ItemUnion) {
+        self.add("union", &node.ident, node.span());
+        visit::visit_item_union(self, node);
     }
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
     let mut position = start + 1;
     while position < bytes.len() {
@@ -75,7 +95,7 @@ fn quoted_end(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 fn char_end(source: &str, start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut position = start + 1;
@@ -101,7 +121,7 @@ fn char_end(source: &str, start: usize) -> Option<usize> {
     (bytes.get(position) == Some(&b'\'')).then_some(position + 1)
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut position = match bytes.get(start..) {
         Some([b'r', ..]) => start + 1,
@@ -130,7 +150,7 @@ fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     Some(bytes.len())
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
@@ -177,7 +197,7 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn attached_comment_indices(
     source: &str,
     comments: &[Range<usize>],
@@ -211,12 +231,12 @@ pub(crate) fn attached_comment_indices(
     indices
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 // {impl}`requirements.definitions.references`
 fn missing_function_references(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
-) -> Result<Vec<(usize, String)>, syn::Error> {
+) -> Result<Vec<(usize, &'static str, String)>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let mut collector = FunctionCollector {
         functions: Vec::new(),
@@ -268,11 +288,11 @@ fn missing_function_references(
     Ok(functions
         .into_iter()
         .zip(cited)
-        .filter_map(|(function, cited)| (!cited).then_some((function.line, function.name)))
+        .filter_map(|(item, cited)| (!cited).then_some((item.line, item.kind, item.name)))
         .collect())
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path::PathBuf> {
     let mut stack = vec![root.to_path_buf()];
     let mut files = Vec::new();
@@ -326,7 +346,7 @@ pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path
     files
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn validate_rust_functions(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -349,9 +369,9 @@ pub(crate) fn validate_rust_functions(
         };
         match missing_function_references(&source, definitions) {
             Ok(missing) => {
-                for (line, name) in missing {
+                for (line, kind, name) in missing {
                     errors.push(format!(
-                        "{label}:{line}: function {name} has no requirement or example citation"
+                        "{label}:{line}: {kind} {name} has no requirement or example citation"
                     ));
                 }
             }
@@ -367,7 +387,7 @@ pub(crate) fn validate_rust_functions(
     }
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+// {impl}`requirements.references.rust_item_coverage`
 fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -386,7 +406,7 @@ mod tests {
     use crate::DefinitionKind;
     use crate::evidence::Declaration;
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     fn definitions() -> BTreeMap<String, Declaration> {
         BTreeMap::from([
             (
@@ -399,6 +419,7 @@ mod tests {
                     line_start: 1,
                     line_end: 1,
                     raw_lines: vec![],
+                    anchors: vec![],
                 },
             ),
             (
@@ -412,12 +433,13 @@ mod tests {
                     line_start: 5,
                     line_end: 5,
                     raw_lines: vec![],
+                    anchors: vec![],
                 },
             ),
         ])
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn finds_uncited_functions_without_using_enclosing_or_string_references() {
         let source = r##"
@@ -470,10 +492,11 @@ fn cited_by_outer_doc() {}
         assert_eq!(
             missing
                 .into_iter()
-                .map(|(_, name)| name)
+                .map(|(_, _, name)| name)
                 .collect::<Vec<_>>(),
             [
                 "missing_method",
+                "Widget",
                 "containing_string",
                 "unknown_reference",
                 "distant_comment",
@@ -483,7 +506,7 @@ fn cited_by_outer_doc() {}
         );
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn checks_trait_test_helper_and_nested_functions_separately() {
         let source = r#"
@@ -511,13 +534,13 @@ fn test_helper() {}
         assert_eq!(
             missing
                 .into_iter()
-                .map(|(_, name)| name)
+                .map(|(_, _, name)| name)
                 .collect::<Vec<_>>(),
             ["uncited_trait_method", "outer", "test_helper"]
         );
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn locates_functions_after_unicode_text() {
         let source = r#"
@@ -530,10 +553,10 @@ fn outer() {
 "#
         .replace("@impl@", "{impl}");
         let missing = missing_function_references(&source, &definitions()).unwrap();
-        assert_eq!(missing, [(6, "missing_inner".to_owned())]);
+        assert_eq!(missing, [(6, "function", "missing_inner".to_owned())]);
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn reports_all_files_and_parse_failures() {
         let project = TempDir::new().unwrap();
@@ -575,6 +598,58 @@ fn outer() {
             errors
                 .iter()
                 .any(|error| error.contains("tests/broken.rs:1: cannot parse Rust source"))
+        );
+    }
+
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn structs_enums_and_unions_need_references_attached_or_inside() {
+        let source = r##"
+// @impl@`requirements.example`
+#[derive(Debug)]
+struct Attached {
+    field: u8,
+}
+
+struct Inside {
+    // @impl@`requirements.example`
+    #[allow(dead_code)]
+    field: u8,
+}
+
+enum Variants {
+    // @cite@`requirements.example`
+    One,
+}
+
+struct Missing;
+
+enum MissingEnum {
+    One,
+}
+
+union MissingUnion {
+    value: u8,
+}
+
+// @impl@`requirements.example`
+fn outer() {
+    struct Nested;
+}
+"##
+        .replace('@', "");
+        let source = source
+            .replace("impl`", "{impl}`")
+            .replace("cite`", "{cite}`");
+        let missing = missing_function_references(&source, &definitions()).unwrap();
+        assert_eq!(
+            missing,
+            vec![
+                (19, "struct", "Missing".to_owned()),
+                (21, "enum", "MissingEnum".to_owned()),
+                (25, "union", "MissingUnion".to_owned()),
+                (31, "struct", "Nested".to_owned()),
+            ]
         );
     }
 }

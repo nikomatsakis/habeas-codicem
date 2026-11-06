@@ -1,7 +1,7 @@
 {
   "requirement": "For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
   "determination": true,
-  "rationale": "The sources satisfy the requirement. Implementation and tests match it, and I found no unmarked implementing code. This is based on reading the code and tests; I did not run them.\n\n**Implementation**\n- `validate_references` in `src/evidence.rs` (marked `{impl}` at line 920) collects every `{impl}`, `{cite}` and `{test}` reference from the project files. It scans every project file except the root-level `.git`, `target`, `book` and `evidence` directories, so references in requirement and example declarations in Markdown are included. Binary and non-UTF-8 files are skipped.\n- It groups references by the definition they name. For each requirement or example it loads `evidence/<name>.json`, builds the covered ranges, and checks that each non-`{cite}` reference has an input with the same file and `line_start <= line <= line_end`.\n- `{cite}` references are explicitly filtered out of the coverage check, as the requirement states.\n- Each uncovered reference produces the error `evidence/<name>.json: no input covers {role}`name` at file:line`. That gives the role, full name, source file and line, as required.\n- `evidence_input_ranges` (marked `{impl}` at line 1131) turns each evidence input into current source ranges. It uses `InputSelector::resolve`, which covers file-range, Rust-item, definition and requirements-glob inputs. It canonicalizes the files, and the root is already canonicalized, so the path comparison is consistent. A missing or unreadable evidence file gives no ranges, so its references are reported as uncovered.\n- `SourceRange` in `src/inputs.rs` is the resolved-range carrier and is marked `{impl}`. I found no unmarked code that implements part of this requirement.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` covers the all-covered case. It includes an `{impl}` and a `{test}` reference in Markdown, a `{cite}` that is not covered, and a quoted or fenced literal that must not count.\n- `reports_unknown_references_and_uncovered_lines` shows that an uncovered `{test}` at `src/main.rs:2` is reported with its role and name, alongside the unknown-target error.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` is the most direct test. With empty inputs, the `{impl}` at line 3 and the `{test}` at line 5 are reported, and the `{cite}` at line 1 is not. A range covering lines 3–6 then clears all errors.\n- `cited_example_with_a_test_and_matching_evidence_validates` shows that removing the inputs makes the `{test}` reference uncovered (`src/main.rs:1`). A requirements-glob input is also exercised.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` in `tests/outcomes.rs` checks the end-to-end case. An `{impl}` in `other.txt` is reported as uncovered even while a FIXME is present.\n\n**Minor gap, not decisive:** No unit test directly shows that a Rust-item input range covers a reference. That path goes through the same range resolution used by the dogfooded evidence files and by other requirements' tests. The tests above cover the other interesting cases: covered, uncovered, `{cite}` exempt, missing evidence, and role and name reporting.",
+  "rationale": "The sources satisfy the requirement. The implementation is marked `{impl}` and the tests cover the main cases. I found no unmarked behaviour or acknowledged gaps (no FIXME).\n\n**Implementation**\n- `collect_references_with_progress` (`src/evidence.rs`, marked `requirements.references.targets`) scans every readable text file under the root. It skips only `.git`, `target`, `book` and `evidence`. It reads `.md` files with markdown handling, so references inside requirement and example declarations are collected. Each reference gets its file and 1-based line.\n- `validate_references` (`src/evidence.rs`, marked `{impl}`) groups references by target definition.\n  - For each requirement or example it loads `evidence/<name>.json` and builds the covered ranges with `evidence_input_ranges`.\n  - It drops `{cite}` references and requires every remaining `{impl}` and `{test}` reference to fall inside some input with the same file and `line_start <= line <= line_end`.\n  - Each uncovered reference produces an error of the form `evidence/<name>.json: no input covers {role}`name` at file:line`. That gives the role, full name, file and line, one error per reference.\n- `evidence_input_ranges` (`src/evidence.rs`, marked `{impl}`) resolves every input kind (file range, Rust item, definition, requirements glob) to ranges. It canonicalizes the paths, and the root is already canonicalized in `inspect_repository_with_progress`, so path comparison is sound. `SourceRange` (`src/inputs.rs`, marked `{impl}`) carries the resolved ranges.\n- The other behaviour in `validate_references` is covered by the other `{impl}` markers on that function: term checks, the example true-determination check, anchors and progress. Anchor handling needs a complete-file input and belongs to `requirements.references.anchors`.\n- The input-selector `resolve` function produces the ranges but is not marked with this requirement. It is marked with the input requirements it implements, and `SourceRange` is marked here, so I count this as minor.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` checks that covered `{impl}` and `{test}` references pass, including a `{test}` in a markdown file. Uncovered `{cite}` references in source and in markdown prose and code fences do not cause errors.\n- `reports_unknown_references_and_uncovered_lines` checks that an uncovered `{test}` line yields `no input covers {test}`…` at src/main.rs:2`. This covers the partial-coverage and reporting-format cases.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks that an empty input set reports exactly the `{impl}` (line 3) and `{test}` (line 5) references and not the `{cite}` (line 1). It also checks that covering lines 3–6 clears the errors.\n- `cited_example_with_a_test_and_matching_evidence_validates` checks that an example's `{test}` reference needs a covering input. Emptying the inputs yields `no input covers … src/main.rs:1`.\n- `tests/outcomes.rs::fixme_does_not_hide_stale_inputs_or_uncovered_references` is an end-to-end check that an uncovered `{impl}` in `other.txt:1` is reported even when the requirement has a FIXME.\n\nNo test places an `{impl}` or `{test}` inside a declaration. That case uses the same code path, and a requirements-glob input covers the declaration's lines.",
   "inputs": [
     {
       "requirements": "requirements.references.evidence_coverage",
@@ -37,7 +37,7 @@
         "    name: String,",
         "    role: \"impl\" | \"cite\" | \"test\",",
         "    file: String,",
-        "    line: Integer,",
+        "    line: Integer?,",
         "    rust_item: String?,",
         "}",
         "```",
@@ -49,7 +49,9 @@
         "in full-name order and one flattened `sites` array containing every valid",
         "`{impl}`, `{cite}`, and `{test}` reference to any match under",
         "{cite}`requirements.references.targets`, each naming the definition it",
-        "references, ordered by name, file, and line. A site in a Rust item MUST give the",
+        "references, ordered by name, file, and line. An anchor under",
+        "{cite}`requirements.references.anchors` MUST be reported as a site for its",
+        "anchored file without a line. A site in a Rust item MUST give the",
         "selector of its smallest enclosing item under",
         "{cite}`requirements.references.rust_item_selectors`. Sites in sources excluded by",
         "{cite}`requirements.authoring.source_tools` MUST be omitted without aborting.",
@@ -72,14 +74,16 @@
         "// {impl}`requirements.definitions.references`",
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.authoring.progress`",
+        "// {impl}`requirements.references.anchors`",
         "fn validate_references(",
         "    root: &Path,",
         "    definitions: &BTreeMap<String, Declaration>,",
+        "    references: &[SourceReference],",
         "    errors: &mut Vec<String>,",
         "    progress: &mut impl FnMut(InspectionProgress),",
         ") {",
-        "    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();",
-        "    for reference in collect_references_with_progress(root, errors, progress) {",
+        "    let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();",
+        "    for reference in references {",
         "        let target = definitions.get(&reference.name);",
         "        if reference.kind == ReferenceKind::Term {",
         "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {",
@@ -124,6 +128,10 @@
         "            && !references",
         "                .iter()",
         "                .any(|reference| reference.kind == ReferenceKind::Test)",
+        "            && !definition",
+        "                .anchors",
+        "                .iter()",
+        "                .any(|anchor| anchor.kind == ReferenceKind::Test)",
         "            && fs::read_to_string(&evidence_file)",
         "                .ok()",
         "                .and_then(|content| serde_json::from_str::<Value>(&content).ok())",
@@ -155,6 +163,33 @@
         "                    display_path(root, &reference.file),",
         "                    reference.line",
         "                ));",
+        "            }",
+        "        }",
+        "        // An anchor is an edge to the complete file, so one input must contain",
+        "        // every line of it.",
+        "        for anchor in &definition.anchors {",
+        "            match anchor.complete_file(root) {",
+        "                Ok((path, line_count)) => {",
+        "                    if !inputs.iter().any(|input| {",
+        "                        input.file == path && input.line_start <= 1 && line_count <= input.line_end",
+        "                    }) {",
+        "                        errors.push(format!(",
+        "                            \"{}: no input contains the complete file {} (lines 1-{line_count}) anchored by :{}: on {} {name}\",",
+        "                            display_path(root, &evidence_file),",
+        "                            anchor.file,",
+        "                            anchor.kind.label(),",
+        "                            definition.kind.noun()",
+        "                        ));",
+        "                    }",
+        "                }",
+        "                Err(error) => errors.push(format!(",
+        "                    \"{}: :{}: anchor {} on {} {name} at {} does not resolve to a readable, permitted file: {error}\",",
+        "                    display_path(root, &evidence_file),",
+        "                    anchor.kind.label(),",
+        "                    anchor.file,",
+        "                    definition.kind.noun(),",
+        "                    definition.source",
+        "                )),",
         "            }",
         "        }",
         "    }",
@@ -580,141 +615,145 @@
       ]
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 9,
-      "line_end": 13,
+      "file": "src/authoring/access.rs",
+      "line_start": 263,
+      "line_end": 267,
       "text": [
+        "// {impl}`requirements.ci.input_containment`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {",
+        "    if relative.as_os_str().is_empty() {",
+        "        return Err(io::Error::new("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 422,
+      "line_end": 426,
+      "text": [
+        "// {impl}`requirements.ci.input_containment`",
+        "// {impl}`requirements.authoring.generated_inputs`",
+        "pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let (requested, target) = resolve(&root, Path::new(file))?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 7,
+      "line_end": 11,
+      "text": [
+        "",
+        "use super::access::SourceAccess;",
         "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
         "use crate::inputs::{InputSelector, read_project_file};",
-        "use crate::{DefinitionKind, ReferenceKind};",
+        "use crate::{DefinitionKind, ReferenceKind};"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 287,
+      "line_end": 291,
+      "text": [
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    reference: &SourceReference,",
+        ") -> io::Result<InputSelector> {",
+        "    let file = reference"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 810,
+      "line_end": 814,
+      "text": [
+        "// {impl}`requirements.configuration.structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring(",
+        "    root: &Path,",
+        "    explicit: Option<&str>,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 832,
+      "line_end": 836,
+      "text": [
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring_from(",
+        "    path: &Path,",
+        "    user: Option<&UserConfig>,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 847,
+      "line_end": 851,
+      "text": [
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.configuration.serialization`",
+        "pub fn resolve_authoring_with_workspace_from(",
+        "    path: &Path,",
+        "    user: Option<&UserConfig>,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 79,
+      "line_end": 83,
+      "text": [
+        "pub(crate) struct RepositoryInspection {",
+        "    pub(crate) definitions: BTreeMap<String, Declaration>,",
+        "    pub(crate) references: Vec<SourceReference>,",
+        "    pub(crate) report: EvidenceReport,",
+        "    pub(crate) discovery_errors: Vec<String>,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 300,
+      "line_end": 304,
+      "text": [
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.references.anchors`",
+        "fn collect_definitions(",
+        "    root: &Path,",
+        "    md_root: &Path,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 989,
+      "line_end": 993,
+      "text": [
+        "}",
         "",
-        "pub(crate) enum AssessmentKind {"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 62,
-      "line_end": 66,
-      "text": [
-        "",
-        "        for reference in crate::reference_roles(&subject.text, true) {",
-        "            if reference.kind == ReferenceKind::Term {",
-        "                continue;",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 76,
-      "line_end": 80,
-      "text": [
-        "            // Only `{cite}` leaves the subject; its `{impl}` and `{test}`",
-        "            // references point into it from the definitions it implements or tests.",
-        "            if reference.kind != ReferenceKind::Cite {",
-        "                continue;",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 96,
-      "line_end": 100,
-      "text": [
-        "        for reference in references.iter().filter(|reference| {",
-        "            reference.name == subject_name",
-        "                && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)",
-        "        }) {",
-        "            access.file(&root, &reference.file)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 227,
-      "line_end": 231,
-      "text": [
-        "    }",
-        "    found.retain(|reference| {",
-        "        reference.kind != crate::ReferenceKind::Term",
-        "            && crate::definition_glob::matches(selection, &reference.name)",
-        "            && definitions"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 10,
-      "line_end": 14,
-      "text": [
-        "use crate::judgment::Judgment;",
-        "use crate::{",
-        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
-        "    reference_roles, valid_name,",
-        "};"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 347,
-      "line_end": 351,
-      "text": [
-        "                .into_iter()",
-        "                .any(|reference| {",
-        "                    matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)",
-        "                        && definitions",
-        "                            .get(reference.name)"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 907,
-      "line_end": 911,
-      "text": [
         "pub(crate) struct SourceReference {",
         "    pub(crate) name: String,",
-        "    pub(crate) kind: ReferenceKind,",
-        "    pub(crate) file: PathBuf,",
-        "    pub(crate) line: usize,"
+        "    pub(crate) kind: ReferenceKind,"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 933,
-      "line_end": 937,
+      "line_start": 1012,
+      "line_end": 1020,
       "text": [
-        "    for reference in collect_references_with_progress(root, errors, progress) {",
-        "        let target = definitions.get(&reference.name);",
-        "        if reference.kind == ReferenceKind::Term {",
-        "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {",
-        "                errors.push(format!("
+        "    root: &Path,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    references: &[SourceReference],",
+        "    errors: &mut Vec<String>,",
+        "    progress: &mut impl FnMut(InspectionProgress),",
+        ") {",
+        "    let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();",
+        "    for reference in references {",
+        "        let target = definitions.get(&reference.name);"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 975,
-      "line_end": 979,
-      "text": [
-        "            && !references",
-        "                .iter()",
-        "                .any(|reference| reference.kind == ReferenceKind::Test)",
-        "            && fs::read_to_string(&evidence_file)",
-        "                .ok()"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 992,
-      "line_end": 996,
-      "text": [
-        "        for reference in references",
-        "            .into_iter()",
-        "            .filter(|reference| reference.kind != ReferenceKind::Cite)",
-        "        {",
-        "            if !inputs.iter().any(|input| {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1018,
-      "line_end": 1022,
+      "line_start": 1135,
+      "line_end": 1139,
       "text": [
         "",
         "// {impl}`requirements.references.targets`",
@@ -725,237 +764,91 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1024,
-      "line_end": 1028,
+      "line_start": 1141,
+      "line_end": 1149,
       "text": [
         "// {impl}`requirements.references.targets`",
         "// {impl}`requirements.authoring.progress`",
         "fn collect_references_with_progress(",
         "    root: &Path,",
-        "    errors: &mut Vec<String>,"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 105,
-      "line_end": 109,
-      "text": [
-        "",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]",
-        "pub(crate) enum ReferenceKind {",
-        "    Impl,",
-        "    Cite,"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 113,
-      "line_end": 117,
-      "text": [
-        "",
-        "// {impl}`requirements.references.book_badges`",
-        "impl ReferenceKind {",
-        "    // {impl}`requirements.references.book_badges`",
-        "    // {impl}`requirements.definitions.references`"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 141,
-      "line_end": 145,
-      "text": [
-        "    end: usize,",
-        "    pub(crate) name: &'a str,",
-        "    pub(crate) kind: ReferenceKind,",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 348,
-      "line_end": 352,
-      "text": [
-        "        result.push_str(&content[cursor..reference.start]);",
-        "        if let Some(target) = definitions.get(reference.name) {",
-        "            if reference.kind == ReferenceKind::Term {",
-        "                if target.kind == DefinitionKind::Term",
-        "                    && let Ok((phrase, _)) = terms::declaration(&target.text)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 594,
-      "line_end": 604,
-      "text": [
-        "        let remaining = &content[start..];",
-        "        let (kind, prefix) = if remaining.starts_with(\"{impl}`\") {",
-        "            (ReferenceKind::Impl, \"{impl}`\")",
-        "        } else if remaining.starts_with(\"{cite}`\") {",
-        "            (ReferenceKind::Cite, \"{cite}`\")",
-        "        } else if remaining.starts_with(\"{test}`\") {",
-        "            (ReferenceKind::Test, \"{test}`\")",
-        "        } else if remaining.starts_with(\"{term}`\") {",
-        "            (ReferenceKind::Term, \"{term}`\")",
-        "        } else {",
-        "            continue;"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 257,
-      "line_end": 261,
-      "text": [
-        "            .iter()",
-        "            .any(|role| {",
-        "                role.kind != crate::ReferenceKind::Term",
-        "                    && definitions",
-        "                        .get(role.name)"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 5,
-      "line_end": 9,
-      "text": [
-        "use crate::evidence::Declaration;",
-        "use crate::inputs::InputSelector;",
-        "use crate::{DefinitionKind, ReferenceKind, reference_roles};",
-        "",
-        "// {impl}`requirements.definitions.declaration`"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 37,
-      "line_end": 41,
-      "text": [
-        "        reference_roles(text, markdown)",
-        "            .into_iter()",
-        "            .filter(|r| r.kind == ReferenceKind::Term)",
-        "            .map(|r| r.name.to_owned()),",
-        "    );"
+        "    errors: &mut Vec<String>,",
+        "    progress: &mut impl FnMut(InspectionProgress),",
+        ") -> Vec<SourceReference> {",
+        "    progress(InspectionProgress {",
+        "        stage: \"discovering source references\","
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 895,
-      "line_end": 1135,
+      "line_start": 1230,
+      "line_end": 1234,
       "text": [
-        "        }",
-        "    }",
-        "}",
+        "                .count()",
+        "                + 1;",
+        "            references.push(SourceReference {",
+        "                name: role.name.to_owned(),",
+        "                kind: role.kind,"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 9,
+      "line_end": 13,
+      "text": [
+        "use serde_json::Value;",
         "",
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn display_path(root: &Path, path: &Path) -> String {",
-        "    path.strip_prefix(root)",
-        "        .unwrap_or(path)",
-        "        .display()",
-        "        .to_string()",
-        "}",
-        "",
-        "pub(crate) struct SourceReference {",
-        "    pub(crate) name: String,",
-        "    pub(crate) kind: ReferenceKind,",
-        "    pub(crate) file: PathBuf,",
-        "    pub(crate) line: usize,",
-        "}",
-        "",
-        "struct InputRange {",
-        "    file: PathBuf,",
-        "    line_start: usize,",
-        "    line_end: usize,",
-        "}",
-        "",
-        "// {impl}`requirements.references.evidence_coverage`",
-        "// {impl}`requirements.references.targets`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.definitions.references`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.progress`",
-        "fn validate_references(",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        "    progress: &mut impl FnMut(InspectionProgress),",
-        ") {",
-        "    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();",
-        "    for reference in collect_references_with_progress(root, errors, progress) {",
-        "        let target = definitions.get(&reference.name);",
-        "        if reference.kind == ReferenceKind::Term {",
-        "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {",
-        "                errors.push(format!(",
-        "                    \"{}:{}: term {} has no matching named definition\",",
-        "                    display_path(root, &reference.file),",
-        "                    reference.line,",
-        "                    reference.name",
-        "                ));",
-        "            }",
-        "            continue;",
-        "        }",
-        "        if target.is_some_and(|d| d.kind != DefinitionKind::Term) {",
-        "            by_definition",
-        "                .entry(reference.name.clone())",
-        "                .or_default()",
-        "                .push(reference);",
-        "        } else {",
-        "            errors.push(format!(",
-        "                \"{}:{}: {{{}}}`{}` has no matching requirement or example\",",
-        "                display_path(root, &reference.file),",
-        "                reference.line,",
-        "                reference.kind.label(),",
-        "                reference.name",
-        "            ));",
-        "        }",
-        "    }",
-        "",
-        "    let subjects: Vec<_> = definitions",
-        "        .iter()",
-        "        .filter(|(_, definition)| definition.kind != DefinitionKind::Term)",
-        "        .collect();",
-        "    for (completed, (name, definition)) in subjects.iter().enumerate() {",
-        "        progress(InspectionProgress {",
-        "            stage: \"reference coverage\",",
-        "            completed,",
-        "            total: Some(subjects.len()),",
-        "        });",
-        "        let evidence_file = root.join(\"evidence\").join(format!(\"{name}.json\"));",
-        "        let references = by_definition.remove(*name).unwrap_or_default();",
-        "        if definition.kind == DefinitionKind::Example",
-        "            && !references",
-        "                .iter()",
-        "                .any(|reference| reference.kind == ReferenceKind::Test)",
-        "            && fs::read_to_string(&evidence_file)",
-        "                .ok()",
-        "                .and_then(|content| serde_json::from_str::<Value>(&content).ok())",
-        "                .and_then(|value| value.get(\"determination\").and_then(Value::as_bool))",
-        "                == Some(true)",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{}: example {name} has a true determination but no {{test}} reference\",",
-        "                display_path(root, &evidence_file)",
-        "            ));",
-        "        }",
-        "        let inputs = evidence_input_ranges(root, &evidence_file, definitions);",
-        "        // `{cite}` points from its source to the definition, so it is not part of",
-        "        // the definition's evidence.",
-        "        for reference in references",
-        "            .into_iter()",
-        "            .filter(|reference| reference.kind != ReferenceKind::Cite)",
-        "        {",
-        "            if !inputs.iter().any(|input| {",
-        "                input.file == reference.file",
-        "                    && input.line_start <= reference.line",
-        "                    && reference.line <= input.line_end",
-        "            }) {",
-        "                errors.push(format!(",
-        "                    \"{}: no input covers {{{}}}`{}` at {}:{}\",",
+        "use crate::evidence::{Declaration, SourceReference, inspect_repository};",
+        "use crate::inputs::{InputSelector, SourceRange};",
+        "use crate::markdown::render_evidence_table;"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 38,
+      "line_end": 42,
+      "text": [
+        "    pub(crate) definitions: &'a BTreeMap<String, Declaration>,",
+        "    /// Current `{impl}`, `{cite}`, and `{test}` references in project sources.",
+        "    pub(crate) references: &'a [SourceReference],",
+        "    pub(crate) source_links: Option<&'a SourceLinks>,",
+        "}"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 755,
+      "line_end": 759,
+      "text": [
+        "    // {impl}`requirements.index.detail_format`",
+        "    // {impl}`requirements.definitions.inputs`",
+        "    fn resolve(input: &Value, sources: &RenderSources<'_>) -> Self {",
+        "        let selector = InputSelector::from_input(input);",
+        "        let ranges = selector.as_ref().map(|selector| match selector {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 118,
+      "line_end": 122,
+      "text": [
+        "    // {impl}`requirements.cli.add_input_requirements`",
+        "    // {impl}`requirements.references.definition_globs`",
+        "    pub(crate) fn resolve(",
+        "        &self,",
+        "        root: &Path,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1120,
+      "line_end": 1250,
+      "text": [
         "                    display_path(root, &evidence_file),",
-        "                    reference.kind.label(),",
-        "                    name,",
-        "                    display_path(root, &reference.file),",
-        "                    reference.line",
-        "                ));",
+        "                    anchor.kind.label(),",
+        "                    anchor.file,",
+        "                    definition.kind.noun(),",
+        "                    definition.source",
+        "                )),",
         "            }",
         "        }",
         "    }",
@@ -1080,15 +973,13 @@
         "",
         "// {impl}`requirements.references.evidence_coverage`",
         "fn evidence_input_ranges(",
-        "    root: &Path,",
-        "    path: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,"
+        "    root: &Path,"
       ]
     },
     {
       "file": "src/inputs.rs",
       "line_start": 1,
-      "line_end": 200,
+      "line_end": 257,
       "text": [
         "use std::collections::BTreeMap;",
         "use std::fs;",
@@ -1169,6 +1060,7 @@
         "    // {impl}`requirements.cli.add_input`",
         "    // {impl}`requirements.definitions.inputs`",
         "    // {impl}`requirements.ci.schema`",
+        "    // {impl}`requirements.cli.add_input_requirements`",
         "    pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {",
         "        match self {",
         "            Self::FileRange {",
@@ -1205,6 +1097,9 @@
         "    // {impl}`requirements.ci.requirements_inputs`",
         "    // {impl}`requirements.definitions.inputs`",
         "    // {impl}`requirements.definitions.selection`",
+        "    // {impl}`requirements.cli.add_input_file_range`",
+        "    // {impl}`requirements.cli.add_input_requirements`",
+        "    // {impl}`requirements.references.definition_globs`",
         "    pub(crate) fn resolve(",
         "        &self,",
         "        root: &Path,",
@@ -1289,370 +1184,318 @@
         "                let mut text = Vec::new();",
         "                let mut matches = Vec::new();",
         "                for (name, definition) in definitions {",
-        "                    if definition.kind == crate::DefinitionKind::Term"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 28,
-      "line_end": 34,
-      "text": [
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    let definitions = &inspection.definitions;",
-        "    let selectors = selectors_for_mode(&root, mode)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 78,
-      "line_end": 84,
-      "text": [
-        "        self.credential_file.as_ref().is_some_and(|path| {",
-        "            requested == path",
-        "                || target == path",
-        "                || fs::canonicalize(path).is_ok_and(|path| target == path)",
-        "        })",
+        "                    if definition.kind == crate::DefinitionKind::Term",
+        "                        || !definition_glob::matches(requirements, name)",
+        "                    {",
+        "                        continue;",
+        "                    }",
+        "                    check_project_file(root, &definition.file)?;",
+        "                    if !text.is_empty() {",
+        "                        text.push(String::new());",
+        "                    }",
+        "                    text.extend(definition.raw_lines.iter().cloned());",
+        "                    ranges.push(SourceRange {",
+        "                        file: definition.file.clone(),",
+        "                        line_start: definition.line_start,",
+        "                        line_end: definition.line_end,",
+        "                        name: Some(name.clone()),",
+        "                    });",
+        "                    matches.push(name.clone());",
+        "                }",
+        "                if matches.is_empty() {",
+        "                    return Err(format!(",
+        "                        \"requirements glob {requirements:?} matches no requirement or example\"",
+        "                    ));",
+        "                }",
+        "                Ok(ResolvedInput {",
+        "                    ranges,",
+        "                    text,",
+        "                    matches,",
+        "                })",
+        "            }",
+        "        }",
         "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.input_containment`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
+        "    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())",
+        "}",
+        "",
+        "// {impl}`requirements.ci.input_containment`",
+        "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
+        "    let path = check_project_file(root, file)?;",
+        "    let content =",
+        "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;",
+        "    Ok((path, content))",
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "fn raw_lines(content: &str) -> Vec<String> {",
+        "    content",
+        "        .lines()",
+        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
+        "        .collect()",
         "}"
       ]
     },
     {
-      "file": "src/authoring/access.rs",
-      "line_start": 184,
-      "line_end": 190,
+      "file": "src/authoring/inputs.rs",
+      "line_start": 308,
+      "line_end": 314,
       "text": [
-        "    pub(crate) fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {",
-        "        let joined = root.join(path);",
-        "        let requested = requested_location(&joined).unwrap_or_else(|_| joined.clone());",
-        "        let target = fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());",
-        "        if !generated_evidence_path(root, &requested) {",
-        "            return false;",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 199,
-      "line_end": 205,
-      "text": [
-        "    // {impl}`requirements.configuration.evidence_paths`",
-        "    fn has_source_under(&self, root: &Path, directory: &Path) -> bool {",
-        "        self.extra_roots().any(|path| {",
-        "            let target = fs::canonicalize(path).unwrap_or_else(|_| path.clone());",
-        "            target != directory",
-        "                && (path.starts_with(directory) || target.starts_with(directory))",
-        "                && self.policy.check_disallow(path, &target).is_ok()"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 223,
-      "line_end": 229,
-      "text": [
-        "fn matches_rule(rule: &Path, requested: &Path, target: &Path) -> bool {",
-        "    requested_location(rule)",
-        "        .is_ok_and(|rule| requested.starts_with(&rule) || target.starts_with(rule))",
-        "        || fs::canonicalize(rule)",
-        "            .is_ok_and(|rule| requested.starts_with(&rule) || target.starts_with(rule))",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 231,
-      "line_end": 238,
-      "text": [
-        "// {impl}`requirements.ci.input_containment`",
-        "fn requested_location(path: &Path) -> io::Result<PathBuf> {",
-        "    match (path.parent(), path.components().next_back()) {",
-        "        (Some(parent), Some(Component::Normal(name))) => Ok(fs::canonicalize(parent)?.join(name)),",
-        "        _ => fs::canonicalize(path),",
-        "    }",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 270,
-      "line_end": 276,
-      "text": [
-        "        ));",
-        "    }",
-        "    let joined = root.join(relative);",
-        "    let target = fs::canonicalize(&joined).map_err(|error| {",
-        "        io::Error::new(",
-        "            error.kind(),",
-        "            format!(\"cannot open {}: {error}\", relative.display()),"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 375,
-      "line_end": 381,
-      "text": [
-        "    else {",
-        "        return Vec::new();",
-        "    };",
-        "    let Ok(directory) = fs::canonicalize(directory) else {",
-        "        return Vec::new();",
-        "    };",
-        "    discover_generated_roots(&directory)"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 395,
-      "line_end": 404,
-      "text": [
-        "                let Ok(text) = fs::read_to_string(&path) else {",
-        "                    continue;",
-        "                };",
-        "                let Ok(out) = fs::canonicalize(text.trim()) else {",
-        "                    continue;",
-        "                };",
-        "                let Ok(sibling) = fs::canonicalize(directory.join(\"out\")) else {",
-        "                    continue;",
-        "                };",
-        "                if out == sibling && out.starts_with(build_root) && out.is_dir() {"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 422,
-      "line_end": 428,
-      "text": [
-        "// {impl}`requirements.ci.input_containment`",
-        "// {impl}`requirements.authoring.generated_inputs`",
-        "pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let (requested, target) = resolve(&root, Path::new(file))?;",
-        "    let policy = PathPolicy::load(&root)?;",
-        "    policy.check_disallow(&root.join(file), &target)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 470,
-      "line_end": 476,
-      "text": [
-        "        fs::write(parent.path().join(\"outside.txt\"), \"outside\\n\").unwrap();",
-        "        git(parent.path(), &[\"init\", \"--quiet\"]);",
-        "        git(parent.path(), &[\"add\", \".\"]);",
-        "        let root = fs::canonicalize(root).unwrap();",
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        assert!(access.file(&root, Path::new(\"./inside.txt\")).is_ok());",
-        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 500,
-      "line_end": 506,
-      "text": [
-        "        let root = parent.path().join(\"project\");",
-        "        fs::create_dir(&root).unwrap();",
-        "        fs::write(root.join(\"source.txt\"), \"source\\n\").unwrap();",
-        "        let root = fs::canonicalize(root).unwrap();",
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        assert!(access.tracked.is_none());",
-        "        assert!(access.file(&root, Path::new(\"source.txt\")).is_ok());"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 539,
-      "line_end": 545,
-      "text": [
-        "        fs::write(root.path().join(\"habeas.toml\"), format!(",
-        "            \"version = 1\\n[evidence]\\nallow = ['generated', 'evidence', {external_toml}]\\ndisallow = ['generated/private']\\n\"",
-        "        )).unwrap();",
-        "        let root = fs::canonicalize(root.path()).unwrap();",
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        for path in [",
-        "            root.join(\"generated/ok.txt\"),"
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 40,
-      "line_end": 46,
-      "text": [
-        "    selection: Option<&str>,",
-        "    options: AuthoringOptions,",
-        ") -> io::Result<BatchOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut progress = BatchProgress::new(options.verbose);",
-        "    let inspection = inspect_repository_with_progress(&root, |update| progress.inspect(update))?;",
-        "    if !inspection.discovery_errors.is_empty() {"
+        "        })?;",
+        "        if let Some(item) = items",
+        "            .iter()",
+        "            .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)",
+        "            .min_by_key(|item| {",
+        "                (",
+        "                    item.line_end - item.line_start,"
       ]
     },
     {
       "file": "src/authoring/inputs.rs",
-      "line_start": 45,
-      "line_end": 51,
+      "line_start": 330,
+      "line_end": 336,
       "text": [
-        "    // {impl}`requirements.authoring.source_tools`",
-        "    // {impl}`requirements.authoring.read_denial`",
-        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {",
-        "        let root = fs::canonicalize(root)?;",
-        "        let access = SourceAccess::load(&root)?;",
-        "        let definitions = load_definitions(&root)?;",
-        "        let subject = definitions"
+        "            .iter()",
+        "            .filter(|(_, declaration)| {",
+        "                declaration.file == file",
+        "                    && declaration.line_start <= reference.line",
+        "                    && reference.line <= declaration.line_end",
+        "            })",
+        "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)"
       ]
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 184,
-      "line_end": 191,
+      "file": "src/authoring/tools.rs",
+      "line_start": 253,
+      "line_end": 259,
       "text": [
-        "    let path = root.join(path);",
-        "    let evidence = root.join(\"evidence\");",
-        "    path.starts_with(&evidence)",
-        "        || fs::canonicalize(&path)",
-        "            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.mandatory_inputs`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 130,
-      "line_end": 139,
-      "text": [
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;",
-        "    fs::create_dir_all(&state)?;",
-        "    if fs::canonicalize(&state)?.starts_with(&root) {",
-        "        return Err(io::Error::other(",
-        "            \"authoring usage state must be outside the project repository\",",
-        "        ));"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 190,
-      "line_end": 199,
-      "text": [
-        "    config: &ResolvedAuthoringConfig,",
-        "    mut cancellation: watch::Receiver<Option<&'static str>>,",
-        ") -> io::Result<PendingAssessment> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;",
-        "    fs::create_dir_all(&state)?;",
-        "    if fs::canonicalize(&state)?.starts_with(&root) {",
-        "        return Err(io::Error::other(",
-        "            \"authoring usage state must be outside the project repository\",",
-        "        ));"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 347,
-      "line_end": 353,
-      "text": [
-        "                || root",
-        "                    .components()",
-        "                    .any(|part| matches!(part, Component::CurDir | Component::ParentDir))",
-        "                || fs::canonicalize(root).is_ok_and(|canonical| canonical != *root)",
-        "            {",
-        "                return Err(invalid(",
-        "                    path,"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 688,
-      "line_end": 696,
-      "text": [
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.loading`",
-        "fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let start = std::env::current_dir()",
-        "        .and_then(fs::canonicalize)",
-        "        .ok()",
-        "        .filter(|cwd| cwd.starts_with(&root))",
-        "        .unwrap_or(root);"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 847,
-      "line_end": 853,
-      "text": [
-        "    root: &Path,",
-        "    explicit: Option<&str>,",
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let project_root = fs::canonicalize(root).map_err(|error| {",
-        "        io::Error::new(",
-        "            error.kind(),",
-        "            format!(\"cannot resolve project root {}: {error}\", root.display()),"
+        "            });",
+        "            parsed",
+        "                .iter()",
+        "                .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)",
+        "                .min_by_key(|item| item.line_end - item.line_start)",
+        "                .map(|item| item.selector.clone())",
+        "        } else {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 55,
-      "line_end": 61,
+      "line_start": 1085,
+      "line_end": 1095,
       "text": [
+        "        {",
+        "            if !inputs.iter().any(|input| {",
+        "                input.file == reference.file",
+        "                    && input.line_start <= reference.line",
+        "                    && reference.line <= input.line_end",
+        "            }) {",
+        "                errors.push(format!(",
+        "                    \"{}: no input covers {{{}}}`{}` at {}:{}\",",
+        "                    display_path(root, &evidence_file),",
+        "                    reference.kind.label(),",
+        "                    name,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1104,
+      "line_end": 1110,
+      "text": [
+        "            match anchor.complete_file(root) {",
+        "                Ok((path, line_count)) => {",
+        "                    if !inputs.iter().any(|input| {",
+        "                        input.file == path && input.line_start <= 1 && line_count <= input.line_end",
+        "                    }) {",
+        "                        errors.push(format!(",
+        "                            \"{}: no input contains the complete file {} (lines 1-{line_count}) anchored by :{}: on {} {name}\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1690,
+      "line_end": 1696,
+      "text": [
+        "            \"{errors}\"",
+        "        );",
+        "        assert!(",
+        "            errors.contains(&format!(\"no input covers {known} at src/main.rs:2\")),",
+        "            \"{errors}\"",
+        "        );",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1870,
+      "line_end": 1876,
+      "text": [
+        "        uncovered[\"inputs\"] = json!([]);",
+        "        fs::write(&example_path, uncovered.to_string()).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
+        "        assert!(errors.contains(\"no input covers\"), \"{errors}\");",
+        "        assert!(errors.contains(\"src/main.rs:1\"), \"{errors}\");",
+        "        fs::write(&example_path, &old).unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1952,
+      "line_end": 1958,
+      "text": [
+        "        let errors = validate_repository(temp.path()).unwrap().errors;",
+        "        let uncovered: Vec<_> = errors",
+        "            .iter()",
+        "            .filter(|error| error.contains(\"no input covers\"))",
+        "            .collect();",
+        "        assert_eq!(uncovered.len(), 2, \"{errors:#?}\");",
+        "        assert!("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 54,
+      "line_end": 66,
+      "text": [
+        "        if line_count == 0 {",
+        "            return Err(format!(",
+        "                \"{} is empty, so no input can contain it\",",
+        "                self.file",
+        "            ));",
+        "        }",
+        "        Ok((fs::canonicalize(&path).unwrap_or(path), line_count))",
+        "    }",
+        "",
+        "    /// The file-range selector containing the complete anchored file.",
+        "    // {impl}`requirements.references.anchors`",
+        "    pub(crate) fn selector(&self, line_count: usize) -> InputSelector {",
+        "        InputSelector::FileRange {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 69,
+      "line_end": 81,
+      "text": [
+        "            line_end: line_count,",
+        "        }",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {",
+        "    Ok(inspect_repository(root)?.report)",
+        "}",
+        "",
+        "pub(crate) struct RepositoryInspection {",
+        "    pub(crate) definitions: BTreeMap<String, Declaration>,",
+        "    pub(crate) references: Vec<SourceReference>,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 92,
+      "line_end": 104,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.ci.book_source`",
         "// {impl}`requirements.ci.definition_errors`",
         "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
         "    let root = fs::canonicalize(root)?;",
         "    let mut errors = Vec::new();",
         "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);"
+        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
+        "    if errors.is_empty() {",
+        "        Ok(definitions)",
+        "    } else {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 96,
-      "line_end": 102,
+      "line_start": 115,
+      "line_end": 127,
       "text": [
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
+        "    inspect_repository_with_progress(root, |_| {})",
+        "}",
+        "",
+        "// {impl}`requirements.integration.report_api`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.authoring.batch`"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 129,
+      "line_end": 145,
+      "text": [
+        "// {impl}`requirements.ci.errors`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "// {impl}`requirements.examples.evidence`",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub(crate) fn inspect_repository_with_progress(",
         "    root: &Path,",
         "    mut progress: impl FnMut(InspectionProgress),",
         ") -> io::Result<RepositoryInspection> {",
         "    let root = fs::canonicalize(root)?;",
         "    progress(InspectionProgress {",
         "        stage: \"discovering requirements\",",
-        "        completed: 0,"
+        "        completed: 0,",
+        "        total: None,",
+        "    });",
+        "    let mut errors = Vec::new();"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1151,
-      "line_end": 1157,
+      "line_start": 1265,
+      "line_end": 1277,
       "text": [
+        "        .flat_map(|resolved| {",
+        "            resolved",
+        "                .ranges",
         "                .into_iter()",
         "                .filter_map(|range| {",
         "                    Some(InputRange {",
         "                        file: fs::canonicalize(root.join(range.file)).ok()?,",
         "                        line_start: range.line_start,",
         "                        line_end: range.line_end,",
-        "                    })"
+        "                    })",
+        "                })",
+        "                .collect::<Vec<_>>()",
+        "        })"
       ]
     },
     {
-      "file": "src/setup.rs",
-      "line_start": 153,
-      "line_end": 159,
+      "file": "src/evidence.rs",
+      "line_start": 2172,
+      "line_end": 2182,
       "text": [
-        "            .arg(\"--manifest-path\")",
-        "            .arg(&manifest_path);",
-        "        if let Some(local_crate) = local_crate {",
-        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
+        "                file: \"src/main.rs\".to_owned(),",
+        "            }]",
+        "        );",
+        "        let resolved = crate::inputs::InputSelector::Requirements {",
+        "            requirements: \"requirements.ready\".to_owned(),",
         "        }",
-        "        let output = command.current_dir(&root).output()?;",
-        "        if !output.status.success() {"
+        "        .resolve(&fs::canonicalize(temp.path()).unwrap(), &definitions)",
+        "        .unwrap();",
+        "        assert_eq!(resolved.text, ready.raw_lines);",
+        "    }",
+        "}"
       ]
     }
   ]

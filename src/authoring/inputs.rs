@@ -44,6 +44,7 @@ impl AssessmentSources {
     // {impl}`requirements.ci.authoring_inputs`
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.read_denial`
+    // {impl}`requirements.references.anchors`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
@@ -102,6 +103,29 @@ impl AssessmentSources {
                 &mut selectors,
                 reference_selector(&root, &definitions, reference)?,
             );
+        }
+
+        // {impl}`requirements.references.anchors`
+        for anchor in &subject.anchors {
+            let selector = access
+                .file(&root, Path::new(&anchor.file))
+                .and_then(|_| {
+                    anchor
+                        .complete_file(&root)
+                        .map(|(_, line_count)| anchor.selector(line_count))
+                        .map_err(io::Error::other)
+                })
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{subject_name}: cannot read :{}: anchor {}: {error}",
+                            anchor.kind.label(),
+                            anchor.file
+                        ),
+                    )
+                })?;
+            insert_selector(&mut selectors, selector);
         }
 
         // Existing evidence only decides whether to reassess; its inputs are
@@ -670,5 +694,78 @@ pub(super) mod tests {
                 .any(|input| input["requirements"] == "requirements.base"),
             "{inputs:#?}"
         );
+    }
+
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn anchored_files_contribute_complete_file_inputs() {
+        let root = project();
+        fs::create_dir_all(root.path().join("skills")).unwrap();
+        fs::write(root.path().join("skills/ready.md"), "# Skill\nBe ready.\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: skills/ready.md\n:test: skills/ready.md\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let inputs = sources.mandatory_inputs();
+        assert_eq!(
+            inputs,
+            &[
+                json!({
+                    "requirements": "requirements.ready",
+                    "matches": ["requirements.ready"],
+                    "text": [":::{req} ready", "The project MUST be ready.", ":::"]
+                }),
+                json!({
+                    "file": "skills/ready.md",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "text": ["# Skill", "Be ready."]
+                }),
+            ]
+        );
+        assert_eq!(sources.subject_text, "The project MUST be ready.");
+    }
+
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.authoring.read_denial`
+    #[test]
+    fn unreadable_or_denied_anchors_fail_before_inference() {
+        let root = project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: skills/missing.md\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("requirements.ready: cannot read :impl: anchor skills/missing.md"),
+            "{error}"
+        );
+
+        fs::create_dir_all(root.path().join("private")).unwrap();
+        fs::write(root.path().join("private/skill.md"), "secret\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: private/skill.md\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['private']\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("private/skill.md"), "{error}");
     }
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.",
-  "determination": false,
-  "rationale": "**Verdict: the implementation looks complete, but the tests leave several MUST clauses unexercised, so I'm judging false.**\n\n**What the implementation gets right (`src/rust_items.rs`)**\n- `parse_items` parses with `syn::parse_file`. `ItemCollector` visits items, impl items, trait items and foreign items, and tracks a parent stack. Selectors are built from syntactic ancestry within the one file. There is no cross-file module resolution and no line-number identity.\n- Named items use `kind[name]` segments through `named`, for example `fn[run]` and `struct[Packet]`. Impl segments are `impl[SelfTy]` for inherent impls and `impl[SelfTy/Trait]` for trait impls. They are built from the source text of the self type and trait path.\n- Duplicates are grouped by `(parent, base)`, sorted by byte start, and given `#N` in source order. `use` and other unnamed items (`macro`, `item`, `Verbatim`) always get a `#N` ordinal, so `use` never includes its import target.\n- `escape_segment` percent-encodes `% [ ] / #` and whitespace as UTF-8 bytes. Spelling is documented in `md/reference.md` (around line 370) and is reversible.\n- The `{impl}` markers cover the relevant functions, and I found no unmarked selector-producing code. `parse_items` consumers in `add_input`, `inputs` and `authoring` only look selectors up.\n- Minor smell: `add` takes unused `_name` and `_is_function` parameters. This is harmless.\n\n**Test coverage**\n- There is one unit test, `selectors_name_syntactic_ancestry_and_duplicates`. It checks:\n  - `use#1` and `use#2`;\n  - `mod[local]/fn[run]` and `mod[external]`;\n  - inherent vs trait impl methods;\n  - an escaped `impl[%5Bu8;%204%5D]` self type;\n  - `trait[Trait]/fn[read]` and `extern[C]/fn[puts]`;\n  - `fn[outer]/fn[inner]`;\n  - `fn[repeated]#1` and `fn[repeated]#2`.\n- The assertions only check that each expected selector is contained in the output. They do not check uniqueness or exact output.\n\n**Gaps**\n- The requirement says \"Other items without a suitable name MUST have a kind and positional disambiguator\", but nothing tests the `macro#N` or `item#N` paths. Examples are macro invocations at item level, and impl, trait or foreign macro items.\n- Reversibility is exercised only for one impl self type. Nothing tests escaping of names or the extern ABI, or the `r#ident` case. There is no round-trip or decode check.\n- `use#N` is not tested as a position among sibling `use` declarations with other items interleaved, or inside a nested module. It also isn't tested that a changed import target leaves the selector unchanged.\n- Duplicate disambiguation is tested only for plain `fn` siblings at the top level. It is not tested for duplicates under a parent, or for the same name under different parents.\n\nI found no acknowledged FIXME for these gaps, so the determination is false rather than FIXME.",
+  "determination": true,
+  "rationale": "**Implementation (`src/rust_items.rs`)**\n- `parse_items` builds selectors from a `syn::parse_file` parse of one file. `ItemCollector` walks items, impl items, trait items and foreign items, keeping a parent stack. Selectors therefore express syntactic ancestry within that file. Nothing resolves `mod x;` across files, and line numbers are never part of identity. Line and byte data are kept as separate `RustItem` fields.\n- Named items use `kind[name]` segments through `named`. This covers `fn`, `struct`, `enum`, `trait`, `mod`, `const`, `static`, `type`, `union`, `macro_rules` and `extern-crate`. Foreign blocks become `extern[ABI]`.\n- Impl segments are `impl[SelfType]` for inherent impls and `impl[SelfType/Trait]` for trait impls. Both use the syntactic source text of the self type and trait path.\n- Items that would otherwise share a selector are grouped by `(parent, base)` and sorted by byte start. They get `#N` suffixes in source order, which is deterministic.\n- `use` always yields `use#N`, with no import target in the selector. `ordinal_always` makes this one-based position among sibling `use` items apply even when there is only one.\n- Unnamed items (macro invocations and unknown or verbatim items) get a kind plus a positional `#N`, for example `macro#1` and `item#1`.\n- `escape_segment` percent-encodes `%`, `[`, `]`, `/`, `#` and whitespace as UTF-8 bytes. Together with the documentation, this makes the spelling reversible. `md/reference.md` (around line 382) documents the spelling, the examples, the duplicate `#N` suffixes and the percent-encoding.\n- The helper structs and functions carry `{impl}` references. The extra behavior (line ranges and attached comments) is marked with `{impl}` for `requirements.ci.rust_item_inputs`. The only oddity is unused `_name` and `_is_function` parameters on `add`, which is harmless.\n- Rust-file path handling is done by callers (`inputs.rs`, `add_input.rs`) under the `requirements.ci.schema` rules.\n\n**Tests**\n- `selectors_name_syntactic_ancestry_and_duplicates` is marked `{test}` for this requirement and the examples `selector_nested`, `selector_impl_and_trait`, `selector_inline_and_foreign`, `selector_duplicate_names` and `selector_use`. It asserts these selectors:\n  - `use#1` and `use#2`\n  - `mod[local]/fn[run]` and `mod[external]`\n  - `impl[Thing]/fn[run]` and `impl[Thing/Trait]/fn[run]`\n  - `impl[%5Bu8;%204%5D]/fn[edge]`, which exercises delimiter and whitespace escaping\n  - `trait[Trait]/fn[read]`, `extern[C]/fn[puts]` and `fn[outer]/fn[inner]`\n  - `fn[repeated]#1` and `fn[repeated]#2`\n- `tests/commands.rs` additionally exercises selectors through the CLI (`selector_same_line` and `selector_raw_lines`).\n- Minor test gaps remain: escaping of `/`, `#` and `%` is not asserted, and neither is `macro#N` or `item#N` for unnamed items. These follow the same code paths as the tested cases, so they do not undermine the judgment.\n\nThe requirement is implemented completely, marked completely, documented and reasonably covered by tests.",
   "inputs": [
     {
       "requirements": "requirements.references.rust_item_selectors",
@@ -412,6 +412,7 @@
       "rust_item": "impl[ItemCollector<'_>/Visit<'ast>]/fn[visit_foreign_item]",
       "text": [
         "    // {impl}`requirements.references.rust_item_selectors`",
+        "    // {impl}`requirements.cli.add_input_rust_item`",
         "    fn visit_foreign_item(&mut self, item: &'ast syn::ForeignItem) {",
         "        use syn::ForeignItem;",
         "        let (base, declaration, name, is_function, ordinal_always) = match item {",
@@ -491,6 +492,7 @@
       "text": [
         "// {impl}`requirements.references.rust_item_selectors`",
         "// {impl}`requirements.ci.rust_item_inputs`",
+        "// {impl}`requirements.cli.add_input_rust_item`",
         "pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {",
         "    let syntax = syn::parse_file(source)?;",
         "    let mut collector = ItemCollector {",
@@ -604,50 +606,25 @@
       ]
     },
     {
-      "file": "md/reference.md",
-      "line_start": 370,
-      "line_end": 372,
-      "text": [
-        "",
-        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 138,
-      "line_end": 140,
-      "text": [
-        "Rust file and selector arguments MUST use the syntax defined by",
-        "{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current",
-        "project working tree, including unstaged changes to tracked files and staged new"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 322,
-      "line_end": 324,
-      "text": [
-        "selector of its smallest enclosing item under",
-        "{cite}`requirements.references.rust_item_selectors`. Sites in sources excluded by",
-        "{cite}`requirements.authoring.source_tools` MUST be omitted without aborting."
-      ]
-    },
-    {
       "file": "md/requirements/references.md",
-      "line_start": 37,
-      "line_end": 39,
+      "line_start": 60,
+      "line_end": 110,
       "text": [
+        "exactly that definition.",
+        ":::",
         "",
         ":::{req} rust_item_selectors",
-        "Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters."
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 50,
-      "line_end": 72,
-      "text": [
+        "Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.",
+        ":::",
+        "",
+        "",
+        ":::{req} markdown_literals",
+        "In Markdown, escaped roles and role-looking text in inline code, fenced code, or raw HTML MUST remain literal and MUST NOT count as references. A `{req}` directive inside a fenced code example and a legacy inline `{req}` role MUST NOT define a requirement.",
+        ":::",
+        "",
+        ":::{req} safe_badges",
+        "The book preprocessor MUST escape requirement names and link targets when inserting badge HTML. It MUST encode badge label and message text in Shields.io URL path components so punctuation cannot change the badge URL structure.",
+        ":::",
         "",
         ":::{example} selector_nested",
         "In `src/lib.rs`, `fn outer() { fn inner() {} }` gives the selectors `fn[outer]` and `fn[outer]/fn[inner]`. {cite}`requirements.references.rust_item_selectors`",
@@ -670,163 +647,78 @@
         ":::",
         "",
         ":::{example} selector_raw_lines",
-        "For a function preceded by a doc comment, an attribute, and an attached citation comment, a Rust-item input starts at the earliest attached line and ends at the function's final line. Its `text` contains those complete raw source lines. Inserting lines before them changes the displayed range without changing the input. {cite}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 74,
-      "line_end": 76,
-      "text": [
+        "For a function preceded by a doc comment, an attribute, and an attached citation comment, a Rust-item input starts at the earliest attached line and ends at the function's final line. Its `text` contains those complete raw source lines. Inserting lines before them changes the displayed range without changing the input. {cite}`requirements.ci.rust_item_inputs`",
+        ":::",
         "",
         ":::{example} selector_same_line",
-        "For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --rust-item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`. Both contain the complete raw line. {cite}`requirements.cli.add_input_rust_item`"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 8,
-      "line_end": 10,
-      "text": [
+        "For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --rust-item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`. Both contain the complete raw line. {cite}`requirements.cli.add_input_rust_item`",
+        ":::",
         "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "// {impl}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 20,
-      "line_end": 22,
-      "text": [
+        ":::{example} definition_glob_cases",
+        "Given a requirement `foo.a.bar` and a named example `foo.a.b.bar`, `foo.*.bar` matches both, in that order. A requirements input stores both full names and their complete raw fenced declarations. Adding another matching definition invalidates the existing input. {cite}`requirements.references.definition_globs` {cite}`requirements.ci.requirements_inputs`",
+        ":::",
         "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "struct ItemNode {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 30,
-      "line_end": 32,
-      "text": [
         "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "struct ItemCollector<'a> {"
+        "## References as authoring inputs",
+        ""
       ]
     },
     {
-      "file": "src/rust_items.rs",
-      "line_start": 38,
-      "line_end": 40,
+      "file": "md/reference.md",
+      "line_start": 370,
+      "line_end": 420,
       "text": [
-        "impl ItemCollector<'_> {",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    fn add("
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 61,
-      "line_end": 63,
-      "text": [
+        "Some sources cannot or should not carry a reference themselves, such as a shipped agent skill. A requirement can anchor such a file with `:impl:` or `:test:` option lines immediately after its opening fence; an example can use `:test:`. Each anchor is an edge to the complete file, so that requirement's evidence must contain an input covering every line of it, and changing the file makes the evidence stale. Option lines are not part of the requirement text. Prefer a precise in-source reference whenever one is possible.",
+        "{cite}`requirements.references.anchors`",
         "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    fn source_at(&self, span: Span) -> &str {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 66,
-      "line_end": 68,
-      "text": [
+        "```text",
+        ":::{req} skill",
+        ":impl: skills/habeas/SKILL.md",
+        "The bundled skill MUST explain how to author evidence.",
+        ":::",
+        "```",
         "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    fn named(&self, kind: &str, name: &syn::Ident) -> String {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 73,
-      "line_end": 75,
-      "text": [
-        "impl<'ast> Visit<'ast> for ItemCollector<'_> {",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    // {impl}`requirements.cli.add_input_rust_item`"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 240,
-      "line_end": 242,
-      "text": [
+        "For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`",
         "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    // {impl}`requirements.cli.add_input_rust_item`"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 294,
-      "line_end": 296,
-      "text": [
+        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
         "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    // {impl}`requirements.cli.add_input_rust_item`"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 348,
-      "line_end": 350,
-      "text": [
+        "## Checking and viewing",
         "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    fn visit_foreign_item(&mut self, item: &'ast syn::ForeignItem) {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 402,
-      "line_end": 404,
-      "text": [
+        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
         "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "fn escape_segment(source: &str) -> String {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 417,
-      "line_end": 419,
-      "text": [
+        "Run `habeas status [<selection>]` from within the project to list requirements and named",
+        "examples needing attention and their validation findings. FIXME judgments are",
+        "summarized by issue, for example:",
         "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "// {impl}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 499,
-      "line_end": 506,
-      "text": [
+        "```text",
+        "- #123 — affects 22 judgments",
+        "- #45 — affects 3 judgments",
+        "- 16 judgments marked FIXME without an issue",
+        "```",
         "",
-        "    // {test}`requirements.references.rust_item_selectors`",
-        "    // {test}`requirements.references.selector_nested`",
-        "    // {test}`requirements.references.selector_impl_and_trait`",
-        "    // {test}`requirements.references.selector_inline_and_foreign`",
-        "    // {test}`requirements.references.selector_duplicate_names`",
-        "    // {test}`requirements.references.selector_use`",
-        "    #[test]"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 778,
-      "line_end": 781,
-      "text": [
-        "// {test}`requirements.cli.add_input_requirements`",
-        "// {test}`requirements.references.selector_same_line`",
-        "// {test}`requirements.references.selector_raw_lines`",
-        "#[test]"
+        "Each judgment counts once per issue, even if it repeats that reference. A judgment",
+        "with several issues counts in each group; the final group counts judgments with",
+        "no recognized issue reference. References may appear in explanatory text or",
+        "`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue",
+        "URLs are also recognized. Groups with the most affected judgments come first.",
+        "{cite}`requirements.cli.fixme_summary`",
+        "",
+        "Use `--verbose` to list the actual judgments in each group, with their full names,",
+        "kinds, and recorded FIXME strings. `--all` shows every matching definition and its",
+        "evidence state. Stale or invalid FIXME evidence still reports its validation",
+        "findings. Use `habeas info <selection>` to print matching detail pages as Markdown,",
+        "including current texts, rationales, inputs, FIXME references, and findings. Both",
+        "commands take a definition selection: a full name selects exactly that definition,",
+        "and in a glob `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`",
+        "{cite}`requirements.references.definition_globs`",
+        "",
+        "```sh",
+        "habeas info requirements.ci.inputs",
+        "habeas info 'requirements.cli.*'",
+        "habeas status 'requirements.cli.*' --all",
+        "habeas status --verbose",
+        "```",
+        ""
       ]
     },
     {
@@ -912,454 +804,113 @@
       ]
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 937,
-      "line_end": 937,
+      "file": "src/add_input.rs",
+      "line_start": 10,
+      "line_end": 12,
       "text": [
-        "            \"rust_item\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 632,
-      "line_end": 632,
-      "text": [
-        "// {test}`requirements.cli.add_input_rust_item`"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 668,
-      "line_end": 668,
-      "text": [
-        "            {\"rust_file\": source, \"rust_item\": \"fn[external]\", \"text\": [\"pub fn external() {}\"]},"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 777,
-      "line_end": 777,
-      "text": [
-        "// {test}`requirements.cli.add_input_rust_item`"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 244,
-      "line_end": 244,
-      "text": [
-        "fn rust_item_inputs_capture_terms_without_counting_them_as_citations() {"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 264,
-      "line_end": 264,
-      "text": [
-        "        inputs.iter().any(|input| input[\"rust_item\"] == \"fn[run]\"),"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 82,
-      "line_end": 82,
-      "text": [
-        "// {test}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 105,
-      "line_end": 105,
-      "text": [
-        "        json!({\"rust_file\":\"escape.rs\", \"rust_item\":\"fn[outside]\", \"text\":[\"fn outside() {}\"]}),"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 143,
-      "line_end": 143,
-      "text": [
-        "// {test}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 156,
-      "line_end": 156,
-      "text": [
-        "        json!({\"rust_file\":source, \"rust_item\":\"fn[generated]\", \"text\":[\"pub fn generated() {}\"]}),"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 197,
-      "line_end": 197,
-      "text": [
-        "// {test}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 220,
-      "line_end": 220,
-      "text": [
-        "            json!({\"rust_file\":file, \"rust_item\":\"struct[Source]\", \"text\":[\"pub struct Source;\"]}),"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 265,
-      "line_end": 265,
-      "text": [
-        "// {test}`requirements.ci.rust_item_inputs`"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 305,
-      "line_end": 305,
-      "text": [
-        "        json!({\"rust_file\":generated, \"rust_item\":\"fn[generated]\", \"text\":[\"pub fn generated() {}\"]}),"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 400,
-      "line_end": 549,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "fn escape_segment(source: &str) -> String {",
-        "    let mut escaped = String::new();",
-        "    for character in source.chars() {",
-        "        if matches!(character, '%' | '[' | ']' | '/' | '#') || character.is_whitespace() {",
-        "            for byte in character.to_string().bytes() {",
-        "                escaped.push_str(&format!(\"%{byte:02X}\"));",
-        "            }",
-        "        } else {",
-        "            escaped.push(character);",
-        "        }",
-        "    }",
-        "    escaped",
-        "}",
-        "",
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {",
-        "    let syntax = syn::parse_file(source)?;",
-        "    let mut collector = ItemCollector {",
-        "        source,",
-        "        nodes: Vec::new(),",
-        "        parents: Vec::new(),",
-        "    };",
-        "    collector.visit_file(&syntax);",
-        "    let nodes = collector.nodes;",
-        "    let mut groups = BTreeMap::<(Option<usize>, String), Vec<usize>>::new();",
-        "    for (index, node) in nodes.iter().enumerate() {",
-        "        groups",
-        "            .entry((node.parent, node.base.clone()))",
-        "            .or_default()",
-        "            .push(index);",
-        "    }",
-        "    let mut segments = vec![String::new(); nodes.len()];",
-        "    for indices in groups.values_mut() {",
-        "        indices.sort_by_key(|index| nodes[*index].byte_start);",
-        "        let count = indices.len();",
-        "        for (ordinal, index) in indices.iter().enumerate() {",
-        "            let node = &nodes[*index];",
-        "            segments[*index] = if node.ordinal_always || count > 1 {",
-        "                format!(\"{}#{}\", node.base, ordinal + 1)",
-        "            } else {",
-        "                node.base.clone()",
-        "            };",
-        "        }",
-        "    }",
-        "    let comments = comments(source);",
-        "    let mut selectors = vec![String::new(); nodes.len()];",
-        "    let mut items = Vec::with_capacity(nodes.len());",
-        "    for (index, node) in nodes.iter().enumerate() {",
-        "        selectors[index] = node.parent.map_or_else(",
-        "            || segments[index].clone(),",
-        "            |parent| format!(\"{}/{}\", selectors[parent], segments[index]),",
-        "        );",
-        "        let byte_start = attached_comment_indices(source, &comments, node.byte_start)",
-        "            .into_iter()",
-        "            .map(|index| comments[index].start)",
-        "            .min()",
-        "            .unwrap_or(node.byte_start);",
-        "        let line_start = line_at(source, byte_start);",
-        "        let line_end = line_at(source, node.byte_end.saturating_sub(1));",
-        "        items.push(RustItem {",
-        "            selector: selectors[index].clone(),",
-        "            declaration_line: node.declaration_line,",
-        "            line_start,",
-        "            line_end,",
-        "            byte_start: node.byte_start,",
-        "            byte_end: node.byte_end,",
-        "        });",
-        "    }",
-        "    Ok(items)",
-        "}",
-        "",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "fn line_at(source: &str, byte: usize) -> usize {",
-        "    source.as_bytes()[..byte.min(source.len())]",
-        "        .iter()",
-        "        .filter(|byte| **byte == b'\\n')",
-        "        .count()",
-        "        + 1",
-        "}",
-        "",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "pub(crate) fn item_lines(source: &str, item: &RustItem) -> Vec<String> {",
-        "    source",
-        "        .lines()",
-        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line))",
-        "        .skip(item.line_start - 1)",
-        "        .take(item.line_end - item.line_start + 1)",
-        "        .map(str::to_owned)",
-        "        .collect()",
-        "}",
-        "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use super::parse_items;",
-        "",
-        "    // {test}`requirements.references.rust_item_selectors`",
-        "    // {test}`requirements.references.selector_nested`",
-        "    // {test}`requirements.references.selector_impl_and_trait`",
-        "    // {test}`requirements.references.selector_inline_and_foreign`",
-        "    // {test}`requirements.references.selector_duplicate_names`",
-        "    // {test}`requirements.references.selector_use`",
-        "    #[test]",
-        "    fn selectors_name_syntactic_ancestry_and_duplicates() {",
-        "        let source = r#\"",
-        "use alpha::A;",
-        "use beta::B;",
-        "mod local { fn run() {} }",
-        "mod external;",
-        "struct Thing;",
-        "impl Thing { fn run() {} }",
-        "impl Trait for Thing { fn run() {} }",
-        "impl [u8; 4] { fn edge() {} }",
-        "trait Trait { fn read(&self); }",
-        "extern \"C\" { fn puts(); }",
-        "fn outer() { fn inner() {} }",
-        "#[cfg(a)] fn repeated() {}",
-        "#[cfg(b)] fn repeated() {}",
-        "\"#;",
-        "        let selectors = parse_items(source)",
-        "            .unwrap()",
-        "            .into_iter()",
-        "            .map(|item| item.selector)",
-        "            .collect::<Vec<_>>();",
-        "        for selector in [",
-        "            \"use#1\",",
-        "            \"use#2\",",
-        "            \"mod[local]/fn[run]\",",
-        "            \"mod[external]\",",
-        "            \"struct[Thing]\",",
-        "            \"impl[Thing]/fn[run]\",",
-        "            \"impl[Thing/Trait]/fn[run]\",",
-        "            \"impl[%5Bu8;%204%5D]/fn[edge]\",",
-        "            \"trait[Trait]/fn[read]\",",
-        "            \"extern[C]/fn[puts]\",",
-        "            \"fn[outer]/fn[inner]\",",
-        "            \"fn[repeated]#1\",",
-        "            \"fn[repeated]#2\",",
-        "        ] {",
-        "            assert!(",
-        "                selectors.contains(&selector.to_owned()),",
-        "                \"{selector}: {selectors:?}\"",
-        "            );",
-        "        }",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 355,
-      "line_end": 380,
-      "text": [
-        "{cite}`requirements.check`",
-        "{test}`requirements.check`",
-        "{test}`reference.cli.unknown_command`",
-        "```",
-        "",
-        "Each reference must name an existing requirement or example and is a directed edge between its source and that definition. Choose the role by what the source does:",
-        "",
-        "- `{impl}`: the source implements part of the definition. It makes a decision, performs a check, produces an output, or handles a case the definition specifies. Calling code that implements a definition, or producing a result a caller uses to meet it, is not implementing it. A requirement that refines another requirement's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.",
-        "- `{test}`: the source is designed to verify behavior the definition specifies, either a test through its scenario and assertions, or a named example through its concrete case.",
-        "- `{cite}`: the source relies on, supports, or refers to the definition without implementing or testing it.",
-        "",
-        "Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.",
-        "{cite}`requirements.references.targets` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`",
-        "",
-        "For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_function_coverage` {cite}`requirements.cli.internal_detail_guidance`",
-        "",
-        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
-        "",
-        "## Checking and viewing",
-        "",
-        "The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`",
-        "",
-        "Run `habeas status [<selection>]` from within the project to list requirements and named",
-        "examples needing attention and their validation findings. FIXME judgments are",
-        "summarized by issue, for example:",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "use crate::rust_items::parse_items;",
         ""
       ]
     },
     {
       "file": "src/add_input.rs",
-      "line_start": 9,
-      "line_end": 13,
+      "line_start": 103,
+      "line_end": 105,
       "text": [
-        "use crate::evidence::{Declaration, inspect_repository};",
-        "use crate::inputs::{InputSelector, read_project_file};",
-        "use crate::rust_items::parse_items;",
-        "",
-        "// {impl}`requirements.cli.add_input`"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 102,
-      "line_end": 106,
-      "text": [
-        "                .to_str()",
         "                .ok_or_else(|| invalid_input(\"Rust file path must be UTF-8\"))?;",
         "            let items = parse_items(&source).map_err(|error| {",
-        "                invalid_input(format!(\"{rust_file}: cannot parse Rust source: {error}\"))",
-        "            })?;"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 110,
-      "line_end": 114,
-      "text": [
-        "                .map(|item| InputSelector::RustItem {",
-        "                    rust_file: rust_file.to_owned(),",
-        "                    rust_item: item.selector,",
-        "                })",
-        "                .collect::<Vec<_>>();"
+        "                invalid_input(format!(\"{rust_file}: cannot parse Rust source: {error}\"))"
       ]
     },
     {
       "file": "src/authoring/inputs.rs",
-      "line_start": 276,
-      "line_end": 280,
+      "line_start": 303,
+      "line_end": 305,
       "text": [
-        "    {",
         "        let (_, source) = read_project_file(root, &file).map_err(io::Error::other)?;",
         "        let items = crate::rust_items::parse_items(&source).map_err(|error| {",
-        "            io::Error::other(format!(",
-        "                \"{file}: cannot parse referenced Rust source: {error}\""
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 293,
-      "line_end": 297,
-      "text": [
-        "            return Ok(InputSelector::RustItem {",
-        "                rust_file: file,",
-        "                rust_item: item.selector.clone(),",
-        "            });",
-        "        }"
+        "            io::Error::other(format!("
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 247,
-      "line_end": 251,
+      "line_start": 250,
+      "line_end": 252,
       "text": [
-        "                fs::read_to_string(&reference.file)",
         "                    .ok()",
         "                    .and_then(|source| crate::rust_items::parse_items(&source).ok())",
-        "                    .unwrap_or_default()",
-        "            });"
+        "                    .unwrap_or_default()"
       ]
     },
     {
-      "file": "src/authoring/tools.rs",
-      "line_start": 254,
-      "line_end": 258,
+      "file": "src/index.rs",
+      "line_start": 1262,
+      "line_end": 1264,
       "text": [
-        "                .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)",
-        "                .min_by_key(|item| item.line_end - item.line_start)",
-        "                .map(|item| item.selector.clone())",
-        "        } else {",
-        "            None"
+        "            links.input_url(\"src/a b#c.rs\", 1, 1).as_deref(),",
+        "            Some(\"https://github.com/example/project/blob/release/src/a%20b%23c.rs#L1-L1\")",
+        "        );"
       ]
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 7,
-      "line_end": 11,
+      "line_start": 8,
+      "line_end": 10,
       "text": [
-        "use crate::definition_glob;",
         "use crate::evidence::Declaration;",
         "use crate::rust_items::{item_lines, parse_items};",
-        "",
-        "// {impl}`requirements.ci.schema`"
+        ""
       ]
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 155,
-      "line_end": 161,
+      "line_start": 160,
+      "line_end": 162,
       "text": [
-        "                }",
         "                let (_, content) = read_project_file(root, rust_file)?;",
         "                let items = parse_items(&content)",
-        "                    .map_err(|error| format!(\"{rust_file}: cannot parse Rust source: {error}\"))?;",
-        "                let mut matching = items.iter().filter(|item| item.selector == *rust_item);",
-        "                let Some(item) = matching.next() else {",
-        "                    return Err(format!(\"{rust_file}: no Rust item matches {rust_item:?}\"));"
+        "                    .map_err(|error| format!(\"{rust_file}: cannot parse Rust source: {error}\"))?;"
       ]
     },
     {
       "file": "src/rust_items.rs",
-      "line_start": 418,
-      "line_end": 422,
+      "line_start": 421,
+      "line_end": 423,
       "text": [
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "// {impl}`requirements.ci.rust_item_inputs`",
+        "// {impl}`requirements.cli.add_input_rust_item`",
         "pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {",
-        "    let syntax = syn::parse_file(source)?;",
-        "    let mut collector = ItemCollector {"
+        "    let syntax = syn::parse_file(source)?;"
       ]
     },
     {
       "file": "src/rust_items.rs",
-      "line_start": 496,
-      "line_end": 500,
+      "line_start": 499,
+      "line_end": 501,
       "text": [
-        "#[cfg(test)]",
         "mod tests {",
         "    use super::parse_items;",
-        "",
-        "    // {test}`requirements.references.rust_item_selectors`"
+        ""
       ]
     },
     {
       "file": "src/rust_items.rs",
-      "line_start": 521,
-      "line_end": 528,
+      "line_start": 524,
+      "line_end": 526,
       "text": [
-        "#[cfg(b)] fn repeated() {}",
         "\"#;",
         "        let selectors = parse_items(source)",
-        "            .unwrap()",
-        "            .into_iter()",
-        "            .map(|item| item.selector)",
-        "            .collect::<Vec<_>>();",
-        "        for selector in ["
+        "            .unwrap()"
+      ]
+    },
+    {
+      "file": "src/rust_items.rs",
+      "line_start": 537,
+      "line_end": 539,
+      "text": [
+        "            \"impl[Thing/Trait]/fn[run]\",",
+        "            \"impl[%5Bu8;%204%5D]/fn[edge]\",",
+        "            \"trait[Trait]/fn[read]\","
       ]
     }
   ]

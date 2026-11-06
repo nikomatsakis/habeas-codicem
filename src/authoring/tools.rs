@@ -47,7 +47,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
-            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
+            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. An :impl: or :test: anchor on a definition names a complete file and is reported with line null. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
             "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
     ]
@@ -191,6 +191,7 @@ fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
 
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.references.definition_globs`
+// {impl}`requirements.references.anchors`
 fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
     check_keys(args, &["selection"])?;
     let selection = if args.contains_key("selection") {
@@ -261,7 +262,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         sites.push((
             reference.name.clone(),
             file,
-            reference.line,
+            Some(reference.line),
             json!({
                 "name": reference.name,
                 "role": reference.kind.label(),
@@ -270,6 +271,33 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
                 "rust_item": rust_item,
             }),
         ));
+    }
+    // {impl}`requirements.references.anchors`
+    for (name, definition) in &definitions {
+        if definition.kind == crate::DefinitionKind::Term
+            || !crate::definition_glob::matches(selection, name)
+        {
+            continue;
+        }
+        for anchor in &definition.anchors {
+            // Discovery omits excluded sources rather than aborting.
+            let Ok(path) = sources.access.file(&sources.root, Path::new(&anchor.file)) else {
+                continue;
+            };
+            let file = relative_path(&sources.root, &path)?;
+            sites.push((
+                name.clone(),
+                file.clone(),
+                None,
+                json!({
+                    "name": name,
+                    "role": anchor.kind.label(),
+                    "file": file,
+                    "line": null,
+                    "rust_item": null,
+                }),
+            ));
+        }
     }
     sites.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
     Ok(ToolDelivery {
@@ -1271,5 +1299,45 @@ mod tests {
             assert_eq!(again.result, first.result);
         }
         assert!(dispatch(&sources, "ripgrep", &json!({"pattern": "("})).is_err());
+    }
+
+    // {test}`requirements.authoring.reference_index`
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn references_report_anchors_as_whole_file_sites() {
+        let root = project();
+        fs::create_dir_all(root.path().join("skills")).unwrap();
+        fs::write(root.path().join("skills/ready.md"), "# Skill\n").unwrap();
+        fs::create_dir_all(root.path().join("private")).unwrap();
+        fs::write(root.path().join("private/notes.md"), "hidden\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\n:impl: skills/ready.md\nThe project MUST be ready.\n:::\n\n:::{{example}} case\n:test: skills/ready.md\n:test: private/notes.md\nA ready case. {}\n:::\n",
+                role("cite", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n\n[evidence]\ndisallow = [\"private\"]\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let result = dispatch(
+            &sources,
+            "references",
+            &json!({"selection": "requirements.*"}),
+        )
+        .unwrap();
+        assert_eq!(
+            result.result["sites"],
+            json!([
+                {"name": "requirements.case", "role": "test", "file": "skills/ready.md", "line": null, "rust_item": null},
+                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 9, "rust_item": null},
+                {"name": "requirements.ready", "role": "impl", "file": "skills/ready.md", "line": null, "rust_item": null},
+            ])
+        );
+        assert!(result.inputs.is_empty());
     }
 }

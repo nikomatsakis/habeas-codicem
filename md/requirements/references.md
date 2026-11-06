@@ -11,6 +11,7 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
 :::
 
 :::{req} anchors
+:impl: assets/skills/habeas-requirements/SKILL.md
 A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`
 declaration MAY list `:test:` options, immediately after its opening fence and
 before its body, one project file path per option line. Each anchor MUST be an `{impl}` or `{test}` edge, under
@@ -34,6 +35,7 @@ definition. Habeas's bundled agent skills MUST give this direction.
 :::
 
 :::{req} book_badges
+:impl: md/habeas.css
 In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`.
 :::
 

@@ -22,6 +22,7 @@ pub struct EvidenceReport {
     pub errors: Vec<String>,
 }
 
+// {impl}`requirements.references.anchors`
 pub(crate) struct Declaration {
     pub(crate) kind: DefinitionKind,
     pub(crate) text: String,
@@ -30,6 +31,44 @@ pub(crate) struct Declaration {
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
     pub(crate) raw_lines: Vec<String>,
+    pub(crate) anchors: Vec<Anchor>,
+}
+
+/// An `:impl:` or `:test:` option naming a complete project file.
+// {impl}`requirements.references.anchors`
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Anchor {
+    pub(crate) kind: ReferenceKind,
+    pub(crate) file: String,
+}
+
+impl Anchor {
+    /// Resolve the anchored file, returning its canonical path and line count.
+    // {impl}`requirements.references.anchors`
+    pub(crate) fn complete_file(&self, root: &Path) -> Result<(PathBuf, usize), String> {
+        if self.file.is_empty() {
+            return Err("anchor path must be nonempty".to_owned());
+        }
+        let (path, content) = crate::inputs::read_project_file(root, &self.file)?;
+        let line_count = content.lines().count();
+        if line_count == 0 {
+            return Err(format!(
+                "{} is empty, so no input can contain it",
+                self.file
+            ));
+        }
+        Ok((fs::canonicalize(&path).unwrap_or(path), line_count))
+    }
+
+    /// The file-range selector containing the complete anchored file.
+    // {impl}`requirements.references.anchors`
+    pub(crate) fn selector(&self, line_count: usize) -> InputSelector {
+        InputSelector::FileRange {
+            file: self.file.clone(),
+            line_start: 1,
+            line_end: line_count,
+        }
+    }
 }
 
 // {impl}`requirements.integration.report_api`
@@ -39,6 +78,7 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 
 pub(crate) struct RepositoryInspection {
     pub(crate) definitions: BTreeMap<String, Declaration>,
+    pub(crate) references: Vec<SourceReference>,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
 }
@@ -165,8 +205,9 @@ pub(crate) fn inspect_repository_with_progress(
         }
     }
 
-    validate_references(&root, &definitions, &mut errors, &mut progress);
-    // {impl}`requirements.references.rust_function_coverage`
+    let references = collect_references_with_progress(&root, &mut errors, &mut progress);
+    validate_references(&root, &definitions, &references, &mut errors, &mut progress);
+    // {impl}`requirements.references.rust_item_coverage`
     progress(InspectionProgress {
         stage: "Rust citations",
         completed: 0,
@@ -195,6 +236,7 @@ pub(crate) fn inspect_repository_with_progress(
             errors,
         },
         definitions,
+        references,
         discovery_errors,
     })
 }
@@ -256,6 +298,7 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.references.anchors`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -280,7 +323,8 @@ fn collect_definitions(
             }
         };
         let namespace = chapter_namespace(relative);
-        for block in definition_blocks(&content) {
+        let blocks = definition_blocks(&content);
+        for block in &blocks {
             let line = content[..block.start]
                 .bytes()
                 .filter(|byte| *byte == b'\n')
@@ -303,7 +347,41 @@ fn collect_definitions(
                 ));
             }
             // {impl}`requirements.ci.span`
-            let text = content[block.body_start..block.body_end].trim().to_owned();
+            // {impl}`requirements.references.anchors`
+            let text = crate::without_options(&content, block.body_start..block.body_end, &blocks)
+                .trim()
+                .to_owned();
+            let mut anchors = Vec::new();
+            for option in &block.options {
+                let kind = match (block.kind, option.name.as_str()) {
+                    (DefinitionKind::Requirement, "impl") => ReferenceKind::Impl,
+                    (DefinitionKind::Requirement | DefinitionKind::Example, "test") => {
+                        ReferenceKind::Test
+                    }
+                    _ => {
+                        errors.push(format!(
+                            "{label}:{}: {} {name} has unsupported option :{}:",
+                            option.line,
+                            block.kind.noun(),
+                            option.name
+                        ));
+                        continue;
+                    }
+                };
+                if option.value.is_empty() {
+                    errors.push(format!(
+                        "{label}:{}: {} {name} has an :{}: option without a file path",
+                        option.line,
+                        block.kind.noun(),
+                        option.name
+                    ));
+                    continue;
+                }
+                anchors.push(Anchor {
+                    kind,
+                    file: option.value.clone(),
+                });
+            }
             if text.is_empty() {
                 errors.push(format!(
                     "{source}: {} {name} has no text",
@@ -318,18 +396,22 @@ fn collect_definitions(
             }
             match definitions.entry(name.clone()) {
                 Entry::Vacant(slot) => {
-                    let raw_lines = content[block.start..block.end]
-                        .lines()
-                        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
-                        .collect::<Vec<_>>();
+                    // {impl}`requirements.references.anchors`
+                    let raw_lines =
+                        crate::without_options(&content, block.start..block.end, &blocks)
+                            .lines()
+                            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+                            .collect::<Vec<_>>();
+                    let line_count = content[block.start..block.end].lines().count();
                     slot.insert(Declaration {
                         kind: block.kind,
                         text,
                         source,
                         file: label.clone(),
                         line_start: line,
-                        line_end: line + raw_lines.len().saturating_sub(1),
+                        line_end: line + line_count.saturating_sub(1),
                         raw_lines,
+                        anchors,
                     });
                 }
                 Entry::Occupied(previous) => errors.push(format!(
@@ -925,14 +1007,16 @@ struct InputRange {
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.authoring.progress`
+// {impl}`requirements.references.anchors`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
+    references: &[SourceReference],
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) {
-    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
-    for reference in collect_references_with_progress(root, errors, progress) {
+    let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();
+    for reference in references {
         let target = definitions.get(&reference.name);
         if reference.kind == ReferenceKind::Term {
             if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {
@@ -977,6 +1061,10 @@ fn validate_references(
             && !references
                 .iter()
                 .any(|reference| reference.kind == ReferenceKind::Test)
+            && !definition
+                .anchors
+                .iter()
+                .any(|anchor| anchor.kind == ReferenceKind::Test)
             && fs::read_to_string(&evidence_file)
                 .ok()
                 .and_then(|content| serde_json::from_str::<Value>(&content).ok())
@@ -1008,6 +1096,33 @@ fn validate_references(
                     display_path(root, &reference.file),
                     reference.line
                 ));
+            }
+        }
+        // An anchor is an edge to the complete file, so one input must contain
+        // every line of it.
+        for anchor in &definition.anchors {
+            match anchor.complete_file(root) {
+                Ok((path, line_count)) => {
+                    if !inputs.iter().any(|input| {
+                        input.file == path && input.line_start <= 1 && line_count <= input.line_end
+                    }) {
+                        errors.push(format!(
+                            "{}: no input contains the complete file {} (lines 1-{line_count}) anchored by :{}: on {} {name}",
+                            display_path(root, &evidence_file),
+                            anchor.file,
+                            anchor.kind.label(),
+                            definition.kind.noun()
+                        ));
+                    }
+                }
+                Err(error) => errors.push(format!(
+                    "{}: :{}: anchor {} on {} {name} at {} does not resolve to a readable, permitted file: {error}",
+                    display_path(root, &evidence_file),
+                    anchor.kind.label(),
+                    anchor.file,
+                    definition.kind.noun(),
+                    definition.source
+                )),
             }
         }
     }
@@ -1167,7 +1282,7 @@ fn evidence_input_ranges(
 mod tests {
     use std::fs;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
 
     use super::validate_repository;
@@ -1928,5 +2043,140 @@ mod tests {
             ),
             "{errors}"
         );
+    }
+
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.ci.requirement_text`
+    #[test]
+    fn anchored_files_must_be_completely_covered_and_resolvable() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::create_dir_all(root.join("skills")).unwrap();
+        fs::write(root.join("skills/ready.md"), "# Skill\nUse ready.\n").unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\n:impl: skills/ready.md\n:test: missing.sh\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
+        )
+        .unwrap();
+        let skill = |line_end: usize| {
+            json!({
+                "file": "skills/ready.md",
+                "line_start": 1,
+                "line_end": line_end,
+                "text": &["# Skill", "Use ready."][..line_end],
+            })
+        };
+        let write = |name: &str, field: &str, text: &str, inputs: Value| {
+            fs::write(
+                root.join(format!("evidence/{name}.json")),
+                json!({
+                    field: text,
+                    "determination": true,
+                    "rationale": "Checked.",
+                    "inputs": inputs,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        // The option lines are not part of the definition text.
+        write(
+            "requirements.ready",
+            "requirement",
+            "Ready MUST hold.",
+            json!([skill(1)]),
+        );
+        write(
+            "requirements.case",
+            "example",
+            &"A ready case. CITE`requirements.ready`".replace("CITE", "{cite}"),
+            json!([skill(2)]),
+        );
+        let errors = validate_repository(root).unwrap().errors.join("\n");
+        assert!(!errors.contains("text changed"), "{errors}");
+        assert!(
+            errors.contains("evidence/requirements.ready.json: no input contains the complete file skills/ready.md (lines 1-2) anchored by :impl: on requirement requirements.ready"),
+            "{errors}"
+        );
+        assert!(
+            errors.contains("evidence/requirements.ready.json: :test: anchor missing.sh on requirement requirements.ready at md/requirements.md:1 does not resolve"),
+            "{errors}"
+        );
+        assert!(!errors.contains("requirements.case.json"), "{errors}");
+
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\n:impl: skills/ready.md\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
+        )
+        .unwrap();
+        write(
+            "requirements.ready",
+            "requirement",
+            "Ready MUST hold.",
+            json!([skill(2)]),
+        );
+        let report = validate_repository(root).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        // Changing the anchored file makes the evidence stale.
+        fs::write(root.join("skills/ready.md"), "# Skill\nUse ready now.\n").unwrap();
+        let errors = validate_repository(root).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("evidence/requirements.ready.json: inputs[0]: input text changed at skills/ready.md:1-2"),
+            "{errors}"
+        );
+    }
+
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn unsupported_and_empty_options_are_validation_errors() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/requirements.md"),
+            ":::{req} ready\n:phrase: ready\n:impl:\nReady MUST hold.\n:::\n\n:::{example} case\n:impl: src/main.rs\nA case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
+        )
+        .unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        for expected in [
+            "md/requirements.md:2: requirement requirements.ready has unsupported option :phrase:",
+            "md/requirements.md:3: requirement requirements.ready has an :impl: option without a file path",
+            "md/requirements.md:8: example requirements.case has unsupported option :impl:",
+        ] {
+            assert!(errors.contains(expected), "missing {expected:?}: {errors}");
+        }
+        assert!(super::load_definitions(temp.path()).is_err());
+    }
+
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.ci.requirements_inputs`
+    #[test]
+    fn requirements_inputs_omit_option_lines() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/requirements.md"),
+            "# Rules\n\n:::{req} ready\n:impl: src/main.rs\nReady MUST hold.\n:::\n",
+        )
+        .unwrap();
+        let definitions = super::load_definitions(temp.path()).unwrap();
+        let ready = &definitions["requirements.ready"];
+        assert_eq!(ready.text, "Ready MUST hold.");
+        assert_eq!((ready.line_start, ready.line_end), (3, 6));
+        assert_eq!(
+            ready.raw_lines,
+            [":::{req} ready", "Ready MUST hold.", ":::"]
+        );
+        assert_eq!(
+            ready.anchors,
+            [super::Anchor {
+                kind: crate::ReferenceKind::Impl,
+                file: "src/main.rs".to_owned(),
+            }]
+        );
+        let resolved = crate::inputs::InputSelector::Requirements {
+            requirements: "requirements.ready".to_owned(),
+        }
+        .resolve(&fs::canonicalize(temp.path()).unwrap(), &definitions)
+        .unwrap();
+        assert_eq!(resolved.text, ready.raw_lines);
     }
 }

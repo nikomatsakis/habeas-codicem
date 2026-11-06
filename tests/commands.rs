@@ -422,7 +422,7 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
 }
 
 // {test}`requirements.cli.status`
-// {test}`requirements.references.rust_function_coverage`
+// {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.references.definition_globs`
 #[test]
 fn status_preserves_repository_wide_rust_findings_in_every_form() {
@@ -905,7 +905,10 @@ fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {
         "{detail}"
     );
     assert!(detail.contains("src/main.rs:1–4"), "{detail}");
-    assert!(detail.contains("requirements glob rules.*"), "{detail}");
+    assert!(
+        detail.contains("requirements selection rules.*"),
+        "{detail}"
+    );
     assert!(detail.contains("md/rules.md:5–7"), "{detail}");
 
     let invalid = habeas(

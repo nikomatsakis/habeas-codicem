@@ -8,17 +8,23 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 use mdbook_preprocessor::config::Config;
 use serde_json::Value;
 
-use crate::evidence::{Declaration, inspect_repository};
+use crate::evidence::{Declaration, SourceReference, inspect_repository};
 use crate::inputs::{InputSelector, SourceRange};
 use crate::markdown::render_evidence_table;
 use crate::{
-    Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,
-    escape_html, overlaps_protected, protected_ranges, shield_badge,
+    Definition, DefinitionKind, EvidenceReport, ReferenceKind, chapter_href, colon_fence,
+    definition_blocks, escape_html, overlaps_protected, protected_ranges, reference_roles,
+    shield_badge,
 };
 
-pub(crate) struct IndexPlan {
-    chapter_path: PathBuf,
+/// Where generated evidence detail pages and the optional index go.
+// {impl}`requirements.index.detail_pages`
+// {impl}`requirements.index.chapter`
+pub(crate) struct DetailPlan {
+    index_path: Option<PathBuf>,
     detail_paths: BTreeMap<String, PathBuf>,
+    /// Defining chapter paths, each with its definitions in definition order.
+    chapters: Vec<(PathBuf, Vec<String>)>,
 }
 
 // {impl}`requirements.index.source_links`
@@ -30,6 +36,8 @@ pub(crate) struct SourceLinks {
 pub(crate) struct RenderSources<'a> {
     pub(crate) root: &'a Path,
     pub(crate) definitions: &'a BTreeMap<String, Declaration>,
+    /// Current `{impl}`, `{cite}`, and `{test}` references in project sources.
+    pub(crate) references: &'a [SourceReference],
     pub(crate) source_links: Option<&'a SourceLinks>,
 }
 
@@ -247,49 +255,62 @@ impl EvidenceState {
     }
 }
 
-impl IndexPlan {
+impl DetailPlan {
     // {impl}`requirements.index.chapter`
     // {impl}`requirements.examples.index`
+    // {impl}`requirements.index.detail_pages`
+    // {impl}`requirements.index.path_conflicts`
     pub(crate) fn find(
         book: &Book,
         definitions: &BTreeMap<String, Definition>,
-    ) -> io::Result<Option<Self>> {
-        let mut chapter_path = None;
+        order: &[String],
+    ) -> io::Result<Self> {
+        let mut index_path = None;
         for chapter in book.chapters() {
             for _ in marker_ranges(&chapter.content)? {
-                if chapter_path.is_some() {
+                if index_path.is_some() {
                     return Err(invalid_index(
                         "a book may contain only one {requirements-index} directive",
                     ));
                 }
-                chapter_path = chapter.path.clone();
+                index_path = chapter.path.clone();
             }
         }
-        let Some(chapter_path) = chapter_path else {
-            return Ok(None);
-        };
-        let detail_dir = chapter_path.with_extension("");
-        let detail_paths = definitions
-            .keys()
-            .map(|name| (name.clone(), detail_dir.join(format!("{name}.md"))))
-            .collect::<BTreeMap<_, _>>();
+        let mut detail_paths = BTreeMap::new();
+        let mut chapters: Vec<(PathBuf, Vec<String>)> = Vec::new();
+        for name in order {
+            let Some(definition) = definitions.get(name) else {
+                continue;
+            };
+            let path = detail_path(&definition.path, name);
+            detail_paths.insert(name.clone(), path);
+            match chapters
+                .iter_mut()
+                .find(|(chapter, _)| *chapter == definition.path)
+            {
+                Some((_, names)) => names.push(name.clone()),
+                None => chapters.push((definition.path.clone(), vec![name.clone()])),
+            }
+        }
         let existing_paths = book
             .chapters()
             .filter_map(|chapter| chapter.path.as_ref())
             .collect::<BTreeSet<_>>();
         // {impl}`requirements.index.path_conflicts`
+        let mut generated = BTreeSet::new();
         for path in detail_paths.values() {
-            if existing_paths.contains(path) {
+            if existing_paths.contains(path) || !generated.insert(path) {
                 return Err(invalid_index(&format!(
                     "generated evidence page {} conflicts with a book chapter",
                     path.display()
                 )));
             }
         }
-        Ok(Some(Self {
-            chapter_path,
+        Ok(Self {
+            index_path,
             detail_paths,
-        }))
+            chapters,
+        })
     }
 
     // {impl}`requirements.index.navigation`
@@ -305,40 +326,48 @@ impl IndexPlan {
     // {impl}`requirements.index.state`
     // {impl}`requirements.examples.index`
     // {impl}`requirements.index.chapter`
+    // {impl}`requirements.index.detail_pages`
     pub(crate) fn populate(
         &self,
         book: &mut Book,
         root: &Path,
         definitions: &BTreeMap<String, Definition>,
     ) -> io::Result<()> {
+        if self.detail_paths.is_empty() && self.index_path.is_none() {
+            return Ok(());
+        }
         let config = Config::from_disk(root.join("book.toml")).map_err(io::Error::other)?;
         let source_links = SourceLinks::from_config(&config)?;
         let inspection = inspect_repository(root)?;
         let report = &inspection.report;
+        let sources = RenderSources {
+            root,
+            definitions: &inspection.definitions,
+            references: &inspection.references,
+            source_links: source_links.as_ref(),
+        };
         let mut rows = Vec::new();
-        let mut pages = Vec::new();
+        let mut pages = BTreeMap::new();
         for (name, detail_path) in &self.detail_paths {
             let evidence_path = root.join("evidence").join(format!("{name}.json"));
             let evidence = LoadedDetailEvidence::load(root, name, report);
-            let detail_href = chapter_href(&self.chapter_path, detail_path, None);
             let definition = definitions
                 .get(name)
                 .expect("every detail page has a definition");
-            rows.push((
-                format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
-                evidence.state().label(),
-            ));
+            if let Some(index_path) = &self.index_path {
+                let detail_href = chapter_href(index_path, detail_path, None);
+                rows.push((
+                    format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
+                    evidence.state().label(),
+                ));
+            }
             let content = render_detail_page(
                 name,
                 detail_path,
-                &self.chapter_path,
+                self.index_path.as_deref(),
                 definition,
                 evidence.borrowed(),
-                &RenderSources {
-                    root,
-                    definitions: &inspection.definitions,
-                    source_links: source_links.as_ref(),
-                },
+                &sources,
             );
             // {impl}`requirements.index.source_links`
             let source_path = if evidence_path.exists() {
@@ -346,26 +375,34 @@ impl IndexPlan {
             } else {
                 definition.path.clone()
             };
-            pages.push((name.clone(), detail_path.clone(), content, source_path));
+            pages.insert(name.clone(), (detail_path.clone(), content, source_path));
         }
 
         // {impl}`requirements.cli.shared_status_rendering`
         let rows = render_evidence_table(&rows);
 
         // {impl}`requirements.index.navigation`
-        let mut found = false;
+        let mut index_found = self.index_path.is_none();
+        let mut chapters_found = 0;
         book.for_each_chapter_mut(|chapter| {
-            if chapter.path.as_deref() != Some(self.chapter_path.as_path()) {
+            let Some(path) = chapter.path.clone() else {
                 return;
+            };
+            if self.index_path.as_deref() == Some(path.as_path()) {
+                index_found = true;
+                let ranges = marker_ranges(&chapter.content)
+                    .expect("the index directive was checked before the book was changed");
+                let range = ranges
+                    .into_iter()
+                    .next()
+                    .expect("the planned index directive is still present");
+                chapter.content.replace_range(range, &rows);
             }
-            found = true;
-            let ranges = marker_ranges(&chapter.content)
-                .expect("the index directive was checked before the book was changed");
-            let range = ranges
-                .into_iter()
-                .next()
-                .expect("the planned index directive is still present");
-            chapter.content.replace_range(range, &rows);
+            let Some((_, names)) = self.chapters.iter().find(|(chapter, _)| *chapter == path)
+            else {
+                return;
+            };
+            chapters_found += 1;
             let mut parent_names = chapter.parent_names.clone();
             parent_names.push(chapter.name.clone());
             let first_number = chapter
@@ -378,7 +415,8 @@ impl IndexPlan {
                 .max()
                 .unwrap_or(0)
                 + 1;
-            for (offset, (name, path, content, source_path)) in pages.iter().enumerate() {
+            for (offset, name) in names.iter().enumerate() {
+                let (path, content, source_path) = &pages[name];
                 let mut page = Chapter::new(name, content.clone(), path, parent_names.clone());
                 page.source_path = Some(source_path.clone());
                 page.number = chapter.number.as_ref().map(|number| {
@@ -389,11 +427,20 @@ impl IndexPlan {
                 chapter.sub_items.push(BookItem::Chapter(page));
             }
         });
-        if !found {
+        if !index_found {
             return Err(invalid_index("the requirements index chapter disappeared"));
+        }
+        if chapters_found != self.chapters.len() {
+            return Err(invalid_index("a defining chapter disappeared"));
         }
         Ok(())
     }
+}
+
+/// The generated page for `name`, in a directory named after its chapter.
+// {impl}`requirements.index.detail_pages`
+fn detail_path(chapter: &Path, name: &str) -> PathBuf {
+    chapter.with_extension("").join(format!("{name}.md"))
 }
 
 // {impl}`requirements.index.source_links`
@@ -412,10 +459,11 @@ fn evidence_edit_path(book_src: &Path, name: &str) -> PathBuf {
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.index.invalid_detail`
 // {impl}`requirements.examples.index`
+// {impl}`requirements.index.navigation`
 fn render_detail_page(
     name: &str,
     detail_path: &Path,
-    index_path: &Path,
+    index_path: Option<&Path>,
     definition: &Definition,
     detail_evidence: DetailEvidence<'_>,
     sources: &RenderSources<'_>,
@@ -425,11 +473,15 @@ fn render_detail_page(
         &definition.path,
         Some(&definition.kind.anchor(name)),
     );
-    let index_href = chapter_href(detail_path, index_path, None);
+    let mut header = format!("# `{name}`\n\n");
+    if let Some(index_path) = index_path {
+        let index_href = chapter_href(detail_path, index_path, None);
+        header.push_str(&format!("[Requirements index]({index_href}) · "));
+    }
+    header.push_str(&format!("[View definition]({definition_href})\n\n"));
     render_detail_sections(
-        format!(
-            "# `{name}`\n\n[Requirements index]({index_href}) · [View definition]({definition_href})\n\n"
-        ),
+        header,
+        name,
         &definition.text,
         definition.kind,
         detail_evidence,
@@ -448,11 +500,143 @@ pub(crate) fn render_cli_detail_page(
 ) -> String {
     render_detail_sections(
         format!("# `{name}`\n\nDefinition: `{source}`\n\n"),
+        name,
         text,
         kind,
         evidence.borrowed(),
         sources,
     )
+}
+
+/// The groups detail pages sort inputs into, in display order.
+// {impl}`requirements.index.detail_format`
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum InputGroup {
+    Implementation,
+    Tests,
+    ReferencedDefinitions,
+    OtherSources,
+}
+
+impl InputGroup {
+    const ALL: [Self; 4] = [
+        Self::Implementation,
+        Self::Tests,
+        Self::ReferencedDefinitions,
+        Self::OtherSources,
+    ];
+
+    // {impl}`requirements.index.detail_format`
+    fn heading(self) -> &'static str {
+        match self {
+            Self::Implementation => "Implementation",
+            Self::Tests => "Tests",
+            Self::ReferencedDefinitions => "Referenced definitions",
+            Self::OtherSources => "Other sources",
+        }
+    }
+
+    // {impl}`requirements.index.detail_format`
+    fn id(self) -> &'static str {
+        match self {
+            Self::Implementation => "habeas-inputs-implementation",
+            Self::Tests => "habeas-inputs-tests",
+            Self::ReferencedDefinitions => "habeas-inputs-referenced-definitions",
+            Self::OtherSources => "habeas-inputs-other-sources",
+        }
+    }
+}
+
+/// Current edges from one definition, used to group its evidence inputs.
+// {impl}`requirements.index.detail_format`
+#[derive(Default)]
+struct DefinitionEdges {
+    /// `{impl}` and `{test}` reference sites as canonical file and line.
+    sites: Vec<(ReferenceKind, PathBuf, usize)>,
+    /// Anchored files as canonical paths.
+    anchors: Vec<(ReferenceKind, PathBuf)>,
+    /// Definitions the subject cites with `{cite}`.
+    cited: BTreeSet<String>,
+}
+
+impl DefinitionEdges {
+    // {impl}`requirements.index.detail_format`
+    // {impl}`requirements.references.anchors`
+    fn current(name: &str, sources: &RenderSources<'_>) -> Self {
+        let mut edges = Self::default();
+        for reference in sources.references {
+            if reference.name == name
+                && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
+            {
+                let file = fs::canonicalize(&reference.file).unwrap_or(reference.file.clone());
+                edges.sites.push((reference.kind, file, reference.line));
+            }
+        }
+        if let Some(declaration) = sources.definitions.get(name) {
+            for anchor in &declaration.anchors {
+                if let Ok((path, _)) = anchor.complete_file(sources.root) {
+                    edges.anchors.push((anchor.kind, path));
+                }
+            }
+            edges.cited = reference_roles(&declaration.text, true)
+                .into_iter()
+                .filter(|reference| reference.kind == ReferenceKind::Cite)
+                .map(|reference| reference.name.to_owned())
+                .collect();
+        }
+        edges
+    }
+
+    // {impl}`requirements.index.detail_format`
+    fn group(
+        &self,
+        root: &Path,
+        selector: Option<&InputSelector>,
+        ranges: &[SourceRange],
+    ) -> InputGroup {
+        let all_cited = !ranges.is_empty()
+            && ranges.iter().all(|range| {
+                range
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| self.cited.contains(name))
+            });
+        let ranges = ranges
+            .iter()
+            .map(|range| {
+                let file = root.join(&range.file);
+                (
+                    fs::canonicalize(&file).unwrap_or(file),
+                    range.line_start,
+                    range.line_end,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (group, kind) in [
+            (InputGroup::Implementation, ReferenceKind::Impl),
+            (InputGroup::Tests, ReferenceKind::Test),
+        ] {
+            let site = self.sites.iter().any(|(site_kind, file, line)| {
+                *site_kind == kind
+                    && ranges
+                        .iter()
+                        .any(|(path, start, end)| path == file && start <= line && line <= end)
+            });
+            let anchored = self.anchors.iter().any(|(anchor_kind, file)| {
+                *anchor_kind == kind && ranges.iter().any(|(path, _, _)| path == file)
+            });
+            if site || anchored {
+                return group;
+            }
+        }
+        match selector {
+            Some(InputSelector::Definition { .. }) => InputGroup::ReferencedDefinitions,
+            Some(InputSelector::Requirements { .. }) if all_cited => {
+                InputGroup::ReferencedDefinitions
+            }
+            _ => InputGroup::OtherSources,
+        }
+    }
 }
 
 // {impl}`requirements.index.detail_format`
@@ -462,6 +646,7 @@ pub(crate) fn render_cli_detail_page(
 // {impl}`requirements.examples.index`
 fn render_detail_sections(
     mut content: String,
+    name: &str,
     definition_text: &str,
     kind: DefinitionKind,
     detail_evidence: DetailEvidence<'_>,
@@ -515,8 +700,37 @@ fn render_detail_sections(
         .and_then(Value::as_array)
     {
         Some(inputs) if !inputs.is_empty() => {
+            let edges = DefinitionEdges::current(name, sources);
+            let mut grouped: BTreeMap<InputGroup, Vec<(usize, &Value, InputLocation)>> =
+                BTreeMap::new();
             for (index, input) in inputs.iter().enumerate() {
-                render_input(&mut content, index + 1, input, sources);
+                let location = InputLocation::resolve(input, sources);
+                let group = edges.group(
+                    sources.root,
+                    location.selector.as_ref(),
+                    match &location.ranges {
+                        Some(Ok(ranges)) => ranges,
+                        _ => &[],
+                    },
+                );
+                grouped
+                    .entry(group)
+                    .or_default()
+                    .push((index + 1, input, location));
+            }
+            for group in InputGroup::ALL {
+                let Some(inputs) = grouped.get(&group) else {
+                    continue;
+                };
+                content.push_str(&format!(
+                    "<details class=\"habeas-input-group\" open>\n<summary><h3 id=\"{}\" style=\"display: inline\">{}</h3></summary>\n\n",
+                    group.id(),
+                    group.heading()
+                ));
+                for (index, input, location) in inputs {
+                    render_input(&mut content, *index, input, location, sources);
+                }
+                content.push_str("</details>\n\n");
             }
         }
         _ => content.push_str("No inputs recorded.\n"),
@@ -530,13 +744,51 @@ fn render_detail_sections(
     content
 }
 
+/// An input's selector and the source ranges it currently resolves to.
+// {impl}`requirements.index.detail_format`
+struct InputLocation {
+    selector: Option<InputSelector>,
+    ranges: Option<Result<Vec<SourceRange>, String>>,
+}
+
+impl InputLocation {
+    // {impl}`requirements.index.detail_format`
+    // {impl}`requirements.definitions.inputs`
+    fn resolve(input: &Value, sources: &RenderSources<'_>) -> Self {
+        let selector = InputSelector::from_input(input);
+        let ranges = selector.as_ref().map(|selector| match selector {
+            InputSelector::FileRange {
+                file,
+                line_start,
+                line_end,
+            } if *line_start > 0 && *line_end >= *line_start => Ok(vec![SourceRange {
+                file: file.clone(),
+                line_start: *line_start,
+                line_end: *line_end,
+                name: None,
+            }]),
+            _ => selector
+                .resolve(sources.root, sources.definitions)
+                .map(|resolved| resolved.ranges),
+        });
+        Self { selector, ranges }
+    }
+}
+
 // {impl}`requirements.index.source_links`
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.definitions.inputs`
-fn render_input(content: &mut String, index: usize, input: &Value, sources: &RenderSources<'_>) {
-    let selector = InputSelector::from_input(input);
-    content.push_str(&format!("<h3 id=\"habeas-input-{index}\">Input {index}"));
-    if let Some(selector) = &selector {
+fn render_input(
+    content: &mut String,
+    index: usize,
+    input: &Value,
+    location: &InputLocation,
+    sources: &RenderSources<'_>,
+) {
+    content.push_str(&format!(
+        "<details class=\"habeas-input\">\n<summary id=\"habeas-input-{index}\"><strong>Input {index}</strong>"
+    ));
+    if let Some(selector) = &location.selector {
         let label = match selector {
             InputSelector::FileRange {
                 file,
@@ -553,41 +805,25 @@ fn render_input(content: &mut String, index: usize, input: &Value, sources: &Ren
             }
             InputSelector::Definition { definition } => format!("definition {definition}"),
             InputSelector::Requirements { requirements } => {
-                format!("requirements glob {requirements}")
+                format!("requirements selection {requirements}")
             }
         };
         content.push_str(": <code>");
         content.push_str(&escape_html(&label));
         content.push_str("</code>");
     }
-    content.push_str("</h3>\n\n");
-    if let Some(selector) = &selector {
-        let ranges = match selector {
-            InputSelector::FileRange {
-                file,
-                line_start,
-                line_end,
-            } if *line_start > 0 && *line_end >= *line_start => Ok(vec![SourceRange {
-                file: file.clone(),
-                line_start: *line_start,
-                line_end: *line_end,
-                name: None,
-            }]),
-            _ => selector
-                .resolve(sources.root, sources.definitions)
-                .map(|resolved| resolved.ranges),
-        };
-        match ranges {
-            Ok(ranges) => {
-                for range in &ranges {
-                    render_source_location(content, range, sources.source_links);
-                }
-                content.push('\n');
+    content.push_str("</summary>\n\n");
+    match &location.ranges {
+        Some(Ok(ranges)) => {
+            for range in ranges {
+                render_source_location(content, range, sources.source_links);
             }
-            Err(error) => {
-                content.push_str(&format!("Unresolved selector: {}\n\n", escape_html(&error)));
-            }
+            content.push('\n');
         }
+        Some(Err(error)) => {
+            content.push_str(&format!("Unresolved selector: {}\n\n", escape_html(error)));
+        }
+        None => {}
     }
 
     if let Some(lines) = input
@@ -595,7 +831,7 @@ fn render_input(content: &mut String, index: usize, input: &Value, sources: &Ren
         .and_then(Value::as_array)
         .and_then(|lines| lines.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
     {
-        let file = match &selector {
+        let file = match &location.selector {
             Some(InputSelector::FileRange { file, .. }) => Some(file.as_str()),
             Some(InputSelector::RustItem { rust_file, .. }) => Some(rust_file.as_str()),
             Some(InputSelector::Requirements { .. } | InputSelector::Definition { .. }) => {
@@ -608,7 +844,7 @@ fn render_input(content: &mut String, index: usize, input: &Value, sources: &Ren
         let raw = serde_json::to_string_pretty(input).expect("JSON values can be serialized");
         push_code_block(content, &raw, "json");
     }
-    content.push('\n');
+    content.push_str("\n</details>\n\n");
 }
 
 // {impl}`requirements.index.source_links`
@@ -747,7 +983,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DetailEvidence, EvidenceState, IndexPlan, RenderSources, SourceLinks, code_language,
+        DetailEvidence, DetailPlan, EvidenceState, RenderSources, SourceLinks, code_language,
         evidence_edit_path, marker_ranges, render_detail_page,
     };
     use crate::{Definition, DefinitionKind, preprocess_book};
@@ -824,12 +1060,10 @@ mod tests {
         }
 
         let mut book = Book::new();
-        book.push_item(Chapter::new(
-            "Requirements",
-            source,
-            "requirements/core.md",
-            Vec::new(),
-        ));
+        let mut definition_chapter =
+            Chapter::new("Requirements", source, "requirements/core.md", Vec::new());
+        definition_chapter.number = Some(SectionNumber::new(vec![3]));
+        book.push_item(definition_chapter);
         let mut index_chapter = Chapter::new(
             "Requirements index",
             "# Requirements index\n\n:::{requirements-index}\n:::\n".to_owned(),
@@ -842,9 +1076,12 @@ mod tests {
 
         let definition = book.chapters().next().unwrap();
         assert!(definition.content.contains(
-            "id=\"habeas-req-requirements.core.ready\" href=\"../appendix/requirements-index/requirements.core.ready.html\""
+            "id=\"habeas-req-requirements.core.ready\" href=\"core/requirements.core.ready.html\""
         ));
-        let index = book.chapters().nth(1).unwrap();
+        let index = book
+            .chapters()
+            .find(|chapter| chapter.name == "Requirements index")
+            .unwrap();
         assert!(!index.content.contains("{requirements-index}"));
         for (name, state) in [
             ("ready", "Valid"),
@@ -854,7 +1091,7 @@ mod tests {
             ("uncovered", "Invalid"),
         ] {
             let link = format!(
-                "| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html)"
+                "| [`requirements.core.{name}`](../requirements/core/requirements.core.{name}.html)"
             );
             let row = index
                 .content
@@ -880,8 +1117,9 @@ mod tests {
                 .collect::<Vec<_>>()
                 == pipes
         }));
-        assert_eq!(index.sub_items.len(), 5);
-        let ready = index
+        assert!(index.sub_items.is_empty());
+        assert_eq!(definition.sub_items.len(), 5);
+        let ready = definition
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -897,22 +1135,20 @@ mod tests {
         );
         assert_eq!(
             ready.number.as_deref().map(Vec::as_slice),
-            Some(&[4, 4][..])
+            Some(&[3, 1][..])
         );
         assert_eq!(
             ready.path.as_deref(),
-            Some(Path::new(
-                "appendix/requirements-index/requirements.core.ready.md"
-            ))
+            Some(Path::new("requirements/core/requirements.core.ready.md"))
         );
-        assert!(ready.content.contains(
-            "[View definition](../../requirements/core.html#habeas-req-requirements.core.ready)"
-        ));
         assert!(
             ready
                 .content
-                .contains("[Requirements index](../requirements-index.html)")
+                .contains("[View definition](../core.html#habeas-req-requirements.core.ready)")
         );
+        assert!(ready.content.contains(
+            "[Requirements index](../../appendix/requirements-index.html) · [View definition]"
+        ));
         assert!(
             ready
                 .content
@@ -920,7 +1156,7 @@ mod tests {
         );
         assert!(ready.content.contains("> Ready MUST work."));
         assert!(!ready.content.contains("## Evidence record"));
-        let changed = index
+        let changed = definition
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -931,7 +1167,7 @@ mod tests {
             })
             .unwrap();
         assert!(changed.content.contains("requirement text changed"));
-        let absent = index
+        let absent = definition
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -984,7 +1220,7 @@ mod tests {
         let page = render_detail_page(
             "requirements.core.ready",
             Path::new("appendix/requirements-index/requirements.core.ready.md"),
-            Path::new("appendix/requirements-index.md"),
+            Some(Path::new("appendix/requirements-index.md")),
             &definition,
             DetailEvidence {
                 state: EvidenceState::Valid,
@@ -995,6 +1231,7 @@ mod tests {
             &RenderSources {
                 root: Path::new("."),
                 definitions: &BTreeMap::new(),
+                references: &[],
                 source_links: None,
             },
         );
@@ -1002,7 +1239,7 @@ mod tests {
         assert!(page.contains("## Requirement\n\n> Ready MUST work.\n> \n> ## Example"));
         assert!(page.contains("## Rationale\n\n**Checked** against the source."));
         assert!(page.contains(
-            "<h3 id=\"habeas-input-1\">Input 1: <code>file range src/main.rs:2–3</code></h3>"
+            "<summary id=\"habeas-input-1\"><strong>Input 1</strong>: <code>file range src/main.rs:2–3</code></summary>"
         ));
         assert!(page.contains("```rust,noplayground\nfn main()"));
         assert!(page.contains("````markdown\n```rust\n````"));
@@ -1050,7 +1287,7 @@ mod tests {
         let page = render_detail_page(
             "requirements.core.ready",
             Path::new("appendix/requirements-index/requirements.core.ready.md"),
-            Path::new("appendix/requirements-index.md"),
+            Some(Path::new("appendix/requirements-index.md")),
             &definition,
             DetailEvidence {
                 state: EvidenceState::Valid,
@@ -1061,6 +1298,7 @@ mod tests {
             &RenderSources {
                 root: Path::new("."),
                 definitions: &BTreeMap::new(),
+                references: &[],
                 source_links: Some(&links),
             },
         );
@@ -1124,7 +1362,7 @@ mod tests {
         book.push_item(Chapter::new(
             "Existing",
             String::new(),
-            "requirements-index/requirements.ready.md",
+            "requirements/requirements.ready.md",
             Vec::new(),
         ));
         let definitions = BTreeMap::from([(
@@ -1135,7 +1373,8 @@ mod tests {
                 kind: DefinitionKind::Requirement,
             },
         )]);
-        let error = match IndexPlan::find(&book, &definitions) {
+        let error = match DetailPlan::find(&book, &definitions, &["requirements.ready".to_owned()])
+        {
             Err(error) => error,
             Ok(_) => panic!("a generated detail page replaced a chapter"),
         };
@@ -1156,7 +1395,7 @@ mod tests {
         let page = render_detail_page(
             "requirements.ready",
             detail,
-            index,
+            Some(index),
             &definition,
             DetailEvidence {
                 state: EvidenceState::Invalid,
@@ -1167,6 +1406,7 @@ mod tests {
             &RenderSources {
                 root: Path::new("."),
                 definitions: &BTreeMap::new(),
+                references: &[],
                 source_links: None,
             },
         );
@@ -1181,7 +1421,7 @@ mod tests {
         let missing = render_detail_page(
             "requirements.ready",
             detail,
-            index,
+            Some(index),
             &definition,
             DetailEvidence {
                 state: EvidenceState::Missing,
@@ -1192,6 +1432,7 @@ mod tests {
             &RenderSources {
                 root: Path::new("."),
                 definitions: &BTreeMap::new(),
+                references: &[],
                 source_links: None,
             },
         );
@@ -1239,22 +1480,27 @@ mod tests {
         ));
         preprocess_book(&mut book, temp.path()).unwrap();
 
-        let chapters = book.chapters().collect::<Vec<_>>();
-        assert!(chapters[0].content.contains(
-            "id=\"habeas-example-rules.pending\" href=\"requirements-index/rules.pending.html\""
-        ));
-        let index = chapters[1];
+        let rules = book.chapters().next().unwrap();
+        assert!(
+            rules
+                .content
+                .contains("id=\"habeas-example-rules.pending\" href=\"rules/rules.pending.html\"")
+        );
+        let index = book
+            .chapters()
+            .find(|chapter| chapter.name == "Index")
+            .unwrap();
         assert!(
             index
                 .content
-                .contains("| [`rules.pending`](requirements-index/rules.pending.html) (example)")
+                .contains("| [`rules.pending`](rules/rules.pending.html) (example)")
         );
         assert!(
             index
                 .content
-                .contains("| [`rules.missing`](requirements-index/rules.missing.html) (example)")
+                .contains("| [`rules.missing`](rules/rules.missing.html) (example)")
         );
-        let pending = index
+        let pending = rules
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1270,7 +1516,7 @@ mod tests {
         );
         assert!(pending.content.contains("The case still needs a test."));
 
-        let missing = index
+        let missing = rules
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1282,5 +1528,95 @@ mod tests {
         assert!(missing.content.contains("## Validation findings"));
         assert!(missing.content.contains("missing for example"));
         assert!(missing.content.contains("No rationale recorded."));
+    }
+
+    // {test}`requirements.index.detail_format`
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn detail_inputs_are_grouped_by_current_edges_in_disclosures() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for dir in ["md", "evidence", "src", "skills"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        let source = ":::{req} ready\n:impl: skills/ready.md\nReady relies on CITE`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. TEST`rules.ready`\n:::\n"
+            .replace("CITE", "{cite}")
+            .replace("TEST", "{test}");
+        fs::write(root.join("md/rules.md"), &source).unwrap();
+        fs::write(root.join("skills/ready.md"), "# Skill\n").unwrap();
+        fs::write(root.join("notes.txt"), "Notes.\n").unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// IMPL`rules.ready`\nfn run() {}\n\n// TEST`rules.ready`\nfn check() {}\n"
+                .replace("IMPL", "{impl}")
+                .replace("TEST", "{test}"),
+        )
+        .unwrap();
+        let inputs = json!([
+            {"requirements": "rules.ready", "matches": ["rules.ready"], "text": ["ready"]},
+            {"rust_file": "src/lib.rs", "rust_item": "fn[check]", "text": ["check"]},
+            {"file": "notes.txt", "line_start": 1, "line_end": 1, "text": ["Notes."]},
+            {"requirements": "rules.base", "matches": ["rules.base"], "text": ["base"]},
+            {"file": "skills/ready.md", "line_start": 1, "line_end": 1, "text": ["# Skill"]},
+            {"requirements": "rules.case", "matches": ["rules.case"], "text": ["case"]},
+            {"rust_file": "src/lib.rs", "rust_item": "fn[run]", "text": ["run"]},
+        ]);
+        fs::write(
+            root.join("evidence/rules.ready.json"),
+            json!({
+                "requirement": "Ready relies on CITE`rules.base`.".replace("CITE", "{cite}"),
+                "determination": true,
+                "rationale": "Checked.",
+                "inputs": inputs,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        preprocess_book(&mut book, root).unwrap();
+        let page = book
+            .chapters()
+            .find(|chapter| chapter.name == "rules.ready")
+            .unwrap();
+        let content = &page.content;
+        let position = |needle: &str| {
+            content
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle:?} in:\n{content}"))
+        };
+        let groups = [
+            ("Implementation", [5, 7].as_slice()),
+            ("Tests", &[2, 6]),
+            ("Referenced definitions", &[4]),
+            ("Other sources", &[1, 3]),
+        ];
+        let starts = groups
+            .iter()
+            .map(|(heading, _)| position(&format!("style=\"display: inline\">{heading}</h3>")))
+            .collect::<Vec<_>>();
+        assert!(starts.windows(2).all(|pair| pair[0] < pair[1]), "{content}");
+        for (group, (_, inputs)) in groups.iter().enumerate() {
+            let end = starts.get(group + 1).copied().unwrap_or(content.len());
+            for input in *inputs {
+                let at = position(&format!("<summary id=\"habeas-input-{input}\">"));
+                assert!(starts[group] < at && at < end, "input {input}:\n{content}");
+            }
+        }
+        assert_eq!(
+            content
+                .matches("<details class=\"habeas-input-group\" open>")
+                .count(),
+            4
+        );
+        assert_eq!(
+            content.matches("<details class=\"habeas-input\">").count(),
+            7
+        );
+        assert_eq!(content.matches("</details>").count(), 11);
+        assert!(content.contains("<code>requirements selection rules.base</code>"));
+        assert!(!content.contains("Requirements index"));
     }
 }

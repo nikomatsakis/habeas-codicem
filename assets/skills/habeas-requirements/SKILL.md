@@ -55,6 +55,8 @@ Choose the role by what the source does:
 
 `{impl}` and `{test}` make the source an input to the definition's assessment and must be covered by its evidence. `{cite}` makes the cited definition context for the citing requirement or example, needs no coverage, and does not count toward the cited requirement's implementation.
 
+When a file that implements or tests a requirement cannot or should not carry a reference itself, such as a shipped skill, a stylesheet copied into other projects, or a README, anchor it from the declaration with `:impl: <path>` or `:test: <path>` option lines directly after the opening fence (examples accept only `:test:`). An anchor covers the whole file, so do not anchor a file when a more precise reference is available, such as a comment attached to the Rust item that implements or tests the requirement.
+
 When a requirement or example changes, run `habeas author --all`, then the Cargo tests. Address reported implementation, test, or reference gaps and rerun the harness. Validation itself checks stored evidence without inference.
 
 ## Shared vocabulary

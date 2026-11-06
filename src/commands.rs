@@ -146,6 +146,7 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
             &RenderSources {
                 root,
                 definitions: &inspection.definitions,
+                references: &inspection.references,
                 source_links: None,
             },
         ));

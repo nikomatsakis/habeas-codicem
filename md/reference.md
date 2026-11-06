@@ -191,6 +191,7 @@ Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
 relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local
 and is not part of the project. Here is a complete configuration with two choices:
 {cite}`requirements.configuration.user_location`
+{impl}`requirements.configuration.documentation`
 {impl}`requirements.authoring.configuration_documentation`
 
 ```toml
@@ -366,7 +367,17 @@ Each reference must name an existing requirement or example and is a directed ed
 Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.
 {cite}`requirements.references.targets` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
-For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_function_coverage` {cite}`requirements.cli.internal_detail_guidance`
+Some sources cannot or should not carry a reference themselves, such as a shipped agent skill. A requirement can anchor such a file with `:impl:` or `:test:` option lines immediately after its opening fence; an example can use `:test:`. Each anchor is an edge to the complete file, so that requirement's evidence must contain an input covering every line of it, and changing the file makes the evidence stale. Option lines are not part of the requirement text. Prefer a precise in-source reference whenever one is possible.
+{cite}`requirements.references.anchors`
+
+```text
+:::{req} skill
+:impl: skills/habeas/SKILL.md
+The bundled skill MUST explain how to author evidence.
+:::
+```
+
+For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
 
 Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`
 
@@ -416,7 +427,7 @@ To add an evidence index, list a chapter in `SUMMARY.md` and put this directive 
 :::
 ```
 
-The build fills that chapter with requirement and example states and adds an evidence page under it for each definition.
+The build fills that chapter with a table of requirement and example states linking to their evidence pages. With or without an index, the build adds an evidence page for every requirement and example, nested under the chapter that defines it; each definition badge and its "See evidence" link open that page. `habeas setup` enables `output.html.fold` so these pages stay folded in the sidebar until a reader expands their chapter. {cite}`requirements.index.detail_pages`
 
 ## Using a local checkout
 

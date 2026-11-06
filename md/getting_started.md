@@ -1,5 +1,7 @@
 # Getting started
 
+{impl}`requirements.install.symposium`
+
 Start with a Cargo project that already has an mdBook (`book.toml` and a `SUMMARY.md` in the book source directory).
 
 Install [Symposium](https://github.com/symposium-dev/symposium) and select your agents once on this machine:

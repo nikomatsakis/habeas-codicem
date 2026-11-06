@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input` MUST accept exactly one evidence target: `--for-requirement <full-name>` or `--for-example <full-name>`. It MUST accept exactly one input mode: `--file-range`, `--rust-item`, or `--requirements`. It MUST use the same input schema and resolution rules as validation. Repeating a selector for a target MUST refresh its existing input rather than add a duplicate; an unchanged input MUST leave the record unchanged. The command MUST report every input it adds or refreshes. It MUST create a missing target record with a pending determination. Whenever it changes a record, it MUST leave `determination` false with a nonempty rationale indicating that review is pending.",
   "determination": false,
-  "rationale": "**Verdict: false.** The core behavior is implemented and mostly tested, but part of the requirement has no `{impl}` marker and some obligations have no tests.\n\n**What is implemented and marked**\n- `src/add_input.rs` implements the command. `add_input` resolves the selectors with the same `InputSelector::resolve` and `to_input` used for validation. `add_definition_inputs` creates a missing record with `determination: false` and a \"Review pending\" rationale.\n- `update_inputs` handles repeated selectors. It matches an existing input by selector and reports `unchanged`, `refreshed` or `added`. It writes the file only when something changed. On any change it resets `determination` to false with a \"Review pending…\" rationale. All of these functions carry `{impl}` markers.\n\n**Gap 1: the \"exactly one\" rules are unmarked.**\n- The requirement says `add-input` MUST accept exactly one evidence target and exactly one input mode. That is enforced only by the clap `ArgGroup` attributes on the `Command::AddInput` variant in `src/main.rs` (lines ~62–75, `group(ArgGroup::new(\"target\")…)` and `group(ArgGroup::new(\"mode\")…)`).\n- The `enum Command` and its `AddInput` variant carry no `{impl}` reference to `requirements.cli.add_input`.\n- The only marker in `main.rs` is on the `fn main` match arm, and that arm does not cover the clap constraints.\n- Code that implements part of the requirement without an `{impl}` reference is a gap.\n\n**Gap 2: test coverage is incomplete.**\n- No test supplies both `--for-requirement` and `--for-example`, or neither.\n- No test supplies two input modes, or none.\n- The only rejection test in `tests/commands.rs` uses the nonexistent `--for-rust-item` flag (`add_input_rejects_function_targets_without_creating_evidence`).\n- Nothing in the `add_input` tests covers a changed input being refreshed in place. `add_input_modes_capture_raw_sources_and_refresh_idempotently` covers only the unchanged and added cases.\n- Nothing in those tests covers an existing `determination: true` record being reset to false after a change. The `tests/definitions.rs` capture tests exercise reassessment, but they cite `requirements.definitions.capture`, not this requirement.\n\n**What the tests do cover**\n- `add_input_modes_capture_raw_sources_and_refresh_idempotently` covers all three modes and both target kinds. It checks that an unchanged repeat leaves the file byte-identical and reports \"unchanged\". It checks that a new record gets `determination` false with \"Review pending\" in the rationale. It checks the no-match error for `--requirements`.\n- `add_input_external_sources_respect_allow_and_disallow` covers the allow and disallow path policy.\n\nNo `FIXME` markers acknowledge these gaps, so the result is `false` rather than `FIXME`.",
+  "rationale": "**Verdict: false.** The core behavior is implemented and tested, but there are marking and coverage gaps.\n\n**What is implemented and works**\n- `src/add_input.rs` resolves the selector with the same `InputSelector::resolve` and `to_input` used by validation.\n- `update_inputs` finds an existing input by selector. It reports `unchanged`, `refreshed` or `added` for each input, and it does not rewrite the file when nothing changed.\n- `read_or_new` and `add_definition_inputs` create a missing record. A new record starts with `determination: false` and a \"Review pending\" rationale.\n- Whenever `update_inputs` changes a record, it resets `determination` to false and sets a nonempty \"Review pending…\" rationale.\n- Definition capture adds `definition` inputs. That behavior is specified by `requirements.definitions.capture` and `requirements.definitions.dependencies`, which the code marks as implemented.\n- The test `add_input_modes_capture_raw_sources_and_refresh_idempotently` covers:\n  - all three modes, including a rust-item line that matches several nested items;\n  - an unchanged re-run that leaves the file byte-identical;\n  - a false determination with \"Review pending\" after a change;\n  - an invalid selection that fails.\n- `add_input_external_sources_respect_allow_and_disallow` covers external allow and disallow paths.\n\n**Gaps**\n1. **Unmarked implementation of the \"exactly one\" rules.** The requirement says the command must accept exactly one evidence target and exactly one input mode. That is enforced only by the clap `ArgGroup`s on `Command::AddInput` (`src/main.rs`, roughly lines 64–79). The `Command` enum and the `AddInput` variant carry no `{impl}` reference to `requirements.cli.add_input`. The only marker is a comment in the `main` match arm, which is dispatch. Code that implements part of the requirement without an `{impl}` marker is a gap.\n2. **Missing tests for the \"exactly one\" rules.** No test passes two targets, no target, two modes or no mode. `add_input_rejects_function_targets_without_creating_evidence` only checks that the unknown `--for-rust-item` flag is rejected and that `--help` output is correct.\n3. **Missing tests for refresh and for the new-record state.**\n   - No test changes the underlying source and then checks that an existing input is refreshed in place with no duplicate, and reported as `refreshed`. Only the unchanged case and the `added` case are exercised.\n   - No test asserts that a newly created record has `determination: false` and a \"Review pending\" rationale right after creation. The test only checks this after a later refresh.\n\nNo FIXME comments acknowledge these gaps, so the answer is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.cli.add_input",
@@ -208,6 +208,7 @@
         "// {impl}`requirements.definitions.capture`",
         "// {impl}`requirements.cli.add_input_requirements`",
         "// {impl}`requirements.definitions.dependencies`",
+        "// {impl}`requirements.cli.add_input_file_range`",
         "fn update_inputs(",
         "    record: &mut Value,",
         "    inputs: Vec<(InputSelector, Value, Vec<String>)>,",
@@ -320,6 +321,7 @@
         "    // {impl}`requirements.cli.add_input`",
         "    // {impl}`requirements.definitions.inputs`",
         "    // {impl}`requirements.ci.schema`",
+        "    // {impl}`requirements.cli.add_input_requirements`",
         "    pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {",
         "        match self {",
         "            Self::FileRange {",
@@ -416,6 +418,7 @@
         "        // {impl}`requirements.authoring.batch`",
         "        // {impl}`requirements.authoring.concurrency`",
         "        // {impl}`requirements.authoring.reporting`",
+        "        // {impl}`requirements.authoring.read_denial`",
         "        Command::Author {",
         "            subject,",
         "            all,",
@@ -780,7 +783,10 @@
         "        \"{detail}\"",
         "    );",
         "    assert!(detail.contains(\"src/main.rs:1–4\"), \"{detail}\");",
-        "    assert!(detail.contains(\"requirements glob rules.*\"), \"{detail}\");",
+        "    assert!(",
+        "        detail.contains(\"requirements selection rules.*\"),",
+        "        \"{detail}\"",
+        "    );",
         "    assert!(detail.contains(\"md/rules.md:5–7\"), \"{detail}\");",
         "",
         "    let invalid = habeas(",
@@ -799,859 +805,9 @@
       ]
     },
     {
-      "file": "md/reference.md",
-      "line_start": 72,
-      "line_end": 89,
-      "text": [
-        "",
-        "`habeas author --all` captures source text and delegates judgments to the configured",
-        "model. The supervising agent fixes reported gaps and reruns the command; it does",
-        "not write evidence by hand. The lower-level `habeas add-input` command remains",
-        "available for selecting an additional input. A changed input leaves its",
-        "determination false until the authoring harness reassesses it.",
-        "{cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`",
-        "",
-        "```sh",
-        "habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20",
-        "habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26",
-        "habeas add-input --for-requirement requirements.ci.inputs --requirements 'requirements.ci.*'",
-        "```",
-        "",
-        "The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`",
-        "",
-        "Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`",
-        ""
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 454,
-      "line_end": 460,
-      "text": [
-        "{\"definition\":\"glossary.first_parent_history\",\"text\":[\":::{definition} first_parent_history\",\":phrase: first-parent history\",\"\",\"The sequence obtained by starting at a Git commit and repeatedly\",\"following its first parent until reaching a root commit.\",\":::\"]}",
-        "```",
-        "",
-        "`habeas add-input` automatically captures definitions referenced by the target's",
-        "requirement or example text and its reviewed inputs. It follows references between",
-        "definitions until no new definitions are found; cycles are allowed, and each",
-        "definition appears once. A requirements input's selection still selects only"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 53,
-      "line_end": 72,
-      "text": [
-        "`habeas info <selection>` MUST show the requirements and named examples matched by the {term}`requirements.references.definition_selection`. It MUST print matches in full-name order as Markdown with the same kind-labeled definition, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid selection or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement or named example.",
-        ":::",
-        "",
-        ":::{req} add_input",
-        "`habeas add-input` MUST accept exactly one evidence target: `--for-requirement <full-name>` or `--for-example <full-name>`. It MUST accept exactly one input mode: `--file-range`, `--rust-item`, or `--requirements`. It MUST use the same input schema and resolution rules as validation. Repeating a selector for a target MUST refresh its existing input rather than add a duplicate; an unchanged input MUST leave the record unchanged. The command MUST report every input it adds or refreshes. It MUST create a missing target record with a pending determination. Whenever it changes a record, it MUST leave `determination` false with a nonempty rationale indicating that review is pending.",
-        ":::",
-        "",
-        ":::{req} add_input_file_range",
-        "`habeas add-input --file-range <file>:<start>-<end>` MUST add or refresh one file-range input containing the current raw lines in the inclusive range. It MUST reject a missing file or invalid range.",
-        ":::",
-        "",
-        ":::{req} add_input_rust_item",
-        "`habeas add-input --rust-item <rust-file>:<line>` MUST parse the file with `syn` and add or refresh one Rust-item input for every explicit item declared on that line. An item with a declared name is declared on the line containing that name; an item without one is declared on the line containing its distinctive keyword or introducer, such as `use` or `impl`. Each input MUST store the selected `rust_file` under the path rules in {cite}`requirements.ci.schema`, the item's syntactic `rust_item` selector, and its complete raw source lines. The command MUST report every selected item and reject a line on which no item is declared.",
-        ":::",
-        "",
-        ":::{req} add_input_requirements",
-        "`habeas add-input --requirements <selection>` MUST add or refresh one requirements input containing the matched full names and their concatenated raw declaration sources. It MUST report the matched names in expansion order and reject a selection that matches no requirement or named example.",
-        ":::",
-        "",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 126,
-      "line_end": 132,
-      "text": [
-        "",
-        "The same explicit disallow rules and external-path exceptions MUST apply when",
-        "resolving recorded evidence inputs, including ordinary validation and",
-        "`add-input`. Validation MUST remain independent of Git index membership: it",
-        "checks the recorded inputs' existence and contents. Loading path policy MUST NOT",
-        "resolve credentials or validate unused authoring settings.",
-        ":::"
-      ]
-    },
-    {
-      "file": "md/requirements/definitions.md",
-      "line_start": 31,
-      "line_end": 37,
-      "text": [
-        ":::",
-        "",
-        ":::{req} capture",
-        "When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.",
-        "",
-        "Repeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.",
-        ":::"
-      ]
-    },
-    {
-      "file": "md/requirements/definitions.md",
-      "line_start": 49,
-      "line_end": 55,
-      "text": [
-        ":::",
-        "",
-        ":::{example} reassessment",
-        "An evidence record has determination true and a current definition input. After the definition changes, validation reports stale evidence without modifying the record. Running `habeas add-input` for that record refreshes its required definition input and leaves determination false pending review. {cite}`requirements.definitions.inputs` {cite}`requirements.definitions.capture`",
-        ":::",
-        "",
-        "## Terminology as authoring inputs"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 73,
-      "line_end": 79,
-      "text": [
-        ":::",
-        "",
-        ":::{example} selector_same_line",
-        "For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --rust-item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`. Both contain the complete raw line. {cite}`requirements.cli.add_input_rust_item`",
-        ":::",
-        "",
-        ":::{example} definition_glob_cases"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 10,
-      "line_end": 33,
-      "text": [
-        "use crate::inputs::{InputSelector, read_project_file};",
-        "use crate::rust_items::parse_items;",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "pub enum InputTarget {",
-        "    Requirement(String),",
-        "    Example(String),",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "pub enum InputMode {",
-        "    FileRange(String),",
-        "    RustItemsAtLine(String),",
-        "    Requirements(String),",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let inspection = inspect_repository(&root)?;",
-        "    let definitions = &inspection.definitions;"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 58,
-      "line_end": 67,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.cli.add_input_file_range`",
-        "// {impl}`requirements.cli.add_input_rust_item`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.ci.schema`",
-        "fn selectors_for_mode(root: &Path, mode: InputMode) -> io::Result<Vec<InputSelector>> {"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 125,
-      "line_end": 131,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.definitions.capture`",
-        "fn add_definition_inputs(",
-        "    root: &Path,"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 171,
-      "line_end": 179,
-      "text": [
-        "    Ok(format!(\"evidence/{name}.json:\\n{}\", output.0))",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "// {impl}`requirements.definitions.capture`",
-        "// {impl}`requirements.cli.add_input_requirements`",
-        "// {impl}`requirements.definitions.dependencies`",
-        "fn update_inputs(",
-        "    record: &mut Value,"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 254,
-      "line_end": 260,
-      "text": [
-        "    Ok((output, changed))",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "fn read_or_new(path: &Path, fallback: Value) -> io::Result<Value> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(source) => serde_json::from_str(&source)"
-      ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "line_start": 264,
-      "line_end": 270,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.cli.add_input`",
-        "fn invalid_input(message: impl Into<String>) -> io::Error {",
-        "    io::Error::new(io::ErrorKind::InvalidInput, message.into())",
-        "}"
-      ]
-    },
-    {
-      "file": "src/inputs.rs",
-      "line_start": 74,
-      "line_end": 80,
-      "text": [
-        "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.cli.add_input`",
-        "    // {impl}`requirements.definitions.inputs`",
-        "    // {impl}`requirements.ci.schema`",
-        "    pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 6,
-      "line_end": 12,
-      "text": [
-        "use mdbook_preprocessor::book::Book;",
-        "use pulldown_cmark::{Event, Parser, Tag};",
-        "",
-        "mod add_input;",
-        "pub mod authoring;",
-        "pub mod config;",
-        "mod definition_glob;"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 19,
-      "line_end": 25,
-      "text": [
-        "mod rust_items;",
-        "mod terms;",
-        "",
-        "pub use add_input::{InputMode, InputTarget, add_input};",
-        "pub use evidence::{EvidenceReport, validate_repository};",
-        "",
-        "/// Validate the current Cargo and mdBook project for use in a Cargo test."
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 62,
-      "line_end": 68,
-      "text": [
-        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\"])),",
-        "        group(ArgGroup::new(\"mode\").required(true).multiple(false).args([\"file_range\", \"rust_item\", \"requirements\"]))",
-        "    )]",
-        "    AddInput {",
-        "        #[arg(long)]",
-        "        for_requirement: Option<String>,",
-        "        #[arg(long)]"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 218,
-      "line_end": 225,
-      "text": [
-        "        Command::Hook {",
-        "            command: HookCommand::SessionStart,",
-        "        } => hook::session_start(),",
-        "        // {impl}`requirements.cli.add_input`",
-        "        Command::AddInput {",
-        "            for_requirement,",
-        "            for_example,",
-        "            file_range,"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 241,
-      "line_end": 247,
-      "text": [
-        "            };",
-        "            io::stdout()",
-        "                .lock()",
-        "                .write_all(habeas::add_input(&root, target, mode)?.as_bytes())?;",
-        "            Ok(())",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 72,
-      "line_end": 78,
-      "text": [
-        "",
-        "impl<'ast> Visit<'ast> for ItemCollector<'_> {",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    // {impl}`requirements.cli.add_input_rust_item`",
-        "    fn visit_item(&mut self, item: &'ast syn::Item) {",
-        "        use syn::Item;",
-        "        let (base, declaration, name, is_function, ordinal_always) = match item {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 239,
-      "line_end": 245,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    // {impl}`requirements.cli.add_input_rust_item`",
-        "    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {",
-        "        use syn::ImplItem;",
-        "        let (base, declaration, name, is_function, ordinal_always) = match item {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 293,
-      "line_end": 299,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.references.rust_item_selectors`",
-        "    // {impl}`requirements.cli.add_input_rust_item`",
-        "    fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {",
-        "        use syn::TraitItem;",
-        "        let (base, declaration, name, is_function, ordinal_always) = match item {"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols.h",
-      "line_start": 2343,
-      "line_end": 2349,
-      "text": [
-        "#define TRUST_TOKEN_pst_v1_pmb BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_pmb)",
-        "#define TRUST_TOKEN_pst_v1_voprf BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_voprf)",
-        "#define UI_add_info_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_info_string)",
-        "#define UI_add_input_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_input_string)",
-        "#define UI_add_verify_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_verify_string)",
-        "#define UI_free BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_free)",
-        "#define UI_new BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_new)"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_asm.h",
-      "line_start": 2347,
-      "line_end": 2353,
-      "text": [
-        "#define _TRUST_TOKEN_pst_v1_pmb BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_pmb)",
-        "#define _TRUST_TOKEN_pst_v1_voprf BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_voprf)",
-        "#define _UI_add_info_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_info_string)",
-        "#define _UI_add_input_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_input_string)",
-        "#define _UI_add_verify_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_verify_string)",
-        "#define _UI_free BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_free)",
-        "#define _UI_new BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_new)"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
-      "line_start": 2340,
-      "line_end": 2346,
-      "text": [
-        "%xdefine _TRUST_TOKEN_pst_v1_pmb _ %+ BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_pmb",
-        "%xdefine _TRUST_TOKEN_pst_v1_voprf _ %+ BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_voprf",
-        "%xdefine _UI_add_info_string _ %+ BORINGSSL_PREFIX %+ _UI_add_info_string",
-        "%xdefine _UI_add_input_string _ %+ BORINGSSL_PREFIX %+ _UI_add_input_string",
-        "%xdefine _UI_add_verify_string _ %+ BORINGSSL_PREFIX %+ _UI_add_verify_string",
-        "%xdefine _UI_free _ %+ BORINGSSL_PREFIX %+ _UI_free",
-        "%xdefine _UI_new _ %+ BORINGSSL_PREFIX %+ _UI_new"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
-      "line_start": 6515,
-      "line_end": 6521,
-      "text": [
-        "%xdefine TRUST_TOKEN_pst_v1_pmb BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_pmb",
-        "%xdefine TRUST_TOKEN_pst_v1_voprf BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_voprf",
-        "%xdefine UI_add_info_string BORINGSSL_PREFIX %+ _UI_add_info_string",
-        "%xdefine UI_add_input_string BORINGSSL_PREFIX %+ _UI_add_input_string",
-        "%xdefine UI_add_verify_string BORINGSSL_PREFIX %+ _UI_add_verify_string",
-        "%xdefine UI_free BORINGSSL_PREFIX %+ _UI_free",
-        "%xdefine UI_new BORINGSSL_PREFIX %+ _UI_new"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ui.h",
-      "line_start": 22,
-      "line_end": 29,
-      "text": [
-        "/// UI_free invokes OPENSSL_free on its parameter.",
-        "OPENSSL_EXPORT OPENSSL_DEPRECATED void UI_free(UI *ui);",
-        "",
-        "/// UI_add_input_string does nothing, always returns -1 for failure.",
-        "OPENSSL_EXPORT OPENSSL_DEPRECATED int UI_add_input_string(UI *ui, const char *prompt, int flags,",
-        "        char *result_buf, int minsize, int maxsize);",
-        "",
-        "/// UI_add_verify_string does nothing, always returns -1 for failure."
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols.h",
-      "line_start": 2343,
-      "line_end": 2349,
-      "text": [
-        "#define TRUST_TOKEN_pst_v1_pmb BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_pmb)",
-        "#define TRUST_TOKEN_pst_v1_voprf BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_voprf)",
-        "#define UI_add_info_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_info_string)",
-        "#define UI_add_input_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_input_string)",
-        "#define UI_add_verify_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_verify_string)",
-        "#define UI_free BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_free)",
-        "#define UI_new BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_new)"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_asm.h",
-      "line_start": 2347,
-      "line_end": 2353,
-      "text": [
-        "#define _TRUST_TOKEN_pst_v1_pmb BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_pmb)",
-        "#define _TRUST_TOKEN_pst_v1_voprf BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_voprf)",
-        "#define _UI_add_info_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_info_string)",
-        "#define _UI_add_input_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_input_string)",
-        "#define _UI_add_verify_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_verify_string)",
-        "#define _UI_free BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_free)",
-        "#define _UI_new BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_new)"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
-      "line_start": 2340,
-      "line_end": 2346,
-      "text": [
-        "%xdefine _TRUST_TOKEN_pst_v1_pmb _ %+ BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_pmb",
-        "%xdefine _TRUST_TOKEN_pst_v1_voprf _ %+ BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_voprf",
-        "%xdefine _UI_add_info_string _ %+ BORINGSSL_PREFIX %+ _UI_add_info_string",
-        "%xdefine _UI_add_input_string _ %+ BORINGSSL_PREFIX %+ _UI_add_input_string",
-        "%xdefine _UI_add_verify_string _ %+ BORINGSSL_PREFIX %+ _UI_add_verify_string",
-        "%xdefine _UI_free _ %+ BORINGSSL_PREFIX %+ _UI_free",
-        "%xdefine _UI_new _ %+ BORINGSSL_PREFIX %+ _UI_new"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
-      "line_start": 6515,
-      "line_end": 6521,
-      "text": [
-        "%xdefine TRUST_TOKEN_pst_v1_pmb BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_pmb",
-        "%xdefine TRUST_TOKEN_pst_v1_voprf BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_voprf",
-        "%xdefine UI_add_info_string BORINGSSL_PREFIX %+ _UI_add_info_string",
-        "%xdefine UI_add_input_string BORINGSSL_PREFIX %+ _UI_add_input_string",
-        "%xdefine UI_add_verify_string BORINGSSL_PREFIX %+ _UI_add_verify_string",
-        "%xdefine UI_free BORINGSSL_PREFIX %+ _UI_free",
-        "%xdefine UI_new BORINGSSL_PREFIX %+ _UI_new"
-      ]
-    },
-    {
-      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ui.h",
-      "line_start": 22,
-      "line_end": 29,
-      "text": [
-        "/// UI_free invokes OPENSSL_free on its parameter.",
-        "OPENSSL_EXPORT OPENSSL_DEPRECATED void UI_free(UI *ui);",
-        "",
-        "/// UI_add_input_string does nothing, always returns -1 for failure.",
-        "OPENSSL_EXPORT OPENSSL_DEPRECATED int UI_add_input_string(UI *ui, const char *prompt, int flags,",
-        "        char *result_buf, int minsize, int maxsize);",
-        "",
-        "/// UI_add_verify_string does nothing, always returns -1 for failure."
-      ]
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols.h",
-      "line_start": 2343,
-      "line_end": 2349,
-      "text": [
-        "#define TRUST_TOKEN_pst_v1_pmb BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_pmb)",
-        "#define TRUST_TOKEN_pst_v1_voprf BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_voprf)",
-        "#define UI_add_info_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_info_string)",
-        "#define UI_add_input_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_input_string)",
-        "#define UI_add_verify_string BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_add_verify_string)",
-        "#define UI_free BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_free)",
-        "#define UI_new BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, UI_new)"
-      ]
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_asm.h",
-      "line_start": 2347,
-      "line_end": 2353,
-      "text": [
-        "#define _TRUST_TOKEN_pst_v1_pmb BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_pmb)",
-        "#define _TRUST_TOKEN_pst_v1_voprf BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, TRUST_TOKEN_pst_v1_voprf)",
-        "#define _UI_add_info_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_info_string)",
-        "#define _UI_add_input_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_input_string)",
-        "#define _UI_add_verify_string BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_add_verify_string)",
-        "#define _UI_free BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_free)",
-        "#define _UI_new BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, UI_new)"
-      ]
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
-      "line_start": 2340,
-      "line_end": 2346,
-      "text": [
-        "%xdefine _TRUST_TOKEN_pst_v1_pmb _ %+ BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_pmb",
-        "%xdefine _TRUST_TOKEN_pst_v1_voprf _ %+ BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_voprf",
-        "%xdefine _UI_add_info_string _ %+ BORINGSSL_PREFIX %+ _UI_add_info_string",
-        "%xdefine _UI_add_input_string _ %+ BORINGSSL_PREFIX %+ _UI_add_input_string",
-        "%xdefine _UI_add_verify_string _ %+ BORINGSSL_PREFIX %+ _UI_add_verify_string",
-        "%xdefine _UI_free _ %+ BORINGSSL_PREFIX %+ _UI_free",
-        "%xdefine _UI_new _ %+ BORINGSSL_PREFIX %+ _UI_new"
-      ]
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
-      "line_start": 6515,
-      "line_end": 6521,
-      "text": [
-        "%xdefine TRUST_TOKEN_pst_v1_pmb BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_pmb",
-        "%xdefine TRUST_TOKEN_pst_v1_voprf BORINGSSL_PREFIX %+ _TRUST_TOKEN_pst_v1_voprf",
-        "%xdefine UI_add_info_string BORINGSSL_PREFIX %+ _UI_add_info_string",
-        "%xdefine UI_add_input_string BORINGSSL_PREFIX %+ _UI_add_input_string",
-        "%xdefine UI_add_verify_string BORINGSSL_PREFIX %+ _UI_add_verify_string",
-        "%xdefine UI_free BORINGSSL_PREFIX %+ _UI_free",
-        "%xdefine UI_new BORINGSSL_PREFIX %+ _UI_new"
-      ]
-    },
-    {
-      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ui.h",
-      "line_start": 22,
-      "line_end": 29,
-      "text": [
-        "/// UI_free invokes OPENSSL_free on its parameter.",
-        "OPENSSL_EXPORT OPENSSL_DEPRECATED void UI_free(UI *ui);",
-        "",
-        "/// UI_add_input_string does nothing, always returns -1 for failure.",
-        "OPENSSL_EXPORT OPENSSL_DEPRECATED int UI_add_input_string(UI *ui, const char *prompt, int flags,",
-        "        char *result_buf, int minsize, int maxsize);",
-        "",
-        "/// UI_add_verify_string does nothing, always returns -1 for failure."
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 626,
-      "line_end": 639,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.ci.input_containment`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.ci.schema`",
-        "#[test]",
-        "fn add_input_external_sources_respect_allow_and_disallow() {",
-        "    let temp = fixture();",
-        "    let external = TempDir::new().unwrap();",
-        "    let source = external.path().join(\"source.rs\");"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 650,
-      "line_end": 656,
-      "text": [
-        "        let output = habeas(",
-        "            temp.path(),",
-        "            &[",
-        "                \"add-input\",",
-        "                \"--for-requirement\",",
-        "                \"requirements.absent\",",
-        "                mode,"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 681,
-      "line_end": 687,
-      "text": [
-        "        let output = habeas(",
-        "            temp.path(),",
-        "            &[",
-        "                \"add-input\",",
-        "                \"--for-requirement\",",
-        "                \"requirements.absent\",",
-        "                mode,"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 727,
-      "line_end": 735,
-      "text": [
-        "    assert!(!info.contains(\"# `requirements.ready`\"), \"{info}\");",
-        "}",
-        "",
-        "// {test}`requirements.cli.add_input`",
-        "#[test]",
-        "fn add_input_rejects_function_targets_without_creating_evidence() {",
-        "    let temp = fixture();",
-        "    fs::write(",
-        "        temp.path().join(\"src/lib.rs\"),"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 743,
-      "line_end": 749,
-      "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-rust-item\",",
-        "            \"src/lib.rs\",",
-        "            \"fn[run]\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 762,
-      "line_end": 768,
-      "text": [
-        "    assert_eq!(before, after);",
-        "    assert!(!temp.path().join(\"evidence/rust\").exists());",
-        "",
-        "    let help = habeas(temp.path(), &[\"add-input\", \"--help\"]);",
-        "    assert!(help.status.success(), \"{help:?}\");",
-        "    let help = String::from_utf8(help.stdout).unwrap();",
-        "    assert!(!help.contains(\"--for-rust-item\"), \"{help}\");"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 771,
-      "line_end": 785,
-      "text": [
-        "    assert!(help.contains(\"--requirements <selection>\"), \"{help}\");",
-        "}",
-        "",
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.cli.add_input_requirements`",
-        "// {test}`requirements.references.selector_same_line`",
-        "// {test}`requirements.references.selector_raw_lines`",
-        "#[test]",
-        "fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {",
-        "    let temp = TempDir::new().unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 803,
-      "line_end": 809,
-      "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--file-range\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 814,
-      "line_end": 820,
-      "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--rust-item\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 830,
-      "line_end": 836,
-      "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--rust-item\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 854,
-      "line_end": 860,
-      "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-example\",",
-        "            \"rules.case\",",
-        "            \"--requirements\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 876,
-      "line_end": 882,
-      "text": [
-        "    let output = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--requirements\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 911,
-      "line_end": 917,
-      "text": [
-        "    let invalid = habeas(",
-        "        temp.path(),",
-        "        &[",
-        "            \"add-input\",",
-        "            \"--for-requirement\",",
-        "            \"rules.ready\",",
-        "            \"--requirements\","
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 1,
-      "line_end": 7,
-      "text": [
-        "use std::fs;",
-        "use std::path::Path;",
-        "",
-        "use habeas::{InputMode, InputTarget, add_input, validate_repository};",
-        "use mdbook_preprocessor::book::{Book, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 31,
-      "line_end": 37,
-      "text": [
-        "",
-        "// {test}`requirements.definitions.capture`",
-        "fn capture(root: &Path) {",
-        "    add_input(",
-        "        root,",
-        "        InputTarget::Requirement(\"rules.ready\".into()),",
-        "        InputMode::Requirements(\"rules.*\".into()),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 251,
-      "line_end": 257,
-      "text": [
-        "            .replace(\"TERM\", \"{term}\"),",
-        "    )",
-        "    .unwrap();",
-        "    add_input(",
-        "        root,",
-        "        InputTarget::Requirement(\"rules.ready\".into()),",
-        "        InputMode::RustItemsAtLine(\"src/lib.rs:3\".into()),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 271,
-      "line_end": 277,
-      "text": [
-        "        );",
-        "    }",
-        "    capture(root);",
-        "    add_input(",
-        "        root,",
-        "        InputTarget::Requirement(\"rules.ready\".into()),",
-        "        InputMode::RustItemsAtLine(\"src/lib.rs:3\".into()),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 373,
-      "line_end": 379,
-      "text": [
-        "            .replace(\"CITE\", \"{cite}\")",
-        "            .replace(\"TERM\", \"{term}\");",
-        "    fs::write(path, text).unwrap();",
-        "    add_input(",
-        "        root,",
-        "        InputTarget::Example(\"rules.case\".into()),",
-        "        InputMode::Requirements(\"rules.ready\".into()),"
-      ]
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
-    },
-    {
       "file": "src/main.rs",
       "line_start": 1,
-      "line_end": 125,
+      "line_end": 9,
       "text": [
         "use clap::{ArgGroup, Parser, Subcommand};",
         "use std::error::Error;",
@@ -1661,7 +817,106 @@
         "",
         "mod hook;",
         "mod setup;",
-        "",
+        ""
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 23,
+      "line_end": 75,
+      "text": [
+        "    },",
+        "    Setup {",
+        "        #[arg(long, value_name = \"crate-dir\")]",
+        "        path: Option<PathBuf>,",
+        "    },",
+        "    Status {",
+        "        #[arg(long)]",
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]",
+        "        verbose: bool,",
+        "        /// A full requirement or example name, or a definition glob.",
+        "        selection: Option<String>,",
+        "    },",
+        "    Info {",
+        "        /// A full requirement or example name, or a definition glob.",
+        "        selection: String,",
+        "    },",
+        "    #[command(alias = \"author-evidence\", group(ArgGroup::new(\"author_target\").required(true).multiple(false).args([\"subject\", \"all\"])))]",
+        "    Author {",
+        "        subject: Option<String>,",
+        "        /// Author all requirement and example evidence needing attention.",
+        "        #[arg(long, conflicts_with = \"stdout\")]",
+        "        all: bool,",
+        "        #[arg(long)]",
+        "        config: Option<String>,",
+        "        /// Write evidence JSON to stdout instead of updating its file.",
+        "        #[arg(long)]",
+        "        stdout: bool,",
+        "        /// Show the stored rationale for false judgments.",
+        "        #[arg(short, long)]",
+        "        verbose: bool,",
+        "    },",
+        "    #[command(hide = true)]",
+        "    Hook {",
+        "        #[command(subcommand)]",
+        "        command: HookCommand,",
+        "    },",
+        "    #[command(",
+        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\"])),",
+        "        group(ArgGroup::new(\"mode\").required(true).multiple(false).args([\"file_range\", \"rust_item\", \"requirements\"]))",
+        "    )]",
+        "    AddInput {",
+        "        #[arg(long)]",
+        "        for_requirement: Option<String>,",
+        "        #[arg(long)]",
+        "        for_example: Option<String>,",
+        "        #[arg(long)]",
+        "        file_range: Option<String>,",
+        "        #[arg(long)]",
+        "        rust_item: Option<String>,",
+        "        #[arg(long, value_name = \"selection\")]",
+        "        requirements: Option<String>,"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 215,
+      "line_end": 239,
+      "text": [
+        "            }",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.integration.symposium_setup_hook`",
+        "        Command::Hook {",
+        "            command: HookCommand::SessionStart,",
+        "        } => hook::session_start(),",
+        "        // {impl}`requirements.cli.add_input`",
+        "        Command::AddInput {",
+        "            for_requirement,",
+        "            for_example,",
+        "            file_range,",
+        "            rust_item,",
+        "            requirements,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            let target = if let Some(name) = for_requirement {",
+        "                habeas::InputTarget::Requirement(name)",
+        "            } else {",
+        "                habeas::InputTarget::Example(for_example.expect(\"clap requires a target\"))",
+        "            };",
+        "            let mode = if let Some(specification) = file_range {",
+        "                habeas::InputMode::FileRange(specification)",
+        "            } else if let Some(specification) = rust_item {",
+        "                habeas::InputMode::RustItemsAtLine(specification)"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 10,
+      "line_end": 80,
+      "text": [
         "// {impl}`requirements.cli.clap`",
         "#[derive(Parser)]",
         "#[command(name = \"habeas\")]",
@@ -1732,126 +987,154 @@
         "}",
         "",
         "#[derive(Subcommand)]",
-        "enum MdbookCommand {",
-        "    Supports { renderer: String },",
+        "enum MdbookCommand {"
+      ]
+    },
+    {
+      "file": "src/add_input.rs",
+      "line_start": 1,
+      "line_end": 60,
+      "text": [
+        "use std::collections::BTreeMap;",
+        "use std::fs;",
+        "use std::io;",
+        "use std::path::Path;",
+        "",
+        "use serde_json::{Value, json};",
+        "",
+        "use crate::DefinitionKind;",
+        "use crate::evidence::{Declaration, inspect_repository};",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "use crate::rust_items::parse_items;",
+        "",
+        "// {impl}`requirements.cli.add_input`",
+        "pub enum InputTarget {",
+        "    Requirement(String),",
+        "    Example(String),",
         "}",
         "",
-        "#[derive(Subcommand)]",
-        "enum HookCommand {",
-        "    SessionStart,",
+        "// {impl}`requirements.cli.add_input`",
+        "pub enum InputMode {",
+        "    FileRange(String),",
+        "    RustItemsAtLine(String),",
+        "    Requirements(String),",
         "}",
         "",
-        "fn main() -> Result<(), Box<dyn Error>> {",
-        "    // {impl}`requirements.cli.clap`",
-        "    let cli = Cli::parse();",
-        "    // {impl}`requirements.configuration.workspace_location`",
-        "    // {impl}`requirements.configuration.workspace_structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    if !matches!(",
-        "        cli.command,",
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { .. })",
-        "        }",
-        "    ) {",
-        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
+        "// {impl}`requirements.cli.add_input`",
+        "// {impl}`requirements.cli.add_input_file_range`",
+        "// {impl}`requirements.cli.add_input_rust_item`",
+        "// {impl}`requirements.cli.add_input_requirements`",
+        "pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Result<String> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let inspection = inspect_repository(&root)?;",
+        "    let definitions = &inspection.definitions;",
+        "    let selectors = selectors_for_mode(&root, mode)?;",
+        "    let mut inputs = Vec::new();",
+        "    for selector in selectors {",
+        "        let resolved = selector",
+        "            .resolve(&root, definitions)",
+        "            .map_err(invalid_input)?;",
+        "        inputs.push((",
+        "            selector.clone(),",
+        "            selector.to_input(&resolved),",
+        "            resolved.matches,",
+        "        ));",
         "    }",
-        "    match cli.command {",
-        "        // {impl}`requirements.cli.mdbook`",
-        "        Command::Mdbook { command: None } => {",
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
-        "            habeas::preprocess_book(&mut book, &context.root)?;",
-        "            serde_json::to_writer(io::stdout().lock(), &book)?;",
-        "            Ok(())",
+        "",
+        "    match target {",
+        "        InputTarget::Requirement(name) => add_definition_inputs(",
+        "            &root,",
+        "            definitions,",
+        "            &name,",
+        "            DefinitionKind::Requirement,",
+        "            inputs,",
+        "        ),",
+        "        InputTarget::Example(name) => {",
+        "            add_definition_inputs(&root, definitions, &name, DefinitionKind::Example, inputs)",
         "        }",
-        "        // {impl}`requirements.cli.invocation`",
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { renderer }),",
-        "        } => {",
-        "            if renderer == \"html\" {",
-        "                Ok(())",
-        "            } else {",
-        "                std::process::exit(1)",
-        "            }",
-        "        }",
-        "        // {impl}`requirements.cli.setup`",
-        "        Command::Setup { path } => setup::run(path.as_deref()),",
-        "        // {impl}`requirements.cli.status`",
-        "        // {impl}`requirements.cli.fixme_summary`",
-        "        Command::Status {"
+        "    }",
+        "}",
+        ""
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 647,
-      "line_end": 647,
+      "line_start": 653,
+      "line_end": 653,
       "text": [
-        "        (\"--file-range\", format!(\"{}:1-1\", source.display())),"
+        "                \"add-input\","
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 678,
-      "line_end": 678,
+      "line_start": 684,
+      "line_end": 684,
       "text": [
-        "        (\"--file-range\", format!(\"{}:1-1\", source.display())),"
+        "                \"add-input\","
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 770,
-      "line_end": 770,
+      "line_start": 746,
+      "line_end": 746,
       "text": [
-        "    assert!(help.contains(\"--for-example\"), \"{help}\");"
+        "            \"add-input\","
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 809,
-      "line_end": 809,
+      "line_start": 765,
+      "line_end": 765,
       "text": [
-        "            \"--file-range\","
+        "    let help = habeas(temp.path(), &[\"add-input\", \"--help\"]);"
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 858,
-      "line_end": 858,
+      "line_start": 806,
+      "line_end": 806,
       "text": [
-        "            \"--for-example\","
+        "            \"add-input\","
       ]
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 92,
-      "line_end": 94,
+      "file": "tests/commands.rs",
+      "line_start": 817,
+      "line_end": 817,
       "text": [
-        "    let refreshed: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
-        "    assert_eq!(refreshed[\"determination\"], false);",
-        "    assert_eq!(refreshed[\"inputs\"].as_array().unwrap().len(), 3);"
+        "            \"add-input\","
       ]
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 98,
-      "line_end": 98,
+      "file": "tests/commands.rs",
+      "line_start": 833,
+      "line_end": 833,
       "text": [
-        "    let mut missing = refreshed.clone();"
+        "            \"add-input\","
       ]
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 111,
-      "line_end": 111,
+      "file": "tests/commands.rs",
+      "line_start": 857,
+      "line_end": 857,
       "text": [
-        "    let mut duplicate = refreshed;"
+        "            \"add-input\","
       ]
     },
     {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 267,
-      "line_end": 267,
+      "file": "tests/commands.rs",
+      "line_start": 879,
+      "line_end": 879,
       "text": [
-        "        \"Symposium dispatched the local CLI, installed current skills, refreshed changed skills, \""
+        "            \"add-input\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 917,
+      "line_end": 917,
+      "text": [
+        "            \"add-input\","
       ]
     }
   ]

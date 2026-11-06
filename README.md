@@ -88,7 +88,10 @@ Every commit belongs to exactly one mode. A run publishes at most one commit;
 if it switches to requirements, it restores its uncommitted code changes before
 proposing the revision and preserves earlier committed work. Requirements
 commits change only `md/` Markdown and matching evidence JSON. Code commits
-cannot change `md/`. Every agent message carries its active mode badge.
+may change `md/` only by adding, removing, or editing `:impl:`/`:test:` anchor
+option lines directly after a `{req}`/`{example}` opening fence (for example,
+when moving an anchored file); the publisher rejects any other `md/` change,
+including new or deleted files. Every agent message carries its active mode badge.
 
 Commit messages record intent. Requirements commits explain why the behavior
 needs to change, quote relevant user feedback, and link the originating GitHub

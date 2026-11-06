@@ -102,6 +102,50 @@ fn setup_is_repeatable() {
     );
     assert!(project.join("md/habeas.css").is_file());
     assert!(!project.join(".agents/skills").exists());
+    let book: toml_edit::DocumentMut = book.parse().unwrap();
+    assert_eq!(
+        book["output"]["html"]["fold"]["enable"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(book.to_string().matches("enable").count(), 1, "{book}");
+}
+
+// {test}`requirements.cli.setup`
+// {test}`requirements.index.detail_pages`
+#[test]
+fn setup_keeps_an_existing_fold_setting() {
+    for (configuration, expected) in [
+        (
+            "[output.html.fold]\nenable = false\nlevel = 1\n",
+            Some(false),
+        ),
+        ("[output.html.fold]\nlevel = 1\n", Some(true)),
+        ("[output.html]\nfold = { enable = false }\n", Some(false)),
+    ] {
+        let temp = fixture();
+        let project = temp.path();
+        fs::write(
+            project.join("book.toml"),
+            format!("[book]\nsrc = \"md\"\n\n{configuration}"),
+        )
+        .unwrap();
+        run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+        let book: toml_edit::DocumentMut = fs::read_to_string(project.join("book.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            book["output"]["html"]["fold"]["enable"].as_bool(),
+            expected,
+            "{configuration}"
+        );
+        if configuration.contains("level") {
+            assert_eq!(
+                book["output"]["html"]["fold"]["level"].as_integer(),
+                Some(1)
+            );
+        }
+    }
 }
 
 // {test}`requirements.cli.setup`
@@ -143,6 +187,7 @@ fn setup_uses_src_when_book_table_or_source_setting_is_absent() {
 
 // {test}`requirements.cli.setup_project`
 // {test}`requirements.cli.setup_css`
+// {test}`requirements.cli.setup`
 #[test]
 fn setup_rejects_invalid_book_configuration() {
     let temp = fixture();
@@ -161,6 +206,10 @@ fn setup_rejects_invalid_book_configuration() {
         (
             "[book]\nsrc = \"md\"\n\n[output.html]\nadditional-css = \"wrong\"\n",
             "output.html.additional-css must be an array",
+        ),
+        (
+            "[book]\nsrc = \"md\"\n\n[output.html]\nfold = true\n",
+            "output.html.fold must be a table",
         ),
     ] {
         fs::write(project.join("book.toml"), book).unwrap();

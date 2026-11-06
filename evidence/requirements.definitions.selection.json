@@ -1,7 +1,7 @@
 {
   "requirement": "A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.",
   "determination": false,
-  "rationale": "**Verdict:** The core behavior is implemented and has one good test. I'm marking it false because one piece of selection logic isn't marked as `{impl}` and the tests leave points in the design space uncovered. No FIXME comments acknowledge either gap.\n\n**What is implemented and marked**\n- `InputSelector::resolve`, `Requirements` arm (`src/inputs.rs`, ~l.115): it skips `DefinitionKind::Term` and only matches requirements and examples through `definition_glob::matches`. It errors if nothing matches. This is the \"select requirements and named examples, excluding named definitions\" obligation.\n- `terms::dependencies` (`src/terms.rs`, l.45): it scans the text of the selected definitions, runs to a fixed point and tolerates cycles. Referenced terms become required definition inputs whether or not their names match the glob. Nothing there expands by name prefix.\n- `status_markdown_with_options`, `status_markdown_filtered` and `info_markdown` (`src/commands.rs`): these skip terms when a glob or selector is applied.\n- `preprocess_book` (`src/lib.rs`): this filters terms out of the definitions used for the evidence index.\n\n**What the test covers**\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` (`tests/definitions.rs`, l.127) also covers the `glob_dependency` example. It adds a term `rules.unrelated` that matches the `rules.*` selection and is not referenced.\n- It asserts that `matches` is exactly `[\"rules.ready\"]`.\n- It asserts that `glossary.a` and `glossary.b` are captured as separate definition inputs even though they sit outside the glob.\n- It asserts that `rules.unrelated` is not captured and does not appear in the status output.\n- That satisfies the example's scenario. The cyclic-dependency test also covers dependency capture.\n\n**Gaps**\n1. **Unmarked selection logic.** `source_input` in `src/authoring/inputs.rs` (~l.230–238) applies the same \"non-term and glob-matches\" filter to `InputSelector::Requirements`. It is marked only with authoring and configuration requirements, not `requirements.definitions.selection`. The `references` tool in `src/authoring/tools.rs` (~l.197–233) also filters terms out of a selection. That one plausibly belongs to `authoring.reference_index`. The `source_input` filter is selection behavior without an `{impl}` marker, so the marking is incomplete.\n2. **Test coverage is thin on some design points.**\n   - Nothing tests a term that is referenced and also matches the selection. The \"regardless of whether their names match the selection\" clause is only exercised by names outside the glob.\n   - The `info` and `status` glob paths are not tested with a glob that matches a term. The status assertion runs with no glob (`all=true`).\n   - `info_markdown` tests use exact names only (`tests/definitions.rs` l.386, `tests/outcomes.rs` l.261).\n   - Nothing tests an example-only or mixed-kind selection that also excludes terms.",
+  "rationale": "**Verdict: the core behaviour is implemented and tested, but the marking is incomplete and test coverage is thin.**\n\n**What works**\n- `InputSelector::resolve` (`src/inputs.rs`, `Requirements` arm) skips `DefinitionKind::Term` entries and uses `definition_glob::matches`. A `rules.*` selection therefore picks only requirements and named examples, not terms that share the name prefix.\n- `source_input` (`src/authoring/inputs.rs`) applies the same term exclusion when checking file access.\n- `terms::dependencies` (`src/terms.rs`) scans the bodies of the selected declarations and pulls in referenced terms transitively. It then returns them as separate `Definition` inputs whether or not their names match the glob. A term is never a dependency just because its name matches the glob.\n- `status_markdown_with_options` and `info_markdown` (`src/commands.rs`) skip terms and apply the glob.\n- `tests/definitions.rs::globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` checks the main scenario:\n  - A `rules.*` glob matches only `rules.ready`.\n  - `glossary.a` and `glossary.b` are captured as definition inputs although they are outside the glob.\n  - The unreferenced term `rules.unrelated`, whose name does match the glob, does not appear in `matches` or in the status output.\n\n**Gaps**\n1. **Implementation not marked.**\n   - The authoring `references` tool (`src/authoring/tools.rs`, `fn references`, about lines 191–300) also implements selection semantics. It excludes terms from the selected set at lines 205–211 and 229–235, and again when emitting anchors at 274–280. It is marked only `authoring.reference_index`, `references.definition_globs` and `references.anchors`.\n   - It carries no `{impl}` for `requirements.definitions.selection`, although the other glob consumers (`source_input`, `status`, `info`, `resolve`) do. By the stated criteria, code that implements part of the requirement without an `{impl}` reference is a gap.\n2. **Thin tests.**\n   - Only one test is tied to this requirement, and it exercises only the capture path (`add_input` with `InputMode::Requirements`).\n   - The test never asserts that the `inputs` array has exactly three entries, so it does not rule out an extra, wrongly captured term input.\n   - Nothing marked `{test}` for this requirement checks that term-excluding selection works for `status`, `info`, the `references` tool or the `requirements` source-input form.\n   - The test selects no named examples. The requirement says selection still selects \"requirements and named examples\", and no marked test covers that half of the selection.\n3. No `FIXME` comments acknowledge these gaps, so `FIXME` is not the right verdict.\n\nThe requirement is therefore not fully and exactly covered by marked implementation and tests.",
   "inputs": [
     {
       "requirements": "requirements.definitions.selection",
@@ -12,6 +12,56 @@
         ":::{req} selection",
         "A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.",
         ":::"
+      ]
+    },
+    {
+      "rust_file": "src/authoring/inputs.rs",
+      "rust_item": "fn[source_input]",
+      "text": [
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.definitions.authoring_inputs`",
+        "// {impl}`requirements.ci.authoring_inputs`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
+        "fn source_input(",
+        "    root: &Path,",
+        "    access: &SourceAccess,",
+        "    definitions: &BTreeMap<String, Declaration>,",
+        "    selector: &InputSelector,",
+        ") -> io::Result<Value> {",
+        "    match selector {",
+        "        InputSelector::FileRange { file, .. }",
+        "        | InputSelector::RustItem {",
+        "            rust_file: file, ..",
+        "        } => {",
+        "            access.file(root, Path::new(file))?;",
+        "        }",
+        "        InputSelector::Definition { definition } => {",
+        "            if let Some(definition) = definitions.get(definition) {",
+        "                access.file(root, Path::new(&definition.file))?;",
+        "            }",
+        "        }",
+        "        InputSelector::Requirements { requirements } => {",
+        "            for (name, definition) in definitions {",
+        "                if definition.kind != DefinitionKind::Term",
+        "                    && crate::definition_glob::matches(requirements, name)",
+        "                {",
+        "                    access.file(root, Path::new(&definition.file))?;",
+        "                }",
+        "            }",
+        "        }",
+        "    }",
+        "    let resolved = selector",
+        "        .resolve(root, definitions)",
+        "        .map_err(io::Error::other)?;",
+        "    for range in &resolved.ranges {",
+        "        access.file(root, Path::new(&range.file))?;",
+        "    }",
+        "    Ok(selector.to_input(&resolved))",
+        "}"
       ]
     },
     {
@@ -159,6 +209,7 @@
         "            &RenderSources {",
         "                root,",
         "                definitions: &inspection.definitions,",
+        "                references: &inspection.references,",
         "                source_links: None,",
         "            },",
         "        ));",
@@ -182,6 +233,9 @@
         "    // {impl}`requirements.ci.requirements_inputs`",
         "    // {impl}`requirements.definitions.inputs`",
         "    // {impl}`requirements.definitions.selection`",
+        "    // {impl}`requirements.cli.add_input_file_range`",
+        "    // {impl}`requirements.cli.add_input_requirements`",
+        "    // {impl}`requirements.references.definition_globs`",
         "    pub(crate) fn resolve(",
         "        &self,",
         "        root: &Path,",
@@ -308,8 +362,11 @@
         "// {impl}`requirements.definitions.declaration`",
         "// {impl}`requirements.definitions.references`",
         "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.index.detail_pages`",
+        "// {impl}`requirements.references.anchors`",
         "pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {",
         "    let mut definitions = BTreeMap::new();",
+        "    let mut order = Vec::new();",
         "    for chapter in book.chapters() {",
         "        let Some(source_path) = chapter.source_path.as_deref().or(chapter.path.as_deref()) else {",
         "            continue;",
@@ -318,24 +375,38 @@
         "            continue;",
         "        };",
         "        let namespace = chapter_namespace(source_path);",
-        "        for block in definition_blocks(&chapter.content) {",
+        "        let blocks = definition_blocks(&chapter.content);",
+        "        for block in &blocks {",
         "            if !block.closed {",
         "                continue;",
         "            }",
         "            let name = full_requirement_name(&namespace, &block.name);",
-        "            definitions.entry(name).or_insert_with(|| Definition {",
-        "                path: render_path.to_path_buf(),",
-        "                text: chapter.content[block.body_start..block.body_end]",
+        "            if definitions.contains_key(&name) {",
+        "                continue;",
+        "            }",
+        "            if block.kind != DefinitionKind::Term {",
+        "                order.push(name.clone());",
+        "            }",
+        "            definitions.insert(",
+        "                name,",
+        "                Definition {",
+        "                    path: render_path.to_path_buf(),",
+        "                    text: without_options(",
+        "                        &chapter.content,",
+        "                        block.body_start..block.body_end,",
+        "                        &blocks,",
+        "                    )",
         "                    .trim()",
         "                    .to_owned(),",
-        "                kind: block.kind,",
-        "            });",
+        "                    kind: block.kind,",
+        "                },",
+        "            );",
         "        }",
         "    }",
-        "    let evidence_definitions = definitions",
+        "    let evidence_definitions = order",
         "        .iter()",
-        "        .filter(|(_, d)| d.kind != DefinitionKind::Term)",
-        "        .map(|(name, d)| {",
+        "        .map(|name| {",
+        "            let d = &definitions[name];",
         "            (",
         "                name.clone(),",
         "                Definition {",
@@ -346,10 +417,8 @@
         "            )",
         "        })",
         "        .collect();",
-        "    let index = index::IndexPlan::find(book, &evidence_definitions)?;",
-        "    if let Some(plan) = index.as_ref() {",
-        "        plan.populate(book, root, &evidence_definitions)?;",
-        "    }",
+        "    let plan = index::DetailPlan::find(book, &evidence_definitions, &order)?;",
+        "    plan.populate(book, root, &evidence_definitions)?;",
         "",
         "    // {impl}`requirements.index.source_links`",
         "    book.for_each_chapter_mut(|chapter| {",
@@ -357,7 +426,7 @@
         "            || chapter",
         "                .path",
         "                .as_deref()",
-        "                .is_some_and(|path| index.as_ref().is_some_and(|plan| plan.is_detail_path(path)))",
+        "                .is_some_and(|path| plan.is_detail_path(path))",
         "        {",
         "            if let Some(path) = chapter.path.as_deref() {",
         "                chapter.content = replace_references(&chapter.content, path, &definitions);",
@@ -374,7 +443,7 @@
         "            &chapter.content,",
         "            &namespace,",
         "            chapter.path.as_deref(),",
-        "            index.as_ref(),",
+        "            Some(&plan),",
         "        );",
         "        if let Some(path) = chapter.path.as_deref() {",
         "            chapter.content = replace_references(&chapter.content, path, &definitions);",
@@ -499,9 +568,57 @@
       ]
     },
     {
+      "file": "md/requirements/definitions.md",
+      "line_start": 39,
+      "line_end": 55,
+      "text": [
+        ":::{example} phrase_rendering",
+        "A definition named `glossary.first_parent_history` declares the phrase \"first-parent history\". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`",
+        ":::",
+        "",
+        ":::{example} transitive_cycle",
+        "Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. Dependency collection terminates. Changing B's phrase or body invalidates R's snapshot of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`",
+        ":::",
+        "",
+        ":::{example} glob_dependency",
+        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that selection. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the selection. {cite}`requirements.definitions.selection`",
+        ":::",
+        "",
+        ":::{example} reassessment",
+        "An evidence record has determination true and a current definition input. After the definition changes, validation reports stale evidence without modifying the record. Running `habeas add-input` for that record refreshes its required definition input and leaves determination false pending review. {cite}`requirements.definitions.inputs` {cite}`requirements.definitions.capture`",
+        ":::",
+        "",
+        "## Terminology as authoring inputs"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 120,
+      "line_end": 136,
+      "text": [
+        "            .any(|e| e.contains(\"found 2\"))",
+        "    );",
+        "    capture(root);",
+        "    let repaired: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
+        "    assert_eq!(repaired[\"inputs\"].as_array().unwrap().len(), 3);",
+        "}",
+        "",
+        "// {test}`requirements.definitions.selection`",
+        "// {test}`requirements.definitions.glob_dependency`",
+        "#[test]",
+        "fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {",
+        "    let temp = fixture();",
+        "    let path = temp.path().join(\"md/rules.md\");",
+        "    let mut text = fs::read_to_string(&path).unwrap();",
+        "    text.push_str(\"\\n:::{definition} unrelated\\n:phrase: unrelated\\n\\nNot referenced.\\n:::\\n\");",
+        "    fs::write(path, text).unwrap();",
+        "    capture(temp.path());"
+      ]
+    },
+    {
       "file": "tests/definitions.rs",
       "line_start": 1,
-      "line_end": 160,
+      "line_end": 80,
       "text": [
         "use std::fs;",
         "use std::path::Path;",
@@ -582,590 +699,56 @@
         "            .replace(\"See {term}\", \"Read {term}\"),",
         "    ] {",
         "        fs::write(&glossary, changed).unwrap();",
-        "        let report = validate_repository(root).unwrap();",
-        "        assert!(",
-        "            report",
-        "                .errors",
-        "                .iter()",
-        "                .any(|e| e.contains(\"input text changed\") && e.contains(\"glossary.\")),",
-        "            \"{:?}\",",
-        "            report.errors",
-        "        );",
-        "        assert_eq!(before, fs::read(&path).unwrap());",
-        "    }",
-        "    capture(root);",
-        "    let refreshed: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
-        "    assert_eq!(refreshed[\"determination\"], false);",
-        "    assert_eq!(refreshed[\"inputs\"].as_array().unwrap().len(), 3);",
-        "    approve(&path);",
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
-        "",
-        "    let mut missing = refreshed.clone();",
-        "    missing[\"inputs\"]",
-        "        .as_array_mut()",
-        "        .unwrap()",
-        "        .retain(|i| i.get(\"definition\") != Some(&json!(\"glossary.b\")));",
-        "    fs::write(&path, missing.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()",
-        "            .any(|e| e.contains(\"glossary.b, found 0\"))",
-        "    );",
-        "    let mut duplicate = refreshed;",
-        "    let input = duplicate[\"inputs\"][1].clone();",
-        "    duplicate[\"inputs\"].as_array_mut().unwrap().push(input);",
-        "    fs::write(&path, duplicate.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()",
-        "            .any(|e| e.contains(\"found 2\"))",
-        "    );",
-        "    capture(root);",
-        "    let repaired: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "    assert_eq!(repaired[\"inputs\"].as_array().unwrap().len(), 3);",
-        "}",
-        "",
-        "// {test}`requirements.definitions.selection`",
-        "// {test}`requirements.definitions.glob_dependency`",
-        "#[test]",
-        "fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {",
-        "    let temp = fixture();",
-        "    let path = temp.path().join(\"md/rules.md\");",
-        "    let mut text = fs::read_to_string(&path).unwrap();",
-        "    text.push_str(\"\\n:::{definition} unrelated\\n:phrase: unrelated\\n\\nNot referenced.\\n:::\\n\");",
-        "    fs::write(path, text).unwrap();",
-        "    capture(temp.path());",
-        "    let record: Value = serde_json::from_str(",
-        "        &fs::read_to_string(temp.path().join(\"evidence/rules.ready.json\")).unwrap(),",
-        "    )",
-        "    .unwrap();",
-        "    assert_eq!(record[\"inputs\"][0][\"matches\"], json!([\"rules.ready\"]));",
-        "    assert_eq!(record[\"inputs\"][1][\"definition\"], \"glossary.a\");",
-        "    assert_eq!(record[\"inputs\"][2][\"definition\"], \"glossary.b\");",
-        "    let status = habeas::status_markdown(temp.path(), true).unwrap();",
-        "    assert!(!status.contains(\"rules.unrelated\"));",
-        "}",
-        "",
-        "// {test}`requirements.definitions.declaration`",
-        "// {test}`requirements.definitions.references`",
-        "#[test]",
-        "fn invalid_declarations_and_reference_targets_are_reported() {",
-        "    for body in [",
-        "        \"Body only.\",",
-        "        \":phrase: \\n\\nBody.\",",
-        "        \":phrase: one\\n:phrase: two\\n\\nBody.\",",
-        "        \":phrase: only\",",
-        "    ] {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/bad.md\"),"
-      ]
-    },
-    {
-      "file": "md/requirements/definitions.md",
-      "line_start": 1,
-      "line_end": 68,
-      "text": [
-        "# Named definitions",
-        "",
-        ":::{req} declaration",
-        "An mdBook chapter MAY declare a named definition using a fenced `{definition}` directive. Definitions MUST use the same chapter-qualified names, identifier rules, fence rules, and nonempty-body rules as requirements and examples. Names MUST be unique across all three kinds.",
-        "",
-        "Each definition MUST declare exactly one nonempty `:phrase:` option before its explanatory body. The phrase MUST be interpreted as plain text. Definitions MUST NOT require their own evidence records or determinations.",
-        ":::",
-        "",
-        ":::{req} references",
-        "The `{term}` role followed by a backtick-delimited full definition name MUST reference a named definition. In rendered Markdown, the reference MUST display the definition's phrase as an ordinary hyperlink to its anchored declaration, without a badge. The phrase MUST be escaped appropriately for rendering.",
-        "",
-        "Missing targets and targets of another kind MUST be reported. Escaped references and references in Markdown code examples MUST remain literal. A term reference MUST NOT satisfy a requirement citation or a Rust function's requirement-coverage obligation.",
-        ":::",
-        "",
-        ":::{req} inputs",
-        "Evidence inputs MAY have a definition form containing exactly `definition` and `text`. `definition` MUST identify one named definition; `text` MUST contain its complete raw fenced declaration as source lines, including its phrase option and explanatory body.",
-        "",
-        "Validation MUST reject missing definitions and changed snapshot text, identifying the definition and showing a compact diff when available. Moving an unchanged definition within its chapter MUST NOT invalidate its snapshot. Evidence displays MUST show the definition name, current source location, and recorded text.",
-        ":::",
-        "",
-        ":::{req} dependencies",
-        "Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs.",
-        "",
-        "Habeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.",
-        "",
-        "Validation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
-        ":::",
-        "",
-        ":::{req} selection",
-        "A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.",
-        ":::",
-        "",
-        ":::{req} capture",
-        "When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.",
-        "",
-        "Repeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.",
-        ":::",
-        "",
-        ":::{example} phrase_rendering",
-        "A definition named `glossary.first_parent_history` declares the phrase \"first-parent history\". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`",
-        ":::",
-        "",
-        ":::{example} transitive_cycle",
-        "Requirement R references definition A. A references B, and B references A. R's evidence contains one definition input for A and one for B. Dependency collection terminates. Changing B's phrase or body invalidates R's snapshot of B. {cite}`requirements.definitions.dependencies` {cite}`requirements.definitions.inputs`",
-        ":::",
-        "",
-        ":::{example} glob_dependency",
-        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that selection. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the selection. {cite}`requirements.definitions.selection`",
-        ":::",
-        "",
-        ":::{example} reassessment",
-        "An evidence record has determination true and a current definition input. After the definition changes, validation reports stale evidence without modifying the record. Running `habeas add-input` for that record refreshes its required definition input and leaves determination false pending review. {cite}`requirements.definitions.inputs` {cite}`requirements.definitions.capture`",
-        ":::",
-        "",
-        "## Terminology as authoring inputs",
-        "",
-        ":::{req} authoring_inputs",
-        "When preparing the mandatory input set defined by",
-        "{cite}`requirements.authoring.mandatory_inputs`, every terminology definition",
-        "referenced by the subject or any contributed source MUST contribute its complete",
-        "fenced declaration, including its phrase option. Definitions referenced by those",
-        "definitions MUST also be included transitively, without duplicates or",
-        "nontermination on cycles.",
-        "",
-        "When an additional source read introduces a terminology dependency, the same",
-        "complete, transitive definition set MUST be supplied to the model and recorded",
-        "before accepting a submission.",
-        ":::"
+        "        let report = validate_repository(root).unwrap();"
       ]
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 58,
-      "line_end": 58,
-      "text": [
-        "        if definition.kind != DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 53,
-      "line_end": 53,
-      "text": [
-        "            .filter(|definition| definition.kind != DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 64,
-      "line_end": 64,
-      "text": [
-        "            if reference.kind == ReferenceKind::Term {"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 69,
-      "line_end": 69,
-      "text": [
-        "                .is_some_and(|definition| definition.kind != DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 235,
-      "line_end": 236,
-      "text": [
-        "                if definition.kind != DefinitionKind::Term",
-        "                    && crate::definition_glob::matches(requirements, name)"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 312,
-      "line_end": 312,
-      "text": [
-        "        return Ok(if declaration.kind == DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 1,
-      "line_end": 1,
-      "text": [
-        "use std::io::{self, IsTerminal};"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 29,
-      "line_end": 29,
-      "text": [
-        "                Box::new(console::Term::buffered_stderr()),"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 210,
-      "line_end": 210,
-      "text": [
-        "    struct RecordingTerm(Arc<Mutex<String>>);"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 212,
-      "line_end": 212,
-      "text": [
-        "    impl indicatif::TermLike for RecordingTerm {"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 264,
-      "line_end": 264,
-      "text": [
-        "        let terminal = RecordingTerm::default();"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 197,
-      "line_end": 197,
-      "text": [
-        "        crate::definition_glob::validate(selection).map_err(io::Error::other)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 206,
-      "line_end": 206,
-      "text": [
-        "            definition.kind != crate::DefinitionKind::Term"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 208,
-      "line_end": 208,
-      "text": [
-        "                    .is_none_or(|selection| crate::definition_glob::matches(selection, name))"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 229,
-      "line_end": 230,
-      "text": [
-        "        reference.kind != crate::ReferenceKind::Term",
-        "            && crate::definition_glob::matches(selection, &reference.name)"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 233,
-      "line_end": 233,
-      "text": [
-        "                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 38,
-      "line_end": 38,
-      "text": [
-        "        definition_glob::validate(glob)"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 41,
-      "line_end": 41,
-      "text": [
-        "            d.kind != crate::DefinitionKind::Term && definition_glob::matches(glob, name)"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
       "line_start": 56,
-      "line_end": 56,
+      "line_end": 62,
       "text": [
-        "        if definition.kind == crate::DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 59,
-      "line_end": 59,
-      "text": [
-        "        if glob.is_some_and(|glob| !definition_glob::matches(glob, name)) {"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 129,
-      "line_end": 129,
-      "text": [
-        "    definition_glob::validate(selector)"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 133,
-      "line_end": 133,
-      "text": [
-        "        if definition.kind == crate::DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 136,
-      "line_end": 136,
-      "text": [
-        "        if !definition_glob::matches(selector, name) {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 142,
-      "line_end": 142,
-      "text": [
-        "            .filter(|d| d.kind != DefinitionKind::Term);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 159,
-      "line_end": 159,
-      "text": [
-        "        if definition.kind != DefinitionKind::Term && !present.contains(name) {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 314,
-      "line_end": 314,
-      "text": [
-        "            if block.kind == DefinitionKind::Term"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 935,
-      "line_end": 936,
-      "text": [
-        "        if reference.kind == ReferenceKind::Term {",
-        "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 946,
-      "line_end": 946,
-      "text": [
-        "        if target.is_some_and(|d| d.kind != DefinitionKind::Term) {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 964,
-      "line_end": 964,
-      "text": [
-        "        .filter(|(_, definition)| definition.kind != DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/inputs.rs",
-      "line_start": 180,
-      "line_end": 180,
-      "text": [
-        "                    .filter(|d| d.kind == crate::DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/inputs.rs",
-      "line_start": 195,
-      "line_end": 195,
-      "text": [
-        "                definition_glob::validate(requirements)?;"
-      ]
-    },
-    {
-      "file": "src/inputs.rs",
-      "line_start": 200,
-      "line_end": 201,
-      "text": [
-        "                    if definition.kind == crate::DefinitionKind::Term",
-        "                        || !definition_glob::matches(requirements, name)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 55,
-      "line_end": 55,
-      "text": [
-        "    Term,"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 66,
-      "line_end": 66,
-      "text": [
-        "            Self::Term => \"definition\","
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 77,
-      "line_end": 77,
-      "text": [
-        "            Self::Term => \"definition\","
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 111,
-      "line_end": 111,
-      "text": [
-        "    Term,"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 123,
-      "line_end": 123,
-      "text": [
-        "            Self::Term => \"term\","
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 134,
-      "line_end": 134,
-      "text": [
-        "            Self::Term => \"006ba8\","
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 177,
-      "line_end": 177,
-      "text": [
-        "        .filter(|(_, d)| d.kind != DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 273,
-      "line_end": 273,
-      "text": [
-        "        if block.kind == DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 350,
-      "line_end": 351,
-      "text": [
-        "            if reference.kind == ReferenceKind::Term {",
-        "                if target.kind == DefinitionKind::Term"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 508,
-      "line_end": 508,
-      "text": [
-        "            (DefinitionKind::Term, rest)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 575,
-      "line_end": 575,
-      "text": [
-        "            .filter(|b| b.kind == DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 602,
-      "line_end": 602,
-      "text": [
-        "            (ReferenceKind::Term, \"{term}`\")"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 259,
-      "line_end": 259,
-      "text": [
-        "                role.kind != crate::ReferenceKind::Term"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 262,
-      "line_end": 262,
-      "text": [
-        "                        .is_some_and(|d| d.kind != crate::DefinitionKind::Term)"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 39,
-      "line_end": 39,
-      "text": [
-        "            .filter(|r| r.kind == ReferenceKind::Term)"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 106,
-      "line_end": 106,
-      "text": [
-        "            .filter(|d| d.kind == DefinitionKind::Term)"
+        "        total: Some(total),",
+        "    });",
+        "    for (checked, (name, definition)) in inspection.definitions.iter().enumerate() {",
+        "        if definition.kind != DefinitionKind::Term {",
+        "            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);",
+        "            // A current false judgment stays until its subject or inputs change.",
+        "            if matches!("
       ]
     },
     {
       "file": "src/authoring/inputs.rs",
-      "line_start": 200,
-      "line_end": 260,
+      "line_start": 51,
+      "line_end": 57,
       "text": [
-        "    match selector {",
-        "        InputSelector::FileRange { file, .. }",
-        "        | InputSelector::RustItem {",
-        "            rust_file: file, ..",
-        "        } => access.omit_generated_evidence(root, Path::new(file)),",
-        "        InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.definitions.authoring_inputs`",
-        "// {impl}`requirements.ci.authoring_inputs`",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "fn source_input(",
-        "    root: &Path,",
-        "    access: &SourceAccess,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    selector: &InputSelector,",
-        ") -> io::Result<Value> {",
-        "    match selector {",
-        "        InputSelector::FileRange { file, .. }",
-        "        | InputSelector::RustItem {",
-        "            rust_file: file, ..",
-        "        } => {",
-        "            access.file(root, Path::new(file))?;",
-        "        }",
-        "        InputSelector::Definition { definition } => {",
-        "            if let Some(definition) = definitions.get(definition) {",
-        "                access.file(root, Path::new(&definition.file))?;",
+        "        let definitions = load_definitions(&root)?;",
+        "        let subject = definitions",
+        "            .get(subject_name)",
+        "            .filter(|definition| definition.kind != DefinitionKind::Term)",
+        "            .ok_or_else(|| {",
+        "                io::Error::other(format!(",
+        "                    \"{subject_name}: no matching requirement or named example\""
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 67,
+      "line_end": 73,
+      "text": [
         "            }",
+        "            if !definitions",
+        "                .get(reference.name)",
+        "                .is_some_and(|definition| definition.kind != DefinitionKind::Term)",
+        "            {",
+        "                return Err(io::Error::other(format!(",
+        "                    \"{subject_name}: referenced subject {} does not exist\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 258,
+      "line_end": 265,
+      "text": [
         "        }",
         "        InputSelector::Requirements { requirements } => {",
         "            for (name, definition) in definitions {",
@@ -1173,34 +756,348 @@
         "                    && crate::definition_glob::matches(requirements, name)",
         "                {",
         "                    access.file(root, Path::new(&definition.file))?;",
-        "                }",
-        "            }",
+        "                }"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 335,
+      "line_end": 341,
+      "text": [
+        "            })",
+        "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)",
+        "    {",
+        "        return Ok(if declaration.kind == DefinitionKind::Term {",
+        "            InputSelector::Definition {",
+        "                definition: name.clone(),",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 205,
+      "line_end": 213,
+      "text": [
+        "    let selected: Vec<_> = definitions",
+        "        .iter()",
+        "        .filter(|(name, definition)| {",
+        "            definition.kind != crate::DefinitionKind::Term",
+        "                && selection",
+        "                    .is_none_or(|selection| crate::definition_glob::matches(selection, name))",
+        "        })",
+        "        .map(|(name, definition)| json!({\"name\": name, \"kind\": definition.kind.noun()}))",
+        "        .collect();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 229,
+      "line_end": 238,
+      "text": [
+        "    }",
+        "    found.retain(|reference| {",
+        "        reference.kind != crate::ReferenceKind::Term",
+        "            && crate::definition_glob::matches(selection, &reference.name)",
+        "            && definitions",
+        "                .get(&reference.name)",
+        "                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term)",
+        "            // Discovery omits excluded sources rather than aborting.",
+        "            && sources.access.file(&sources.root, &reference.file).is_ok()",
+        "    });"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 274,
+      "line_end": 281,
+      "text": [
+        "    }",
+        "    // {impl}`requirements.references.anchors`",
+        "    for (name, definition) in &definitions {",
+        "        if definition.kind == crate::DefinitionKind::Term",
+        "            || !crate::definition_glob::matches(selection, name)",
+        "        {",
+        "            continue;",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 38,
+      "line_end": 44,
+      "text": [
+        "        definition_glob::validate(glob)",
+        "            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;",
+        "        if !inspection.definitions.iter().any(|(name, d)| {",
+        "            d.kind != crate::DefinitionKind::Term && definition_glob::matches(glob, name)",
+        "        }) {",
+        "            return Err(io::Error::new(",
+        "                io::ErrorKind::NotFound,"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 53,
+      "line_end": 62,
+      "text": [
+        "    let mut associated_errors = BTreeSet::new();",
+        "",
+        "    for (name, definition) in &inspection.definitions {",
+        "        if definition.kind == crate::DefinitionKind::Term {",
+        "            continue;",
         "        }",
-        "    }",
-        "    let resolved = selector",
-        "        .resolve(root, definitions)",
-        "        .map_err(io::Error::other)?;",
-        "    for range in &resolved.ranges {",
-        "        access.file(root, Path::new(&range.file))?;",
-        "    }",
-        "    Ok(selector.to_input(&resolved))",
-        "}",
+        "        if glob.is_some_and(|glob| !definition_glob::matches(glob, name)) {",
+        "            continue;",
+        "        }",
+        "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);"
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 130,
+      "line_end": 139,
+      "text": [
+        "        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;",
+        "    let mut pages = Vec::new();",
+        "    for (name, definition) in &inspection.definitions {",
+        "        if definition.kind == crate::DefinitionKind::Term {",
+        "            continue;",
+        "        }",
+        "        if !definition_glob::matches(selector, name) {",
+        "            continue;",
+        "        }",
+        "        let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 179,
+      "line_end": 185,
+      "text": [
+        "        };",
+        "        let expected = name",
+        "            .and_then(|name| definitions.get(name))",
+        "            .filter(|d| d.kind != DefinitionKind::Term);",
         "",
-        "// {impl}`requirements.authoring.mandatory_inputs`",
-        "fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) {",
-        "    if !selectors.contains(&selector) {",
-        "        selectors.push(selector);",
-        "    }",
-        "}",
+        "        if let Some(name) = name.filter(|_| expected.is_some()) {",
+        "            present.insert(name.to_owned());"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 196,
+      "line_end": 202,
+      "text": [
         "",
-        "// {impl}`requirements.references.authoring_inputs`",
-        "fn reference_selector("
+        "    // {impl}`requirements.ci.coverage`",
+        "    for (name, definition) in &definitions {",
+        "        if definition.kind != DefinitionKind::Term && !present.contains(name) {",
+        "            errors.push(format!(",
+        "                \"evidence/{name}.json: missing for {} at {}\",",
+        "                definition.kind.noun(),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 389,
+      "line_end": 395,
+      "text": [
+        "                ));",
+        "            }",
+        "",
+        "            if block.kind == DefinitionKind::Term",
+        "                && let Err(error) = crate::terms::declaration(&text)",
+        "            {",
+        "                errors.push(format!(\"{source}: definition {name}: {error}\"));"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1019,
+      "line_end": 1025,
+      "text": [
+        "    for reference in references {",
+        "        let target = definitions.get(&reference.name);",
+        "        if reference.kind == ReferenceKind::Term {",
+        "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {",
+        "                errors.push(format!(",
+        "                    \"{}:{}: term {} has no matching named definition\",",
+        "                    display_path(root, &reference.file),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1029,
+      "line_end": 1035,
+      "text": [
+        "            }",
+        "            continue;",
+        "        }",
+        "        if target.is_some_and(|d| d.kind != DefinitionKind::Term) {",
+        "            by_definition",
+        "                .entry(reference.name.clone())",
+        "                .or_default()"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1047,
+      "line_end": 1053,
+      "text": [
+        "",
+        "    let subjects: Vec<_> = definitions",
+        "        .iter()",
+        "        .filter(|(_, definition)| definition.kind != DefinitionKind::Term)",
+        "        .collect();",
+        "    for (completed, (name, definition)) in subjects.iter().enumerate() {",
+        "        progress(InspectionProgress {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 181,
+      "line_end": 187,
+      "text": [
+        "            Self::Definition { definition } => {",
+        "                let target = definitions",
+        "                    .get(definition)",
+        "                    .filter(|d| d.kind == crate::DefinitionKind::Term)",
+        "                    .ok_or_else(|| format!(\"{definition}: no matching named definition\"))?;",
+        "                check_project_file(root, &target.file)?;",
+        "                Ok(ResolvedInput {"
+      ]
+    },
+    {
+      "file": "src/inputs.rs",
+      "line_start": 201,
+      "line_end": 208,
+      "text": [
+        "                let mut text = Vec::new();",
+        "                let mut matches = Vec::new();",
+        "                for (name, definition) in definitions {",
+        "                    if definition.kind == crate::DefinitionKind::Term",
+        "                        || !definition_glob::matches(requirements, name)",
+        "                    {",
+        "                        continue;",
+        "                    }"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 185,
+      "line_end": 191,
+      "text": [
+        "            if definitions.contains_key(&name) {",
+        "                continue;",
+        "            }",
+        "            if block.kind != DefinitionKind::Term {",
+        "                order.push(name.clone());",
+        "            }",
+        "            definitions.insert("
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 301,
+      "line_end": 307,
+      "text": [
+        "        let full_name = full_requirement_name(namespace, &block.name);",
+        "        // {impl}`requirements.references.safe_badges`",
+        "        let escaped_name = escape_html(&full_name);",
+        "        if block.kind == DefinitionKind::Term {",
+        "            if let Ok((phrase, body)) =",
+        "                terms::declaration(&content[block.body_start..block.body_end])",
+        "            {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 385,
+      "line_end": 391,
+      "text": [
+        "        result.push_str(&content[cursor..reference.start]);",
+        "        if let Some(target) = definitions.get(reference.name) {",
+        "            if reference.kind == ReferenceKind::Term {",
+        "                if target.kind == DefinitionKind::Term",
+        "                    && let Ok((phrase, _)) = terms::declaration(&target.text)",
+        "                {",
+        "                    let href = chapter_href("
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 543,
+      "line_end": 549,
+      "text": [
+        "        } else if let Some(rest) = suffix.strip_prefix(\"{example}\") {",
+        "            (DefinitionKind::Example, rest)",
+        "        } else if let Some(rest) = suffix.strip_prefix(\"{definition}\") {",
+        "            (DefinitionKind::Term, rest)",
+        "        } else {",
+        "            index += 1;",
+        "            continue;"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 571,
+      "line_end": 577,
+      "text": [
+        "        // {impl}`requirements.references.anchors`",
+        "        let mut options = Vec::new();",
+        "        let mut text_start = body_start;",
+        "        if kind != DefinitionKind::Term {",
+        "            let body_lines = close_index.unwrap_or(lines.len());",
+        "            for (offset, &(option_start, option_end, option)) in",
+        "                lines[index + 1..body_lines].iter().enumerate()"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 676,
+      "line_end": 682,
+      "text": [
+        "        let mut ranges = protected_ranges(content);",
+        "        for block in definition_blocks(content)",
+        "            .into_iter()",
+        "            .filter(|b| b.kind == DefinitionKind::Term)",
+        "        {",
+        "            let body = &content[block.body_start..block.body_end];",
+        "            let option_start = block.body_start + body.len() - body.trim_start().len();"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 279,
+      "line_end": 285,
+      "text": [
+        "                role.kind != crate::ReferenceKind::Term",
+        "                    && definitions",
+        "                        .get(role.name)",
+        "                        .is_some_and(|d| d.kind != crate::DefinitionKind::Term)",
+        "            })",
+        "        {",
+        "            cited[*function_index] = true;"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 103,
+      "line_end": 109,
+      "text": [
+        "        }",
+        "        let definition = declarations",
+        "            .get(&name)",
+        "            .filter(|d| d.kind == DefinitionKind::Term)",
+        "            .ok_or_else(|| format!(\"term {name}: no matching named definition\"))?;",
+        "        let (_, body) = declaration(&definition.text)?;",
+        "        referenced_terms(body, true, &mut pending);"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
       "line_start": 180,
-      "line_end": 245,
+      "line_end": 300,
       "text": [
         "    entries.dedup();",
         "    Ok(ToolDelivery {",
@@ -1215,6 +1112,8 @@
         "}",
         "",
         "// {impl}`requirements.authoring.reference_index`",
+        "// {impl}`requirements.references.definition_globs`",
+        "// {impl}`requirements.references.anchors`",
         "fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
         "    check_keys(args, &[\"selection\"])?;",
         "    let selection = if args.contains_key(\"selection\") {",
@@ -1267,95 +1166,154 @@
         "            .file",
         "            .extension()",
         "            .is_some_and(|extension| extension == \"rs\")",
-        "        {"
+        "        {",
+        "            let parsed = items.entry(reference.file.clone()).or_insert_with(|| {",
+        "                fs::read_to_string(&reference.file)",
+        "                    .ok()",
+        "                    .and_then(|source| crate::rust_items::parse_items(&source).ok())",
+        "                    .unwrap_or_default()",
+        "            });",
+        "            parsed",
+        "                .iter()",
+        "                .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)",
+        "                .min_by_key(|item| item.line_end - item.line_start)",
+        "                .map(|item| item.selector.clone())",
+        "        } else {",
+        "            None",
+        "        };",
+        "        sites.push((",
+        "            reference.name.clone(),",
+        "            file,",
+        "            Some(reference.line),",
+        "            json!({",
+        "                \"name\": reference.name,",
+        "                \"role\": reference.kind.label(),",
+        "                \"file\": relative_path(&sources.root, &reference.file)?,",
+        "                \"line\": reference.line,",
+        "                \"rust_item\": rust_item,",
+        "            }),",
+        "        ));",
+        "    }",
+        "    // {impl}`requirements.references.anchors`",
+        "    for (name, definition) in &definitions {",
+        "        if definition.kind == crate::DefinitionKind::Term",
+        "            || !crate::definition_glob::matches(selection, name)",
+        "        {",
+        "            continue;",
+        "        }",
+        "        for anchor in &definition.anchors {",
+        "            // Discovery omits excluded sources rather than aborting.",
+        "            let Ok(path) = sources.access.file(&sources.root, Path::new(&anchor.file)) else {",
+        "                continue;",
+        "            };",
+        "            let file = relative_path(&sources.root, &path)?;",
+        "            sites.push((",
+        "                name.clone(),",
+        "                file.clone(),",
+        "                None,",
+        "                json!({",
+        "                    \"name\": name,",
+        "                    \"role\": anchor.kind.label(),",
+        "                    \"file\": file,",
+        "                    \"line\": null,",
+        "                    \"rust_item\": null,",
+        "                }),",
+        "            ));",
+        "        }"
       ]
     },
     {
-      "file": "md/requirements/definitions.md",
-      "line_start": 48,
-      "line_end": 48,
+      "file": "src/authoring/inputs.rs",
+      "line_start": 238,
+      "line_end": 242,
       "text": [
-        "A requirements input selects `requirements.cli.*`. A selected requirement references `glossary.command`, which is captured as a separate definition input despite not matching that selection. An unreferenced definition named `requirements.cli.unrelated` is not selected merely because its name matches the selection. {cite}`requirements.definitions.selection`"
+        "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
+        "fn source_input(",
+        "    root: &Path,"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 191,
+      "line_end": 195,
+      "text": [
+        "",
+        "// {impl}`requirements.authoring.reference_index`",
+        "// {impl}`requirements.references.definition_globs`",
+        "// {impl}`requirements.references.anchors`",
+        "fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {"
       ]
     },
     {
       "file": "src/commands.rs",
-      "line_start": 20,
-      "line_end": 20,
+      "line_start": 27,
+      "line_end": 31,
       "text": [
-        "// {impl}`requirements.definitions.selection`"
+        "// {impl}`requirements.cli.shared_status_rendering`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
+        "pub fn status_markdown_with_options(",
+        "    root: &Path,"
       ]
     },
     {
       "file": "src/commands.rs",
-      "line_start": 28,
-      "line_end": 28,
+      "line_start": 124,
+      "line_end": 128,
       "text": [
-        "// {impl}`requirements.definitions.selection`"
+        "// {impl}`requirements.cli.info`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
+        "pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {",
+        "    let inspection = inspect_repository(root)?;"
       ]
     },
     {
-      "file": "src/commands.rs",
-      "line_start": 125,
-      "line_end": 125,
+      "file": "src/definition_glob.rs",
+      "line_start": 1,
+      "line_end": 3,
       "text": [
-        "// {impl}`requirements.definitions.selection`"
+        "// {impl}`requirements.references.definition_globs`",
+        "pub(crate) fn validate(pattern: &str) -> Result<(), String> {",
+        "    if pattern.is_empty() {"
+      ]
+    },
+    {
+      "file": "src/definition_glob.rs",
+      "line_start": 14,
+      "line_end": 18,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.references.definition_globs`",
+        "pub(crate) fn matches(pattern: &str, name: &str) -> bool {",
+        "    let bytes = name.as_bytes();"
+      ]
+    },
+    {
+      "file": "src/definition_glob.rs",
+      "line_start": 40,
+      "line_end": 44,
+      "text": [
+        "    use super::{matches, validate};",
+        "",
+        "    // {test}`requirements.references.definition_globs`",
+        "    // {test}`requirements.references.definition_glob_cases`",
+        "    #[test]"
       ]
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 115,
-      "line_end": 115,
+      "line_start": 117,
+      "line_end": 121,
       "text": [
-        "    // {impl}`requirements.definitions.selection`"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 150,
-      "line_end": 150,
-      "text": [
-        "// {impl}`requirements.definitions.selection`"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 45,
-      "line_end": 45,
-      "text": [
-        "// {impl}`requirements.definitions.selection`"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 127,
-      "line_end": 127,
-      "text": [
-        "// {test}`requirements.definitions.selection`"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 386,
-      "line_end": 386,
-      "text": [
-        "    let display = habeas::info_markdown(root, \"rules.case\").unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 258,
-      "line_end": 258,
-      "text": [
-        "    let verbose = habeas::status_markdown_with_options(temp.path(), false, None, true).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 261,
-      "line_end": 261,
-      "text": [
-        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();"
+        "    // {impl}`requirements.cli.add_input_file_range`",
+        "    // {impl}`requirements.cli.add_input_requirements`",
+        "    // {impl}`requirements.references.definition_globs`",
+        "    pub(crate) fn resolve(",
+        "        &self,"
       ]
     }
   ]

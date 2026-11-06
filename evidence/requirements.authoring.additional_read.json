@@ -1,7 +1,7 @@
 {
   "example": "The model calls `list_files` to find a directory, then `ripgrep` to find matching\nlines in a Rust file. The listing creates no evidence input; the search returns\nand records file-range inputs including five context lines on each side, where\navailable. A `habeas` request with that file's `rust_file` and\na `rust_item` selector returns and records the complete Rust item, along with any\nrequired terminology. A file-range request omitting `line_end` reads through EOF\nand records the actual ending line without requiring the model to know it.\n{cite}`requirements.authoring.file_discovery`\n{cite}`requirements.authoring.text_search`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "Three tests carry `{test}` references to `requirements.authoring.additional_read`. Together they cover each step of the scenario.\n\n**`list_files`, then `ripgrep`, with listings creating no evidence**\n- `tools.rs::reading_records_only_delivered_sources_and_their_terms` lists `src` and gets `[{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]`. It asserts `listing.inputs.is_empty()`.\n- `tests/authoring_cli.rs::ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` runs a scripted model session. The model calls `list_files`, then `ripgrep` on `extra.txt`, then `habeas` calls. The final evidence contains no input for `\".\"`, so the listing was not recorded.\n\n**`ripgrep` returns file-range inputs with five context lines per side**\n- `tools.rs::search_merges_context_windows_and_respects_ignore_rules` places matches on lines 2 and 6 of a 20-line file. With the default context, the windows merge into a single input covering lines 1–11, and the text matches `lines[..11]`.\n- The same test shows that `context: 0` returns only the two matching lines. It also shows that no match returns empty arrays, and that a bad regex or a negative context is an error.\n- The CLI test confirms that `extra.txt` is recorded with a 1–11 range.\n\n**`habeas` with `rust_file` and `rust_item` returns the complete item plus required terminology**\n- In `reading_records_only_delivered_sources_and_their_terms`, reading `fn[work]` returns 2 inputs: the Rust item and the `terms.value` definition. `result[\"definitions\"][0][\"definition\"]` is `terms.value`.\n- The test also checks that nothing is recorded until `record_inputs` is called, and that recording the same inputs twice leaves 2 recorded inputs.\n- It rejects incomplete, mixed and unknown request forms. I did not read the implementation in `src/authoring/tools.rs` itself. The judgment rests on these test assertions.\n\n**A file-range request without `line_end` reads through EOF and records the actual last line**\n- In the unit test, `{\"file\":\"src/lib.rs\",\"line_start\":2}` returns `line_end` 2 and text `[\"fn work() {}\"]`. `line_start: 0` is an error.\n- In the CLI test, `{\"file\":\"extra.txt\",\"line_start\":10}` is recorded as the 10–12 range. The repeated call is deduplicated, leaving two `extra.txt` inputs.\n- A failed read of `absent.txt` adds no evidence.\n\nThe CLI test also checks the end-to-end behaviour: tool results reach the model, and usage records the `habeas` origin and the repeated delivery.\n\nThe test setup and assertions cover the scenario and its expected outcomes, and I found no unacknowledged gaps.",
+  "rationale": "Three `{test}` references cover the scenario. Each step of the example is asserted by at least one of them. No single test runs the whole list → search → Rust-item → EOF sequence, but the CLI test runs list, search and file reads in one session, and the Rust-item read is covered separately.\n\n- **Listing creates no evidence:**\n  - `reading_records_only_delivered_sources_and_their_terms` (src/authoring/tools.rs) calls `list_files` on `src`. It asserts the entries `[{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]` and `listing.inputs.is_empty()`.\n  - The CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (tests/authoring_cli.rs) calls `list_files`. It then asserts that no evidence input has file `.`.\n- **Search with five lines of context on each side, merged and clamped:** `search_merges_context_windows_and_respects_ignore_rules` places matches on lines 2 and 6 of a 20-line file. It asserts one merged input, `sample.txt`, lines 1–11, with the exact text. Lines 1–11 show the start-of-file boundary and the merging of overlapping windows. The same test checks `context:0` (two single-line windows), empty arrays for no match, errors for a bad regex and a negative context, and `ignored.txt` and `.hidden.txt` absent from the results. The CLI test checks that the search output is recorded: `extra.txt` appears in the evidence with a 1–11 window.\n- **Rust-item read with terminology:** `reading_records_only_delivered_sources_and_their_terms` requests `rust_file` `src/lib.rs` with `rust_item` `fn[work]`. It asserts two recorded inputs (the item and its required definition) and `definitions[0].definition == \"terms.value\"`. It also asserts that nothing is recorded until `record_inputs` is called, and that recording is idempotent. The test does not assert the item's full text; it checks only the input count and the definition name. That is a minor weakness, not a gap against the example.\n- **EOF read records the actual end line:** the same test requests `file: src/lib.rs, line_start: 2` with no `line_end`. It asserts `line_end == 2` and `text == [\"fn work() {}\"]`. The CLI test reads `extra.txt` from line 10 and asserts a recorded input spanning lines 10–12. A repeated read is deduplicated, and a failed read adds no evidence.\n- **Argument validation:** `line_start: 0`, incomplete, mixed and unknown request forms are all rejected.\n\nThe listing, search and read steps each have assertions on inputs, ranges and recorded evidence, so I judge the example covered.",
   "inputs": [
     {
       "requirements": "requirements.authoring.additional_read",
@@ -335,6 +335,7 @@
         "// {test}`requirements.authoring.usage_storage`",
         "// {test}`requirements.authoring.usage_inputs`",
         "// {test}`requirements.authoring.usage_requests`",
+        "// {test}`requirements.authoring.mandatory_inputs`",
         "#[test]",
         "fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {",
         "    let server = Server::start(vec![",
@@ -517,46 +518,6 @@
         "    let stdout = String::from_utf8_lossy(&output.stdout);",
         "    assert!(stdout.contains(MODEL) && stdout.contains(\"Evidence:\") && stdout.contains(\"Usage:\"));",
         "}"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 855,
-      "line_end": 857,
-      "text": [
-        "",
-        ":::{example} additional_read",
-        "The model calls `list_files` to find a directory, then `ripgrep` to find matching"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 495,
-      "line_end": 497,
-      "text": [
-        "",
-        "    // {test}`requirements.authoring.additional_read`",
-        "    // {test}`requirements.authoring.source_tools`"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 575,
-      "line_end": 577,
-      "text": [
-        "    // {test}`requirements.authoring.text_search`",
-        "    // {test}`requirements.authoring.additional_read`",
-        "    // {test}`requirements.authoring.file_discovery`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 233,
-      "line_end": 235,
-      "text": [
-        "// {test}`requirements.authoring.invocation`",
-        "// {test}`requirements.authoring.additional_read`",
-        "// {test}`requirements.authoring.acknowledged_gap`"
       ]
     }
   ]

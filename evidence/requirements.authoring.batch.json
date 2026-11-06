@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement\nand named example whose evidence is missing, stale, or invalid. It MUST preserve\ncurrent records without invoking a model for them, including accepted FIXME\njudgments and current false judgments. A current false judgment is reassessed\nonly when its subject or inputs change, or when it is named explicitly with\n{cite}`requirements.authoring.invocation`.\n`--all` MUST be mutually exclusive with a subject name and `--stdout`.\nFailure to discover declarations or parse project sources MUST report an error,\nnot a successful empty batch. A batch with no assessments needed MUST succeed\nwithout resolving model configuration or credentials.\n\nEach subject MUST receive an independent assessment with its own prompt, inputs,\njudgment, and usage record. The command MUST report aggregate completion and each\nauthoring error under {cite}`requirements.authoring.reporting`, and retain\nsuccessful writes when another assessment fails. It MUST return a nonzero\nexit status if any assessment fails. False judgments MUST still be written as\ncompleted assessments; they remain failures under ordinary evidence validation.\nAn access-policy denial MUST abort only the affected assessment under\n{cite}`requirements.authoring.read_denial`.\n\nThe bundled Habeas skills MUST direct the supervising agent to run this command\nto create or refresh evidence. They MUST leave judgments, rationales, and input\nsnapshots to the authoring harness; the supervising agent addresses findings by\nchanging requirements, source citations, implementation, or tests.\n{cite}`requirements.authoring.concurrency`\n{cite}`requirements.authoring.usage_storage`\n{cite}`requirements.authoring.persistence`",
-  "determination": false,
-  "rationale": "**Verdict: false.** The command behaviour is implemented and well tested. The obligation on the bundled skills has no `{impl}` marking and no test.\n\n**Command behaviour that is covered**\n- **Selection.** `author_all_with_options` (src/batch.rs) selects only definitions that are not terms. It skips ones whose evidence state is Valid, Fixme or DeterminationFalse, so current records are preserved without a model call. It returns an error when discovery fails.\n- **Empty batch.** When nothing needs assessing, it returns before calling `config::resolve_authoring`, so no configuration or credentials are resolved.\n- **Mutual exclusion.** src/main.rs uses `ArgGroup(\"author_target\")` with `multiple(false)` over `subject` and `all`, plus `conflicts_with = \"stdout\"` on `all`.\n- **Independent assessments.** Each assessment runs through `prepare_assessment`, with its own conversation and its own `UsageLog`.\n- **Failures.** Successful writes are kept when another assessment fails. Failures are reported individually. The exit status is nonzero if any assessment failed. False judgments are written through `write_record` like any other outcome.\n- **Read denial.** A denied read fails only its own assessment, and the other assessments continue.\n- **Tests (tests/authoring_batch.rs).**\n  - Fill, preserve and re-author on changed inputs.\n  - Current false judgments preserved, and stale ones re-authored.\n  - Serial default for Ollama.\n  - A failing assessment keeps the other results.\n  - Mixed true, false and FIXME outcomes, and verbose rationales.\n  - Interrupt handling.\n  - Denied read, both for queued and for in-flight assessments.\n  - `--stdout` rejected.\n  - Discovery errors fail before any configuration is resolved.\n  - A no-op batch succeeds with an invalid or missing config.\n\n**Gap**\n- The requirement says the bundled Habeas skills MUST direct the supervising agent to run `habeas author --all`. It also says they MUST leave judgments, rationales and input snapshots to the harness.\n- The text that does this is in assets/skills/habeas-evidence/SKILL.md, habeas-requirements/SKILL.md and habeas-bootstrap-requirements/SKILL.md.\n- None of that text is marked `{impl}` for `requirements.authoring.batch`. The reference list shows no `{impl}` or `{test}` site outside Rust sources and tests/authoring_batch.rs.\n- No test checks the skill content. tests/symposium_hook_smoke.py only checks that the skills are installed byte-for-byte.\n- So part of the requirement is implemented without an `{impl}` marking and is untested. Nothing in the sources acknowledges this as a FIXME.\n\nBecause of that gap, the determination is false rather than true.",
+  "determination": true,
+  "rationale": "**Judgment: `requirements.authoring.batch` is satisfied.** One small gap remains: no test checks that a subject name combined with `--all` is rejected. I judged it too minor to fail the requirement.\n\n**Implementation**\n- **Selecting work:**\n  - `author_all_with_options` (`src/authoring/batch.rs`) inspects the repository and returns an error if `discovery_errors` is non-empty. A discovery or parse failure is therefore never a successful empty batch.\n  - It queues every non-term definition whose evidence is not `Valid`, `Fixme` or `DeterminationFalse`. Missing, stale and invalid records are re-authored. Current FIXME and current false records are counted as unchanged and never sent to a model. A false record is reassessed only when its subject or inputs change.\n  - When no subjects are queued it returns before `config::resolve_authoring`, so no model configuration or credentials are resolved.\n- **Independent assessments:**\n  - Each subject runs in its own task through `prepare_assessment`, with its own prompt, `UsageLog` and judgment.\n  - Concurrency is bounded by `effective_concurrency()`, using a Tokio `JoinSet` on the runtime created in `main`.\n- **Failures and exit status:**\n  - `write_record` writes each successful record atomically, and `persisted` marks it written. A false judgment is written like any other completed assessment.\n  - A failure produces a `failed` or `cancelled` usage record (`PendingAssessment::failed`), and its error is reported through `BatchProgress::failed` and added to `outcome.failures`.\n  - Other assessments continue and keep their writes. `main` prints the aggregate \"N authored; M unchanged; K failed\" line and returns an error, hence a nonzero exit, when any failure exists.\n- **Cancellation:** `cancel_on_error` stops the batch only on an `Interrupted` error. A read denial is an ordinary failure, so it does not stop queued work. Stopping on interruption is specified by the progress requirement that `author_all` also implements.\n- **Flags:** In `main.rs`, `--all` is declared `conflicts_with = \"stdout\"`, and the clap `author_target` group allows only one of `subject` or `--all`. `-v` and `--verbose` are accepted.\n- **Skills:** The three bundled skills are anchored with `:impl:` in the requirement declaration. They direct the supervising agent to run `habeas author --all`. They also forbid the agent from hand-writing judgments, rationales or snapshots, and say findings are addressed by changing requirements, citations, implementation or tests.\n\n**Tests (`tests/authoring_batch.rs`)**\n- **Fill, preserve, refresh:** `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` covers filling all six subjects and preserving a FIXME record. It verifies that a no-op batch succeeds even with an invalid or missing configuration. It also verifies that only the changed subject is re-authored, that each assessment has its own usage record, and that concurrency stays within the configured limit.\n- **False judgments:** `batch_preserves_current_false_judgments_and_reauthors_stale_ones` covers keeping current false records and reauthoring a stale one.\n- **Failure handling:** `failed_assessment_keeps_other_results_and_reports_failure` covers one failed assessment, kept writes, a failed usage record and a nonzero exit.\n- **Read denial:** two tests cover denial, `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence`. Queued and in-flight assessments finish, the denied subject gets no evidence and a failed usage record, and the exit is nonzero.\n- **Rejected `--stdout`:** `batch_stdout_is_rejected_before_authoring` covers `--all` with `--stdout`.\n- **Discovery errors:** `discovery_errors_fail_before_configuration_or_inference` covers a Rust parse error and an unclosed fence. Neither resolves configuration, writes state or contacts a model.\n- **Defaults and reporting:** `ollama_batches_are_serial_by_default` covers the Ollama default of one at a time. Further tests cover the verbose and non-verbose reporting of false rationales, PTY progress and interrupted batches.\n\n**Minor gap**\n- No test checks that `author <name> --all` is rejected. The rule is enforced declaratively by the clap `ArgGroup(multiple(false))`.",
   "inputs": [
     {
       "requirements": "requirements.authoring.batch",
@@ -196,6 +196,7 @@
         "// {impl}`requirements.authoring.read_denial`",
         "// {impl}`requirements.authoring.progress`",
         "// {impl}`requirements.authoring.reporting`",
+        "// {impl}`requirements.ci.authoring_inputs`",
         "pub async fn author_all_with_options(",
         "    root: &Path,",
         "    selection: Option<&str>,",
@@ -433,6 +434,7 @@
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.configuration.state_location`",
         "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.authoring.concurrency`",
         "pub(crate) async fn prepare_assessment(",
         "    root: &Path,",
         "    subject: &AuthoringSubject,",
@@ -562,6 +564,7 @@
       "text": [
         "    // {impl}`requirements.authoring.progress`",
         "    // {impl}`requirements.authoring.batch`",
+        "    // {impl}`requirements.authoring.reporting`",
         "    pub(super) fn println(&self, message: &str) {",
         "        if let Some(bar) = &self.bar {",
         "            bar.println(message);",
@@ -676,8 +679,9 @@
         "        }",
         "    }",
         "",
-        "    validate_references(&root, &definitions, &mut errors, &mut progress);",
-        "    // {impl}`requirements.references.rust_function_coverage`",
+        "    let references = collect_references_with_progress(&root, &mut errors, &mut progress);",
+        "    validate_references(&root, &definitions, &references, &mut errors, &mut progress);",
+        "    // {impl}`requirements.references.rust_item_coverage`",
         "    progress(InspectionProgress {",
         "        stage: \"Rust citations\",",
         "        completed: 0,",
@@ -706,6 +710,7 @@
         "            errors,",
         "        },",
         "        definitions,",
+        "        references,",
         "        discovery_errors,",
         "    })",
         "}"
@@ -775,6 +780,7 @@
         "        // {impl}`requirements.authoring.batch`",
         "        // {impl}`requirements.authoring.concurrency`",
         "        // {impl}`requirements.authoring.reporting`",
+        "        // {impl}`requirements.authoring.read_denial`",
         "        Command::Author {",
         "            subject,",
         "            all,",
@@ -1989,7 +1995,7 @@
       "text": [
         "// {test}`requirements.authoring.batch`",
         "// {test}`requirements.ci.definition_errors`",
-        "// {test}`requirements.references.rust_function_coverage`",
+        "// {test}`requirements.references.rust_item_coverage`",
         "#[test]",
         "fn discovery_errors_fail_before_configuration_or_inference() {",
         "    for (declarations, source, location, diagnostic) in [",
@@ -2018,94 +2024,226 @@
       ]
     },
     {
-      "file": "README.md",
-      "line_start": 28,
-      "line_end": 34,
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "line_start": 1,
+      "line_end": 70,
       "text": [
+        "---",
+        "name: habeas-requirements",
+        "description: Design and vet requirements and examples for user-visible behavior changes in a Habeas mdBook project before coding; maintain definitions and references.",
+        "---",
         "",
-        "Add a `{test}` reference to an appropriate project requirement or named example on the generated test, and give the rest of your Rust functions references before expecting validation to pass. Mark code with `{impl}` where it implements part of a definition, tests with `{test}` where they are designed to verify one, and use `{cite}` only for related code that does neither; see [References](md/reference.md#references).",
+        "# Habeas requirements",
         "",
-        "Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement and example evidence. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current records are preserved, including false judgments whose subject and inputs are unchanged. Run `cargo test --workspace` afterward to validate the saved evidence without inference.",
+        "## New or changed behavior",
         "",
-        "Bedrock authoring defaults to the available logical CPU count in simultaneous",
-        "assessments; Ollama defaults to one. Set a positive `concurrency` in the named"
+        "When a user requests new or changed user-visible behavior in a Habeas project, first read the relevant requirements, code, and tests. Identify requirements that already express the intended behavior. For gaps, draft the smallest set of observable obligations, including important outcomes and failure cases, without committing to an implementation.",
+        "",
+        "Run `habeas info <selection>` to read current requirement and named example texts, evidence states, rationales, inputs, and validation findings as Markdown. A selection is a full name, which selects exactly, or a glob where `*` matches any number of characters, including dots, when you need to inspect a group.",
+        "",
+        "Show the user the full IDs and text of existing requirements to reuse, plus the proposed chapter location, full IDs, and exact fenced text of any additions or changes. State open product choices separately. Ask the user to agree to or revise this requirement set. User-provided exact requirement text or explicit agreement earlier in the conversation counts as approval; a general request to build the feature does not. Keep drafts out of the mdBook while review is pending, and do not write implementation or test code yet.",
+        "",
+        "After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior and add tests and traceability references. Run `habeas author --all` to create or refresh evidence through the configured model. The supervising agent must not compose evidence JSON, rationales, determinations, or source snapshots itself or delegate manual evidence writing to another agent. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Missing or false evidence is expected while implementation is incomplete.",
+        "",
+        "## Reviewing code against requirements",
+        "",
+        "The authoring harness assesses whether the code marked `{impl}` for a requirement implements every obligation completely and exactly as stated, and whether tests cover interesting design cases. It also treats as gaps any code that implements part of the requirement without `{impl}`, including code that only cites it, and any behavior in `{impl}` code that no definition implemented there specifies. When another requirement implements part of the subject, it checks only that the text carries out that part. For absent tests, it assesses whether simplicity or impracticality justifies their absence. For an example, it assesses whether test setup and assertions cover the scenario and expected outcomes. Use these criteria while implementing and fixing reported gaps; leave evidence judgments and rationales to the harness.",
+        "",
+        "Requirement and example judgments have three outcomes: `true`, `false`, or `{\"FIXME\": [\"#125\"]}`. The harness uses FIXME when source comments or tests explicitly acknowledge the uncovered aspects, recording their issue references or other identifying content. A documented gap does not excuse other, unacknowledged gaps. Use the `habeas-evidence` skill for the authoring workflow.",
+        "",
+        "Inspect every end-user-observable result and branch, including errors and input handling. Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement. When requirements interact, mark every requirement implemented at the relevant point with `{impl}` and explain how their texts jointly account for the behavior. A reference alone does not explain why a behavior, such as accepting `^C`, is specified.",
+        "",
+        "Every explicit function or method in first-party Rust sources needs its own requirement or example reference in an attached Rust comment or within its body, including trait methods and test helpers. A reference on an enclosing module or `impl` does not cover its functions, and there is no uncited-function waiver. If no existing requirement explains an internal helper, propose a requirement scoped to that area of internal code, such as `internal.config_parsing`, rather than one catch-all, get the user's agreement, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function. Do not use an internal-detail requirement to justify otherwise unspecified observable behavior.",
+        "",
+        "## Authoring format",
+        "",
+        "Put requirements in the book's Markdown source directory. Define each with a fenced `{req}` directive: the opening line is three or more colons followed by `{req} name`, and the closing line has at least as many colons. Derive the full name from the chapter path relative to that directory: remove `.md`, change `/` to `.`, and append the directive name. For nested chapters, omit a leading `reqs/` and a trailing `/index` or `/README`.",
+        "",
+        "```text",
+        ":::{req} forwarding.quit",
+        "Pressing q MUST stop managed forwards.",
+        ":::",
+        "```",
+        "",
+        "Everything between the fences is the requirement body, including headings and diagrams. Use a longer outer colon fence when the body contains a nested colon directive. Use BCP 14 terms when stating obligations.",
+        "",
+        "Write a concrete case as a separate `{example}` directive with the same chapter-qualified naming and fence rules. Reference at least one requirement it illustrates from the example body: `{test}` when the example is a case the requirement's review should check, `{cite}` when the requirement is context for the example's own review, or both. A true example determination needs test references and an evidence rationale explaining how the tests cover its interesting aspects. Keep names unique across requirements and examples.",
+        "",
+        "Use fully qualified names for implementation, citation, and test references. Place them on the relevant source or book line:",
+        "",
+        "```text",
+        "{impl}`requirements.forwarding.quit`",
+        "{cite}`requirements.forwarding.quit`",
+        "{test}`requirements.forwarding.quit`",
+        "```",
+        "",
+        "Choose the role by what the source does:",
+        "",
+        "- `{impl}`: it implements part of the definition, making a decision, performing a check, producing an output, or handling a case the definition specifies. Calling code that implements the definition, or producing a result a caller uses to meet it, does not count. A requirement that refines another's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.",
+        "- `{test}`: it is designed to verify behavior the definition specifies, through a test's scenario and assertions or an example's concrete case. Incidental setup does not count.",
+        "- `{cite}`: it relies on, supports, or refers to the definition without implementing or testing it.",
+        "",
+        "`{impl}` and `{test}` make the source an input to the definition's assessment and must be covered by its evidence. `{cite}` makes the cited definition context for the citing requirement or example, needs no coverage, and does not count toward the cited requirement's implementation.",
+        "",
+        "When a file that implements or tests a requirement cannot or should not carry a reference itself, such as a shipped skill, a stylesheet copied into other projects, or a README, anchor it from the declaration with `:impl: <path>` or `:test: <path>` option lines directly after the opening fence (examples accept only `:test:`). An anchor covers the whole file, so do not anchor a file when a more precise reference is available, such as a comment attached to the Rust item that implements or tests the requirement.",
+        "",
+        "When a requirement or example changes, run `habeas author --all`, then the Cargo tests. Address reported implementation, test, or reference gaps and rerun the harness. Validation itself checks stored evidence without inference.",
+        "",
+        "## Shared vocabulary",
+        "",
+        "Use `:::{definition} name` with one nonempty `:phrase: display text` option before",
+        "its explanatory body to define shared vocabulary. Reference its chapter-qualified",
+        "name with the `{term}` role; the book renders the phrase as a plain link, without",
+        "a badge. Names are unique across requirements, examples, and definitions. A",
+        "named definition has no evidence record of its own and cannot substitute for a",
+        "requirement citation. Dependent evidence snapshots its complete declaration;",
+        "review changes to phrases and bodies because they invalidate that evidence."
       ]
     },
     {
-      "file": "README.md",
-      "line_start": 77,
-      "line_end": 83,
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 1,
+      "line_end": 98,
       "text": [
-        "2. In **📝 Adjust requirements** mode, owner comments and reviews refine the",
-        "   proposal. An **Approve** review of the current head enables coding.",
-        "3. In **🛠 Author code** mode, the agent implements the approved requirements,",
-        "   tests their examples, and runs `habeas author --all` for evidence. Owner feedback triggers revisions.",
-        "   Code commits preserve requirements approval.",
-        "4. If implementation reveals that an obligation needs revision, the agent returns",
-        "   to **📝 Adjust requirements**, explains the reason, and publishes a"
-      ]
-    },
-    {
-      "file": "agent-sops/approved-implementation.sop.md",
-      "line_start": 10,
-      "line_end": 16,
-      "text": [
-        "2. Implement the approved behavior and test its concrete examples. Mark code that",
-        "   implements part of a requirement with `{impl}` and tests that verify it with",
-        "   `{test}`, using `{cite}` only for related code that does neither. Then run",
-        "   `cargo habeas author --all` (or installed `habeas author --all`) to assess",
-        "   evidence. Leave",
-        "   evidence JSON, judgments, rationales, and input snapshots to that harness.",
-        "   Address reported gaps in source, references, or tests and rerun authoring."
-      ]
-    },
-    {
-      "file": "agent-sops/autofix-context.md",
-      "line_start": 24,
-      "line_end": 30,
-      "text": [
-        "In `requirements` mode, change requirements/examples under `md/` and leave their",
-        "evidence pending for the authoring harness. Wait for owner approval of the current",
-        "head before coding. In `implementation` mode, author code and tests, then run",
-        "`cargo habeas author --all` (or installed `habeas author --all`) for the approved",
-        "requirements; leave `md/` unchanged. The supervising agent must not write evidence",
-        "JSON, judgments, rationales, or input snapshots itself or delegate manual evidence",
-        "writing to another agent. If the harness lacks configuration or provider access,"
-      ]
-    },
-    {
-      "file": "agent-sops/requirements-proposal.sop.md",
-      "line_start": 13,
-      "line_end": 19,
-      "text": [
-        "   requirements observable and avoid prescribing a design unless requested.",
-        "   Leave changed or new definitions' evidence pending; missing or stale evidence",
-        "   is expected at this stage. Do not write placeholder judgments or snapshots.",
-        "   After approval, the implementation workflow uses `habeas author --all` to",
-        "   assess evidence with the configured model. Preserve earlier implementation commits. Do not write code",
-        "   or tests until the current proposal receives owner approval. If feedback only",
-        "   asks a question, you may leave files unchanged and answer in the final message."
+        "---",
+        "name: habeas-evidence",
+        "description: Use the Habeas authoring harness to create or refresh requirement and example evidence, and address Cargo validation failures.",
+        "---",
+        "",
+        "# Habeas evidence",
+        "",
+        "Run the authoring harness from the Cargo and mdBook project:",
+        "",
+        "```sh",
+        "habeas author --all",
+        "```",
+        "",
+        "It fills in missing, stale, or invalid evidence for requirements and named",
+        "examples. Current records are preserved, including FIXME judgments and false",
+        "judgments whose subject and inputs are unchanged; rerun one explicitly with",
+        "`habeas author <full-name>`. Each assessment runs in its own model conversation.",
+        "The harness records delivered source inputs and writes the model's judgment and",
+        "rationale. The supervising agent must not compose or refresh evidence JSON,",
+        "determinations, rationales, or source snapshots itself, or delegate that work to",
+        "an ad hoc evidence-writing agent.",
+        "",
+        "Monitor summaries, outcomes, and validation diagnostics without loading generated",
+        "evidence bodies into the supervising agent's context. If a rationale needs",
+        "investigation, delegate that reading and request a concise implementation finding",
+        "rather than the evidence text.",
+        "",
+        "In a Git worktree, stage new source files with `git add` before authoring.",
+        "Unstaged edits to tracked files are readable. The default exclusions are",
+        "untracked files, generated `evidence/` content, and paths outside the project;",
+        "existing Cargo build-script output directories are allowed when discoverable.",
+        "The nearest enclosing `habeas.toml` can set `[evidence]` `allow` and `disallow`",
+        "paths (literal files or directory subtrees relative to that file). Allow overrides",
+        "the defaults and disallow wins. A denied explicit read aborts that assessment;",
+        "other batch assessments continue, and the command ultimately reports failure.",
+        "The driving human or agent must decide whether to stage the file or change policy.",
+        "Do not bypass the error by writing evidence yourself.",
+        "",
+        "Use `--config <name>` to select a saved authoring configuration. Configuration and",
+        "credentials can come from the user file or nearest `habeas.toml`; prefer profiles",
+        "and environment references over literal credentials in workspace files.",
+        "Bedrock defaults to concurrent assessments;",
+        "Ollama defaults to one at a time. Each named configuration's positive `concurrency`",
+        "setting overrides its default. If the provider reports throttling, lower that",
+        "setting and rerun the command. Do not substitute manual evidence creation when",
+        "configuration or provider access is missing; report the blocker.",
+        "",
+        "Use `habeas status [<selection>]` to find requirements and examples needing attention,",
+        "or `--all` to include accepted records. Status groups FIXME judgments by issue;",
+        "use `--verbose` to list the judgments and original FIXME entries in each group.",
+        "Use `habeas info <selection>` to inspect their",
+        "judgments, inputs, and validation findings. A selection is a full name, which",
+        "selects exactly, or a glob matching whole names, where `*` matches any number of",
+        "characters, including dots. For a focused reassessment, run",
+        "`habeas author <full-name>`; add `--stdout` to inspect its JSON without changing",
+        "the evidence file.",
+        "",
+        "Address findings by fixing implementation, tests, or source references. Review a",
+        "substantive change to an approved requirement with the user before changing its",
+        "text. Every first-party Rust function or method needs its own requirement or",
+        "example reference, including trait methods and test helpers; an enclosing module",
+        "reference does not cover its functions. Mark code `{impl}` where it implements",
+        "part of a definition and tests `{test}` where they are designed to verify it; use",
+        "`{cite}` only for related code that does neither. A requirement can `{impl}`",
+        "another requirement it refines, and an example can `{test}` or `{cite}` a",
+        "requirement. When no existing",
+        "requirement explains behavior, propose an appropriate requirement rather than",
+        "waiving the function or inventing evidence.",
+        "Missing evidence or a truthful false judgment is expected while implementation",
+        "is pending; do not write placeholder evidence yourself.",
+        "",
+        "The harness assesses each requirement against the code marked `{impl}` for it",
+        "and checks that its `{test}` sources cover interesting design cases. It may",
+        "justify absent tests for simple logic or where testing is impractical. The same",
+        "review checks that the implementation is marked completely: code that implements",
+        "part of the requirement without `{impl}`, including code that only cites it, is a",
+        "gap, and so is behavior in `{impl}` code that no definition implemented there",
+        "specifies. Examples require tests covering the scenario and expected outcomes; an",
+        "accepted true judgment needs a covered `{test}` reference. `{impl}` and `{test}`",
+        "lines must be covered by the referenced definition's evidence; `{cite}` lines",
+        "need no coverage.",
+        "",
+        "Requirement and example judgments are `true`, `false`, or `{\"FIXME\": [\"#125\"]}`.",
+        "FIXME means source comments or tests explicitly acknowledge every remaining gap;",
+        "the entries identify issues or other source content. The convention is",
+        "`FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but other source locations are allowed.",
+        "The harness records these references; do not invent issue numbers or change a",
+        "judgment to make validation pass. CI accepts true and FIXME only when all schema,",
+        "freshness, and coverage checks also pass. Each determination stands alone: a",
+        "false judgment does not fail the definitions its subject implements, tests, or",
+        "cites.",
+        "",
+        "After source or requirement fixes, rerun `habeas author --all`, then",
+        "`cargo test --workspace`. Authoring preserves completed writes when another",
+        "assessment fails, so rerunning can continue the work. A completed false judgment",
+        "still fails validation and needs its reported gaps addressed. Ordinary validation",
+        "checks stored evidence without inference; its instruction to run authoring is",
+        "for the agent, not permission for CI to call a model automatically."
       ]
     },
     {
       "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
-      "line_start": 22,
-      "line_end": 28,
+      "line_start": 1,
+      "line_end": 38,
       "text": [
+        "---",
+        "name: habeas-bootstrap-requirements",
+        "description: Build an initial Habeas requirement set from an existing codebase by tracing its tests and user-visible behavior; use for requirements bootstrapping or coverage audits.",
+        "---",
+        "",
+        "# Bootstrap requirements",
+        "",
+        "Read the project's existing requirements, documentation, public entry points, implementation, and tests before writing new requirements. Follow behavior through the code rather than relying only on test names or top-level dispatch.",
+        "",
+        "Keep two working inventories:",
+        "",
+        "- Every first-party runnable test or test case, including integration tests, doctests, and parameterized cases where present. Record the requirement or example IDs each test checks.",
+        "- Every explicit function or method in first-party Rust sources, including trait declarations, test helpers, and internal helpers. Record its file location and the requirement or example IDs it references, with each reference's role. Also inventory relevant public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches. Do not count one tagged entry point as coverage for deeper code.",
+        "",
+        "Exclude generated and third-party code from the inventories. If a candidate looks user-facing but its purpose is unclear, keep it on the gap list until resolved.",
+        "",
+        "Treat requirements inferred from existing code as proposals. Show the user their proposed full IDs and exact text, along with uncertainty about whether observed behavior is intended or a bug. Obtain agreement on the proposals before installing them in the mdBook; prior explicit agreement to the same requirements counts.",
+        "",
+        "Create or reuse the agreed, stable, chapter-qualified `{req}` requirements in the mdBook. State observable obligations with BCP 14 terms. Group tests that check the same behavior under one requirement; several tests MAY share an ID. For tests of internal invariants, write a requirement for the invariant they actually check rather than inventing a user-facing promise. Distinguish intended behavior from a possible bug or incidental implementation detail.",
+        "",
+        "Put at least one `{test}` reference with a full requirement or example name on each test definition or individual case, naming the definitions the test is designed to verify rather than ones it exercises incidentally. A parameterized test can carry a reference at its case source or generating declaration when that is the only editable source. Add multiple references when a test checks multiple definitions. Do not use one file-level tag to stand in for unrelated tests.",
         "",
         "Add a requirement or example reference in a Rust comment attached to each inventoried function or method or within its body. Use `{impl}` where the function itself implements part of a definition: it makes a decision, performs a check, produces an output, or handles a case the definition specifies. Calling code that implements a definition does not count. Use `{cite}` only for code that relies on or refers to a definition without implementing or testing it; the cited requirement's review treats cite-only implementing code as a gap. An example must reference a requirement with `{test}` or `{cite}`, so an example reference still traces the function to a requirement. A reference on an enclosing module or `impl` does not cover its functions. There is no waiver for an uncited function. If no behavior-specific requirement explains an internal helper, propose an explicit requirement scoped to that area of internal code, such as `internal.config_parsing`, rather than one catch-all, get the user's agreement, and mark the helper with `{impl}`. Do not use an internal-detail requirement to justify unspecified end-user-visible behavior.",
         "",
         "Run `habeas author --all` to create requirement and example evidence. Each assessment has its own model conversation. Each requirement's review receives the sources marked `{impl}` or `{test}` for it and can look up every source that references it, so it can find implementing code that is unmarked or only cited. It records delivered source inputs and writes judgments and rationales. The supervising agent must not compose or refresh evidence JSON, determinations, rationales, or snapshots itself, or delegate manual evidence writing to another agent. If authoring configuration or credentials are unavailable, report the blocker instead of substituting hand-written evidence.",
         "",
         "Review every end-user-observable result and branch, including errors and input handling, when proposing requirements and adding references. Verify that the code fulfills each applicable requirement and does not introduce additional observable behavior without an agreed requirement. When requirements interact, mark each one implemented at a meaningful implementation point with `{impl}`. For example, a `^C` shortcut needs a requirement that explains why it is accepted. A tag alone does not establish that the behavior matches the requirement. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and the authoring workflow.",
-        ""
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
-      "line_start": 35,
-      "line_end": 38,
-      "text": [
+        "",
+        "The harness assesses whether the code marked `{impl}` implements each requirement completely and exactly, whether that marking is complete, with no unspecified behavior in the marked code, and whether tests cover interesting cases, allowing a rationale for absent tests when logic is simple or testing is impractical. For examples, it checks the scenario, test setup, and expected assertions; a true judgment needs a covered `{test}` reference. Its outcomes are true for supported subjects, false for unacknowledged gaps or insufficient information, and `{\"FIXME\": [\"#125\"]}` for gaps explicitly acknowledged in source comments or tests. A FIXME does not excuse additional unacknowledged gaps.",
+        "",
+        "For example, source comments can carry these references:",
+        "",
+        "```text",
+        "// {test}`requirements.foo`",
         "// {impl}`requirements.foo`",
         "```",
         "",
@@ -2113,273 +2251,99 @@
       ]
     },
     {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 8,
-      "line_end": 14,
-      "text": [
-        "Run the authoring harness from the Cargo and mdBook project:",
-        "",
-        "```sh",
-        "habeas author --all",
-        "```",
-        "",
-        "It fills in missing, stale, or invalid evidence for requirements and named"
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 90,
-      "line_end": 96,
-      "text": [
-        "false judgment does not fail the definitions its subject implements, tests, or",
-        "cites.",
-        "",
-        "After source or requirement fixes, rerun `habeas author --all`, then",
-        "`cargo test --workspace`. Authoring preserves completed writes when another",
-        "assessment fails, so rerunning can continue the work. A completed false judgment",
-        "still fails validation and needs its reported gaps addressed. Ordinary validation"
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-requirements/SKILL.md",
-      "line_start": 13,
-      "line_end": 19,
-      "text": [
-        "",
-        "Show the user the full IDs and text of existing requirements to reuse, plus the proposed chapter location, full IDs, and exact fenced text of any additions or changes. State open product choices separately. Ask the user to agree to or revise this requirement set. User-provided exact requirement text or explicit agreement earlier in the conversation counts as approval; a general request to build the feature does not. Keep drafts out of the mdBook while review is pending, and do not write implementation or test code yet.",
-        "",
-        "After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior and add tests and traceability references. Run `habeas author --all` to create or refresh evidence through the configured model. The supervising agent must not compose evidence JSON, rationales, determinations, or source snapshots itself or delegate manual evidence writing to another agent. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Missing or false evidence is expected while implementation is incomplete.",
-        "",
-        "## Reviewing code against requirements",
-        ""
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-requirements/SKILL.md",
-      "line_start": 55,
-      "line_end": 61,
-      "text": [
-        "",
-        "`{impl}` and `{test}` make the source an input to the definition's assessment and must be covered by its evidence. `{cite}` makes the cited definition context for the citing requirement or example, needs no coverage, and does not count toward the cited requirement's implementation.",
-        "",
-        "When a requirement or example changes, run `habeas author --all`, then the Cargo tests. Address reported implementation, test, or reference gaps and rerun the harness. Validation itself checks stored evidence without inference.",
-        "",
-        "## Shared vocabulary",
-        ""
-      ]
-    },
-    {
-      "file": "md/getting_started.md",
-      "line_start": 38,
-      "line_end": 44,
-      "text": [
-        "Configure an authoring model using the [Bedrock or Ollama examples](./reference.md#authoring-evidence-with-a-model), then run:",
-        "",
-        "```sh",
-        "habeas author --all",
-        "cargo test --workspace",
-        "```",
-        ""
-      ]
-    },
-    {
       "file": "md/reference.md",
-      "line_start": 26,
-      "line_end": 32,
+      "line_start": 124,
+      "line_end": 131,
       "text": [
         "",
-        "## Evidence",
+        "Transient provider token/request throttling is retried automatically with",
+        "exponential backoff and jitter, honoring `Retry-After` when the provider exposes",
+        "it. Every attempt is counted in usage. Retries have no attempt limit; Ctrl-C",
+        "interrupts waiting. Requests that exceed a model's input/context limit still fail",
+        "because waiting cannot make that request fit. {cite}`requirements.authoring.provider_backoff`",
         "",
-        "Run `habeas author --all` to create and refresh evidence for requirements and",
-        "examples. The harness writes `evidence/requirements.check.json`",
-        "for the requirement above and `evidence/reference.cli.unknown_command.json` for the",
-        "example. Each requirement or example evidence file records four fields:"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 70,
-      "line_end": 76,
-      "text": [
-        "{\"requirements\":\"requirements.cli.*\",\"matches\":[\"requirements.cli.info\"],\"text\":[\"...\"]}",
-        "```",
-        "",
-        "`habeas author --all` captures source text and delegates judgments to the configured",
-        "model. The supervising agent fixes reported gaps and reruns the command; it does",
-        "not write evidence by hand. The lower-level `habeas add-input` command remains",
-        "available for selecting an additional input. A changed input leaves its"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 89,
-      "line_end": 95,
-      "text": [
-        "",
-        "## Authoring evidence with a model",
-        "",
-        "`habeas author --all` fills in missing, stale, or invalid evidence for",
-        "requirements and named examples. It preserves current records, including FIXME",
-        "judgments and current false judgments. A false judgment is reassessed when its",
-        "subject or inputs change, or when you name it with `habeas author <full-name>`."
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 115,
-      "line_end": 121,
-      "text": [
-        "without input snapshots or additional inference:",
-        "",
-        "```sh",
-        "habeas author --all --config cloud -v",
-        "habeas author requirements.ci.inputs --verbose",
-        "```",
-        ""
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 226,
-      "line_end": 233,
-      "text": [
-        "Run from the project:",
-        "",
-        "```sh",
-        "habeas author --all",
-        "habeas author --all --config local",
-        "```",
-        "",
-        "For a single requirement or example, replace `requirements.check` with its full name:"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 287,
-      "line_end": 293,
-      "text": [
-        "",
-        "Four is an example, not a fixed default. Authoring uses asynchronous tasks on a",
-        "fixed worker thread pool and limits simultaneous assessments to this value.",
-        "Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work",
-        "on records that still need attention. {cite}`requirements.authoring.concurrency`",
-        "",
-        "For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and"
+        "`habeas author <full-name>` assesses one requirement or example, records the"
       ]
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 16,
-      "line_end": 22,
+      "line_start": 65,
+      "line_end": 71,
       "text": [
-        ":::",
-        "",
-        ":::{req} batch",
-        "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement",
-        "and named example whose evidence is missing, stale, or invalid. It MUST preserve",
-        "current records without invoking a model for them, including accepted FIXME",
-        "judgments and current false judgments. A current false judgment is reassessed"
+        "phases whose totals are not yet known MUST use an indeterminate activity display.",
+        "Inspection progress MUST NOT change validation results or invoke inference.",
+        "Enabled reports MUST remain readable alongside progress. An",
+        "interrupted batch MUST retain its actual progress without counting unstarted",
+        "assessments as finished. Empty batches and early errors MUST clear the temporary",
+        "display. When stderr is redirected or `TERM=dumb`, the command MUST retain its",
+        "plain line-oriented reports without terminal control sequences. `NO_COLOR` MUST"
       ]
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 46,
-      "line_end": 52,
+      "line_start": 109,
+      "line_end": 115,
       "text": [
-        ":::",
+        "provider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a",
+        "minimum delay even when longer than the window. A successful response MUST reset",
+        "backoff for the next completion request. There MUST be no retry-attempt limit;",
+        "interruption MUST cancel both the wait and further retries.",
         "",
-        ":::{req} progress",
-        "When stderr is an interactive terminal, `habeas author --all` MUST display an",
-        "updating progress bar with elapsed time, percentage, finished and total assessment",
-        "counts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,",
-        "and authoring errors. The total MUST count only subjects selected for assessment;"
+        "Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.",
+        "Hidden SDK retries MUST remain disabled so the harness can account for attempts."
       ]
     },
     {
       "file": "md/requirements/authoring.md",
-      "line_start": 714,
-      "line_end": 720,
+      "line_start": 812,
+      "line_end": 818,
       "text": [
-        "table and update any selections naming it. Preserve other feature sections when",
-        "editing an existing file.",
-        "",
-        "Run `habeas author --all` to fill in evidence needing attention, or",
-        "`habeas author <full-name>` to assess one requirement or example. Add `--config local`",
-        "to override the saved selection for one run. Set `concurrency` alongside `backend`",
-        "and `model` to override the provider's default number of simultaneous assessments:"
+        "`evidence_output` as `file` or `stdout`; a successful write to either destination",
+        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
+        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
+        "Failed, cancelled, or unfinished",
+        "runs MUST remain distinguishable from completed judgments. Records MUST persist",
+        "for later review without storing source text, prompts, responses, or rationale.",
+        ":::"
       ]
     },
     {
-      "file": "md/requirements/authoring.md",
-      "line_start": 729,
-      "line_end": 735,
+      "file": "md/requirements/ci.md",
+      "line_start": 200,
+      "line_end": 210,
       "text": [
-        "Here `MODEL_ID` is your available model identifier and four is an illustrative",
-        "choice, not the default. Bedrock defaults to the available logical CPU count;",
-        "Ollama defaults to one. Lower concurrency if the provider reports throttling;",
-        "rerunning `habeas author --all` preserves current accepted results and retries",
-        "records that still need attention.",
+        "test gap recorded in the test source:",
         "",
-        "Backend options belong under"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 83,
-      "line_end": 89,
-      "text": [
-        ":::",
+        "```text",
+        "// FIXME: cancellation races are not tested on Windows.",
+        "```",
         "",
-        ":::{req} internal_detail_guidance",
-        "Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement scoped to one area of internal code, such as `internal.config_parsing`, rather than one catch-all requirement, obtain the user's agreement, mark the function with `{impl}`, and run `habeas author --all` for the harness to assess that requirement's evidence. That assessment MUST account for whether the requirement explains each implementing function's behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.",
-        ":::",
-        "",
-        ":::{req} invocation"
-      ]
-    },
-    {
-      "file": "md/requirements/integration.md",
-      "line_start": 2,
-      "line_end": 8,
-      "text": [
-        "",
-        ":::{req} validate",
-        "`habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.",
-        "Its failure message MUST instruct the agent to run `habeas author --all`, address",
-        "the reported gaps, and rerun tests. Validation MUST remain deterministic and MUST",
-        "NOT invoke authoring itself. {cite}`requirements.authoring.batch`",
-        "{cite}`requirements.authoring.deterministic_validation`"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 37,
-      "line_end": 43,
-      "text": [
-        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
-        "    if !report.errors.is_empty() {",
-        "        panic!(",
-        "            \"Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\\n- {}\\n\\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.\",",
-        "            report.requirements,",
-        "            report.examples,",
-        "            report.evidence_files,"
+        "The reviewer records",
+        "`{\"FIXME\": [\"cancellation races are not tested on Windows\"]}`, using the comment's",
+        "content without inventing an issue number. The rationale explains the gap and",
+        "locates the comment in the recorded inputs. CI accepts the evidence when all",
+        "other checks pass."
       ]
     },
     {
       "file": "src/main.rs",
-      "line_start": 1,
-      "line_end": 4,
+      "line_start": 27,
+      "line_end": 34,
       "text": [
-        "use clap::{ArgGroup, Parser, Subcommand};",
-        "use std::error::Error;",
-        "use std::io;",
-        "use std::io::Write;"
+        "    },",
+        "    Status {",
+        "        #[arg(long)]",
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]",
+        "        verbose: bool,",
+        "        /// A full requirement or example name, or a definition glob."
       ]
     },
     {
       "file": "src/main.rs",
       "line_start": 38,
-      "line_end": 48,
+      "line_end": 49,
       "text": [
         "        /// A full requirement or example name, or a definition glob.",
         "        selection: String,",
@@ -2391,7 +2355,8 @@
         "        #[arg(long, conflicts_with = \"stdout\")]",
         "        all: bool,",
         "        #[arg(long)]",
-        "        config: Option<String>,"
+        "        config: Option<String>,",
+        "        /// Write evidence JSON to stdout instead of updating its file."
       ]
     },
     {
@@ -2410,247 +2375,493 @@
       ]
     },
     {
-      "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
-      "line_start": 22,
-      "line_end": 30,
+      "file": "src/main.rs",
+      "line_start": 184,
+      "line_end": 190,
       "text": [
-        "",
-        "Add a requirement or example reference in a Rust comment attached to each inventoried function or method or within its body. Use `{impl}` where the function itself implements part of a definition: it makes a decision, performs a check, produces an output, or handles a case the definition specifies. Calling code that implements a definition does not count. Use `{cite}` only for code that relies on or refers to a definition without implementing or testing it; the cited requirement's review treats cite-only implementing code as a gap. An example must reference a requirement with `{test}` or `{cite}`, so an example reference still traces the function to a requirement. A reference on an enclosing module or `impl` does not cover its functions. There is no waiver for an uncited function. If no behavior-specific requirement explains an internal helper, propose an explicit requirement scoped to that area of internal code, such as `internal.config_parsing`, rather than one catch-all, get the user's agreement, and mark the helper with `{impl}`. Do not use an internal-detail requirement to justify unspecified end-user-visible behavior.",
-        "",
-        "Run `habeas author --all` to create requirement and example evidence. Each assessment has its own model conversation. Each requirement's review receives the sources marked `{impl}` or `{test}` for it and can look up every source that references it, so it can find implementing code that is unmarked or only cited. It records delivered source inputs and writes judgments and rationales. The supervising agent must not compose or refresh evidence JSON, determinations, rationales, or snapshots itself, or delegate manual evidence writing to another agent. If authoring configuration or credentials are unavailable, report the blocker instead of substituting hand-written evidence.",
-        "",
-        "Review every end-user-observable result and branch, including errors and input handling, when proposing requirements and adding references. Verify that the code fulfills each applicable requirement and does not introduce additional observable behavior without an agreed requirement. When requirements interact, mark each one implemented at a meaningful implementation point with `{impl}`. For example, a `^C` shortcut needs a requirement that explains why it is accepted. A tag alone does not establish that the behavior matches the requirement. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and the authoring workflow.",
-        "",
-        "The harness assesses whether the code marked `{impl}` implements each requirement completely and exactly, whether that marking is complete, with no unspecified behavior in the marked code, and whether tests cover interesting cases, allowing a rationale for absent tests when logic is simple or testing is impractical. For examples, it checks the scenario, test setup, and expected assertions; a true judgment needs a covered `{test}` reference. Its outcomes are true for supported subjects, false for unacknowledged gaps or insufficient information, and `{\"FIXME\": [\"#125\"]}` for gaps explicitly acknowledged in source comments or tests. A FIXME does not excuse additional unacknowledged gaps.",
-        ""
+        "            };",
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
+        "                &root,",
+        "                &subject.expect(\"clap requires a subject or --all\"),",
+        "                config.as_deref(),",
+        "                output,",
+        "            ))?;"
       ]
     },
     {
-      "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
-      "line_start": 34,
-      "line_end": 36,
+      "file": "src/main.rs",
+      "line_start": 231,
+      "line_end": 244,
       "text": [
-        "// {test}`requirements.foo`",
-        "// {impl}`requirements.foo`",
-        "```"
+        "            let target = if let Some(name) = for_requirement {",
+        "                habeas::InputTarget::Requirement(name)",
+        "            } else {",
+        "                habeas::InputTarget::Example(for_example.expect(\"clap requires a target\"))",
+        "            };",
+        "            let mode = if let Some(specification) = file_range {",
+        "                habeas::InputMode::FileRange(specification)",
+        "            } else if let Some(specification) = rust_item {",
+        "                habeas::InputMode::RustItemsAtLine(specification)",
+        "            } else {",
+        "                habeas::InputMode::Requirements(requirements.expect(\"clap requires an input mode\"))",
+        "            };",
+        "            io::stdout()",
+        "                .lock()"
       ]
     },
     {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 1,
-      "line_end": 3,
+      "file": "md/requirements/authoring.md",
+      "line_start": 14,
+      "line_end": 22,
       "text": [
-        "---",
-        "name: habeas-evidence",
-        "description: Use the Habeas authoring harness to create or refresh requirement and example evidence, and address Cargo validation failures."
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 61,
-      "line_end": 65,
-      "text": [
-        "example reference, including trait methods and test helpers; an enclosing module",
-        "reference does not cover its functions. Mark code `{impl}` where it implements",
-        "part of a definition and tests `{test}` where they are designed to verify it; use",
-        "`{cite}` only for related code that does neither. A requirement can `{impl}`",
-        "another requirement it refines, and an example can `{test}` or `{cite}` a"
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 71,
-      "line_end": 73,
-      "text": [
+        "report and diagnostics MUST go to stderr. `author-evidence` MUST remain an alias",
+        "for the single-subject command.",
+        ":::",
         "",
-        "The harness assesses each requirement against the code marked `{impl}` for it",
-        "and checks that its `{test}` sources cover interesting design cases. It may"
+        ":::{req} batch",
+        ":impl: assets/skills/habeas-requirements/SKILL.md",
+        ":impl: assets/skills/habeas-evidence/SKILL.md",
+        ":impl: assets/skills/habeas-bootstrap-requirements/SKILL.md",
+        "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement"
       ]
     },
     {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 75,
-      "line_end": 80,
+      "file": "src/main.rs",
+      "line_start": 31,
+      "line_end": 35,
       "text": [
-        "review checks that the implementation is marked completely: code that implements",
-        "part of the requirement without `{impl}`, including code that only cites it, is a",
-        "gap, and so is behavior in `{impl}` code that no definition implemented there",
-        "specifies. Examples require tests covering the scenario and expected outcomes; an",
-        "accepted true judgment needs a covered `{test}` reference. `{impl}` and `{test}`",
-        "lines must be covered by the referenced definition's evidence; `{cite}` lines"
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]",
+        "        verbose: bool,",
+        "        /// A full requirement or example name, or a definition glob.",
+        "        selection: Option<String>,"
       ]
     },
     {
-      "file": "assets/skills/habeas-requirements/SKILL.md",
-      "line_start": 19,
-      "line_end": 27,
+      "file": "src/main.rs",
+      "line_start": 52,
+      "line_end": 56,
       "text": [
-        "",
-        "The authoring harness assesses whether the code marked `{impl}` for a requirement implements every obligation completely and exactly as stated, and whether tests cover interesting design cases. It also treats as gaps any code that implements part of the requirement without `{impl}`, including code that only cites it, and any behavior in `{impl}` code that no definition implemented there specifies. When another requirement implements part of the subject, it checks only that the text carries out that part. For absent tests, it assesses whether simplicity or impracticality justifies their absence. For an example, it assesses whether test setup and assertions cover the scenario and expected outcomes. Use these criteria while implementing and fixing reported gaps; leave evidence judgments and rationales to the harness.",
-        "",
-        "Requirement and example judgments have three outcomes: `true`, `false`, or `{\"FIXME\": [\"#125\"]}`. The harness uses FIXME when source comments or tests explicitly acknowledge the uncovered aspects, recording their issue references or other identifying content. A documented gap does not excuse other, unacknowledged gaps. Use the `habeas-evidence` skill for the authoring workflow.",
-        "",
-        "Inspect every end-user-observable result and branch, including errors and input handling. Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement. When requirements interact, mark every requirement implemented at the relevant point with `{impl}` and explain how their texts jointly account for the behavior. A reference alone does not explain why a behavior, such as accepting `^C`, is specified.",
-        "",
-        "Every explicit function or method in first-party Rust sources needs its own requirement or example reference in an attached Rust comment or within its body, including trait methods and test helpers. A reference on an enclosing module or `impl` does not cover its functions, and there is no uncited-function waiver. If no existing requirement explains an internal helper, propose a requirement scoped to that area of internal code, such as `internal.config_parsing`, rather than one catch-all, get the user's agreement, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function. Do not use an internal-detail requirement to justify otherwise unspecified observable behavior.",
-        ""
+        "        /// Show the stored rationale for false judgments.",
+        "        #[arg(short, long)]",
+        "        verbose: bool,",
+        "    },",
+        "    #[command(hide = true)]"
       ]
     },
     {
-      "file": "assets/skills/habeas-requirements/SKILL.md",
-      "line_start": 44,
-      "line_end": 46,
+      "file": "src/main.rs",
+      "line_start": 126,
+      "line_end": 134,
       "text": [
-        "```text",
-        "{impl}`requirements.forwarding.quit`",
-        "{cite}`requirements.forwarding.quit`"
+        "            all,",
+        "            selection,",
+        "            verbose,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout().lock().write_all(",
+        "                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?",
+        "                    .as_bytes(),",
+        "            )?;"
       ]
     },
     {
-      "file": "assets/skills/habeas-requirements/SKILL.md",
-      "line_start": 51,
-      "line_end": 53,
+      "file": "src/main.rs",
+      "line_start": 153,
+      "line_end": 157,
       "text": [
-        "",
-        "- `{impl}`: it implements part of the definition, making a decision, performing a check, producing an output, or handling a case the definition specifies. Calling code that implements the definition, or producing a result a caller uses to meet it, does not count. A requirement that refines another's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.",
-        "- `{test}`: it is designed to verify behavior the definition specifies, through a test's scenario and assertions or an example's concrete case. Incidental setup does not count."
+        "            config,",
+        "            stdout,",
+        "            verbose,",
+        "        } => {",
+        "            let root = setup::project_root()?;"
       ]
     },
     {
-      "file": "assets/skills/habeas-requirements/SKILL.md",
-      "line_start": 55,
-      "line_end": 57,
+      "file": "src/main.rs",
+      "line_start": 162,
+      "line_end": 166,
       "text": [
-        "",
-        "`{impl}` and `{test}` make the source an input to the definition's assessment and must be covered by its evidence. `{cite}` makes the cited definition context for the citing requirement or example, needs no coverage, and does not count toward the cited requirement's implementation.",
-        ""
+        "                    &root,",
+        "                    config.as_deref(),",
+        "                    habeas::authoring::AuthoringOptions { verbose },",
+        "                ))?;",
+        "                println!("
       ]
     },
     {
-      "file": "tests/setup.rs",
-      "line_start": 110,
-      "line_end": 114,
+      "file": "src/main.rs",
+      "line_start": 198,
+      "line_end": 202,
       "text": [
-        "    let project = temp.path();",
-        "",
-        "    let skill = project.join(\".agents/skills/habeas-requirements/SKILL.md\");",
-        "    fs::create_dir_all(skill.parent().unwrap()).unwrap();",
-        "    fs::write(&skill, \"custom skill\\n\").unwrap();"
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
+        "                eprintln!(\"{}: false\", outcome.subject);",
+        "                if verbose {",
+        "                    eprintln!(\"{}\", outcome.rationale);",
+        "                }"
       ]
     },
     {
-      "file": "tests/setup.rs",
-      "line_start": 219,
-      "line_end": 223,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 751,
+      "line_end": 753,
       "text": [
-        "    assert_eq!(fs::read_to_string(project.join(\"book.toml\")).unwrap(), book);",
-        "",
-        "    fs::write(&css, include_str!(\"../md/habeas.css\")).unwrap();",
-        "    fs::write(",
-        "        project.join(\"book.toml\"),"
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run_in_pty_with_args(false, \"xterm-256color\", &[\"author\", \"--all\", \"-v\"]);",
+        "    assert!(!output.status.success(), \"{output:?}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 604,
+      "line_end": 606,
+      "text": [
+        "fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {",
+        "    for (determination, flag) in [(false, \"-v\"), (false, \"--verbose\"), (true, \"-v\")] {",
+        "        let rationale = \"REVIEW_RATIONALE_ONLY:\\n\\n- The captured test misses an interesting boundary.\\n- Add an assertion for that boundary.\";"
       ]
     },
     {
       "file": "tests/symposium_hook_smoke.py",
-      "line_start": 75,
-      "line_end": 79,
+      "line_start": 162,
+      "line_end": 164,
       "text": [
-        "        symposium_home = root / \"symposium-home\"",
-        "        local_crate = root / \"habeas-current\"",
-        "        source_skills = repo / \"assets\" / \"skills\"",
-        "        for directory in (",
-        "            project / \"md\","
+        "            result = subprocess.run(",
+        "                [symposium, \"-v\", \"hook\", \"codex\", \"session-start\"],",
+        "                cwd=project,"
       ]
     },
     {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 107,
-      "line_end": 111,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 325,
+      "line_end": 331,
       "text": [
-        "        )",
-        "        (local_crate / \"src\" / \"lib.rs\").write_text(\"\")",
-        "        shutil.copytree(source_skills, local_crate / \"assets\" / \"skills\")",
+        "    // {test}`requirements.authoring.batch`",
+        "    #[cfg(unix)]",
+        "    fn run_in_pty(&self, interrupt: bool, term: &str) -> Output {",
+        "        self.run_in_pty_with_args(interrupt, term, &[\"author\", \"--all\"])",
+        "    }",
         "",
-        "        (project / \"Cargo.toml\").write_text("
+        "    // {test}`requirements.authoring.progress`"
       ]
     },
     {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 204,
-      "line_end": 215,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 450,
+      "line_end": 456,
       "text": [
-        "        skills_dir = project / \".agents\" / \"skills\"",
-        "        skill_names = sorted(",
-        "            path.name for path in source_skills.iterdir() if (path / \"SKILL.md\").is_file()",
-        "        )",
-        "        if not skill_names:",
-        "            raise AssertionError(\"Habeas did not ship any skills\")",
-        "        for name in skill_names:",
-        "            installed = skills_dir / name / \"SKILL.md\"",
-        "            if not installed.is_file() or installed.read_bytes() != (",
-        "                source_skills / name / \"SKILL.md\"",
-        "            ).read_bytes():",
-        "                raise AssertionError(f\"Symposium did not install the current {name} skill\")"
+        "        ),",
+        "    )",
+        "    .unwrap();",
+        "    let output = fixture.run(&[\"author\", \"--all\", \"--config\", \"mock\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\","
       ]
     },
     {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 221,
-      "line_end": 225,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 491,
+      "line_end": 504,
       "text": [
-        "        (next_crate / \"src\").mkdir(parents=True)",
-        "        (next_crate / \"src\" / \"lib.rs\").write_text(\"\")",
-        "        shutil.copytree(source_skills, next_crate / \"assets\" / \"skills\")",
-        "        current_version_line = f'version = \"{current_version}\"'",
-        "        if current_version_line not in manifest:"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 228,
-      "line_end": 232,
-      "text": [
-        "            manifest.replace(current_version_line, f'version = \"{next_version}\"', 1)",
-        "        )",
-        "        changed_skill = next_crate / \"assets\" / \"skills\" / skill_names[0] / \"SKILL.md\"",
-        "        changed_skill.write_text(changed_skill.read_text() + \"\\nUpdated in the next release.\\n\")",
-        ""
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 261,
-      "line_end": 265,
-      "text": [
-        "        if updated_sync.returncode:",
-        "            raise RuntimeError(f\"Updated Symposium sync failed:\\n{updated_sync.stderr}\")",
-        "        if (skills_dir / skill_names[0] / \"SKILL.md\").read_bytes() != changed_skill.read_bytes():",
-        "            raise AssertionError(\"Symposium kept the old skill after the selected version changed\")",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 356,
-      "line_end": 360,
-      "text": [
-        "fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {",
-        "    // Keep the approved template as the sole source of these instructions.",
-        "    let chapter = include_str!(\"../../md/requirements/authoring.md\");",
-        "    let opening = \"Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.\";",
-        "    let start = chapter.find(opening).expect(\"approved prompt template\");"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 7,
-      "line_end": 11,
-      "text": [
+        "    }",
         "",
-        "const TEST_SOURCE: &str = \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\";",
-        "const BADGE_CSS: &str = include_str!(\"../md/habeas.css\");",
+        "    fs::write(&fixture.config, \"invalid TOML [\").unwrap();",
+        "    let no_op = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        no_op.status.success(),",
+        "        \"{}\",",
+        "        String::from_utf8_lossy(&no_op.stderr)",
+        "    );",
+        "    fs::remove_file(&fixture.config).unwrap();",
+        "    let no_config = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        no_config.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 526,
+      "line_end": 532,
+      "text": [
+        "        .unwrap()",
+        "        .replace(\"-> u8 { 1 }\", \"-> u8 { 1_u8 }\");",
+        "    fs::write(source, changed).unwrap();",
+        "    let updated = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        updated.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 556,
+      "line_end": 562,
+      "text": [
+        "fn ollama_batches_are_serial_by_default() {",
+        "    let server = Server::start(false, None);",
+        "    let fixture = Fixture::new(&server.endpoint, None);",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 574,
+      "line_end": 580,
+      "text": [
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {",
+        "    let server = Server::start(true, Some(\"requirement requirements.alpha\"));",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(!output.stderr.contains(&b'\\x1b'));",
+        "    assert!(!output.stderr.contains(&b'\\r'));",
+        "    assert!(!output.status.success());"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 702,
+      "line_end": 710,
+      "text": [
+        "        let server = Server::start_with(true, Behavior::MixedJudgments);",
+        "        let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "        let args = if verbose {",
+        "            vec![\"author\", \"--all\", \"--verbose\"]",
+        "        } else {",
+        "            vec![\"author\", \"--all\"]",
+        "        };",
+        "        let output = fixture.run(&args);",
+        "        assert!(!output.status.success(), \"{output:?}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 749,
+      "line_end": 755,
+      "text": [
+        "fn verbose_false_rationale_is_readable_above_terminal_progress() {",
+        "    let server = Server::start_with(true, Behavior::MixedJudgments);",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run_in_pty_with_args(false, \"xterm-256color\", &[\"author\", \"--all\", \"-v\"]);",
+        "    assert!(!output.status.success(), \"{output:?}\");",
+        "    assert_eq!(server.subjects().len(), 6);",
+        "    let terminal = String::from_utf8_lossy(&output.stderr);"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 844,
+      "line_end": 850,
+      "text": [
+        "        \"generated output\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(!output.status.success(), \"{output:?}\");",
+        "    let subjects = server.subjects();",
+        "    assert_eq!(subjects.len(), 6, \"{subjects:?}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 923,
+      "line_end": 929,
+      "text": [
+        "    .unwrap();",
+        "    let mut child = fixture",
+        "        .command()",
+        "        .args([\"author\", \"--all\"])",
+        "        .stdout(Stdio::piped())",
+        "        .stderr(Stdio::piped())",
+        "        .spawn()"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 1005,
+      "line_end": 1011,
+      "text": [
+        "fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {",
+        "    let server = Server::start(false, None);",
+        "    let fixture = Fixture::new(&server.endpoint, Some(2));",
+        "    let output = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 1023,
+      "line_end": 1029,
+      "text": [
+        "    let alpha = mark_false(\"requirements.alpha\");",
+        "    mark_false(\"requirements.gamma\");",
         "",
-        "// {impl}`requirements.cli.setup_css`"
+        "    let current = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        current.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 1051,
+      "line_end": 1057,
+      "text": [
+        "            .replace(\"-> u8 { 3 }\", \"-> u8 { 3_u8 }\"),",
+        "    )",
+        "    .unwrap();",
+        "    let stale = fixture.run(&[\"author\", \"--all\"]);",
+        "    assert!(",
+        "        stale.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 1079,
+      "line_end": 1085,
+      "text": [
+        "fn batch_stdout_is_rejected_before_authoring() {",
+        "    let server = Server::start(false, None);",
+        "    let fixture = Fixture::new(&server.endpoint, None);",
+        "    let output = fixture.run(&[\"author\", \"--all\", \"--stdout\"]);",
+        "    assert!(!output.status.success());",
+        "    assert!(String::from_utf8_lossy(&output.stderr).contains(\"--stdout\"));",
+        "    assert!(server.subjects().is_empty());"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 1104,
+      "line_end": 1110,
+      "text": [
+        "        fs::write(fixture.project.join(\"md/requirements.md\"), declarations).unwrap();",
+        "        fs::write(fixture.project.join(\"src/lib.rs\"), source).unwrap();",
+        "        fs::remove_file(&fixture.config).unwrap();",
+        "        let output = fixture.run(&[\"author\", \"--all\"]);",
+        "        assert!(!output.status.success());",
+        "        let stderr = String::from_utf8_lossy(&output.stderr);",
+        "        assert!(stderr.contains(location), \"{stderr}\");"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 797,
+      "line_end": 803,
+      "text": [
+        "        \"this is not TOML [\",",
+        "    )",
+        "    .unwrap();",
+        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
+        "    assert!(",
+        "        output.status.success(),",
+        "        \"{}\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 290,
+      "line_end": 296,
+      "text": [
+        "        assert!(!text.contains(&format!(\"rules.{name}\")), \"{text}\");",
+        "    }",
+        "",
+        "    let output = habeas(temp.path(), &[\"status\", \"--all\"]);",
+        "    assert!(output.status.success(), \"{output:?}\");",
+        "    let all = String::from_utf8(output.stdout).unwrap();",
+        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 396,
+      "line_end": 402,
+      "text": [
+        "    assert!(text.contains(\"invalid JSON\"), \"{text}\");",
+        "    assert!(text.contains(\"no input covers\"), \"{text}\");",
+        "",
+        "    let output = habeas(&nested, &[\"status\", \"--all\"]);",
+        "    assert!(output.status.success(), \"{:?}\", output);",
+        "    let all = String::from_utf8(output.stdout).unwrap();",
+        "    assert!(all.contains(\"| `requirements.case` (example)\"), \"{all}\");"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 430,
+      "line_end": 438,
+      "text": [
+        "    let nested = temp.path().join(\"src/nested\");",
+        "    for flags in [",
+        "        [].as_slice(),",
+        "        [\"--all\"].as_slice(),",
+        "        [\"--verbose\"].as_slice(),",
+        "        [\"--all\", \"--verbose\"].as_slice(),",
+        "    ] {",
+        "        for selection in [None, Some(\"requirements.ready\")] {",
+        "            let mut args = vec![\"status\"];"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 528,
+      "line_end": 534,
+      "text": [
+        "    let temp = fixture();",
+        "    for args in [",
+        "        [\"status\", \"--wrong\"].as_slice(),",
+        "        [\"status\", \"--all\", \"extra\", \"more\"].as_slice(),",
+        "        [\"info\"].as_slice(),",
+        "        [\"info\", \"ready\", \"extra\"].as_slice(),",
+        "    ] {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 553,
+      "line_end": 559,
+      "text": [
+        "        String::from_utf8_lossy(&unmatched.stderr).contains(\"no definitions match\"),",
+        "        \"{unmatched:?}\"",
+        "    );",
+        "    let status = habeas(temp.path(), &[\"status\", \"requirements.*ready\", \"--all\"]);",
+        "    assert!(status.status.success(), \"{status:?}\");",
+        "    let status = String::from_utf8(status.stdout).unwrap();",
+        "    assert!("
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 583,
+      "line_end": 589,
+      "text": [
+        "#[test]",
+        "fn status_tables_align_each_column_to_its_widest_cell() {",
+        "    let temp = fixture();",
+        "    for args in [[\"status\"].as_slice(), [\"status\", \"--all\"].as_slice()] {",
+        "        let output = habeas(temp.path(), args);",
+        "        assert!(output.status.success(), \"{args:?}: {output:?}\");",
+        "        let text = String::from_utf8(output.stdout).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 712,
+      "line_end": 718,
+      "text": [
+        "            \"{help}\"",
+        "        );",
+        "    }",
+        "    let status = habeas(temp.path(), &[\"status\", \"requirements.c*\", \"--all\"]);",
+        "    assert!(status.status.success(), \"{status:?}\");",
+        "    let status = String::from_utf8(status.stdout).unwrap();",
+        "    assert!("
       ]
     }
   ]

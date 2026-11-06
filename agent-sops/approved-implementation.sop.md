@@ -16,7 +16,8 @@ Apply the shared one-PR protocol. Start in **🛠 Author code**.
    Address reported gaps in source, references, or tests and rerun authoring.
    Report unavailable model configuration or provider access as a blocker.
    Do not edit `md/`
-   while authoring code. If an obligation needs revision, follow the shared
+   while authoring code, except to add, remove, or update `:impl:`/`:test:`
+   anchor option lines (for example, when moving an anchored file). If an obligation needs revision, follow the shared
    transition protocol: restore this run's code changes, propose requirements
    in a separate requirements-only commit, and wait for approval on this PR.
 3. For code changes, run `git diff --check`, `cargo test --locked --workspace`,

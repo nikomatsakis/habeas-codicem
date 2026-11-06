@@ -1,7 +1,7 @@
 {
   "requirement": "When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.",
   "determination": false,
-  "rationale": "**Implementation: adequate.**\n- `run` in `src/setup.rs` (lines ~143–165) parses `Cargo.toml` and calls `has_habeas_dev_dependency`. That function checks for a `habeas` key in `[dev-dependencies]`.\n- When no such dependency exists, `run` executes `cargo add --dev habeas --manifest-path … --path <canonicalized dir>` if `--path` was given. This adds the local crate.\n- When the dependency exists, `run` skips `cargo add`, so setup does not touch an existing Habeas dependency.\n- Both `run` and `has_habeas_dev_dependency` carry `{impl}` markers.\n- The `--path` option is parsed in `main.rs` and passed to `setup::run`, which is marked `{impl}` for `requirements.cli.setup`.\n- I found no unmarked behavior beyond what `requirements.cli.setup` and the Symposium hook requirement cover.\n\n**Tests: insufficient.** The only `{test}` reference is `setup_is_repeatable` in `tests/setup.rs`. It runs `setup --path <crate>` twice and asserts three things:\n- `Cargo.toml` contains `[dev-dependencies]`.\n- It contains the string `habeas`.\n- It contains the string `path = `.\n\nTwo gaps follow.\n- **Weak repeat check.** The test never asserts that the Habeas dependency appears exactly once, and it never checks that the path equals the supplied crate. `cargo add` on an existing dependency updates it in place and does not duplicate it. If the skip-when-present branch were removed, the second run would still pass. The \"Repeating setup MUST NOT add a duplicate\" obligation is therefore not discriminated, unlike the CSS case, where `book.matches(...).count() == 1` is asserted.\n- **Untested \"no existing dependency\" condition.** No test starts with an existing Habeas dev dependency, for example a registry version or a different path, and runs `setup --path`. Such a test would check that the existing entry is left alone and not replaced or duplicated. The Python Symposium smoke test does start from an existing path dependency, but it is not marked `{test}` for this requirement and does not assert on the manifest. Other `--path` invocations in `tests/setup.rs` only exercise unrelated requirements.\n\nThese are unacknowledged gaps: there is no FIXME in the sources. So the judgment is false rather than FIXME.",
+  "rationale": "**Implementation: sound and marked.** I found no unmarked implementation and no unspecified behavior.\n- `src/main.rs` defines `setup --path <crate-dir>` with clap and passes it to `setup::run`.\n- `src/setup.rs` `has_habeas_dev_dependency` (marked {impl}) checks `[dev-dependencies].habeas` in the manifest.\n- `run` (with the {impl} marker at line ~161) skips `cargo add` when that dependency exists. Otherwise it runs `cargo add --dev habeas --manifest-path … --path <canonicalized crate-dir>`. That adds the local crate as the dev dependency, and a repeated run does not add it again.\n\n**Tests: too weak to check what the requirement says.** The only {test} reference is `tests/setup.rs::setup_is_repeatable`. It runs `setup --path $CARGO_MANIFEST_DIR` twice and then asserts only these things about the dependency:\n- `Cargo.toml` contains `[dev-dependencies]`.\n- `Cargo.toml` contains the substring `habeas`.\n- `Cargo.toml` contains the substring `path = `.\n\nIt does not check these points:\n- The dependency's `path` is the crate directory passed to `--path`. This is the core obligation, \"add that local crate\".\n- Exactly one `habeas` dependency entry exists after the second run. The \"no duplicate\" obligation is only covered because the second run does not fail.\n- An existing Habeas dev dependency is left untouched, for example one that points at a different path. That is the branch where `cargo add` is skipped, and the test never sets it up. Only the Python Symposium smoke test starts from a manifest that already has a path dependency, and it does not check that the manifest is unchanged.\n\nThese assertions would still pass if `--path` were ignored and some other `path = ` entry were added. They also would not catch an added second entry. So the tests do not cover the interesting points of the requirement, and I am judging it false on that basis.\n\nNo FIXME acknowledges these gaps.",
   "inputs": [
     {
       "requirements": "requirements.cli.setup_local_path",
@@ -61,6 +61,7 @@
         "        }",
         "    }",
         "",
+        "    // {impl}`requirements.cli.mdbook`",
         "    book[\"preprocessor\"][\"habeas\"][\"command\"] = value(\"habeas mdbook\");",
         "    let mut renderers = Array::new();",
         "    renderers.push(\"html\");",
@@ -82,6 +83,21 @@
         "        }",
         "    } else {",
         "        return Err(\"output.html.additional-css must be an array\".into());",
+        "    }",
+        "",
+        "    // {impl}`requirements.cli.setup`",
+        "    // {impl}`requirements.index.detail_pages`",
+        "    let fold = &mut book[\"output\"][\"html\"][\"fold\"];",
+        "    if fold.is_none() {",
+        "        let mut table = Table::new();",
+        "        table.insert(\"enable\", value(true));",
+        "        *fold = Item::Table(table);",
+        "    } else if let Some(fold) = fold.as_table_like_mut() {",
+        "        if fold.get(\"enable\").is_none() {",
+        "            fold.insert(\"enable\", value(true));",
+        "        }",
+        "    } else {",
+        "        return Err(\"output.html.fold must be a table\".into());",
         "    }",
         "",
         "    let manifest_path = root.join(\"Cargo.toml\");",
@@ -124,6 +140,7 @@
         "// {test}`requirements.cli.setup`",
         "// {test}`requirements.cli.setup_css`",
         "// {test}`requirements.cli.setup_local_path`",
+        "// {test}`requirements.cli.mdbook`",
         "#[test]",
         "fn setup_is_repeatable() {",
         "    let temp = fixture();",
@@ -149,46 +166,152 @@
         "    );",
         "    assert!(project.join(\"md/habeas.css\").is_file());",
         "    assert!(!project.join(\".agents/skills\").exists());",
+        "    let book: toml_edit::DocumentMut = book.parse().unwrap();",
+        "    assert_eq!(",
+        "        book[\"output\"][\"html\"][\"fold\"][\"enable\"].as_bool(),",
+        "        Some(true)",
+        "    );",
+        "    assert_eq!(book.to_string().matches(\"enable\").count(), 1, \"{book}\");",
         "}"
       ]
     },
     {
-      "file": "src/setup.rs",
-      "line_start": 132,
-      "line_end": 153,
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 68,
+      "line_end": 74,
       "text": [
-        "    } else if let Some(css) = additional_css.as_array_mut() {",
-        "        if !css",
-        "            .iter()",
-        "            .any(|existing| existing.as_str() == Some(css_relative.as_str()))",
-        "        {",
-        "            css.push(css_relative.as_str());",
-        "        }",
-        "    } else {",
-        "        return Err(\"output.html.additional-css must be an array\".into());",
-        "    }",
+        "| `src/main.rs:11` `main` | `requirements.cli.mdbook`, `requirements.cli.invocation`, `requirements.cli.setup`, `requirements.cli.agents` |",
+        "| `src/setup.rs:12` `project_root` | `requirements.cli.setup_project`, `requirements.cli.agents` |",
+        "| `src/setup.rs:30` `write_new_or_same` | `requirements.cli.setup`, `requirements.cli.agents` |",
+        "| `src/setup.rs:49` `run` | `requirements.cli.setup`, `requirements.cli.setup_project`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
+        "| `src/agents.rs:22` `run` | `requirements.cli.agents` |",
+        "| `src/agents.rs:28` `install` | `requirements.cli.agents` |",
+        ""
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 105,
+      "line_end": 111,
+      "text": [
+        "| `src/lib.rs:690` `a_longer_colon_fence_contains_a_shorter_nested_directive` | `requirements.ci.span` |",
+        "| `tests/cli.rs:5` `renderer_support_and_invalid_commands` | `requirements.cli.invocation` |",
+        "| `tests/habeas.rs:3` `habeas` | `requirements.integration.self_test` |",
+        "| `tests/setup.rs:46` `setup_and_agents_are_repeatable` | `requirements.cli.setup`, `requirements.cli.agents`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
+        "| `tests/setup.rs:98` `setup_install_skills_preserves_differing_skill` | `requirements.cli.setup`, `requirements.cli.agents` |",
+        "| `tests/setup.rs:123` `setup_rejects_invalid_book_configuration` | `requirements.cli.setup_project`, `requirements.cli.setup_css` |",
+        ""
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 137,
+      "line_end": 143,
+      "text": [
+        "| `src/main.rs:21` | renderer support and command usage failures | `requirements.cli.invocation` |",
+        "| `src/setup.rs:53` | invalid project source or missing summary | `requirements.cli.setup_project` |",
+        "| `src/setup.rs:90` | existing, missing, or invalid CSS configuration | `requirements.cli.setup_css` |",
+        "| `src/setup.rs:109` | existing dependency or local path addition | `requirements.cli.setup_local_path` |",
+        "| `src/agents.rs:28` | existing identical or differing installed skill | `requirements.cli.agents` |",
+        "",
+        "## Remaining gaps"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 108,
+      "line_end": 114,
+      "text": [
+        "`habeas setup` MUST preserve existing entries in `output.html.additional-css` while adding the Habeas stylesheet at most once. It MUST report an error if `additional-css` is not an array.",
+        ":::",
+        "",
+        ":::{req} setup_local_path",
+        "When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.",
+        ":::",
+        ""
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 22,
+      "line_end": 28,
+      "text": [
+        "        .join(\"/\")",
+        "}",
+        "",
+        "// {impl}`requirements.cli.setup_local_path`",
+        "// {impl}`requirements.integration.symposium_setup_hook`",
+        "fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {",
+        "    manifest"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 90,
+      "line_end": 96,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.cli.setup`",
+        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
+        "    let root = project_root()?;",
+        "    let book_path = root.join(\"book.toml\");",
+        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 158,
+      "line_end": 164,
+      "text": [
         "",
         "    let manifest_path = root.join(\"Cargo.toml\");",
         "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
         "    // {impl}`requirements.cli.setup_local_path`",
         "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
         "    if !has_dev_dependency {",
-        "        let mut command = Command::new(\"cargo\");",
-        "        command",
-        "            .arg(\"add\")",
-        "            .arg(\"--dev\")",
+        "        let mut command = Command::new(\"cargo\");"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 168,
+      "line_end": 175,
+      "text": [
         "            .arg(\"habeas\")",
-        "            .arg(\"--manifest-path\")"
+        "            .arg(\"--manifest-path\")",
+        "            .arg(&manifest_path);",
+        "        if let Some(local_crate) = local_crate {",
+        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
+        "        }",
+        "        let output = command.current_dir(&root).output()?;",
+        "        if !output.status.success() {"
+      ]
+    },
+    {
+      "file": "tests/cli.rs",
+      "line_start": 20,
+      "line_end": 26,
+      "text": [
+        "        [\"agents\"].as_slice(),",
+        "        [\"setup\", \"--wrong\"].as_slice(),",
+        "        [\"setup\", \"--install-skills\"].as_slice(),",
+        "        [\"setup\", \"--path\", \".\", \"--install-skills\"].as_slice(),",
+        "    ] {",
+        "        let output = Command::new(binary).args(args).output().unwrap();",
+        "        assert!(!output.status.success());"
       ]
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 76,
-      "line_end": 104,
+      "line_start": 75,
+      "line_end": 91,
       "text": [
+        "",
         "// {test}`requirements.cli.setup`",
         "// {test}`requirements.cli.setup_css`",
         "// {test}`requirements.cli.setup_local_path`",
+        "// {test}`requirements.cli.mdbook`",
         "#[test]",
         "fn setup_is_repeatable() {",
         "    let temp = fixture();",
@@ -200,20 +323,407 @@
         "    run(project, &[\"setup\", \"--path\", local_crate]);",
         "",
         "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));",
-        "    assert!(book.contains(\"md/custom.css\"));",
-        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
-        "    assert_eq!(",
-        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
-        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
+        "    assert!(cargo.contains(\"[dev-dependencies]\"));"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 129,
+      "line_end": 135,
+      "text": [
+        "            format!(\"[book]\\nsrc = \\\"md\\\"\\n\\n{configuration}\"),",
+        "        )",
+        "        .unwrap();",
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        let book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
+        "            .unwrap()",
+        "            .parse()"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 158,
+      "line_end": 164,
+      "text": [
+        "    fs::create_dir_all(skill.parent().unwrap()).unwrap();",
+        "    fs::write(&skill, \"custom skill\\n\").unwrap();",
+        "",
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "    assert_eq!(fs::read_to_string(skill).unwrap(), \"custom skill\\n\");",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 172,
+      "line_end": 178,
+      "text": [
+        "        let project = temp.path();",
+        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
+        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        assert!(project.join(\"src/habeas.css\").is_file());",
+        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
+        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 214,
+      "line_end": 220,
+      "text": [
+        "    ] {",
+        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
+        "        let output = Command::new(binary)",
+        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
+        "            .current_dir(project)",
+        "            .env(\"CARGO_NET_OFFLINE\", \"true\")",
+        "            .output()"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 231,
+      "line_end": 237,
+      "text": [
+        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "    fs::remove_file(project.join(\"md/SUMMARY.md\")).unwrap();",
+        "    let output = Command::new(binary)",
+        "        .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
+        "        .current_dir(project)",
+        "        .env(\"CARGO_NET_OFFLINE\", \"true\")",
+        "        .output()"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 250,
+      "line_end": 256,
+      "text": [
+        "        json!({\"SessionStart\": {}}),",
+        "        \"a project without Habeas must not receive an advisory\"",
         "    );",
-        "    assert!(project.join(\"md/habeas.css\").is_file());",
-        "    assert!(!project.join(\".agents/skills\").exists());",
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "",
+        "    let nested = project.join(\"src/nested\");",
+        "    fs::create_dir_all(&nested).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 73,
+      "line_end": 85,
+      "text": [
+        "        root = Path(temporary)",
+        "        project = root / \"consumer\"",
+        "        symposium_home = root / \"symposium-home\"",
+        "        local_crate = root / \"habeas-current\"",
+        "        source_skills = repo / \"assets\" / \"skills\"",
+        "        for directory in (",
+        "            project / \"md\",",
+        "            project / \"src\",",
+        "            symposium_home,",
+        "            local_crate / \"src\",",
+        "        ):",
+        "            directory.mkdir(parents=True)",
+        ""
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 98,
+      "line_end": 117,
+      "text": [
+        "        )",
+        "        if manifest.count(cargo_installation) != 1:",
+        "            raise AssertionError(\"Habeas's Cargo installation declaration changed\")",
+        "        (local_crate / \"Cargo.toml\").write_text(",
+        "            manifest.replace(",
+        "                cargo_installation,",
+        "                f\"executable = {json.dumps(str(runner))}\",",
+        "                1,",
+        "            )",
+        "        )",
+        "        (local_crate / \"src\" / \"lib.rs\").write_text(\"\")",
+        "        shutil.copytree(source_skills, local_crate / \"assets\" / \"skills\")",
+        "",
+        "        (project / \"Cargo.toml\").write_text(",
+        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
+        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
+        "            f\"habeas = {{ path = {json.dumps(str(local_crate))} }}\\n\"",
+        "        )",
+        "        (project / \"Cargo.lock\").write_bytes((repo / \"Cargo.lock\").read_bytes())",
+        "        (project / \"book.toml\").write_text('[book]\\nsrc = \"md\"\\n')"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 194,
+      "line_end": 200,
+      "text": [
+        "                f\"Plugin status: {status.stdout}\\n{status.stderr}\"",
+        "            )",
+        "        subprocess.run(",
+        "            [runner, \"setup\", \"--path\", str(repo)], cwd=project, check=True",
+        "        )",
+        "        configured_context = session_start()",
+        "        if \"Habeas Codicem is not fully configured\" in configured_context:"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 1,
+      "line_end": 249,
+      "text": [
+        "use clap::{ArgGroup, Parser, Subcommand};",
+        "use std::error::Error;",
+        "use std::io;",
+        "use std::io::Write;",
+        "use std::path::PathBuf;",
+        "",
+        "mod hook;",
+        "mod setup;",
+        "",
+        "// {impl}`requirements.cli.clap`",
+        "#[derive(Parser)]",
+        "#[command(name = \"habeas\")]",
+        "struct Cli {",
+        "    #[command(subcommand)]",
+        "    command: Command,",
+        "}",
+        "",
+        "#[derive(Subcommand)]",
+        "enum Command {",
+        "    Mdbook {",
+        "        #[command(subcommand)]",
+        "        command: Option<MdbookCommand>,",
+        "    },",
+        "    Setup {",
+        "        #[arg(long, value_name = \"crate-dir\")]",
+        "        path: Option<PathBuf>,",
+        "    },",
+        "    Status {",
+        "        #[arg(long)]",
+        "        all: bool,",
+        "        /// List the judgments and original FIXME entries within each issue group.",
+        "        #[arg(long)]",
+        "        verbose: bool,",
+        "        /// A full requirement or example name, or a definition glob.",
+        "        selection: Option<String>,",
+        "    },",
+        "    Info {",
+        "        /// A full requirement or example name, or a definition glob.",
+        "        selection: String,",
+        "    },",
+        "    #[command(alias = \"author-evidence\", group(ArgGroup::new(\"author_target\").required(true).multiple(false).args([\"subject\", \"all\"])))]",
+        "    Author {",
+        "        subject: Option<String>,",
+        "        /// Author all requirement and example evidence needing attention.",
+        "        #[arg(long, conflicts_with = \"stdout\")]",
+        "        all: bool,",
+        "        #[arg(long)]",
+        "        config: Option<String>,",
+        "        /// Write evidence JSON to stdout instead of updating its file.",
+        "        #[arg(long)]",
+        "        stdout: bool,",
+        "        /// Show the stored rationale for false judgments.",
+        "        #[arg(short, long)]",
+        "        verbose: bool,",
+        "    },",
+        "    #[command(hide = true)]",
+        "    Hook {",
+        "        #[command(subcommand)]",
+        "        command: HookCommand,",
+        "    },",
+        "    #[command(",
+        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\"])),",
+        "        group(ArgGroup::new(\"mode\").required(true).multiple(false).args([\"file_range\", \"rust_item\", \"requirements\"]))",
+        "    )]",
+        "    AddInput {",
+        "        #[arg(long)]",
+        "        for_requirement: Option<String>,",
+        "        #[arg(long)]",
+        "        for_example: Option<String>,",
+        "        #[arg(long)]",
+        "        file_range: Option<String>,",
+        "        #[arg(long)]",
+        "        rust_item: Option<String>,",
+        "        #[arg(long, value_name = \"selection\")]",
+        "        requirements: Option<String>,",
+        "    },",
+        "}",
+        "",
+        "#[derive(Subcommand)]",
+        "enum MdbookCommand {",
+        "    Supports { renderer: String },",
+        "}",
+        "",
+        "#[derive(Subcommand)]",
+        "enum HookCommand {",
+        "    SessionStart,",
+        "}",
+        "",
+        "fn main() -> Result<(), Box<dyn Error>> {",
+        "    // {impl}`requirements.cli.clap`",
+        "    let cli = Cli::parse();",
+        "    // {impl}`requirements.configuration.workspace_location`",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    if !matches!(",
+        "        cli.command,",
+        "        Command::Mdbook {",
+        "            command: Some(MdbookCommand::Supports { .. })",
+        "        }",
+        "    ) {",
+        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
+        "    }",
+        "    match cli.command {",
+        "        // {impl}`requirements.cli.mdbook`",
+        "        Command::Mdbook { command: None } => {",
+        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;",
+        "            habeas::preprocess_book(&mut book, &context.root)?;",
+        "            serde_json::to_writer(io::stdout().lock(), &book)?;",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.cli.invocation`",
+        "        Command::Mdbook {",
+        "            command: Some(MdbookCommand::Supports { renderer }),",
+        "        } => {",
+        "            if renderer == \"html\" {",
+        "                Ok(())",
+        "            } else {",
+        "                std::process::exit(1)",
+        "            }",
+        "        }",
+        "        // {impl}`requirements.cli.setup`",
+        "        Command::Setup { path } => setup::run(path.as_deref()),",
+        "        // {impl}`requirements.cli.status`",
+        "        // {impl}`requirements.cli.fixme_summary`",
+        "        Command::Status {",
+        "            all,",
+        "            selection,",
+        "            verbose,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout().lock().write_all(",
+        "                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?",
+        "                    .as_bytes(),",
+        "            )?;",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.cli.info`",
+        "        Command::Info { selection } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout()",
+        "                .lock()",
+        "                .write_all(habeas::info_markdown(&root, &selection)?.as_bytes())?;",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.authoring.invocation`",
+        "        // {impl}`requirements.authoring.batch`",
+        "        // {impl}`requirements.authoring.concurrency`",
+        "        // {impl}`requirements.authoring.reporting`",
+        "        // {impl}`requirements.authoring.read_denial`",
+        "        Command::Author {",
+        "            subject,",
+        "            all,",
+        "            config,",
+        "            stdout,",
+        "            verbose,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            // Tokio's fixed worker pool is shared by all async assessments.",
+        "            let runtime = tokio::runtime::Runtime::new()?;",
+        "            if all {",
+        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
+        "                    &root,",
+        "                    config.as_deref(),",
+        "                    habeas::authoring::AuthoringOptions { verbose },",
+        "                ))?;",
+        "                println!(",
+        "                    \"{} authored; {} unchanged; {} failed\",",
+        "                    outcome.completed.len(),",
+        "                    outcome.unchanged,",
+        "                    outcome.failures.len()",
+        "                );",
+        "                if !outcome.failures.is_empty() {",
+        "                    return Err(io::Error::other(",
+        "                        \"evidence authoring failed for one or more subjects; see diagnostics above\",",
+        "                    )",
+        "                    .into());",
+        "                }",
+        "                return Ok(());",
+        "            }",
+        "            let output = if stdout {",
+        "                habeas::authoring::EvidenceOutput::Stdout",
+        "            } else {",
+        "                habeas::authoring::EvidenceOutput::File",
+        "            };",
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
+        "                &root,",
+        "                &subject.expect(\"clap requires a subject or --all\"),",
+        "                config.as_deref(),",
+        "                output,",
+        "            ))?;",
+        "            let mut summary = format!(",
+        "                \"{}: {} / {}\",",
+        "                outcome.subject, outcome.backend, outcome.model,",
+        "            );",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {",
+        "                summary.push_str(\" — FIXME\");",
+        "            }",
+        "            if matches!(outcome.determination, habeas::judgment::Judgment::False) {",
+        "                eprintln!(\"{}: false\", outcome.subject);",
+        "                if verbose {",
+        "                    eprintln!(\"{}\", outcome.rationale);",
+        "                }",
+        "            }",
+        "            if let Some(path) = outcome.evidence_path {",
+        "                println!(",
+        "                    \"{summary}\\nEvidence: {}\\nUsage: {}\",",
+        "                    path.display(),",
+        "                    outcome.usage_path.display()",
+        "                );",
+        "            } else {",
+        "                eprintln!(",
+        "                    \"{summary}\\nEvidence: stdout\\nUsage: {}\",",
+        "                    outcome.usage_path.display()",
+        "                );",
+        "            }",
+        "            Ok(())",
+        "        }",
+        "        // {impl}`requirements.integration.symposium_setup_hook`",
+        "        Command::Hook {",
+        "            command: HookCommand::SessionStart,",
+        "        } => hook::session_start(),",
+        "        // {impl}`requirements.cli.add_input`",
+        "        Command::AddInput {",
+        "            for_requirement,",
+        "            for_example,",
+        "            file_range,",
+        "            rust_item,",
+        "            requirements,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            let target = if let Some(name) = for_requirement {",
+        "                habeas::InputTarget::Requirement(name)",
+        "            } else {",
+        "                habeas::InputTarget::Example(for_example.expect(\"clap requires a target\"))",
+        "            };",
+        "            let mode = if let Some(specification) = file_range {",
+        "                habeas::InputMode::FileRange(specification)",
+        "            } else if let Some(specification) = rust_item {",
+        "                habeas::InputMode::RustItemsAtLine(specification)",
+        "            } else {",
+        "                habeas::InputMode::Requirements(requirements.expect(\"clap requires an input mode\"))",
+        "            };",
+        "            io::stdout()",
+        "                .lock()",
+        "                .write_all(habeas::add_input(&root, target, mode)?.as_bytes())?;",
+        "            Ok(())",
+        "        }",
+        "    }",
         "}"
       ]
     },
@@ -297,1560 +807,6 @@
         "    serde_json::from_slice(&output.stdout).unwrap()",
         "}",
         ""
-      ]
-    },
-    {
-      "file": "README.md",
-      "line_start": 23,
-      "line_end": 27,
-      "text": [
-        "Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.",
-        "",
-        "To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.",
-        "",
-        "`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files."
-      ]
-    },
-    {
-      "file": "README.md",
-      "line_start": 39,
-      "line_end": 43,
-      "text": [
-        "If Habeas previously copied skills into `.agents/skills/habeas-*`, review them for local edits before the first Symposium sync. Save any edits under different names or elsewhere, remove those old copies, and then sync so Symposium can manage them.",
-        "",
-        "During local development, `habeas setup --path /path/to/habeas-codicem` uses a local crate in place of the registry dependency.",
-        "",
-        "Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command."
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 69,
-      "line_end": 73,
-      "text": [
-        "| `src/setup.rs:12` `project_root` | `requirements.cli.setup_project`, `requirements.cli.agents` |",
-        "| `src/setup.rs:30` `write_new_or_same` | `requirements.cli.setup`, `requirements.cli.agents` |",
-        "| `src/setup.rs:49` `run` | `requirements.cli.setup`, `requirements.cli.setup_project`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
-        "| `src/agents.rs:22` `run` | `requirements.cli.agents` |",
-        "| `src/agents.rs:28` `install` | `requirements.cli.agents` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 106,
-      "line_end": 110,
-      "text": [
-        "| `tests/cli.rs:5` `renderer_support_and_invalid_commands` | `requirements.cli.invocation` |",
-        "| `tests/habeas.rs:3` `habeas` | `requirements.integration.self_test` |",
-        "| `tests/setup.rs:46` `setup_and_agents_are_repeatable` | `requirements.cli.setup`, `requirements.cli.agents`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
-        "| `tests/setup.rs:98` `setup_install_skills_preserves_differing_skill` | `requirements.cli.setup`, `requirements.cli.agents` |",
-        "| `tests/setup.rs:123` `setup_rejects_invalid_book_configuration` | `requirements.cli.setup_project`, `requirements.cli.setup_css` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 138,
-      "line_end": 142,
-      "text": [
-        "| `src/setup.rs:53` | invalid project source or missing summary | `requirements.cli.setup_project` |",
-        "| `src/setup.rs:90` | existing, missing, or invalid CSS configuration | `requirements.cli.setup_css` |",
-        "| `src/setup.rs:109` | existing dependency or local path addition | `requirements.cli.setup_local_path` |",
-        "| `src/agents.rs:28` | existing identical or differing installed skill | `requirements.cli.agents` |",
-        ""
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 304,
-      "line_end": 309,
-      "text": [
-        "```",
-        "",
-        "These values are illustrative choices, not Habeas defaults. Omit any setting to",
-        "leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`",
-        "go in the same options table; Rig places them in Ollama's native request.",
-        "{cite}`requirements.authoring.configuration_storage`"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 77,
-      "line_end": 82,
-      "text": [
-        ":::{req} requirements_review_skill",
-        "The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.",
-        ":::",
-        "",
-        ":::{req} behavior_review_guidance",
-        "Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark code that implements part of a requirement with `{impl}` and tests that verify it with `{test}`, using `{cite}` only for related code that does neither, under {cite}`requirements.references.targets`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation."
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 23,
-      "line_end": 27,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_local_path`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 143,
-      "line_end": 147,
-      "text": [
-        "    let manifest_path = root.join(\"Cargo.toml\");",
-        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_local_path`",
-        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
-        "    if !has_dev_dependency {"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 154,
-      "line_end": 158,
-      "text": [
-        "            .arg(&manifest_path);",
-        "        if let Some(local_crate) = local_crate {",
-        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
-        "        }",
-        "        let output = command.current_dir(&root).output()?;"
-      ]
-    },
-    {
-      "file": "tests/cli.rs",
-      "line_start": 21,
-      "line_end": 25,
-      "text": [
-        "        [\"setup\", \"--wrong\"].as_slice(),",
-        "        [\"setup\", \"--install-skills\"].as_slice(),",
-        "        [\"setup\", \"--path\", \".\", \"--install-skills\"].as_slice(),",
-        "    ] {",
-        "        let output = Command::new(binary).args(args).output().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 76,
-      "line_end": 80,
-      "text": [
-        "// {test}`requirements.cli.setup`",
-        "// {test}`requirements.cli.setup_css`",
-        "// {test}`requirements.cli.setup_local_path`",
-        "#[test]",
-        "fn setup_is_repeatable() {"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 83,
-      "line_end": 89,
-      "text": [
-        "    let local_crate = env!(\"CARGO_MANIFEST_DIR\");",
-        "",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 114,
-      "line_end": 118,
-      "text": [
-        "    fs::write(&skill, \"custom skill\\n\").unwrap();",
-        "",
-        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "    assert_eq!(fs::read_to_string(skill).unwrap(), \"custom skill\\n\");",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 127,
-      "line_end": 131,
-      "text": [
-        "        let project = temp.path();",
-        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
-        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "        assert!(project.join(\"src/habeas.css\").is_file());"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 164,
-      "line_end": 168,
-      "text": [
-        "    ] {",
-        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
-        "        let output = Command::new(binary)",
-        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
-        "            .current_dir(project)"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 181,
-      "line_end": 185,
-      "text": [
-        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "    fs::remove_file(project.join(\"md/SUMMARY.md\")).unwrap();",
-        "    let output = Command::new(binary)",
-        "        .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
-        "        .current_dir(project)"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 200,
-      "line_end": 204,
-      "text": [
-        "        json!({\"SessionStart\": {}}),",
-        "        \"a project without Habeas must not receive an advisory\"",
-        "    );",
-        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        ""
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 195,
-      "line_end": 199,
-      "text": [
-        "            )",
-        "        subprocess.run(",
-        "            [runner, \"setup\", \"--path\", str(repo)], cwd=project, check=True",
-        "        )",
-        "        configured_context = session_start()"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 313,
-      "line_end": 319,
-      "text": [
-        "    fn command(&self) -> Command {",
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 626,
-      "line_end": 632,
-      "text": [
-        "            assert!(!text.contains(\"SECRET_DEFINITION_TEXT\"), \"{text}\");",
-        "            assert!(!text.contains(\"pub fn ready()\"), \"{text}\");",
-        "            assert!(!text.contains(\"— true\"), \"{text}\");",
-        "            assert!(!text.contains(&format!(\"{SUBJECT}: true\")), \"{text}\");",
-        "        }",
-        "        assert!(stdout.contains(\"Evidence:\"), \"{stdout}\");",
-        "        assert!(stdout.contains(\"Usage:\"), \"{stdout}\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 900,
-      "line_end": 906,
-      "text": [
-        "                .headers",
-        "                .contains(\"Credential=FAKE_PROFILE_ACCESS_KEY/\")",
-        "        );",
-        "        assert!(",
-        "            requests[0]",
-        "                .headers",
-        "                .contains(\"/us-west-2/bedrock/aws4_request\")"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 914,
-      "line_end": 920,
-      "text": [
-        "        assert_eq!(body[\"additionalModelRequestFields\"], json!({\"top_k\":12}));",
-        "        let prompt = body[\"messages\"][0][\"content\"][0][\"text\"].as_str().unwrap();",
-        "        assert!(prompt.contains(\"Bring your expert judgment\") && prompt.contains(REQUIREMENT));",
-        "        let tool_specs = body[\"toolConfig\"][\"tools\"].as_array().unwrap();",
-        "        for tool in tool_specs {",
-        "            let schema = &tool[\"toolSpec\"][\"inputSchema\"][\"json\"];",
-        "            assert_eq!(schema[\"type\"], \"object\");"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 682,
-      "line_end": 688,
-      "text": [
-        "            temp.path(),",
-        "            &[",
-        "                \"add-input\",",
-        "                \"--for-requirement\",",
-        "                \"requirements.absent\",",
-        "                mode,",
-        "                &location,"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 71,
-      "line_end": 77,
-      "text": [
-        "#[test]",
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"user.toml\");",
-        "    assert!(load_user_config(&path).unwrap().is_none());",
-        "    assert!(!path.exists());",
-        "    let original = \"# keep this comment\\nversion = 1\\n\";"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 124,
-      "line_end": 130,
-      "text": [
-        "backend = \"ollama\"",
-        "model = \"tiny:latest\"",
-        "\"#;",
-        "    let path = Path::new(\"settings.toml\");",
-        "    let config = UserConfig::parse(source, path).unwrap();",
-        "    let authoring = config.authoring.as_ref().unwrap();",
-        "    assert!(authoring.projects.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 157,
-      "line_end": 163,
-      "text": [
-        "#[test]",
-        "fn authoring_concurrency_defaults_overrides_and_invalid_values() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"config.toml\");",
-        "    for backend in [\"bedrock\", \"ollama\"] {",
-        "        let base =",
-        "            format!(\"version = 1\\n[authoring.configs.model]\\nbackend = '{backend}'\\nmodel = 'm'\\n\");"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 202,
-      "line_end": 208,
-      "text": [
-        "fn explicit_project_and_default_selections_choose_whole_configs() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let root = dir.path().canonicalize().unwrap();",
-        "    let config_path = root.join(\"config.toml\");",
-        "    let mut config = UserConfig::parse(",
-        "        r#\"",
-        "version = 1"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 268,
-      "line_end": 274,
-      "text": [
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "#[test]",
-        "fn invalid_schema_and_feature_values_report_the_configuration_path() {",
-        "    let path = Path::new(\"/settings/habeas/config.toml\");",
-        "    for source in [",
-        "        \"version = 2\","
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 333,
-      "line_end": 339,
-      "text": [
-        "    let nested = project.join(\"nested/deep\");",
-        "    fs::create_dir_all(&nested).unwrap();",
-        "    let outer = temp.path().join(\"habeas.toml\");",
-        "    fs::write(&outer, \"version = 1\\n[evidence]\\nallow = ['outer']\\n\").unwrap();",
-        "    let inherited = load_workspace_config(&project).unwrap().unwrap();",
-        "    assert_eq!(inherited.path, outer);",
-        "    assert_eq!(inherited.root, temp.path().canonicalize().unwrap());"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 377,
-      "line_end": 383,
-      "text": [
-        "// {test}`requirements.configuration.workspace_structure`",
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.authoring.credentials`",
-        "#[test]",
-        "fn evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials() {",
-        "    let temp = tempfile::tempdir().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 421,
-      "line_end": 429,
-      "text": [
-        "// {test}`requirements.authoring.configuration`",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn workspace_defaults_and_configs_combine_with_existing_user_selections() {",
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let root = temp.path().canonicalize().unwrap();",
-        "    let user_path = root.join(\"user.toml\");"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 526,
-      "line_end": 532,
-      "text": [
-        "}",
-        "",
-        "// {test}`requirements.authoring.credentials`",
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.configuration.serialization`",
-        "// {test}`requirements.configuration.loading`",
-        "#[test]"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 57,
-      "line_end": 63,
-      "text": [
-        "    let temp = fixture();",
-        "    let root = temp.path();",
-        "    capture(root);",
-        "    let path = root.join(\"evidence/rules.ready.json\");",
-        "    approve(&path);",
-        "    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
-        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 129,
-      "line_end": 135,
-      "text": [
-        "#[test]",
-        "fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {",
-        "    let temp = fixture();",
-        "    let path = temp.path().join(\"md/rules.md\");",
-        "    let mut text = fs::read_to_string(&path).unwrap();",
-        "    text.push_str(\"\\n:::{definition} unrelated\\n:phrase: unrelated\\n\\nNot referenced.\\n:::\\n\");",
-        "    fs::write(path, text).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 269,
-      "line_end": 275,
-      "text": [
-        "            inputs.iter().any(|input| input[\"definition\"] == term),",
-        "            \"{inputs:?}\"",
-        "        );",
-        "    }",
-        "    capture(root);",
-        "    add_input(",
-        "        root,"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 327,
-      "line_end": 333,
-      "text": [
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()",
-        "            .any(|e| e.contains(\"unexpected field\"))",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 376,
-      "line_end": 382,
-      "text": [
-        "    add_input(",
-        "        root,",
-        "        InputTarget::Example(\"rules.case\".into()),",
-        "        InputMode::Requirements(\"rules.ready\".into()),",
-        "    )",
-        "    .unwrap();",
-        "    let record: Value ="
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 159,
-      "line_end": 165,
-      "text": [
-        "        fs::write(root.join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
-        "        assert!(",
-        "            validate_repository(&root)",
-        "                .unwrap()",
-        "                .errors",
-        "                .join(\"\\n\")",
-        "                .contains(\"outside the repository\")"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 21,
-      "line_end": 27,
-      "text": [
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "fn selected_config() -> Result<Option<ResolvedAuthoringConfig>, Box<dyn Error>> {",
-        "    let root = fs::canonicalize(env!(\"CARGO_MANIFEST_DIR\"))?;",
-        "    let path = config::user_config_path()?;",
-        "    let user = config::load_user_config(&path)?;",
-        "    let explicit = match std::env::var(\"HABEAS_LIVE_CONFIG\") {",
-        "        Ok(name) => Some(name),"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 185,
-      "line_end": 191,
-      "text": [
-        "        }),",
-        "        \"model must inspect the fixture's source through a read tool\"",
-        "    );",
-        "    assert!(!project.join(\"evidence\").exists());",
-        "    let usage_path = stderr",
-        "        .lines()",
-        "        .find_map(|line| line.strip_prefix(\"Usage: \"))"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 233,
-      "line_end": 239,
-      "text": [
-        "fn live_test_prerequisites_are_checked_without_inference() {",
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let root = temp.path();",
-        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
-        "    let config_path = root.join(\"config/habeas/config.toml\");",
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
-        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 75,
-      "line_end": 81,
-      "text": [
-        "",
-        "// {test}`requirements.ci.outcomes`",
-        "fn replace_judgment(root: &Path, name: &str, judgment: Value) {",
-        "    let path = root.join(format!(\"evidence/requirements.{name}.json\"));",
-        "    let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "    record[\"determination\"] = judgment;",
-        "    write_record(root, name, record);"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 157,
-      "line_end": 163,
-      "text": [
-        "        ),",
-        "    ] {",
-        "        fs::write(temp.path().join(\"reviewed.txt\"), format!(\"{comment}\\n\")).unwrap();",
-        "        let path = temp.path().join(\"evidence/requirements.ready.json\");",
-        "        let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "        record[\"determination\"] = judgment;",
-        "        record[\"inputs\"]"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 248,
-      "line_end": 254,
-      "text": [
-        "    let temp = fixture();",
-        "    for all in [false, true] {",
-        "        let status = habeas::status_markdown(temp.path(), all).unwrap();",
-        "        assert_eq!(status.contains(\"requirements.timeout\"), all, \"{status}\");",
-        "        assert!(status.contains(\"FIXME\"));",
-        "        assert!(status.contains(\"#125\"));",
-        "        assert!(status.contains(\"rust-lang/rust#123\"));"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 256,
-      "line_end": 262,
-      "text": [
-        "        assert!(!status.contains(\"## Validation findings\"));",
-        "    }",
-        "    let verbose = habeas::status_markdown_with_options(temp.path(), false, None, true).unwrap();",
-        "    assert!(verbose.contains(\"requirements.timeout\"), \"{verbose}\");",
-        "    assert!(verbose.contains(\"example\"), \"{verbose}\");",
-        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
-        "    assert!(info.contains(\"## FIXME references\"));"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 87,
-      "line_end": 95,
-      "text": [
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 110,
-      "line_end": 117,
-      "text": [
-        "",
-        "        (project / \"Cargo.toml\").write_text(",
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(local_crate))} }}\\n\"",
-        "        )",
-        "        (project / \"Cargo.lock\").write_bytes((repo / \"Cargo.lock\").read_bytes())",
-        "        (project / \"book.toml\").write_text('[book]\\nsrc = \"md\"\\n')"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 232,
-      "line_end": 239,
-      "text": [
-        "",
-        "        (project / \"Cargo.toml\").write_text(",
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(next_crate))} }}\\n\"",
-        "        )",
-        "        updated_metadata = subprocess.run(",
-        "            [cargo, \"metadata\", \"--format-version\", \"1\", \"--all-features\"],"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 175,
-      "line_end": 260,
-      "text": [
-        "            try:",
-        "                output = json.loads(result.stdout)",
-        "            except json.JSONDecodeError as error:",
-        "                raise RuntimeError(f\"Invalid Symposium output: {result.stdout}\") from error",
-        "            return output.get(\"hookSpecificOutput\", {}).get(\"additionalContext\", \"\")",
-        "",
-        "        incomplete_context = session_start()",
-        "        if \"Habeas Codicem is not fully configured\" not in incomplete_context:",
-        "            status = subprocess.run(",
-        "                [symposium, \"status\"],",
-        "                cwd=project,",
-        "                env=env,",
-        "                text=True,",
-        "                capture_output=True,",
-        "            )",
-        "            raise AssertionError(",
-        "                \"Symposium did not deliver Habeas's setup advisory. \"",
-        "                f\"Agent output: {incomplete_context!r}\\n\"",
-        "                f\"Hook diagnostics: {last_stderr}\\n\"",
-        "                f\"Plugin status: {status.stdout}\\n{status.stderr}\"",
-        "            )",
-        "        subprocess.run(",
-        "            [runner, \"setup\", \"--path\", str(repo)], cwd=project, check=True",
-        "        )",
-        "        configured_context = session_start()",
-        "        if \"Habeas Codicem is not fully configured\" in configured_context:",
-        "            raise AssertionError(\"Symposium kept advising setup after it was complete\")",
-        "",
-        "        # {test}`requirements.integration.symposium`",
-        "        skills_dir = project / \".agents\" / \"skills\"",
-        "        skill_names = sorted(",
-        "            path.name for path in source_skills.iterdir() if (path / \"SKILL.md\").is_file()",
-        "        )",
-        "        if not skill_names:",
-        "            raise AssertionError(\"Habeas did not ship any skills\")",
-        "        for name in skill_names:",
-        "            installed = skills_dir / name / \"SKILL.md\"",
-        "            if not installed.is_file() or installed.read_bytes() != (",
-        "                source_skills / name / \"SKILL.md\"",
-        "            ).read_bytes():",
-        "                raise AssertionError(f\"Symposium did not install the current {name} skill\")",
-        "",
-        "        # Symposium 0.5.1 debounces skill comparisons for five seconds and",
-        "        # caches workspace dependencies by whole-second Cargo.lock mtime.",
-        "        time.sleep(6)",
-        "        next_crate = root / \"habeas-next\"",
-        "        (next_crate / \"src\").mkdir(parents=True)",
-        "        (next_crate / \"src\" / \"lib.rs\").write_text(\"\")",
-        "        shutil.copytree(source_skills, next_crate / \"assets\" / \"skills\")",
-        "        current_version_line = f'version = \"{current_version}\"'",
-        "        if current_version_line not in manifest:",
-        "            raise AssertionError(\"Cargo did not report the current Habeas version\")",
-        "        (next_crate / \"Cargo.toml\").write_text(",
-        "            manifest.replace(current_version_line, f'version = \"{next_version}\"', 1)",
-        "        )",
-        "        changed_skill = next_crate / \"assets\" / \"skills\" / skill_names[0] / \"SKILL.md\"",
-        "        changed_skill.write_text(changed_skill.read_text() + \"\\nUpdated in the next release.\\n\")",
-        "",
-        "        (project / \"Cargo.toml\").write_text(",
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(next_crate))} }}\\n\"",
-        "        )",
-        "        updated_metadata = subprocess.run(",
-        "            [cargo, \"metadata\", \"--format-version\", \"1\", \"--all-features\"],",
-        "            cwd=project,",
-        "            env=env,",
-        "            text=True,",
-        "            capture_output=True,",
-        "        )",
-        "        if updated_metadata.returncode:",
-        "            raise RuntimeError(f\"Updated Cargo metadata failed:\\n{updated_metadata.stderr}\")",
-        "        packages = json.loads(updated_metadata.stdout)[\"packages\"]",
-        "        if not any(",
-        "            package[\"name\"] == \"habeas\" and package[\"version\"] == next_version",
-        "            for package in packages",
-        "        ):",
-        "            raise AssertionError(\"Cargo did not select the next Habeas version\")",
-        "",
-        "        updated_sync = subprocess.run(",
-        "            [symposium, \"sync\"],",
-        "            cwd=project,",
-        "            env=env,",
-        "            text=True,",
-        "            capture_output=True,",
-        "        )"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 88,
-      "line_end": 92,
-      "text": [
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 416,
-      "line_end": 420,
-      "text": [
-        "        )",
-        "        .unwrap()",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.usage_storage`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 627,
-      "line_end": 631,
-      "text": [
-        "            assert!(!text.contains(\"pub fn ready()\"), \"{text}\");",
-        "            assert!(!text.contains(\"— true\"), \"{text}\");",
-        "            assert!(!text.contains(&format!(\"{SUBJECT}: true\")), \"{text}\");",
-        "        }",
-        "        assert!(stdout.contains(\"Evidence:\"), \"{stdout}\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 901,
-      "line_end": 905,
-      "text": [
-        "                .contains(\"Credential=FAKE_PROFILE_ACCESS_KEY/\")",
-        "        );",
-        "        assert!(",
-        "            requests[0]",
-        "                .headers"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 915,
-      "line_end": 919,
-      "text": [
-        "        let prompt = body[\"messages\"][0][\"content\"][0][\"text\"].as_str().unwrap();",
-        "        assert!(prompt.contains(\"Bring your expert judgment\") && prompt.contains(REQUIREMENT));",
-        "        let tool_specs = body[\"toolConfig\"][\"tools\"].as_array().unwrap();",
-        "        for tool in tool_specs {",
-        "            let schema = &tool[\"toolSpec\"][\"inputSchema\"][\"json\"];"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 800,
-      "line_end": 804,
-      "text": [
-        "            .replace(\"IMPL\", \"{impl}\"),",
-        "    )",
-        "    .unwrap();",
-        "    let output = habeas(",
-        "        temp.path(),"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 72,
-      "line_end": 76,
-      "text": [
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"user.toml\");",
-        "    assert!(load_user_config(&path).unwrap().is_none());",
-        "    assert!(!path.exists());"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 125,
-      "line_end": 129,
-      "text": [
-        "model = \"tiny:latest\"",
-        "\"#;",
-        "    let path = Path::new(\"settings.toml\");",
-        "    let config = UserConfig::parse(source, path).unwrap();",
-        "    let authoring = config.authoring.as_ref().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 158,
-      "line_end": 162,
-      "text": [
-        "fn authoring_concurrency_defaults_overrides_and_invalid_values() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"config.toml\");",
-        "    for backend in [\"bedrock\", \"ollama\"] {",
-        "        let base ="
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 203,
-      "line_end": 207,
-      "text": [
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let root = dir.path().canonicalize().unwrap();",
-        "    let config_path = root.join(\"config.toml\");",
-        "    let mut config = UserConfig::parse(",
-        "        r#\""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 269,
-      "line_end": 273,
-      "text": [
-        "// {test}`requirements.authoring.configuration_storage`",
-        "#[test]",
-        "fn invalid_schema_and_feature_values_report_the_configuration_path() {",
-        "    let path = Path::new(\"/settings/habeas/config.toml\");",
-        "    for source in ["
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 334,
-      "line_end": 338,
-      "text": [
-        "    fs::create_dir_all(&nested).unwrap();",
-        "    let outer = temp.path().join(\"habeas.toml\");",
-        "    fs::write(&outer, \"version = 1\\n[evidence]\\nallow = ['outer']\\n\").unwrap();",
-        "    let inherited = load_workspace_config(&project).unwrap().unwrap();",
-        "    assert_eq!(inherited.path, outer);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 378,
-      "line_end": 382,
-      "text": [
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.authoring.credentials`",
-        "#[test]",
-        "fn evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials() {"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 422,
-      "line_end": 428,
-      "text": [
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn workspace_defaults_and_configs_combine_with_existing_user_selections() {",
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let root = temp.path().canonicalize().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 527,
-      "line_end": 531,
-      "text": [
-        "",
-        "// {test}`requirements.authoring.credentials`",
-        "// {test}`requirements.authoring.configuration_serialization`",
-        "// {test}`requirements.configuration.serialization`",
-        "// {test}`requirements.configuration.loading`"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 58,
-      "line_end": 62,
-      "text": [
-        "    let root = temp.path();",
-        "    capture(root);",
-        "    let path = root.join(\"evidence/rules.ready.json\");",
-        "    approve(&path);",
-        "    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 130,
-      "line_end": 134,
-      "text": [
-        "fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {",
-        "    let temp = fixture();",
-        "    let path = temp.path().join(\"md/rules.md\");",
-        "    let mut text = fs::read_to_string(&path).unwrap();",
-        "    text.push_str(\"\\n:::{definition} unrelated\\n:phrase: unrelated\\n\\nNot referenced.\\n:::\\n\");"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 270,
-      "line_end": 274,
-      "text": [
-        "            \"{inputs:?}\"",
-        "        );",
-        "    }",
-        "    capture(root);",
-        "    add_input("
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 328,
-      "line_end": 332,
-      "text": [
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()",
-        "            .any(|e| e.contains(\"unexpected field\"))"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 377,
-      "line_end": 381,
-      "text": [
-        "        root,",
-        "        InputTarget::Example(\"rules.case\".into()),",
-        "        InputMode::Requirements(\"rules.ready\".into()),",
-        "    )",
-        "    .unwrap();"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 160,
-      "line_end": 164,
-      "text": [
-        "        assert!(",
-        "            validate_repository(&root)",
-        "                .unwrap()",
-        "                .errors",
-        "                .join(\"\\n\")"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 22,
-      "line_end": 26,
-      "text": [
-        "fn selected_config() -> Result<Option<ResolvedAuthoringConfig>, Box<dyn Error>> {",
-        "    let root = fs::canonicalize(env!(\"CARGO_MANIFEST_DIR\"))?;",
-        "    let path = config::user_config_path()?;",
-        "    let user = config::load_user_config(&path)?;",
-        "    let explicit = match std::env::var(\"HABEAS_LIVE_CONFIG\") {"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 186,
-      "line_end": 190,
-      "text": [
-        "        \"model must inspect the fixture's source through a read tool\"",
-        "    );",
-        "    assert!(!project.join(\"evidence\").exists());",
-        "    let usage_path = stderr",
-        "        .lines()"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 234,
-      "line_end": 238,
-      "text": [
-        "    let temp = tempfile::tempdir().unwrap();",
-        "    let root = temp.path();",
-        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
-        "    let config_path = root.join(\"config/habeas/config.toml\");",
-        "    fs::write(&config_path, \"invalid TOML [\").unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 76,
-      "line_end": 80,
-      "text": [
-        "// {test}`requirements.ci.outcomes`",
-        "fn replace_judgment(root: &Path, name: &str, judgment: Value) {",
-        "    let path = root.join(format!(\"evidence/requirements.{name}.json\"));",
-        "    let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "    record[\"determination\"] = judgment;"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 158,
-      "line_end": 162,
-      "text": [
-        "    ] {",
-        "        fs::write(temp.path().join(\"reviewed.txt\"), format!(\"{comment}\\n\")).unwrap();",
-        "        let path = temp.path().join(\"evidence/requirements.ready.json\");",
-        "        let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();",
-        "        record[\"determination\"] = judgment;"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 249,
-      "line_end": 253,
-      "text": [
-        "    for all in [false, true] {",
-        "        let status = habeas::status_markdown(temp.path(), all).unwrap();",
-        "        assert_eq!(status.contains(\"requirements.timeout\"), all, \"{status}\");",
-        "        assert!(status.contains(\"FIXME\"));",
-        "        assert!(status.contains(\"#125\"));"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 257,
-      "line_end": 261,
-      "text": [
-        "    }",
-        "    let verbose = habeas::status_markdown_with_options(temp.path(), false, None, true).unwrap();",
-        "    assert!(verbose.contains(\"requirements.timeout\"), \"{verbose}\");",
-        "    assert!(verbose.contains(\"example\"), \"{verbose}\");",
-        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 88,
-      "line_end": 94,
-      "text": [
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 111,
-      "line_end": 116,
-      "text": [
-        "        (project / \"Cargo.toml\").write_text(",
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(local_crate))} }}\\n\"",
-        "        )",
-        "        (project / \"Cargo.lock\").write_bytes((repo / \"Cargo.lock\").read_bytes())"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 233,
-      "line_end": 238,
-      "text": [
-        "        (project / \"Cargo.toml\").write_text(",
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(next_crate))} }}\\n\"",
-        "        )",
-        "        updated_metadata = subprocess.run("
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 90,
-      "line_end": 96,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup`",
-        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
-        "    let root = project_root()?;",
-        "    let book_path = root.join(\"book.toml\");",
-        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 152,
-      "line_end": 159,
-      "text": [
-        "            .arg(\"habeas\")",
-        "            .arg(\"--manifest-path\")",
-        "            .arg(&manifest_path);",
-        "        if let Some(local_crate) = local_crate {",
-        "            command.arg(\"--path\").arg(fs::canonicalize(local_crate)?);",
-        "        }",
-        "        let output = command.current_dir(&root).output()?;",
-        "        if !output.status.success() {"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 89,
-      "line_end": 91,
-      "text": [
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 112,
-      "line_end": 114,
-      "text": [
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(local_crate))} }}\\n\""
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 234,
-      "line_end": 236,
-      "text": [
-        "            '[package]\\nname = \"habeas-hook-consumer\"\\nversion = \"0.1.0\"\\n'",
-        "            'edition = \"2024\"\\n\\n[dev-dependencies]\\n'",
-        "            f\"habeas = {{ path = {json.dumps(str(next_crate))} }}\\n\""
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 68,
-      "line_end": 74,
-      "text": [
-        "| `src/main.rs:11` `main` | `requirements.cli.mdbook`, `requirements.cli.invocation`, `requirements.cli.setup`, `requirements.cli.agents` |",
-        "| `src/setup.rs:12` `project_root` | `requirements.cli.setup_project`, `requirements.cli.agents` |",
-        "| `src/setup.rs:30` `write_new_or_same` | `requirements.cli.setup`, `requirements.cli.agents` |",
-        "| `src/setup.rs:49` `run` | `requirements.cli.setup`, `requirements.cli.setup_project`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
-        "| `src/agents.rs:22` `run` | `requirements.cli.agents` |",
-        "| `src/agents.rs:28` `install` | `requirements.cli.agents` |",
-        ""
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 105,
-      "line_end": 111,
-      "text": [
-        "| `src/lib.rs:690` `a_longer_colon_fence_contains_a_shorter_nested_directive` | `requirements.ci.span` |",
-        "| `tests/cli.rs:5` `renderer_support_and_invalid_commands` | `requirements.cli.invocation` |",
-        "| `tests/habeas.rs:3` `habeas` | `requirements.integration.self_test` |",
-        "| `tests/setup.rs:46` `setup_and_agents_are_repeatable` | `requirements.cli.setup`, `requirements.cli.agents`, `requirements.cli.setup_css`, `requirements.cli.setup_local_path` |",
-        "| `tests/setup.rs:98` `setup_install_skills_preserves_differing_skill` | `requirements.cli.setup`, `requirements.cli.agents` |",
-        "| `tests/setup.rs:123` `setup_rejects_invalid_book_configuration` | `requirements.cli.setup_project`, `requirements.cli.setup_css` |",
-        ""
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 137,
-      "line_end": 143,
-      "text": [
-        "| `src/main.rs:21` | renderer support and command usage failures | `requirements.cli.invocation` |",
-        "| `src/setup.rs:53` | invalid project source or missing summary | `requirements.cli.setup_project` |",
-        "| `src/setup.rs:90` | existing, missing, or invalid CSS configuration | `requirements.cli.setup_css` |",
-        "| `src/setup.rs:109` | existing dependency or local path addition | `requirements.cli.setup_local_path` |",
-        "| `src/agents.rs:28` | existing identical or differing installed skill | `requirements.cli.agents` |",
-        "",
-        "## Remaining gaps"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 8,
-      "line_end": 14,
-      "text": [
-        "The `mdbook` subcommand MUST act as the mdBook preprocessor for HTML books, rendering requirement definitions and linked reference badges. This project's `book.toml` MUST configure `cargo habeas mdbook` as the `habeas` preprocessor, using a repository-local Cargo alias for `cargo run --release -p habeas --`. Consumer books MUST continue to invoke the installed `habeas mdbook` CLI directly.",
-        ":::",
-        "",
-        ":::{req} setup",
-        "Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas as a dev dependency, configure `habeas mdbook` as its preprocessor, add the badge stylesheet, and create `tests/habeas.rs` that calls `habeas::validate()`. Repeating setup MUST avoid duplicate configuration and MUST NOT overwrite a differing test or stylesheet. Setup MUST NOT install or modify agent skills.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 90,
-      "line_end": 104,
-      "text": [
-        "`habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.",
-        ":::",
-        "",
-        ":::{req} setup_project",
-        "`habeas setup` MUST find an ancestor containing both `Cargo.toml` and `book.toml`, require a nonempty relative mdBook source path without parent components and a `SUMMARY.md` at that path, and report an error when these prerequisites are absent or invalid.",
-        ":::",
-        "",
-        ":::{req} setup_css",
-        "`habeas setup` MUST preserve existing entries in `output.html.additional-css` while adding the Habeas stylesheet at most once. It MUST report an error if `additional-css` is not an array.",
-        ":::",
-        "",
-        ":::{req} setup_local_path",
-        "When given `--path <crate-dir>` and no existing Habeas dev dependency, `habeas setup` MUST add that local crate as the dev dependency. Repeating setup MUST NOT add a duplicate Habeas dependency.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 22,
-      "line_end": 30,
-      "text": [
-        "        .join(\"/\")",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_local_path`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {",
-        "    manifest",
-        "        .get(\"dev-dependencies\")",
-        "        .and_then(Item::as_table_like)"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 50,
-      "line_end": 56,
-      "text": [
-        "    fs::read_to_string(root.join(\"Cargo.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "        .is_some_and(|manifest| has_habeas_dev_dependency(&manifest))",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_project`"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 142,
-      "line_end": 149,
-      "text": [
-        "",
-        "    let manifest_path = root.join(\"Cargo.toml\");",
-        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_local_path`",
-        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);",
-        "    if !has_dev_dependency {",
-        "        let mut command = Command::new(\"cargo\");",
-        "        command"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 184,
-      "line_end": 190,
-      "text": [
-        "        Some(manifest) => manifest,",
-        "        None => return false,",
-        "    };",
-        "    if !has_habeas_dev_dependency(&manifest) {",
-        "        return false;",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 75,
-      "line_end": 81,
-      "text": [
-        "",
-        "// {test}`requirements.cli.setup`",
-        "// {test}`requirements.cli.setup_css`",
-        "// {test}`requirements.cli.setup_local_path`",
-        "#[test]",
-        "fn setup_is_repeatable() {",
-        "    let temp = fixture();"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 1,
-      "line_end": 16,
-      "text": [
-        "use clap::{ArgGroup, Parser, Subcommand};",
-        "use std::error::Error;",
-        "use std::io;",
-        "use std::io::Write;",
-        "use std::path::PathBuf;",
-        "",
-        "mod hook;",
-        "mod setup;",
-        "",
-        "// {impl}`requirements.cli.clap`",
-        "#[derive(Parser)]",
-        "#[command(name = \"habeas\")]",
-        "struct Cli {",
-        "    #[command(subcommand)]",
-        "    command: Command,",
-        "}"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 113,
-      "line_end": 164,
-      "text": [
-        "            command: Some(MdbookCommand::Supports { renderer }),",
-        "        } => {",
-        "            if renderer == \"html\" {",
-        "                Ok(())",
-        "            } else {",
-        "                std::process::exit(1)",
-        "            }",
-        "        }",
-        "        // {impl}`requirements.cli.setup`",
-        "        Command::Setup { path } => setup::run(path.as_deref()),",
-        "        // {impl}`requirements.cli.status`",
-        "        // {impl}`requirements.cli.fixme_summary`",
-        "        Command::Status {",
-        "            all,",
-        "            selection,",
-        "            verbose,",
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?",
-        "                    .as_bytes(),",
-        "            )?;",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.cli.info`",
-        "        Command::Info { selection } => {",
-        "            let root = setup::project_root()?;",
-        "            io::stdout()",
-        "                .lock()",
-        "                .write_all(habeas::info_markdown(&root, &selection)?.as_bytes())?;",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.authoring.invocation`",
-        "        // {impl}`requirements.authoring.batch`",
-        "        // {impl}`requirements.authoring.concurrency`",
-        "        // {impl}`requirements.authoring.reporting`",
-        "        Command::Author {",
-        "            subject,",
-        "            all,",
-        "            config,",
-        "            stdout,",
-        "            verbose,",
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            // Tokio's fixed worker pool is shared by all async assessments.",
-        "            let runtime = tokio::runtime::Runtime::new()?;",
-        "            if all {",
-        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
-        "                    &root,",
-        "                    config.as_deref(),",
-        "                    habeas::authoring::AuthoringOptions { verbose },",
-        "                ))?;"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 209,
-      "line_end": 237,
-      "text": [
-        "            } else {",
-        "                eprintln!(",
-        "                    \"{summary}\\nEvidence: stdout\\nUsage: {}\",",
-        "                    outcome.usage_path.display()",
-        "                );",
-        "            }",
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.integration.symposium_setup_hook`",
-        "        Command::Hook {",
-        "            command: HookCommand::SessionStart,",
-        "        } => hook::session_start(),",
-        "        // {impl}`requirements.cli.add_input`",
-        "        Command::AddInput {",
-        "            for_requirement,",
-        "            for_example,",
-        "            file_range,",
-        "            rust_item,",
-        "            requirements,",
-        "        } => {",
-        "            let root = setup::project_root()?;",
-        "            let target = if let Some(name) = for_requirement {",
-        "                habeas::InputTarget::Requirement(name)",
-        "            } else {",
-        "                habeas::InputTarget::Example(for_example.expect(\"clap requires a target\"))",
-        "            };",
-        "            let mode = if let Some(specification) = file_range {",
-        "                habeas::InputMode::FileRange(specification)",
-        "            } else if let Some(specification) = rust_item {"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 1,
-      "line_end": 90,
-      "text": [
-        "use std::error::Error;",
-        "use std::fs;",
-        "use std::path::{Component, Path, PathBuf};",
-        "use std::process::Command;",
-        "",
-        "use toml_edit::{Array, DocumentMut, Item, value};",
-        "",
-        "const TEST_SOURCE: &str = \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\";",
-        "const BADGE_CSS: &str = include_str!(\"../md/habeas.css\");",
-        "",
-        "// {impl}`requirements.cli.setup_css`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn css_relative(source_path: &Path) -> String {",
-        "    source_path",
-        "        .join(\"habeas.css\")",
-        "        .components()",
-        "        .filter_map(|part| match part {",
-        "            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),",
-        "            _ => None,",
-        "        })",
-        "        .collect::<Vec<_>>()",
-        "        .join(\"/\")",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_local_path`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {",
-        "    manifest",
-        "        .get(\"dev-dependencies\")",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"habeas\"))",
-        "        .is_some()",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_project`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {",
-        "    let table = book",
-        "        .get(\"book\")",
-        "        .map(|item| item.as_table_like().ok_or(\"book must be a table\"))",
-        "        .transpose()?;",
-        "    match table.and_then(|table| table.get(\"src\")) {",
-        "        Some(item) => item.as_str().ok_or(\"book.src must be a string\"),",
-        "        None => Ok(\"src\"),",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {",
-        "    fs::read_to_string(root.join(\"Cargo.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "        .is_some_and(|manifest| has_habeas_dev_dependency(&manifest))",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_project`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {",
-        "    cwd.ancestors()",
-        "        .find(|directory| {",
-        "            directory.join(\"Cargo.toml\").is_file() && directory.join(\"book.toml\").is_file()",
-        "        })",
-        "        .map(Path::to_path_buf)",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_project`",
-        "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {",
-        "    let cwd = std::env::current_dir()?;",
-        "    find_project_root(&cwd)",
-        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup`",
-        "pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {",
-        "    if path.exists() {",
-        "        if fs::read_to_string(path)? != content {",
-        "            return Err(format!(",
-        "                \"{} already exists with different content; review it before running setup again\",",
-        "                path.display()",
-        "            )",
-        "            .into());",
-        "        }",
-        "    } else {",
-        "        if let Some(parent) = path.parent() {",
-        "            fs::create_dir_all(parent)?;",
-        "        }",
-        "        fs::write(path, content)?;",
-        "    }",
-        "    Ok(())",
-        "}"
       ]
     }
   ]

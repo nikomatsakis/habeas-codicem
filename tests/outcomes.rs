@@ -276,9 +276,16 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
         Vec::new(),
     ));
     habeas::preprocess_book(&mut book, temp.path()).unwrap();
-    let index = book.chapters().nth(1).unwrap();
+    let index = book
+        .chapters()
+        .find(|chapter| chapter.name == "Index")
+        .unwrap();
     assert!(index.content.contains("FIXME"));
-    let detail = index
+    // Detail pages are nested under the defining chapter.
+    let detail = book
+        .chapters()
+        .next()
+        .unwrap()
         .sub_items
         .iter()
         .find_map(|item| match item {

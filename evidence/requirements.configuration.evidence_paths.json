@@ -1,7 +1,7 @@
 {
   "requirement": "The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and\n`disallow` MUST be arrays of nonempty literal paths, each naming a file or a\ndirectory subtree. Relative paths MUST resolve from the selected `habeas.toml`\ndirectory; absolute paths MUST be supported. These paths are not glob patterns.\n\nFor authoring reads, a matching disallow MUST reject the path; otherwise a\nmatching allow MUST permit it; otherwise the default source-access rules MUST\napply. Explicit allow MUST override every default, including Git tracking,\nproject containment, generated-evidence exclusion, and automatic generated-output\nrules. Disallow MUST win even when an allow or generated-output rule also matches.\nBoth the requested path and its resolved symlink target MUST be checked for\ndisallow, so an allowed alias cannot expose a disallowed target.\n\nThe same explicit disallow rules and external-path exceptions MUST apply when\nresolving recorded evidence inputs, including ordinary validation and\n`add-input`. Validation MUST remain independent of Git index membership: it\nchecks the recorded inputs' existence and contents. Loading path policy MUST NOT\nresolve credentials or validate unused authoring settings.",
-  "determination": true,
-  "rationale": "**Judgment:** the sources satisfy `requirements.configuration.evidence_paths`. I did not run the code or tests; this is based on reading the marked sources and tests.\n\n**Schema and loading**\n- `config.rs` `EvidenceConfig::validate` rejects empty entries and entries containing NUL, for both `allow` and `disallow`. The error names the offending `evidence.<field>[i]`.\n- `load_workspace_evidence` decodes the `[evidence]` table, validates it, and only detects credentials. It does not resolve credentials or validate the other authoring settings.\n- `tests/configuration.rs` (`evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials`) covers empty strings, non-string entries and unknown keys. It also covers invalid but unused authoring settings being ignored.\n- `tests/commands.rs` (`status_loads_nearest_workspace_file_without_validating_authoring`) and `tests/evidence_boundaries.rs` (`validation_checks_workspace_common_config_without_loading_unused_authoring_settings`) cover the same independence at the CLI and validation level.\n\n**Path resolution**\n- `PathPolicy::load` joins each rule onto the directory of the selected `habeas.toml`. Joining an absolute path replaces the base, so absolute rules are supported.\n- Rules are matched by literal path prefix (`matches_rule`), not as globs. Each rule is checked both as written, with its parent resolved, and fully canonicalized, so symlinked rules are handled.\n\n**Authoring reads**\n- `SourceAccess::path` applies the rules in the required order:\n  1. `check_disallow` first, against both the requested location and the resolved target.\n  2. Explicit allow next, which returns before the credential, generated-evidence, containment and Git-tracking defaults.\n  3. The defaults last.\n- `check_disallow` also checks every traversed ancestor of the request, so a disallowed directory cannot redirect a read through a symlink into an allowed target.\n- `list_files`, `ripgrep` and `has_source_under` apply the same disallow check.\n- `omit_generated_evidence` and `extra_roots` treat generated-output exclusion and allow roots consistently with those rules.\n- Tests:\n  - `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` covers allow overriding the ignored, `evidence/` and external defaults, and a disallowed target behind an allowed symlink alias.\n  - `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees` cover symlink redirection and `..` after a symlink.\n  - The `tools.rs` tests cover ripgrep, list and read through allowed ignored, external and Cargo output paths, and denial of disallowed descendants.\n  - `disallowed_mandatory_inputs_abort_preparation` covers mandatory inputs.\n\n**Recorded evidence and `add-input`**\n- `inputs::check_project_file` calls `resolve_evidence_file`. That function loads the same `PathPolicy`, applies `check_disallow` against the requested path and its target, and permits outside-project paths only through an allow rule or discovered generated roots.\n- It never consults the Git index, so validation stays independent of Git tracking. It checks existence and contents only.\n- `add_input` goes through `read_project_file`, so it shares this path.\n- Tests:\n  - `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` and `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` cover external allow, freshness and disallow.\n  - `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources` covers symlink redirection during validation.\n  - `status_applies_workspace_disallow_to_existing_evidence` covers `status`.\n  - `add_input_external_sources_respect_allow_and_disallow` covers `add-input`.\n\n**Minor observations (not gaps)**\n- `inputs::read_project_file` and `InputSelector::resolve` route through the marked `check_project_file` but carry only `ci.input_containment` marks. They are thin wrappers that add no policy logic.\n- Tests exercise relative rules only from a root-level `habeas.toml`. Resolution from a nested selected `habeas.toml` directory follows from `config.root`, and nearest-file location belongs to `workspace_location`.\n\nThe implementation is complete and marked, the tests cover the main points of the design space, and there are no FIXME-acknowledged gaps.",
+  "determination": false,
+  "rationale": "**Verdict: gaps in {impl} marking. The behaviour and tests look strong.**\n\n**What is implemented and tested**\n- `EvidenceConfig::validate` (src/config.rs:300) rejects empty and NUL-containing `allow`/`disallow` entries. The `EvidenceConfig` struct uses `deny_unknown_fields`.\n- `PathPolicy::load` (src/authoring/access.rs:17) joins each rule onto the directory of the selected `habeas.toml`. Absolute paths work because `join` replaces the base.\n- `SourceAccess::path` checks disallow first, with both the requested path and the symlink-resolved target. A matching allow then overrides credentials, generated-evidence exclusion, project containment and Git tracking. The default rules apply only after that.\n- `check_disallow` also checks every traversed ancestor location, so a disallowed directory cannot redirect a read into an allowed target.\n- `resolve_evidence_file` (access.rs:421) applies the same disallow and external-path rules to recorded inputs. `check_project_file` calls it on the validation and `add-input` paths. It does no Git-index check.\n- `load_workspace_evidence` only detects whether credential keys are present. It does not resolve them or validate unused authoring settings.\n- Tests cover:\n  - allow overriding defaults and disallow winning, including alias targets;\n  - disallowed-ancestor symlink redirection;\n  - symlinks before `..` components;\n  - external absolute allow/disallow for `add-input`, `status` and `validate_repository`;\n  - freshness of externally allowed inputs;\n  - generated Cargo output with disallow;\n  - credentials excluded unless allowed;\n  - malformed `[evidence]` entries (empty string, non-string element, unknown key);\n  - unused authoring settings ignored.\n\n**Gaps**\n1. The `EvidenceConfig` struct (src/config.rs:46–52) has no `{impl}` reference. It is what actually defines the `[evidence]` table and its `allow`/`disallow` array shape, which the \"MUST serialize EvidenceConfig\" obligation is about. Only the `validate` method is marked. The `WorkspaceConfig.evidence` field and `WorkspaceEvidenceConfig` are also unmarked.\n2. `InputSelector::resolve` (src/inputs.rs:120) is where recorded and `add-input` selectors reach the policy. It is not marked for this requirement. `read_project_file` (inputs.rs:244) is where path policy gates every file read, and it carries only `requirements.ci.input_containment`. Both are thin delegators to the marked `check_project_file`, but they are part of the \"same disallow rules apply when resolving recorded evidence inputs\" path.\n3. The `load_workspace_evidence` call sites in `validate_repository` (src/evidence.rs:146) and src/main.rs:101 take part in \"loading path policy\" for validation. They do not cite this requirement.\n4. Tests only exercise a `habeas.toml` at the project root. The relative-to-`habeas.toml`-directory rule is not tested with a nested or ancestor config.\n\nNo FIXME acknowledges these gaps, so the result is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.configuration.evidence_paths",
@@ -666,6 +666,8 @@
         "// {impl}`requirements.ci.authoring_inputs`",
         "// {impl}`requirements.configuration.evidence_paths`",
         "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
         "fn source_input(",
         "    root: &Path,",
         "    access: &SourceAccess,",
@@ -764,7 +766,7 @@
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
         "        }),",
         "        json!({",
-        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\",",
+        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. An :impl: or :test: anchor on a definition names a complete file and is reported with line null. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\",",
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"selection\":{\"type\":\"string\"}},\"additionalProperties\":false}",
         "        }),",
         "    ]",
@@ -1278,6 +1280,7 @@
         "// {impl}`requirements.configuration.evidence_paths`",
         "// {impl}`requirements.configuration.loading`",
         "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.deterministic_validation`",
         "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
         "    let Some((path, table)) = workspace_document(root)? else {",
         "        return Ok(None);",
@@ -1377,6 +1380,7 @@
         "// {impl}`requirements.ci.inputs`",
         "// {impl}`requirements.ci.input_containment`",
         "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.ci.diagnostics`",
         "fn validate_input_lines(",
         "    root: &Path,",
         "    file: &str,",
@@ -1700,7 +1704,13 @@
         "    for directory in [\"private\", \"public\", \"sub\"] {",
         "        fs::create_dir(root.join(directory)).unwrap();",
         "    }",
-        "    fs::write(root.join(\"public/source.rs\"), \"pub struct Source;\\n\").unwrap();",
+        "    // Every struct needs a reference under rust_item_coverage.",
+        "    let cite = [\"// {\", \"cite}`rules.ready`\"].concat();",
+        "    fs::write(",
+        "        root.join(\"public/source.rs\"),",
+        "        format!(\"{cite}\\npub struct Source;\\n\"),",
+        "    )",
+        "    .unwrap();",
         "    std::os::unix::fs::symlink(\"../public\", root.join(\"private/link\")).unwrap();",
         "    fs::write(",
         "        root.join(\"habeas.toml\"),",
@@ -1713,8 +1723,8 @@
         "        \"sub/../private/link/source.rs\",",
         "    ] {",
         "        for input in [",
-        "            json!({\"file\":file, \"line_start\":1, \"line_end\":1, \"text\":[\"pub struct Source;\"]}),",
-        "            json!({\"rust_file\":file, \"rust_item\":\"struct[Source]\", \"text\":[\"pub struct Source;\"]}),",
+        "            json!({\"file\":file, \"line_start\":2, \"line_end\":2, \"text\":[\"pub struct Source;\"]}),",
+        "            json!({\"rust_file\":file, \"rust_item\":\"struct[Source]\", \"text\":[cite, \"pub struct Source;\"]}),",
         "        ] {",
         "            write_inputs(&root, vec![input]);",
         "            let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
@@ -1833,20 +1843,9 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "line_start": 7,
+      "line_start": 18,
       "line_end": 24,
       "text": [
-        "use super::inputs::generated_evidence_path;",
-        "",
-        "#[derive(Default)]",
-        "pub(crate) struct PathPolicy {",
-        "    allow: Vec<PathBuf>,",
-        "    disallow: Vec<PathBuf>,",
-        "    credential_file: Option<PathBuf>,",
-        "}",
-        "",
-        "impl PathPolicy {",
-        "    // {impl}`requirements.configuration.evidence_paths`",
         "    // {impl}`requirements.configuration.workspace_location`",
         "    // {impl}`requirements.authoring.credentials`",
         "    pub(crate) fn load(root: &Path) -> io::Result<Self> {",
@@ -1854,20 +1853,6 @@
         "            return Ok(Self::default());",
         "        };",
         "        Ok(Self {"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 85,
-      "line_end": 91,
-      "text": [
-        "",
-        "pub(crate) struct SourceAccess {",
-        "    tracked: Option<BTreeSet<PathBuf>>,",
-        "    policy: PathPolicy,",
-        "    generated: Vec<PathBuf>,",
-        "}",
-        ""
       ]
     },
     {
@@ -1903,72 +1888,9 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "line_start": 471,
-      "line_end": 477,
-      "text": [
-        "        git(parent.path(), &[\"init\", \"--quiet\"]);",
-        "        git(parent.path(), &[\"add\", \".\"]);",
-        "        let root = fs::canonicalize(root).unwrap();",
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        assert!(access.file(&root, Path::new(\"./inside.txt\")).is_ok());",
-        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());",
-        "        assert!(access.file(&root, Path::new(\"outside.txt\")).is_err());"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 485,
-      "line_end": 491,
-      "text": [
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \".\"]);",
-        "        fs::write(root.path().join(\".git/index\"), \"invalid index\\n\").unwrap();",
-        "        let error = SourceAccess::load(root.path()).err().unwrap();",
-        "        assert!(",
-        "            error.to_string().contains(\"cannot read Git index\"),",
-        "            \"{error}\""
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 501,
-      "line_end": 507,
-      "text": [
-        "        fs::create_dir(&root).unwrap();",
-        "        fs::write(root.join(\"source.txt\"), \"source\\n\").unwrap();",
-        "        let root = fs::canonicalize(root).unwrap();",
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        assert!(access.tracked.is_none());",
-        "        assert!(access.file(&root, Path::new(\"source.txt\")).is_ok());",
-        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 513,
-      "line_end": 519,
-      "text": [
-        "        let root = tempfile::tempdir().unwrap();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        fs::write(root.path().join(\".git/config\"), \"[invalid config\\n\").unwrap();",
-        "        let error = SourceAccess::load(root.path()).err().unwrap();",
-        "        assert!(",
-        "            error.to_string().contains(\"cannot discover Git worktree\"),",
-        "            \"{error}\""
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 540,
+      "line_start": 547,
       "line_end": 559,
       "text": [
-        "            \"version = 1\\n[evidence]\\nallow = ['generated', 'evidence', {external_toml}]\\ndisallow = ['generated/private']\\n\"",
-        "        )).unwrap();",
-        "        let root = fs::canonicalize(root.path()).unwrap();",
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        for path in [",
-        "            root.join(\"generated/ok.txt\"),",
-        "            root.join(\"evidence/old.txt\"),",
         "            external.path().join(\"outside.txt\"),",
         "        ] {",
         "            assert!(access.file(&root, &path).is_ok(), \"{}\", path.display());",
@@ -1986,76 +1908,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "line_start": 577,
-      "line_end": 583,
-      "text": [
-        "        let root = tempfile::tempdir().unwrap();",
-        "        let config = \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'fixture'\\napi_key = 'TEST_KEY'\\n\";",
-        "        fs::write(root.path().join(\"habeas.toml\"), config).unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        let error = access",
-        "            .file(root.path(), Path::new(\"habeas.toml\"))",
-        "            .unwrap_err();"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 589,
-      "line_end": 595,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        assert!(",
-        "            SourceAccess::load(root.path())",
-        "                .unwrap()",
-        "                .file(root.path(), Path::new(\"habeas.toml\"))",
-        "                .is_ok()"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 614,
-      "line_end": 620,
-      "text": [
-        "            \"version = 1\\n[evidence]\\nallow = ['public']\\ndisallow = ['private']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        assert!(",
-        "            access",
-        "                .file(root.path(), Path::new(\"public/file.txt\"))"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 683,
-      "line_end": 689,
-      "text": [
-        "            \"version = 1\\n[evidence]\\nallow = ['alias/../private']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        assert!(",
-        "            access",
-        "                .file(root.path(), Path::new(\"actual/private/file.txt\"))"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 706,
-      "line_end": 712,
-      "text": [
-        "            \"version = 1\\n[evidence]\\nallow = ['.']\\ndisallow = ['alias/../private']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        for denied in [\"actual/private/file.txt\", \"alias/../private/file.txt\"] {",
-        "            assert_eq!(",
-        "                access"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
       "line_start": 715,
       "line_end": 721,
       "text": [
@@ -2069,55 +1921,13 @@
       ]
     },
     {
-      "file": "src/authoring/access.rs",
-      "line_start": 727,
-      "line_end": 733,
-      "text": [
-        "            \"version = 1\\n[evidence]\\nallow = ['actual/private']\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        assert_eq!(",
-        "            access",
-        "                .file("
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 747,
-      "line_end": 753,
-      "text": [
-        "    fn inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads() {",
-        "        if let Some(root) = std::env::var_os(\"HABEAS_TEST_OUT_DIR_PROBE_ROOT\") {",
-        "            let root = PathBuf::from(root);",
-        "            let access = SourceAccess::load(&root).unwrap();",
-        "            assert!(access.generated.is_empty());",
-        "            assert!(access.file(&root, Path::new(\"tracked.txt\")).is_ok());",
-        "            let inherited = PathBuf::from(std::env::var_os(\"OUT_DIR\").unwrap());"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 46,
-      "line_end": 52,
-      "text": [
-        "    // {impl}`requirements.authoring.read_denial`",
-        "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {",
-        "        let root = fs::canonicalize(root)?;",
-        "        let access = SourceAccess::load(&root)?;",
-        "        let definitions = load_definitions(&root)?;",
-        "        let subject = definitions",
-        "            .get(subject_name)"
-      ]
-    },
-    {
       "file": "src/config.rs",
-      "line_start": 655,
-      "line_end": 661,
+      "line_start": 660,
+      "line_end": 666,
       "text": [
-        "// {impl}`requirements.configuration.evidence_paths`",
         "// {impl}`requirements.configuration.loading`",
         "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.deterministic_validation`",
         "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
         "    let Some((path, table)) = workspace_document(root)? else {",
         "        return Ok(None);",
@@ -2126,8 +1936,8 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 103,
-      "line_end": 109,
+      "line_start": 143,
+      "line_end": 149,
       "text": [
         "        total: None,",
         "    });",
@@ -2140,8 +1950,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 179,
-      "line_end": 185,
+      "line_start": 183,
+      "line_end": 189,
       "text": [
         "                    .get(definition)",
         "                    .filter(|d| d.kind == crate::DefinitionKind::Term)",
@@ -2154,8 +1964,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 202,
-      "line_end": 208,
+      "line_start": 206,
+      "line_end": 212,
       "text": [
         "                    {",
         "                        continue;",
@@ -2168,8 +1978,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "line_start": 232,
-      "line_end": 244,
+      "line_start": 236,
+      "line_end": 248,
       "text": [
         "",
         "// {impl}`requirements.ci.input_containment`",
@@ -2201,10 +2011,172 @@
       ]
     },
     {
+      "file": "src/config.rs",
+      "line_start": 36,
+      "line_end": 75,
+      "text": [
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct WorkspaceAuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub default: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub configs: BTreeMap<String, AuthoringConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct EvidenceConfig {",
+        "    #[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+        "    pub allow: Vec<PathBuf>,",
+        "    #[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+        "    pub disallow: Vec<PathBuf>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug)]",
+        "pub struct LoadedWorkspaceConfig {",
+        "    pub path: PathBuf,",
+        "    pub root: PathBuf,",
+        "    pub config: WorkspaceConfig,",
+        "}",
+        "",
+        "#[derive(Clone, Debug)]",
+        "pub struct WorkspaceEvidenceConfig {",
+        "    pub path: PathBuf,",
+        "    pub root: PathBuf,",
+        "    pub evidence: EvidenceConfig,",
+        "    pub contains_credentials: bool,",
+        "}",
+        "",
+        "/// A user-supplied credential value. Serialization preserves it; diagnostics do not.",
+        "#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(transparent)]",
+        "pub struct SecretString(String);",
+        "",
+        "impl SecretString {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 683,
+      "line_end": 707,
+      "text": [
+        "        root: path",
+        "            .parent()",
+        "            .expect(\"configuration has a parent\")",
+        "            .to_owned(),",
+        "        path,",
+        "        evidence,",
+        "        contains_credentials,",
+        "    }))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.loading`",
+        "fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let start = std::env::current_dir()",
+        "        .and_then(fs::canonicalize)",
+        "        .ok()",
+        "        .filter(|cwd| cwd.starts_with(&root))",
+        "        .unwrap_or(root);",
+        "    for directory in start.ancestors() {",
+        "        let path = directory.join(\"habeas.toml\");",
+        "        match fs::symlink_metadata(&path) {",
+        "            Ok(_) => {",
+        "                let text = fs::read_to_string(&path).map_err(|error| {",
+        "                    io::Error::new(error.kind(), format!(\"{}: {error}\", path.display()))"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 32,
+      "line_end": 36,
+      "text": [
+        "    pub authoring: Option<WorkspaceAuthoringConfig>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub evidence: Option<EvidenceConfig>,",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 46,
+      "line_end": 50,
+      "text": [
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct EvidenceConfig {",
+        "    #[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+        "    pub allow: Vec<PathBuf>,"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 61,
+      "line_end": 68,
+      "text": [
+        "",
+        "#[derive(Clone, Debug)]",
+        "pub struct WorkspaceEvidenceConfig {",
+        "    pub path: PathBuf,",
+        "    pub root: PathBuf,",
+        "    pub evidence: EvidenceConfig,",
+        "    pub contains_credentials: bool,",
+        "}"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 296,
+      "line_end": 300,
+      "text": [
+        "}",
+        "",
+        "impl EvidenceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.evidence_paths`"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 661,
+      "line_end": 669,
+      "text": [
+        "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.deterministic_validation`",
+        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
+        "    let Some((path, table)) = workspace_document(root)? else {",
+        "        return Ok(None);",
+        "    };",
+        "    let evidence: EvidenceConfig = table",
+        "        .get(\"evidence\")",
+        "        .map(|value| decode(value.clone(), &path, \"evidence\"))"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 680,
+      "line_end": 684,
+      "text": [
+        "            })",
+        "        });",
+        "    Ok(Some(WorkspaceEvidenceConfig {",
+        "        root: path",
+        "            .parent()"
+      ]
+    },
+    {
       "file": "src/inputs.rs",
       "line_start": 120,
-      "line_end": 232,
+      "line_end": 257,
       "text": [
+        "    pub(crate) fn resolve(",
+        "        &self,",
+        "        root: &Path,",
+        "        definitions: &BTreeMap<String, Declaration>,",
         "    ) -> Result<ResolvedInput, String> {",
         "        match self {",
         "            Self::FileRange {",
@@ -2317,81 +2289,109 @@
         "        }",
         "    }",
         "}",
+        "",
+        "// {impl}`requirements.ci.input_containment`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
+        "    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())",
+        "}",
+        "",
+        "// {impl}`requirements.ci.input_containment`",
+        "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
+        "    let path = check_project_file(root, file)?;",
+        "    let content =",
+        "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;",
+        "    Ok((path, content))",
+        "}",
+        "",
+        "// {impl}`requirements.ci.inputs`",
+        "fn raw_lines(content: &str) -> Vec<String> {",
+        "    content",
+        "        .lines()",
+        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
+        "        .collect()",
+        "}"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 1,
+      "line_end": 46,
+      "text": [
+        "//! Saved configuration and resolution for evidence authoring.",
+        "",
+        "use std::collections::BTreeMap;",
+        "use std::ffi::OsString;",
+        "use std::fmt;",
+        "use std::fs;",
+        "use std::io;",
+        "use std::num::NonZeroUsize;",
+        "use std::path::{Component, Path, PathBuf};",
+        "",
+        "use serde::{Deserialize, Serialize, de::DeserializeOwned};",
+        "",
+        "const CONFIG_EXAMPLES: &str = \"see md/requirements/authoring.md#editing-the-file\";",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct UserConfig {",
+        "    pub version: u32,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub authoring: Option<UserAuthoringConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct ProjectConfig {}",
+        "",
+        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct WorkspaceConfig {",
+        "    pub version: u32,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub authoring: Option<WorkspaceAuthoringConfig>,",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub evidence: Option<EvidenceConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct WorkspaceAuthoringConfig {",
+        "    #[serde(default, skip_serializing_if = \"Option::is_none\")]",
+        "    pub default: Option<String>,",
+        "    #[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]",
+        "    pub configs: BTreeMap<String, AuthoringConfig>,",
+        "}",
+        "",
+        "#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 377,
+      "line_end": 383,
+      "text": [
+        ":::",
+        "```",
+        "",
+        "For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`",
+        "",
+        "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
         ""
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 80,
-      "line_end": 112,
+      "file": "md/requirements/references.md",
+      "line_start": 43,
+      "line_end": 49,
       "text": [
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {",
-        "    inspect_repository_with_progress(root, |_| {})",
-        "}",
+        "For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
+        ":::",
         "",
-        "// {impl}`requirements.integration.report_api`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.authoring.progress`",
-        "// {impl}`requirements.ci.errors`",
-        "// {impl}`requirements.ci.diagnostics`",
-        "// {impl}`requirements.examples.evidence`",
-        "// {impl}`requirements.configuration.workspace_location`",
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "// {impl}`requirements.configuration.loading`",
-        "pub(crate) fn inspect_repository_with_progress(",
-        "    root: &Path,",
-        "    mut progress: impl FnMut(InspectionProgress),",
-        ") -> io::Result<RepositoryInspection> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    progress(InspectionProgress {",
-        "        stage: \"discovering requirements\",",
-        "        completed: 0,",
-        "        total: None,",
-        "    });",
-        "    let mut errors = Vec::new();",
-        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
-        "        errors.push(error.to_string());",
-        "    }",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
-        "    let mut discovery_errors = errors.clone();",
-        "    let evidence_root = root.join(\"evidence\");"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 80,
-      "line_end": 106,
-      "text": [
-        "enum MdbookCommand {",
-        "    Supports { renderer: String },",
-        "}",
-        "",
-        "#[derive(Subcommand)]",
-        "enum HookCommand {",
-        "    SessionStart,",
-        "}",
-        "",
-        "fn main() -> Result<(), Box<dyn Error>> {",
-        "    // {impl}`requirements.cli.clap`",
-        "    let cli = Cli::parse();",
-        "    // {impl}`requirements.configuration.workspace_location`",
-        "    // {impl}`requirements.configuration.workspace_structure`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    if !matches!(",
-        "        cli.command,",
-        "        Command::Mdbook {",
-        "            command: Some(MdbookCommand::Supports { .. })",
-        "        }",
-        "    ) {",
-        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
-        "    }",
-        "    match cli.command {",
-        "        // {impl}`requirements.cli.mdbook`",
-        "        Command::Mdbook { command: None } => {",
-        "            let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;"
+        ":::{req} rust_item_coverage",
+        "During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. A comment immediately preceding an item's declaration or its attributes is attached to that item. A comment within an item's body, including one before a field, variant, or attribute inside it, belongs to the smallest enclosing item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
+        ":::",
+        ""
       ]
     }
   ]

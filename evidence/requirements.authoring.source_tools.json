@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `habeas` tool accepting exactly one of these request\nforms. Each form MUST correspond to one existing evidence-input kind:\n\n| Request fields | Evidence input returned | Definition |\n| --- | --- | --- |\n| `file: String`, `line_start: Integer`, optional `line_end: Integer` | File-range input | {cite}`requirements.ci.inputs` |\n| `rust_file: String`, `rust_item: String` | Rust-item input | {cite}`requirements.ci.rust_item_inputs` |\n| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |\n| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |\n\nRust file and selector arguments MUST use the syntax defined by\n{cite}`requirements.references.rust_item_selectors`. Reads MUST use the current\nproject working tree, including unstaged changes to tracked files and staged new\nfiles. By default, source inputs MUST stay within the project root after\nresolving symlinks; in a Git worktree, both the requested file and its resolved\ntarget MUST be present in the Git index. Projects outside Git MUST use the same\ncontainment rules without requiring an index. Failure to read an existing\nrepository's index MUST be reported as an error.\nThe project-root `evidence/` directory and an active workspace configuration\ncontaining literal credentials MUST be excluded from model reads by default,\nincluding symlink aliases. Generated build outputs MUST follow\n{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST\nfollow {cite}`requirements.configuration.evidence_paths`, including explicit\npermission for otherwise excluded inputs. A denied mandatory input or explicit\nread MUST abort under {cite}`requirements.authoring.read_denial`.\n\nFile line numbers MUST be one-based and inclusive. Omitting `line_end` MUST read\nthrough EOF; the returned evidence input MUST contain the actual numeric ending\nline. The model-facing tool description MUST include the argument conventions\nfrom the cited requirements, including Rust selector syntax, definition\nselections, and full definition names, with a short request example for each form.\n\nA successful call MUST return the requested evidence input, populated by the\nharness with the selected source text, using the existing evidence schema.\n{cite}`requirements.ci.schema`\nRequired terminology dependencies MUST be returned alongside it as additional\ndefinition inputs under {cite}`requirements.definitions.authoring_inputs`.\nThe result MUST have this shape:\n\n```text\nHabeasResult {\n    input: EvidenceInput,\n    definitions: Array<DefinitionInput>,\n}\n```\n\n`definitions` MUST be empty when no additional terminology is required. The\nharness MUST record inputs supplied to the model in the assessment's evidence.\nA failed read MUST add no evidence input. Access-policy denials MUST abort;\nother failed reads MUST return an explanatory tool error.",
-  "determination": true,
-  "rationale": "**Verdict:** the `habeas` tool is implemented and marked `{impl}` as the requirement states, and the tests cover the main design points. The one thin spot is that nothing asserts the tool description text.\n\n**Implementation**\n- **Tool definition:** `src/authoring/tools.rs` `definitions()` exposes `habeas`. The schema has the optional `file`, `line_start`, `line_end`, `rust_file`, `rust_item`, `requirements` and `definition` fields, with `additionalProperties:false`.\n- **Description text:** it names the four forms and says to supply exactly one. It gives a short example for the file, Rust-item, requirements and definition forms. It also states the Rust selector syntax (`kind[name]`, `/`, `#N`, `impl[Thing/Trait]`, `use#1`, percent-encoding) and the definition-selection globs. It documents the 1-based inclusive line numbers, the omitted-`line_end` behaviour, the default exclusions, the allow/disallow rules, and that denied reads abort the assessment.\n- **Request forms:** `read()` maps each form to an `InputSelector` and calls `check_keys` to reject mixed or unknown fields. Missing or invalid arguments return recoverable tool errors.\n- **Omitted `line_end`:** it is resolved to the actual line count, so the returned input carries a numeric ending line.\n- **Result shape:** `{ \"input\": …, \"definitions\": […] }`. The input is the first recorded delivery and the additional terminology definitions follow it.\n- **Failed reads:** a failed read returns an error before any delivery is built, so nothing is added to the evidence. `assess()` records inputs only from successful deliveries.\n- **Denials:** `PermissionDenied` aborts the assessment in `assess()`. Other errors are returned to the model as tool errors.\n- **Access policy** (`src/authoring/access.rs`):\n  - `SourceAccess::path` and `file` enforce containment after symlink resolution, and both the requested path and its target must be in the Git index.\n  - They also enforce disallow-wins and allow-overrides, exclusion of `evidence/`, and the credentials exclusion.\n  - Cargo build-script output directories are permitted via `generated_roots`, which ignores the inherited `OUT_DIR`.\n  - `tracked_sources` reports a failure to read an existing repository's index as an error. The working tree is read, so dirty and staged files work.\n\n**Tests**\n- `reading_records_only_delivered_sources_and_their_terms` covers:\n  - Rust-item, file (including the omitted-`line_end` EOF case), requirements and definition reads.\n  - Rejection of incomplete, mixed and extra-field requests, and rejection of `line_start` 0.\n  - The `input`/`definitions` result shape.\n- The Git tests cover staged, dirty and untracked files, symlink aliases and targets, a nested project, an ancestor `.git` directory, an unreadable index and an invalid Git config. They also check the `git add` hint.\n- The tests also cover:\n  - Generated `evidence/` exclusion, including through symlink aliases.\n  - Outside-project symlinks.\n  - Allow/disallow semantics, including alias and ancestor redirection.\n  - External absolute paths.\n  - Credentials exclusion and the explicit allow override.\n  - Cargo output discovery without building, the ignored inherited `OUT_DIR`, and disallow overriding it.\n- `tests/authoring_cli.rs` checks that an explicit untracked read aborts the assessment, with no further request and no evidence written. `bedrock_cli_uses_selected_profile_region_and_converse_tools` checks the `habeas` schema fields and a successful read. The live test checks an end-to-end read.\n\n**Residual observations**\n- No test asserts the text of the tool description. It is static text in the source and was verified by inspection.\n- I found no other code that implements this requirement without an `{impl}` marker. The helpers I checked (`check_disallow`, `allowed`, `extra_roots`, `requested_location`, `generated_roots`, `resolve_evidence_file`, `record_inputs`) carry markers for the requirements they serve.\n- I found no unspecified behaviour in the `{impl}` code that another definition does not cover. The `list_files`, `ripgrep` and `references` behaviours are covered by their own requirements.\n- There are no FIXME markers.",
+  "determination": false,
+  "rationale": "**Verdict:** the implementation looks complete and well tested, with one gap. No test checks the `habeas` tool description, which the requirement explicitly mandates.\n\n**Implementation: complete and correctly marked**\n- `src/authoring/tools.rs` `fn[definitions]` registers a single `habeas` tool whose schema has the optional fields `file`, `line_start`, `line_end`, `rust_file`, `rust_item`, `requirements`, `definition` and sets `additionalProperties: false`.\n- `fn[read]` enforces exactly one form:\n  - It picks the form by key.\n  - `check_keys` rejects any extra or mixed keys.\n  - Missing required fields fail in `string` or `integer`.\n  - When `line_end` is omitted, `read` computes the actual numeric last line from the file, so the returned input carries a numeric `line_end`.\n- `fn[read]` returns `{input, definitions}`. `additional_definitions` in `inputs.rs` supplies terminology, deduplicated against already-supplied and recorded inputs. `definitions` is empty when nothing more is needed.\n- Reads go through `SourceAccess::path` and `file` in `access.rs`:\n  - Symlinks are resolved.\n  - Both the requested path and its resolved target must be in the Git index when the project is a Git worktree.\n  - Containment is enforced for non-Git projects without needing an index.\n  - `tracked_sources` reports an unreadable index or Git config as an error instead of falling back.\n  - Generated `evidence/` output and a credential-bearing `habeas.toml` are excluded, including through symlink aliases.\n  - Cargo build-script output directories are allowed.\n  - Workspace allow and disallow rules apply, and disallow wins.\n- Denials are returned as `PermissionDenied`. `assess` in `mod.rs` aborts on that error instead of returning it to the model. Other failures become recoverable tool errors, and inputs are recorded only after a successful delivery.\n- The description in `definitions()` includes the argument conventions and a short example for each of the four forms:\n  - the file example `{\"file\":\"src/lib.rs\",\"line_start\":1}`;\n  - the Rust example `impl[Thing]/fn[run]`, with `#N`, `use#1`, and the percent-encoding rules;\n  - the `requirements.cli.*` glob example;\n  - the `glossary.command` definition example.\n\n**Tests: good coverage of behaviour**\n- `reading_records_only_delivered_sources_and_their_terms` covers:\n  - the Rust-item, EOF file-range, requirements and definition forms;\n  - rejection of incomplete, mixed and unknown request forms;\n  - the `line_start` of 0 rejection;\n  - terminology returned alongside the input and recorded only once.\n- The `access.rs` tests cover:\n  - nested Git projects;\n  - an unreadable index;\n  - an ancestor-only `.git` directory;\n  - an invalid Git config;\n  - allow and disallow overrides, including alias targets;\n  - credential exclusion;\n  - symlink and `..` handling;\n  - an inherited `OUT_DIR` being ignored.\n- The `tools.rs` tests cover:\n  - staged, dirty and untracked files;\n  - alias and target tracking;\n  - generated `evidence/` exclusion;\n  - outside symlinks;\n  - external allowed paths;\n  - Cargo output discovery and disallow.\n- `tests/authoring_cli.rs` covers abort on denied reads. The Bedrock test covers the tool names and schema. The live Bedrock test exercises the tools against a real provider.\n\n**Gap**\n- The requirement says the model-facing tool description MUST include the argument conventions, with a short request example for each form.\n- That text is a hand-written string literal in `definitions()`. I searched `src` and `tests` and found no test that asserts any of its content: the examples, the Rust selector syntax, the glob and full-name conventions, or the `habeas.toml` notes.\n- The Bedrock CLI test checks only the JSON schema types, `additionalProperties` and the tool names.\n- A regression that drops or garbles the description would go undetected.\n- The check would be simple and cheap, so the absence is not justified by impracticality.\n- No `FIXME` or issue reference in the sources acknowledges this gap.",
   "inputs": [
     {
       "requirements": "requirements.authoring.source_tools",
@@ -865,6 +865,7 @@
         "    // {impl}`requirements.ci.authoring_inputs`",
         "    // {impl}`requirements.authoring.source_tools`",
         "    // {impl}`requirements.authoring.read_denial`",
+        "    // {impl}`requirements.references.anchors`",
         "    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {",
         "        let root = fs::canonicalize(root)?;",
         "        let access = SourceAccess::load(&root)?;",
@@ -923,6 +924,29 @@
         "                &mut selectors,",
         "                reference_selector(&root, &definitions, reference)?,",
         "            );",
+        "        }",
+        "",
+        "        // {impl}`requirements.references.anchors`",
+        "        for anchor in &subject.anchors {",
+        "            let selector = access",
+        "                .file(&root, Path::new(&anchor.file))",
+        "                .and_then(|_| {",
+        "                    anchor",
+        "                        .complete_file(&root)",
+        "                        .map(|(_, line_count)| anchor.selector(line_count))",
+        "                        .map_err(io::Error::other)",
+        "                })",
+        "                .map_err(|error| {",
+        "                    io::Error::new(",
+        "                        error.kind(),",
+        "                        format!(",
+        "                            \"{subject_name}: cannot read :{}: anchor {}: {error}\",",
+        "                            anchor.kind.label(),",
+        "                            anchor.file",
+        "                        ),",
+        "                    )",
+        "                })?;",
+        "            insert_selector(&mut selectors, selector);",
         "        }",
         "",
         "        // Existing evidence only decides whether to reassess; its inputs are",
@@ -1038,6 +1062,8 @@
         "// {impl}`requirements.ci.authoring_inputs`",
         "// {impl}`requirements.configuration.evidence_paths`",
         "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.definitions.selection`",
+        "// {impl}`requirements.references.definition_globs`",
         "fn source_input(",
         "    root: &Path,",
         "    access: &SourceAccess,",
@@ -1166,6 +1192,7 @@
         "// {impl}`requirements.authoring.source_tools`",
         "// {impl}`requirements.authoring.file_discovery`",
         "// {impl}`requirements.authoring.text_search`",
+        "// {impl}`requirements.ci.authoring_inputs`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -1311,7 +1338,7 @@
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
         "        }),",
         "        json!({",
-        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\",",
+        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. An :impl: or :test: anchor on a definition names a complete file and is reported with line null. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\",",
         "            \"parameters\":{\"type\":\"object\",\"properties\":{\"selection\":{\"type\":\"string\"}},\"additionalProperties\":false}",
         "        }),",
         "    ]",
@@ -2648,171 +2675,10 @@
       ]
     },
     {
-      "file": "src/authoring/access.rs",
-      "line_start": 36,
-      "line_end": 56,
-      "text": [
-        "                .collect(),",
-        "            credential_file: config.contains_credentials.then_some(config.path),",
-        "        })",
-        "    }",
-        "",
-        "    // {impl}`requirements.configuration.evidence_paths`",
-        "    pub(crate) fn allowed(&self, requested: &Path, target: &Path) -> bool {",
-        "        self.allow",
-        "            .iter()",
-        "            .any(|rule| matches_rule(rule, requested, target))",
-        "    }",
-        "",
-        "    // {impl}`requirements.configuration.evidence_paths`",
-        "    // {impl}`requirements.authoring.read_denial`",
-        "    pub(crate) fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {",
-        "        if self.disallow.is_empty() {",
-        "            return Ok(());",
-        "        }",
-        "        // Retain locations traversed before a symlink redirects the request. Resolving",
-        "        // each parent also preserves filesystem semantics for subsequent `..`.",
-        "        let locations: Vec<_> = requested"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 211,
-      "line_end": 223,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.generated_inputs`",
-        "    // {impl}`requirements.configuration.evidence_paths`",
-        "    // {impl}`requirements.authoring.file_discovery`",
-        "    // {impl}`requirements.authoring.text_search`",
-        "    pub(crate) fn extra_roots(&self) -> impl Iterator<Item = &PathBuf> {",
-        "        self.policy.allow.iter().chain(self.generated.iter())",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "fn matches_rule(rule: &Path, requested: &Path, target: &Path) -> bool {"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 226,
-      "line_end": 247,
-      "text": [
-        "        || fs::canonicalize(rule)",
-        "            .is_ok_and(|rule| requested.starts_with(&rule) || target.starts_with(rule))",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.ci.input_containment`",
-        "fn requested_location(path: &Path) -> io::Result<PathBuf> {",
-        "    match (path.parent(), path.components().next_back()) {",
-        "        (Some(parent), Some(Component::Normal(name))) => Ok(fs::canonicalize(parent)?.join(name)),",
-        "        _ => fs::canonicalize(path),",
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.ci.input_containment`",
-        "pub(crate) fn normalize(path: &Path) -> PathBuf {",
-        "    let mut normalized = PathBuf::new();",
-        "    for component in path.components() {",
-        "        match component {",
-        "            Component::CurDir => {}",
-        "            Component::ParentDir => {",
-        "                normalized.pop();"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 250,
-      "line_end": 262,
-      "text": [
-        "        }",
-        "    }",
-        "    normalized",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.read_denial`",
-        "fn denied(message: impl Into<String>) -> io::Error {",
-        "    io::Error::new(io::ErrorKind::PermissionDenied, message.into())",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 345,
-      "line_end": 357,
-      "text": [
-        "        })",
-        "        .collect::<io::Result<_>>()?;",
-        "    Ok(Some(tracked))",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.generated_inputs`",
-        "pub(crate) fn generated_roots(root: &Path) -> Vec<PathBuf> {",
-        "    let Ok(output) = Command::new(\"cargo\")",
-        "        .current_dir(root)",
-        "        .args([",
-        "            \"metadata\",",
-        "            \"--offline\",",
-        "            \"--locked\","
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 418,
-      "line_end": 430,
-      "text": [
-        "    roots.into_iter().collect()",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "// {impl}`requirements.ci.input_containment`",
-        "// {impl}`requirements.authoring.generated_inputs`",
-        "pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let (requested, target) = resolve(&root, Path::new(file))?;",
-        "    let policy = PathPolicy::load(&root)?;",
-        "    policy.check_disallow(&root.join(file), &target)?;",
-        "    if (!requested.starts_with(&root) || !target.starts_with(&root))",
-        "        && !policy.allowed(&requested, &target)"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 143,
-      "line_end": 155,
-      "text": [
-        "    // {impl}`requirements.authoring.delivered_inputs`",
-        "    pub(crate) fn recorded_inputs(&self) -> &[Value] {",
-        "        &self.recorded",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.delivered_inputs`",
-        "    pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {",
-        "        for input in inputs {",
-        "            if !self.recorded.contains(input) {",
-        "                self.recorded.push(input.clone());",
-        "            }",
-        "        }",
-        "    }"
-      ]
-    },
-    {
       "file": "src/authoring/mod.rs",
-      "line_start": 392,
+      "line_start": 397,
       "line_end": 404,
       "text": [
-        "    Ok((judgment, rationale.to_owned()))",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.submission`",
         "// {impl}`requirements.authoring.initial_prompt`",
         "// {impl}`requirements.ci.outcomes`",
         "fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {",
@@ -2820,68 +2686,388 @@
         "    let determination = json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]});",
         "    definitions.push(json!({\"name\": \"submit_judgment\", \"description\": \"Submit your final judgment exactly once. No other message supplies the result.\",",
         "        \"parameters\": {\"type\":\"object\", \"additionalProperties\": false, \"required\":[\"determination\",\"rationale\"], \"properties\": {",
-        "            \"determination\": determination,",
-        "            \"rationale\":{\"type\":\"string\",\"minLength\":1}}}}));"
-      ]
-    },
-    {
-      "file": "src/inputs.rs",
-      "line_start": 234,
-      "line_end": 246,
-      "text": [
-        "// {impl}`requirements.configuration.evidence_paths`",
-        "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
-        "    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())",
-        "}",
-        "",
-        "// {impl}`requirements.ci.input_containment`",
-        "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
-        "    let path = check_project_file(root, file)?;",
-        "    let content =",
-        "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;",
-        "    Ok((path, content))",
-        "}",
-        ""
+        "            \"determination\": determination,"
       ]
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 401,
+      "line_start": 431,
+      "line_end": 435,
+      "text": [
+        ") -> io::Result<(Judgment, Value)> {",
+        "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
+        "    request.tools = tool_definitions()?;",
+        "    let mut pending = sources.mandatory_inputs().to_vec();",
+        "    let mut backoff = providers::ProviderBackoff::default();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 22,
+      "line_end": 26,
+      "text": [
+        "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.authoring.credentials`",
+        "pub(crate) fn definitions() -> Vec<Value> {",
+        "    // Providers such as Anthropic require a plain object at the schema root.",
+        "    // Describe the alternative forms here and enforce them in read()."
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 28,
+      "line_end": 32,
+      "text": [
+        "        json!({",
+        "            \"name\": \"habeas\",",
+        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\",",
+        "            \"parameters\": {\"type\":\"object\", \"properties\": {",
+        "                \"file\":{\"type\":\"string\"},"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 40,
+      "line_end": 52,
+      "text": [
+        "        }),",
+        "        json!({",
+        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
+        "        }),",
+        "        json!({",
+        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
+        "        }),",
+        "        json!({",
+        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. An :impl: or :test: anchor on a definition names a complete file and is reported with line null. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"selection\":{\"type\":\"string\"}},\"additionalProperties\":false}",
+        "        }),"
+      ]
+    },
+    {
+      "file": "tests/cli.rs",
+      "line_start": 2,
+      "line_end": 4,
+      "text": [
+        "",
+        "// {test}`requirements.cli.invocation`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/cli.rs",
+      "line_start": 30,
+      "line_end": 32,
+      "text": [
+        "",
+        "// {test}`requirements.cli.invocation`",
+        "// {test}`reference.cli.unknown_command`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 7,
+      "line_end": 10,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.info`",
+        "fn fixture() -> TempDir {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 105,
+      "line_end": 109,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.cli.info`",
+        "fn habeas(dir: &Path, args: &[&str]) -> Output {"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 116,
+      "line_end": 118,
+      "text": [
+        "",
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.ci.outcomes`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 201,
+      "line_end": 203,
+      "text": [
+        "// {test}`requirements.authoring.deterministic_validation`",
+        "// {test}`requirements.cli.status`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 236,
+      "line_end": 238,
+      "text": [
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.authoring.deterministic_validation`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 256,
+      "line_end": 259,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 308,
+      "line_end": 311,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.references.definition_globs`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 365,
+      "line_end": 367,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 423,
+      "line_end": 425,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.references.rust_item_coverage`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 458,
+      "line_end": 461,
+      "text": [
+        "",
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.cli.definition_glob_search`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 522,
+      "line_end": 525,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.references.definition_globs`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 581,
+      "line_end": 583,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status_table_alignment`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 628,
+      "line_end": 633,
+      "text": [
+        "",
+        "// {test}`requirements.cli.add_input`",
+        "// {test}`requirements.ci.input_containment`",
+        "// {test}`requirements.cli.add_input_file_range`",
+        "// {test}`requirements.cli.add_input_rust_item`",
+        "// {test}`requirements.configuration.evidence_paths`"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 698,
+      "line_end": 702,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.cli.definition_glob_search`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 729,
+      "line_end": 731,
+      "text": [
+        "",
+        "// {test}`requirements.cli.add_input`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 773,
+      "line_end": 779,
+      "text": [
+        "",
+        "// {test}`requirements.cli.add_input`",
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.cli.add_input_file_range`",
+        "// {test}`requirements.cli.add_input_rust_item`",
+        "// {test}`requirements.cli.add_input_requirements`",
+        "// {test}`requirements.references.selector_same_line`"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 178,
+      "line_end": 180,
+      "text": [
+        "// {test}`requirements.index.state`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 205,
+      "line_end": 207,
+      "text": [
+        "// {test}`requirements.index.state`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 239,
+      "line_end": 243,
+      "text": [
+        "",
+        "// {test}`requirements.cli.status`",
+        "// {test}`requirements.cli.fixme_summary`",
+        "// {test}`requirements.cli.info`",
+        "// {test}`requirements.index.state`"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 8,
+      "line_end": 10,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup`",
+        "// {test}`requirements.integration.symposium_setup_hook`"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 29,
+      "line_end": 31,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup`",
+        "fn run(project: &Path, args: &[&str]) {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 75,
+      "line_end": 80,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup`",
+        "// {test}`requirements.cli.setup_css`",
+        "// {test}`requirements.cli.setup_local_path`",
+        "// {test}`requirements.cli.mdbook`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 112,
+      "line_end": 114,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup`",
+        "// {test}`requirements.index.detail_pages`"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 150,
+      "line_end": 152,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 164,
+      "line_end": 168,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup_project`",
+        "// {test}`requirements.integration.symposium_setup_hook`",
+        "// {test}`requirements.cli.setup`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 187,
+      "line_end": 191,
+      "text": [
+        "",
+        "// {test}`requirements.cli.setup_project`",
+        "// {test}`requirements.cli.setup_css`",
+        "// {test}`requirements.cli.setup`",
+        "#[test]"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 399,
       "line_end": 401,
       "text": [
-        "    definitions.push(json!({\"name\": \"submit_judgment\", \"description\": \"Submit your final judgment exactly once. No other message supplies the result.\","
+        "fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {",
+        "    let mut definitions = tools::definitions();",
+        "    let determination = json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]});"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 30,
-      "line_end": 30,
+      "line_start": 29,
+      "line_end": 31,
       "text": [
-        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 42,
-      "line_end": 42,
-      "text": [
-        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 46,
-      "line_end": 46,
-      "text": [
-        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 50,
-      "line_end": 50,
-      "text": [
-        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\","
+        "            \"name\": \"habeas\",",
+        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\",",
+        "            \"parameters\": {\"type\":\"object\", \"properties\": {"
       ]
     }
   ]

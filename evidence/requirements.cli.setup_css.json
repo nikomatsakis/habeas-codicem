@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas setup` MUST preserve existing entries in `output.html.additional-css` while adding the Habeas stylesheet at most once. It MUST report an error if `additional-css` is not an array.",
   "determination": true,
-  "rationale": "**Verdict:** `requirements.cli.setup_css` is implemented, marked, and tested. I found no gaps.\n\n**Implementation**\n- `src/setup.rs`, `run` (the `{impl}` marker is at line 126), covers each obligation:\n  - **Missing `additional-css`:** a new array containing only the Habeas stylesheet path is created.\n  - **Existing array:** entries are left in place. The Habeas path, computed by `css_relative`, is pushed only if no existing entry already equals it. This gives \"preserve existing entries\" and \"at most once\", including on re-runs.\n  - **Not an array:** it returns `output.html.additional-css must be an array`. This happens before any file or `Cargo.toml` change, because the book is only edited in memory until the final write.\n- `css_relative` (`src/setup.rs`, line 11) is marked `{impl}`. It builds the `<src>/habeas.css` path used for the entry.\n- `is_configured` only reads the stylesheet entry to report whether setup is complete. It does not add or change anything, so a `{cite}` there is appropriate. It is not unmarked implementation.\n- I found no behavior in the marked code that goes beyond this requirement or another one it implements.\n\n**Tests**\n- `tests/setup.rs`, `setup_is_repeatable` (`{test}` marker at line 77):\n  - The fixture's `book.toml` starts with `additional-css = [\"md/custom.css\"]`.\n  - Setup runs twice.\n  - The test asserts that `md/custom.css` is preserved, `md/habeas.css` is present, and `md/habeas.css` appears exactly once.\n- `setup_rejects_invalid_book_configuration` (`{test}` marker at line 144) covers the error case. A string-valued `additional-css = \"wrong\"` makes setup fail with the expected stderr message.\n- Missing `additional-css` is exercised by `setup_uses_src_when_book_table_or_source_setting_is_absent`, though that test does not carry a `{test}` marker for this requirement. Only the first two tests are marked for `setup_css`. The behavior is simple, so this is a minor omission.\n\n**Minor observation:** the toml_edit indexing could panic if `output` or `output.html` is a non-table value. This is outside what the requirement specifies.",
+  "rationale": "**Verdict:** `requirements.cli.setup_css` is implemented completely and tested. I found no unmarked implementation and no unspecified behaviour.\n\n**Implementation**\n- `fn run` in `src/setup.rs` (around lines 125–143, marked `{impl}`) handles the three cases for `output.html.additional-css`:\n  - **Absent:** it creates an array containing the Habeas stylesheet path.\n  - **An array:** it pushes the stylesheet path only if no existing entry already equals it. Existing entries are left untouched, so they are preserved and the stylesheet appears at most once.\n  - **Anything else:** it returns the error `output.html.additional-css must be an array`.\n- `css_relative` (marked `{impl}`) computes the stylesheet path from the book source directory as `<src>/habeas.css`, using only normal path components with `/` separators.\n- `is_configured` in `src/setup.rs` only `{cite}`s this requirement. It is the read-only check for the Symposium setup hook (`requirements.integration.symposium_setup_hook`) and does not write the CSS configuration. Citing it rather than marking it `{impl}` is therefore appropriate.\n\n**Tests**\n- `setup_is_repeatable` in `tests/setup.rs` starts from a fixture whose `book.toml` already has `additional-css = [\"md/custom.css\"]`. It runs `setup` twice and asserts three things:\n  - `md/custom.css` is preserved.\n  - `md/habeas.css` is present.\n  - `md/habeas.css` occurs exactly once after the repeat run.\n- `setup_rejects_invalid_book_configuration` in `tests/setup.rs` sets `additional-css = \"wrong\"` and asserts that `setup` fails with `output.html.additional-css must be an array`.\n\n**Residual gaps (minor, not blocking)**\n- No test covers the case where `additional-css` is absent. The code path is simple.\n- No test covers a pre-existing Habeas entry on the first run. The idempotence check on the second run exercises the same check.",
   "inputs": [
     {
       "requirements": "requirements.cli.setup_css",
@@ -65,6 +65,7 @@
         "        }",
         "    }",
         "",
+        "    // {impl}`requirements.cli.mdbook`",
         "    book[\"preprocessor\"][\"habeas\"][\"command\"] = value(\"habeas mdbook\");",
         "    let mut renderers = Array::new();",
         "    renderers.push(\"html\");",
@@ -86,6 +87,21 @@
         "        }",
         "    } else {",
         "        return Err(\"output.html.additional-css must be an array\".into());",
+        "    }",
+        "",
+        "    // {impl}`requirements.cli.setup`",
+        "    // {impl}`requirements.index.detail_pages`",
+        "    let fold = &mut book[\"output\"][\"html\"][\"fold\"];",
+        "    if fold.is_none() {",
+        "        let mut table = Table::new();",
+        "        table.insert(\"enable\", value(true));",
+        "        *fold = Item::Table(table);",
+        "    } else if let Some(fold) = fold.as_table_like_mut() {",
+        "        if fold.get(\"enable\").is_none() {",
+        "            fold.insert(\"enable\", value(true));",
+        "        }",
+        "    } else {",
+        "        return Err(\"output.html.fold must be a table\".into());",
         "    }",
         "",
         "    let manifest_path = root.join(\"Cargo.toml\");",
@@ -128,6 +144,7 @@
         "// {test}`requirements.cli.setup`",
         "// {test}`requirements.cli.setup_css`",
         "// {test}`requirements.cli.setup_local_path`",
+        "// {test}`requirements.cli.mdbook`",
         "#[test]",
         "fn setup_is_repeatable() {",
         "    let temp = fixture();",
@@ -153,6 +170,12 @@
         "    );",
         "    assert!(project.join(\"md/habeas.css\").is_file());",
         "    assert!(!project.join(\".agents/skills\").exists());",
+        "    let book: toml_edit::DocumentMut = book.parse().unwrap();",
+        "    assert_eq!(",
+        "        book[\"output\"][\"html\"][\"fold\"][\"enable\"].as_bool(),",
+        "        Some(true)",
+        "    );",
+        "    assert_eq!(book.to_string().matches(\"enable\").count(), 1, \"{book}\");",
         "}"
       ]
     },
@@ -162,6 +185,7 @@
       "text": [
         "// {test}`requirements.cli.setup_project`",
         "// {test}`requirements.cli.setup_css`",
+        "// {test}`requirements.cli.setup`",
         "#[test]",
         "fn setup_rejects_invalid_book_configuration() {",
         "    let temp = fixture();",
@@ -180,6 +204,10 @@
         "        (",
         "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = \\\"wrong\\\"\\n\",",
         "            \"output.html.additional-css must be an array\",",
+        "        ),",
+        "        (",
+        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nfold = true\\n\",",
+        "            \"output.html.fold must be a table\",",
         "        ),",
         "    ] {",
         "        fs::write(project.join(\"book.toml\"), book).unwrap();",
@@ -212,9 +240,134 @@
       ]
     },
     {
-      "rust_file": "src/setup.rs",
-      "rust_item": "fn[is_configured]",
+      "file": "book.toml",
+      "line_start": 9,
+      "line_end": 15,
       "text": [
+        "renderers = [\"html\"]",
+        "",
+        "[output.html]",
+        "additional-css = [\"md/habeas.css\"]",
+        "site-url = \"/habeas-codicem/\"",
+        "git-repository-url = \"https://github.com/nikomatsakis/habeas-codicem\"",
+        "edit-url-template = \"https://github.com/nikomatsakis/habeas-codicem/edit/main/{path}\""
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 105,
+      "line_end": 111,
+      "text": [
+        ":::",
+        "",
+        ":::{req} setup_css",
+        "`habeas setup` MUST preserve existing entries in `output.html.additional-css` while adding the Habeas stylesheet at most once. It MUST report an error if `additional-css` is not an array.",
+        ":::",
+        "",
+        ":::{req} setup_local_path"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 125,
+      "line_end": 131,
+      "text": [
+        "",
+        "    let css_relative = css_relative(source_path);",
+        "    // {impl}`requirements.cli.setup_css`",
+        "    let additional_css = &mut book[\"output\"][\"html\"][\"additional-css\"];",
+        "    if additional_css.is_none() {",
+        "        let mut css = Array::new();",
+        "        css.push(css_relative.as_str());"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 138,
+      "line_end": 144,
+      "text": [
+        "            css.push(css_relative.as_str());",
+        "        }",
+        "    } else {",
+        "        return Err(\"output.html.additional-css must be an array\".into());",
+        "    }",
+        "",
+        "    // {impl}`requirements.cli.setup`"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 249,
+      "line_end": 255,
+      "text": [
+        "        .and_then(Item::as_table_like)",
+        "        .and_then(|table| table.get(\"html\"))",
+        "        .and_then(Item::as_table_like)",
+        "        .and_then(|table| table.get(\"additional-css\"))",
+        "        .and_then(Item::as_array);",
+        "    if !css_list.is_some_and(|css| {",
+        "        css.iter()"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 20,
+      "line_end": 26,
+      "text": [
+        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"book.toml\"),",
+        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 94,
+      "line_end": 100,
+      "text": [
+        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
+        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
+        "    assert!(book.contains(\"md/habeas.css\"));",
+        "    assert!(book.contains(\"md/custom.css\"));",
+        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
+        "    assert_eq!(",
+        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 204,
+      "line_end": 211,
+      "text": [
+        "            \"book.src must be a directory\",",
+        "        ),",
+        "        (",
+        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = \\\"wrong\\\"\\n\",",
+        "            \"output.html.additional-css must be an array\",",
+        "        ),",
+        "        (",
+        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nfold = true\\n\","
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 180,
+      "line_end": 265,
+      "text": [
+        "            .into());",
+        "        }",
+        "    }",
+        "",
+        "    write_new_or_same(&css_path, BADGE_CSS)?;",
+        "    write_new_or_same(&test_path, TEST_SOURCE)?;",
+        "    fs::write(&book_path, book.to_string())?;",
+        "    println!(\"Habeas configured in {}\", root.display());",
+        "    Ok(())",
+        "}",
+        "",
         "// {impl}`requirements.integration.symposium_setup_hook`",
         "// {cite}`requirements.cli.setup`",
         "// {cite}`requirements.cli.setup_project`",
@@ -290,388 +443,6 @@
         "        && fs::read_to_string(root.join(\"tests/habeas.rs\"))",
         "            .is_ok_and(|content| content == TEST_SOURCE)",
         "}"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 112,
-      "line_end": 128,
-      "text": [
-        "    let css_path = source_dir.join(\"habeas.css\");",
-        "    let test_path = root.join(\"tests/habeas.rs\");",
-        "    for (path, desired) in [(&css_path, BADGE_CSS), (&test_path, TEST_SOURCE)] {",
-        "        if path.exists() && fs::read_to_string(path)? != desired {",
-        "            return Err(format!(\"{} already exists with different content\", path.display()).into());",
-        "        }",
-        "    }",
-        "",
-        "    book[\"preprocessor\"][\"habeas\"][\"command\"] = value(\"habeas mdbook\");",
-        "    let mut renderers = Array::new();",
-        "    renderers.push(\"html\");",
-        "    book[\"preprocessor\"][\"habeas\"][\"renderers\"] = value(renderers);",
-        "",
-        "    let css_relative = css_relative(source_path);",
-        "    // {impl}`requirements.cli.setup_css`",
-        "    let additional_css = &mut book[\"output\"][\"html\"][\"additional-css\"];",
-        "    if additional_css.is_none() {"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 120,
-      "line_end": 164,
-      "text": [
-        "// {test}`requirements.cli.setup_project`",
-        "// {test}`requirements.integration.symposium_setup_hook`",
-        "// {test}`requirements.cli.setup`",
-        "#[test]",
-        "fn setup_uses_src_when_book_table_or_source_setting_is_absent() {",
-        "    for configuration in [\"\", \"[book]\\ntitle = 'Example'\\n\"] {",
-        "        let temp = fixture();",
-        "        let project = temp.path();",
-        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
-        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "        assert!(project.join(\"src/habeas.css\").is_file());",
-        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
-        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
-        "            .unwrap()",
-        "            .parse()",
-        "            .unwrap();",
-        "        book[\"book\"][\"src\"] = toml_edit::value(7);",
-        "        fs::write(project.join(\"book.toml\"), book.to_string()).unwrap();",
-        "        assert!(session_start(project, project)[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.cli.setup_project`",
-        "// {test}`requirements.cli.setup_css`",
-        "#[test]",
-        "fn setup_rejects_invalid_book_configuration() {",
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    let binary = env!(\"CARGO_BIN_EXE_habeas\");",
-        "",
-        "    for (book, expected) in [",
-        "        (\"book = 'wrong'\\n\", \"book must be a table\"),",
-        "        (\"[book]\\nsrc = 7\\n\", \"book.src must be a string\"),",
-        "        (\"[book]\\nsrc = ''\\n\", \"book.src must be a directory\"),",
-        "        (\"[book]\\nsrc = '/outside'\\n\", \"book.src must be a directory\"),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"../outside\\\"\\n\",",
-        "            \"book.src must be a directory\",",
-        "        ),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = \\\"wrong\\\"\\n\",",
-        "            \"output.html.additional-css must be an array\",",
-        "        ),",
-        "    ] {"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 76,
-      "line_end": 104,
-      "text": [
-        "// {test}`requirements.cli.setup`",
-        "// {test}`requirements.cli.setup_css`",
-        "// {test}`requirements.cli.setup_local_path`",
-        "#[test]",
-        "fn setup_is_repeatable() {",
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    let local_crate = env!(\"CARGO_MANIFEST_DIR\");",
-        "",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));",
-        "    assert!(book.contains(\"md/custom.css\"));",
-        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
-        "    assert_eq!(",
-        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
-        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
-        "    );",
-        "    assert!(project.join(\"md/habeas.css\").is_file());",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "}"
-      ]
-    },
-    {
-      "file": "book.toml",
-      "line_start": 5,
-      "line_end": 17,
-      "text": [
-        "",
-        "[preprocessor.habeas]",
-        "command = \"cargo habeas mdbook\"",
-        "renderers = [\"html\"]",
-        "",
-        "[output.html]",
-        "additional-css = [\"md/habeas.css\"]",
-        "site-url = \"/habeas-codicem/\"",
-        "git-repository-url = \"https://github.com/nikomatsakis/habeas-codicem\"",
-        "edit-url-template = \"https://github.com/nikomatsakis/habeas-codicem/edit/main/{path}\"",
-        "",
-        "[output.html.fold]",
-        "enable = true"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 70,
-      "line_end": 82,
-      "text": [
-        ":::",
-        "",
-        "",
-        ":::{req} bootstrap_skill",
-        "Habeas MUST bundle a skill for deriving initial requirements from an existing codebase. The skill MUST direct agents to read the code and tests, map every first-party test to at least one requirement or example, identify and map every source unit implementing end-user-visible functionality or interactions to a requirement, and report gaps rather than claim complete coverage without an independent inventory review.",
-        ":::",
-        "",
-        ":::{req} requirements_review_skill",
-        "The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.",
-        ":::",
-        "",
-        ":::{req} behavior_review_guidance",
-        "Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark code that implements part of a requirement with `{impl}` and tests that verify it with `{test}`, using `{cite}` only for related code that does neither, under {cite}`requirements.references.targets`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation."
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 121,
-      "line_end": 146,
-      "text": [
-        "    let mut renderers = Array::new();",
-        "    renderers.push(\"html\");",
-        "    book[\"preprocessor\"][\"habeas\"][\"renderers\"] = value(renderers);",
-        "",
-        "    let css_relative = css_relative(source_path);",
-        "    // {impl}`requirements.cli.setup_css`",
-        "    let additional_css = &mut book[\"output\"][\"html\"][\"additional-css\"];",
-        "    if additional_css.is_none() {",
-        "        let mut css = Array::new();",
-        "        css.push(css_relative.as_str());",
-        "        *additional_css = value(css);",
-        "    } else if let Some(css) = additional_css.as_array_mut() {",
-        "        if !css",
-        "            .iter()",
-        "            .any(|existing| existing.as_str() == Some(css_relative.as_str()))",
-        "        {",
-        "            css.push(css_relative.as_str());",
-        "        }",
-        "    } else {",
-        "        return Err(\"output.html.additional-css must be an array\".into());",
-        "    }",
-        "",
-        "    let manifest_path = root.join(\"Cargo.toml\");",
-        "    let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_local_path`",
-        "    let has_dev_dependency = has_habeas_dev_dependency(&manifest);"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 227,
-      "line_end": 239,
-      "text": [
-        "        return false;",
-        "    }",
-        "",
-        "    let css_relative = css_relative(source_path);",
-        "    let css_list = book",
-        "        .get(\"output\")",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"html\"))",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"additional-css\"))",
-        "        .and_then(Item::as_array);",
-        "    if !css_list.is_some_and(|css| {",
-        "        css.iter()"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 17,
-      "line_end": 29,
-      "text": [
-        "        \"[package]\\nname = \\\"sample-project\\\"\\nversion = \\\"0.1.0\\\"\\nedition = \\\"2024\\\"\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"book.toml\"),",
-        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "    temp",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 90,
-      "line_end": 102,
-      "text": [
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));",
-        "    assert!(book.contains(\"md/custom.css\"));",
-        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
-        "    assert_eq!(",
-        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
-        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
-        "    );",
-        "    assert!(project.join(\"md/habeas.css\").is_file());"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 154,
-      "line_end": 167,
-      "text": [
-        "        (\"[book]\\nsrc = ''\\n\", \"book.src must be a directory\"),",
-        "        (\"[book]\\nsrc = '/outside'\\n\", \"book.src must be a directory\"),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"../outside\\\"\\n\",",
-        "            \"book.src must be a directory\",",
-        "        ),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = \\\"wrong\\\"\\n\",",
-        "            \"output.html.additional-css must be an array\",",
-        "        ),",
-        "    ] {",
-        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
-        "        let output = Command::new(binary)",
-        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])"
-      ]
-    },
-    {
-      "file": "book.toml",
-      "line_start": 9,
-      "line_end": 13,
-      "text": [
-        "",
-        "[output.html]",
-        "additional-css = [\"md/habeas.css\"]",
-        "site-url = \"/habeas-codicem/\"",
-        "git-repository-url = \"https://github.com/nikomatsakis/habeas-codicem\""
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 96,
-      "line_end": 100,
-      "text": [
-        "",
-        ":::{req} setup_css",
-        "`habeas setup` MUST preserve existing entries in `output.html.additional-css` while adding the Habeas stylesheet at most once. It MUST report an error if `additional-css` is not an array.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 11,
-      "line_end": 15,
-      "text": [
-        "// {impl}`requirements.cli.setup_css`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn css_relative(source_path: &Path) -> String {",
-        "    source_path",
-        "        .join(\"habeas.css\")"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 123,
-      "line_end": 142,
-      "text": [
-        "    book[\"preprocessor\"][\"habeas\"][\"renderers\"] = value(renderers);",
-        "",
-        "    let css_relative = css_relative(source_path);",
-        "    // {impl}`requirements.cli.setup_css`",
-        "    let additional_css = &mut book[\"output\"][\"html\"][\"additional-css\"];",
-        "    if additional_css.is_none() {",
-        "        let mut css = Array::new();",
-        "        css.push(css_relative.as_str());",
-        "        *additional_css = value(css);",
-        "    } else if let Some(css) = additional_css.as_array_mut() {",
-        "        if !css",
-        "            .iter()",
-        "            .any(|existing| existing.as_str() == Some(css_relative.as_str()))",
-        "        {",
-        "            css.push(css_relative.as_str());",
-        "        }",
-        "    } else {",
-        "        return Err(\"output.html.additional-css must be an array\".into());",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 228,
-      "line_end": 232,
-      "text": [
-        "    }",
-        "",
-        "    let css_relative = css_relative(source_path);",
-        "    let css_list = book",
-        "        .get(\"output\")"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 234,
-      "line_end": 242,
-      "text": [
-        "        .and_then(|table| table.get(\"html\"))",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"additional-css\"))",
-        "        .and_then(Item::as_array);",
-        "    if !css_list.is_some_and(|css| {",
-        "        css.iter()",
-        "            .any(|entry| entry.as_str() == Some(css_relative.as_str()))",
-        "    }) {",
-        "        return false;"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 21,
-      "line_end": 25,
-      "text": [
-        "    fs::write(",
-        "        temp.path().join(\"book.toml\"),",
-        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
-        "    )",
-        "    .unwrap();"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 159,
-      "line_end": 164,
-      "text": [
-        "        ),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = \\\"wrong\\\"\\n\",",
-        "            \"output.html.additional-css must be an array\",",
-        "        ),",
-        "    ] {"
       ]
     }
   ]

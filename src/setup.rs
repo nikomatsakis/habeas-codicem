@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use toml_edit::{Array, DocumentMut, Item, value};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
@@ -139,6 +139,21 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         }
     } else {
         return Err("output.html.additional-css must be an array".into());
+    }
+
+    // {impl}`requirements.cli.setup`
+    // {impl}`requirements.index.detail_pages`
+    let fold = &mut book["output"]["html"]["fold"];
+    if fold.is_none() {
+        let mut table = Table::new();
+        table.insert("enable", value(true));
+        *fold = Item::Table(table);
+    } else if let Some(fold) = fold.as_table_like_mut() {
+        if fold.get("enable").is_none() {
+            fold.insert("enable", value(true));
+        }
+    } else {
+        return Err("output.html.fold must be a table".into());
     }
 
     let manifest_path = root.join("Cargo.toml");

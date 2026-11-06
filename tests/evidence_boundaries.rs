@@ -203,7 +203,13 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
     for directory in ["private", "public", "sub"] {
         fs::create_dir(root.join(directory)).unwrap();
     }
-    fs::write(root.join("public/source.rs"), "pub struct Source;\n").unwrap();
+    // Every struct needs a reference under rust_item_coverage.
+    let cite = ["// {", "cite}`rules.ready`"].concat();
+    fs::write(
+        root.join("public/source.rs"),
+        format!("{cite}\npub struct Source;\n"),
+    )
+    .unwrap();
     std::os::unix::fs::symlink("../public", root.join("private/link")).unwrap();
     fs::write(
         root.join("habeas.toml"),
@@ -216,8 +222,8 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
         "sub/../private/link/source.rs",
     ] {
         for input in [
-            json!({"file":file, "line_start":1, "line_end":1, "text":["pub struct Source;"]}),
-            json!({"rust_file":file, "rust_item":"struct[Source]", "text":["pub struct Source;"]}),
+            json!({"file":file, "line_start":2, "line_end":2, "text":["pub struct Source;"]}),
+            json!({"rust_file":file, "rust_item":"struct[Source]", "text":[cite, "pub struct Source;"]}),
         ] {
             write_inputs(&root, vec![input]);
             let errors = validate_repository(&root).unwrap().errors.join("\n");

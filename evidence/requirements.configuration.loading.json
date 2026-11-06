@@ -1,7 +1,7 @@
 {
   "requirement": "An operation MUST load user configuration only when its requirements call for\nuser settings. A missing user file MUST represent absent user configuration;\nwhether the operation can proceed MUST be defined by the feature. Loading MUST\nNOT create a file, repair malformed input, or supply an undocumented selection.\n\nWhen loading configuration, Habeas MUST report unreadable files, invalid TOML,\nunsupported user-file versions, unknown common keys, and invalid common field\ntypes. It MUST validate the feature sections used by that operation and report\ninvalid feature settings with the file and setting identified. Unknown keys in\nan explicitly documented provider-owned options map MUST follow that feature's\nvalidation rules.\n\nAn operation MUST NOT require or semantically validate configuration for a\nfeature it does not use. This isolation MUST NOT suppress TOML syntax errors in\na shared file that the operation otherwise needs to parse. In particular,\nordinary validation still requires a parseable `book.toml` while remaining\nindependent of authoring settings and the user configuration file. It MUST apply\nthe selected workspace's evidence path policy without loading its model clients\nor credentials.",
   "determination": false,
-  "rationale": "Most of `requirements.configuration.loading` is implemented and tested, but `main` has a gap that I think fails the isolation obligation.\n\n**What works**\n- `load_user_config` (src/config.rs) returns `Ok(None)` for a missing file, never creates a file, and reports unreadable files with the path.\n- `UserConfig::parse` runs `parse_document`, which reports invalid TOML with file, line and column.\n- `decode` uses `deny_unknown_fields` structs. It reports unknown common keys and wrong field types with the file path, and redacts secrets.\n- `UserConfig::validate` and `WorkspaceConfig::validate` reject unsupported versions. The authoring, backend, evidence and project checks name the file and the setting. This includes the provider-owned `options` map, which is validated and cannot replace the model, prompt or tools.\n- `workspace_document` reports an unreadable `habeas.toml` instead of silently selecting an ancestor. `validate_workspace_common` rejects bad versions and unknown common keys before any feature section is decoded.\n- `load_workspace_evidence` decodes only `[evidence]` and only flags that credentials are present. It does not validate authoring settings or resolve credentials. A syntax error in the shared file is still reported.\n- `book_source_dir` in src/evidence.rs requires a parseable `book.toml` and does not touch authoring or user configuration.\n- Tests cover these cases:\n  - tests/configuration.rs: absent versus minimal user file, read-only loading, invalid schema and feature values, nearest-file workspace discovery, evidence loading that ignores unused authoring settings, and credential redaction.\n  - tests/commands.rs and tests/authoring_cli.rs: `status` ignoring invalid authoring settings and an invalid user file.\n  - tests/evidence_boundaries.rs: validation checking the common workspace configuration while ignoring unused authoring settings.\n\n**Gaps**\n1. `fn main` in src/main.rs calls `habeas::config::load_workspace_evidence(&current_dir)?` for every command except `mdbook supports`, and it is marked `{impl}` for this requirement.\n   - That includes `setup` and `hook session-start`.\n   - `setup` edits `book.toml`, and `hook::session_start` only builds a hook response. Neither uses the workspace evidence policy or any `habeas.toml` setting.\n   - A `habeas.toml` with `version = 99` or an unknown key therefore blocks them. The requirement says an operation \"MUST NOT require or semantically validate configuration for a feature it does not use\", and this contradicts it.\n   - The syntax-error carve-out covers only \"a shared file that the operation otherwise needs to parse\", which does not apply here.\n   - No test covers `setup` or `hook` with an invalid `habeas.toml`.\n2. `ProjectConfig::from_book_toml` is marked `{impl}` for loading, but nothing in the sources I searched calls it outside tests. It also implements a `[habeas]` table in `book.toml`, which this requirement does not specify.\n3. Test coverage has holes:\n   - No test covers unreadable files (non-NotFound I/O errors) for the user file or `habeas.toml`.\n   - No test covers a missing user file in an operation that needs it (`resolve_authoring` reporting \"no authoring configuration\").\n   - The ordinary-validation checks for an invalid or missing `book.toml` appear only as unit tests in src/evidence.rs, which are not marked `{test}` for this requirement.\n\nNo `FIXME` acknowledges any of these gaps, so the determination is false.",
+  "rationale": "**Verdict: false.** The core loading and validation logic is implemented and well tested, but there are marking gaps and untested obligations. None of the gaps carries a FIXME or issue reference.\n\n**What is in place**\n- `load_user_config` in `src/config.rs` maps a NotFound error to `Ok(None)` and never creates or rewrites a file. `tests/configuration.rs::absent_and_minimal_configuration_are_distinct_and_read_only` checks this.\n- `parse_document`, `decode`, `UserConfig::parse` and `validate`, `WorkspaceConfig::parse` and `validate`, `validate_workspace_common`, and `workspace_document` cover these cases:\n  - invalid TOML, with line and column;\n  - unsupported versions;\n  - unknown common keys (`deny_unknown_fields` and the explicit workspace key check);\n  - wrong types;\n  - feature validation, with the file and setting named by `invalid`.\n- `BackendConfig::validate` applies the provider-owned `options` map rules.\n- `load_workspace_evidence` parses and validates only the common fields and the `evidence` section. It does not semantically validate authoring settings and only detects credentials. `tests/configuration.rs::evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` and `tests/evidence_boundaries.rs::validation_checks_workspace_common_config_without_loading_unused_authoring_settings` cover this.\n- `tests/authoring_cli.rs::ordinary_status_ignores_invalid_user_authoring_configuration` shows that ordinary status ignores a malformed user file. `tests/commands.rs::status_loads_nearest_workspace_file_without_validating_authoring` covers nearest-file selection and syntax errors in a shared file.\n- `tests/configuration.rs::invalid_schema_and_feature_values_report_the_configuration_path` covers invalid schema and feature values for the user file.\n\n**Gaps**\n1. **Incomplete `{impl}` marking.**\n   - The requirement's last obligation is to apply the selected workspace's evidence path policy without loading model clients or credentials.\n   - `PathPolicy::load` in `src/authoring/access.rs` (around line 19) implements it by calling `load_workspace_evidence` and consuming the policy. It is marked only for `evidence_paths`, `workspace_location` and `authoring.credentials`, not for `configuration.loading`.\n   - Per the criteria, code implementing part of the requirement without an `{impl}` marker is a gap.\n2. **No test for unreadable files.** The requirement says unreadable files MUST be reported. `load_user_config` and `workspace_document` have non-NotFound error branches, but I found no test that exercises them, such as a directory or permission-denied file at the config path.\n3. **No test for an unparseable `book.toml`.** The requirement says ordinary validation still requires a parseable `book.toml`. `book_source_dir` in `src/evidence.rs` implements this, and its error branches are not covered by any test I found. The `book.toml` fixtures in `tests/` all contain valid TOML.\n4. **Narrow coverage of workspace-file errors.** The workspace-file tests cover version, unknown key and syntax errors. They do not show that a malformed user file does not affect ordinary validation, but `ordinary_status_ignores_invalid_user_authoring_configuration` partly covers that case.",
   "inputs": [
     {
       "requirements": "requirements.configuration.loading",
@@ -42,6 +42,7 @@
         "    // {impl}`requirements.authoring.configuration_serialization`",
         "    // {impl}`requirements.authoring.concurrency`",
         "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.configuration.serialization`",
         "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
         "        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, \"\")?;",
         "        config.validate(path)?;",
@@ -74,6 +75,8 @@
         "    // {impl}`requirements.configuration.workspace_structure`",
         "    // {impl}`requirements.configuration.loading`",
         "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.configuration.serialization`",
         "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
         "        let table = parse_document(text, path)?;",
         "        validate_workspace_common(&table, path)?;",
@@ -312,6 +315,7 @@
         "// {impl}`requirements.configuration.workspace_location`",
         "// {impl}`requirements.configuration.loading`",
         "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.serialization`",
         "pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {",
         "    let Some((path, table)) = workspace_document(root)? else {",
         "        return Ok(None);",
@@ -338,6 +342,7 @@
         "// {impl}`requirements.configuration.evidence_paths`",
         "// {impl}`requirements.configuration.loading`",
         "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.deterministic_validation`",
         "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
         "    let Some((path, table)) = workspace_document(root)? else {",
         "        return Ok(None);",
@@ -528,6 +533,7 @@
         "// {impl}`requirements.configuration.workspace_structure`",
         "// {impl}`requirements.configuration.loading`",
         "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.configuration.serialization`",
         "pub fn resolve_authoring_with_workspace_from(",
         "    path: &Path,",
         "    user: Option<&UserConfig>,",
@@ -724,8 +730,9 @@
         "        }",
         "    }",
         "",
-        "    validate_references(&root, &definitions, &mut errors, &mut progress);",
-        "    // {impl}`requirements.references.rust_function_coverage`",
+        "    let references = collect_references_with_progress(&root, &mut errors, &mut progress);",
+        "    validate_references(&root, &definitions, &references, &mut errors, &mut progress);",
+        "    // {impl}`requirements.references.rust_item_coverage`",
         "    progress(InspectionProgress {",
         "        stage: \"Rust citations\",",
         "        completed: 0,",
@@ -754,6 +761,7 @@
         "            errors,",
         "        },",
         "        definitions,",
+        "        references,",
         "        discovery_errors,",
         "    })",
         "}"
@@ -881,6 +889,7 @@
         "        // {impl}`requirements.authoring.batch`",
         "        // {impl}`requirements.authoring.concurrency`",
         "        // {impl}`requirements.authoring.reporting`",
+        "        // {impl}`requirements.authoring.read_denial`",
         "        Command::Author {",
         "            subject,",
         "            all,",
@@ -1292,6 +1301,7 @@
         "// {test}`requirements.authoring.configuration_serialization`",
         "// {test}`requirements.configuration.serialization`",
         "// {test}`requirements.configuration.loading`",
+        "// {test}`requirements.authoring.configuration_structure`",
         "#[test]",
         "fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {",
         "    let path = Path::new(\"habeas.toml\");",
@@ -1389,686 +1399,389 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "line_start": 20,
-      "line_end": 22,
+      "line_start": 21,
+      "line_end": 21,
       "text": [
-        "    pub(crate) fn load(root: &Path) -> io::Result<Self> {",
-        "        let Some(config) = crate::config::load_workspace_evidence(root)? else {",
-        "            return Ok(Self::default());"
+        "        let Some(config) = crate::config::load_workspace_evidence(root)? else {"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 67,
+      "line_end": 67,
+      "text": [
+        "                \"{} is disallowed by habeas.toml rule {}; update the workspace evidence policy before retrying\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 125,
+      "line_end": 125,
+      "text": [
+        "                \"{}: generated evidence is output, not assessment source; an explicit habeas.toml allow rule is required\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 139,
+      "line_end": 139,
+      "text": [
+        "                \"{} resolves outside the project; add an explicit habeas.toml allow rule before retrying\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 148,
+      "line_end": 148,
+      "text": [
+        "                        \"{} contains no eligible sources; use git add to stage sources or update habeas.toml before retrying\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 156,
+      "line_end": 156,
+      "text": [
+        "                            \"{} is not tracked by Git; use git add to stage it or add an explicit habeas.toml allow rule before retrying\","
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 539,
+      "line_end": 539,
+      "text": [
+        "        fs::write(root.path().join(\"habeas.toml\"), format!("
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 579,
+      "line_end": 579,
+      "text": [
+        "        fs::write(root.path().join(\"habeas.toml\"), config).unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 582,
+      "line_end": 582,
+      "text": [
+        "            .file(root.path(), Path::new(\"habeas.toml\"))"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 587,
+      "line_end": 588,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),",
+        "            format!(\"{config}\\n[evidence]\\nallow = ['habeas.toml']\\n\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 594,
+      "line_end": 594,
+      "text": [
+        "                .file(root.path(), Path::new(\"habeas.toml\"))"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 613,
+      "line_end": 613,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 682,
+      "line_end": 682,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 705,
+      "line_end": 705,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 726,
+      "line_end": 726,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
       ]
     },
     {
       "file": "src/authoring/batch.rs",
-      "line_start": 83,
+      "line_start": 85,
       "line_end": 85,
       "text": [
-        "    }",
-        "    let config = config::resolve_authoring(&root, selection)?;",
-        "    let concurrency = config.effective_concurrency();"
+        "    let config = config::resolve_authoring(&root, selection)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 633,
+      "line_end": 633,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 761,
+      "line_end": 761,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
       ]
     },
     {
       "file": "src/authoring/mod.rs",
-      "line_start": 273,
+      "line_start": 275,
       "line_end": 275,
       "text": [
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let config = config::resolve_authoring(root, selection)?;",
-        "    let (determination, evidence) = configured_record("
+        "    let config = config::resolve_authoring(root, selection)?;"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 30,
+      "line_end": 30,
+      "text": [
+        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 42,
+      "line_end": 42,
+      "text": [
+        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 985,
+      "line_end": 985,
+      "text": [
+        "        fs::write(root.path().join(\"habeas.toml\"), format!("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1103,
+      "line_end": 1103,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1196,
+      "line_end": 1196,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1322,
+      "line_end": 1322,
+      "text": [
+        "            root.path().join(\"habeas.toml\"),"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 318,
-      "line_end": 320,
+      "line_start": 322,
+      "line_end": 322,
       "text": [
-        "    // {impl}`requirements.configuration.workspace_structure`",
-        "    pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {",
-        "        let book: toml::Table = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;"
+        "    pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 622,
-      "line_end": 624,
+      "line_start": 626,
+      "line_end": 626,
       "text": [
-        "// {impl}`requirements.configuration.serialization`",
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {"
+        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 636,
-      "line_end": 638,
+      "line_start": 628,
+      "line_end": 628,
       "text": [
-        "// {impl}`requirements.configuration.workspace_structure`",
-        "pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {",
-        "    let Some((path, table)) = workspace_document(root)? else {"
+        "        Ok(text) => UserConfig::parse(&text, path).map(Some),"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 657,
-      "line_end": 659,
+      "line_start": 641,
+      "line_end": 641,
       "text": [
-        "// {impl}`requirements.authoring.credentials`",
-        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {",
-        "    let Some((path, table)) = workspace_document(root)? else {"
+        "pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 806,
-      "line_end": 808,
+      "line_start": 663,
+      "line_end": 663,
       "text": [
-        "// {impl}`requirements.configuration.loading`",
-        "pub fn resolve_authoring(",
-        "    root: &Path,"
+        "pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 810,
-      "line_end": 814,
+      "line_start": 703,
+      "line_end": 703,
       "text": [
-        ") -> io::Result<ResolvedAuthoringConfig> {",
-        "    let workspace = load_workspace_config(root)?;",
-        "    let path = user_config_path()?;",
+        "        let path = directory.join(\"habeas.toml\");"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 812,
+      "line_end": 812,
+      "text": [
+        "pub fn resolve_authoring("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 816,
+      "line_end": 816,
+      "text": [
+        "    let workspace = load_workspace_config(root)?;"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 818,
+      "line_end": 819,
+      "text": [
         "    let config = load_user_config(&path)?;",
         "    resolve_authoring_with_workspace_from("
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 105,
-      "line_end": 107,
+      "file": "src/config.rs",
+      "line_start": 834,
+      "line_end": 834,
       "text": [
-        "    let mut errors = Vec::new();",
-        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {",
-        "        errors.push(error.to_string());"
+        "pub fn resolve_authoring_from("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 840,
+      "line_end": 840,
+      "text": [
+        "    resolve_authoring_with_workspace_from(path, user, None, root, explicit)"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 849,
+      "line_end": 849,
+      "text": [
+        "pub fn resolve_authoring_with_workspace_from("
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 146,
+      "line_end": 146,
+      "text": [
+        "    if let Err(error) = crate::config::load_workspace_evidence(&root) {"
       ]
     },
     {
       "file": "src/main.rs",
-      "line_start": 100,
-      "line_end": 102,
+      "line_start": 101,
+      "line_end": 101,
       "text": [
-        "    ) {",
-        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;",
-        "    }"
+        "        habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;"
       ]
     },
     {
       "file": "src/authoring/access.rs",
-      "line_start": 65,
-      "line_end": 69,
+      "line_start": 1,
+      "line_end": 60,
       "text": [
-        "        }) {",
-        "            return Err(denied(format!(",
-        "                \"{} is disallowed by habeas.toml rule {}; update the workspace evidence policy before retrying\",",
-        "                requested.display(),",
-        "                rule.display()"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 123,
-      "line_end": 127,
-      "text": [
-        "        if generated_evidence_path(root, &requested) {",
-        "            return Err(denied(format!(",
-        "                \"{}: generated evidence is output, not assessment source; an explicit habeas.toml allow rule is required\",",
-        "                relative.display()",
-        "            )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 137,
-      "line_end": 141,
-      "text": [
-        "        if !lexical_request.starts_with(root) || !target.starts_with(root) {",
-        "            return Err(denied(format!(",
-        "                \"{} resolves outside the project; add an explicit habeas.toml allow rule before retrying\",",
-        "                relative.display()",
-        "            )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 146,
-      "line_end": 150,
-      "text": [
-        "                {",
-        "                    return Err(denied(format!(",
-        "                        \"{} contains no eligible sources; use git add to stage sources or update habeas.toml before retrying\",",
-        "                        relative.display()",
-        "                    )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 154,
-      "line_end": 158,
-      "text": [
-        "                    if !tracked.contains(path) {",
-        "                        return Err(denied(format!(",
-        "                            \"{} is not tracked by Git; use git add to stage it or add an explicit habeas.toml allow rule before retrying\",",
-        "                            path.strip_prefix(root).unwrap_or(path).display()",
-        "                        )));"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 537,
-      "line_end": 541,
-      "text": [
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        let external_toml = toml::Value::String(external.path().display().to_string());",
-        "        fs::write(root.path().join(\"habeas.toml\"), format!(",
-        "            \"version = 1\\n[evidence]\\nallow = ['generated', 'evidence', {external_toml}]\\ndisallow = ['generated/private']\\n\"",
-        "        )).unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 577,
-      "line_end": 590,
-      "text": [
-        "        let root = tempfile::tempdir().unwrap();",
-        "        let config = \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'fixture'\\napi_key = 'TEST_KEY'\\n\";",
-        "        fs::write(root.path().join(\"habeas.toml\"), config).unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        let error = access",
-        "            .file(root.path(), Path::new(\"habeas.toml\"))",
-        "            .unwrap_err();",
-        "        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);",
-        "        assert!(!error.to_string().contains(\"TEST_KEY\"));",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            format!(\"{config}\\n[evidence]\\nallow = ['habeas.toml']\\n\"),",
-        "        )",
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 592,
-      "line_end": 596,
-      "text": [
-        "            SourceAccess::load(root.path())",
-        "                .unwrap()",
-        "                .file(root.path(), Path::new(\"habeas.toml\"))",
-        "                .is_ok()",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 611,
-      "line_end": 615,
-      "text": [
-        "        std::os::unix::fs::symlink(\"../public\", root.path().join(\"private/link\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\nallow = ['public']\\ndisallow = ['private']\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 680,
-      "line_end": 684,
-      "text": [
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\nallow = ['alias/../private']\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 703,
-      "line_end": 707,
-      "text": [
-        "        );",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\nallow = ['.']\\ndisallow = ['alias/../private']\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 724,
-      "line_end": 728,
-      "text": [
-        "        );",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\nallow = ['actual/private']\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 368,
-      "line_end": 372,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(root.path().join(\"book.toml\"), \"[book]\\nsrc='md'\\n\").unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"md/requirements.md\"),"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 541,
-      "line_end": 545,
-      "text": [
-        "        let root = project();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \"Cargo.toml\", \"book.toml\"]);",
-        "        let error = AssessmentSources::prepare(root.path(), \"requirements.ready\")",
-        "            .err()"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 605,
-      "line_end": 609,
-      "text": [
-        "        let root = project();",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\ndisallow = ['md/requirements.md']\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 28,
-      "line_end": 32,
-      "text": [
-        "        json!({",
-        "            \"name\": \"habeas\",",
-        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\",",
-        "            \"parameters\": {\"type\":\"object\", \"properties\": {",
-        "                \"file\":{\"type\":\"string\"},"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 40,
-      "line_end": 44,
-      "text": [
-        "        }),",
-        "        json!({",
-        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\",",
-        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
-        "        }),"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 823,
-      "line_end": 827,
-      "text": [
-        "                .map(|entry| entry[\"path\"].as_str().unwrap())",
-        "                .collect::<Vec<_>>(),",
-        "            vec![\"Cargo.toml\", \"book.toml\", \"md\", \"staged.txt\", \"tracked-dir\"]",
-        "        );",
-        "        for (path, text) in ["
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 883,
-      "line_end": 887,
-      "text": [
-        "                \"add\",",
-        "                \"Cargo.toml\",",
-        "                \"book.toml\",",
-        "                \"md\",",
-        "                \"tracked.txt\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 954,
-      "line_end": 958,
-      "text": [
-        "        git(root.path(), &[\"add\", \".\"]);",
-        "        let external_toml = toml::Value::String(external.path().display().to_string());",
-        "        fs::write(root.path().join(\"habeas.toml\"), format!(",
-        "            \"version = 1\\n[evidence]\\nallow = ['generated', {external_toml}]\\ndisallow = ['generated/private']\\n\"",
-        "        )).unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1072,
-      "line_end": 1076,
-      "text": [
-        "        );",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\ndisallow = ['target/debug/build/fixture-hash/out']\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 1165,
-      "line_end": 1169,
-      "text": [
-        "        .unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n\\n[evidence]\\ndisallow = [\\\"private\\\"]\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 557,
-      "line_end": 566,
-      "text": [
+        "use std::collections::BTreeSet;",
+        "use std::fs;",
+        "use std::io;",
+        "use std::path::{Component, Path, PathBuf};",
+        "use std::process::Command;",
         "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path() -> io::Result<PathBuf> {",
-        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
+        "use super::inputs::generated_evidence_path;",
+        "",
+        "#[derive(Default)]",
+        "pub(crate) struct PathPolicy {",
+        "    allow: Vec<PathBuf>,",
+        "    disallow: Vec<PathBuf>,",
+        "    credential_file: Option<PathBuf>,",
         "}",
         "",
-        "// {impl}`requirements.configuration.user_location`",
-        "pub fn user_config_path_from(",
-        "    platform: ConfigPlatform,",
-        "    lookup: impl Fn(&str) -> Option<OsString>,"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 573,
-      "line_end": 577,
-      "text": [
-        "        },",
-        "    };",
-        "    Ok(base.join(\"habeas/config.toml\"))",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 623,
-      "line_end": 627,
-      "text": [
-        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
-        "    match fs::read_to_string(path) {",
-        "        Ok(text) => UserConfig::parse(&text, path).map(Some),",
-        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),",
-        "        Err(error) => Err(io::Error::new("
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 696,
-      "line_end": 700,
-      "text": [
-        "        .unwrap_or(root);",
-        "    for directory in start.ancestors() {",
-        "        let path = directory.join(\"habeas.toml\");",
-        "        match fs::symlink_metadata(&path) {",
-        "            Ok(_) => {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 204,
-      "line_end": 208,
-      "text": [
-        "// {impl}`requirements.ci.diagnostics`",
-        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
-        "    let path = root.join(\"book.toml\");",
-        "    let source = match fs::read_to_string(&path) {",
-        "        Ok(content) => match content.parse::<DocumentMut>() {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 212,
-      "line_end": 216,
-      "text": [
-        "                        Some(table) => Some(table),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book must be a table\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 222,
-      "line_end": 226,
-      "text": [
-        "                        Some(source) => source.to_owned(),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 230,
-      "line_end": 234,
-      "text": [
-        "            }",
-        "            Err(error) => {",
-        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
-        "                return root.join(\"md\");",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 236,
-      "line_end": 240,
-      "text": [
-        "        Err(error) => {",
-        "            errors.push(format!(",
-        "                \"book.toml: cannot read book configuration: {error}\"",
-        "            ));",
-        "            return root.join(\"md\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 247,
-      "line_end": 251,
-      "text": [
-        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
-        "    {",
-        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
-        "        return root.join(\"md\");",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1177,
-      "line_end": 1181,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1290,
-      "line_end": 1294,
-      "text": [
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        let mut updates = Vec::new();",
-        "        let inspected ="
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1313,
-      "line_end": 1317,
-      "text": [
-        "        let temp = TempDir::new().unwrap();",
-        "        let root = temp.path();",
-        "        let path = root.join(\"book.toml\");",
-        "        for (configuration, expected) in [",
-        "            (\"\", \"src\"),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1334,
-      "line_end": 1338,
-      "text": [
-        "            errors",
+        "impl PathPolicy {",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.configuration.workspace_location`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub(crate) fn load(root: &Path) -> io::Result<Self> {",
+        "        let Some(config) = crate::config::load_workspace_evidence(root)? else {",
+        "            return Ok(Self::default());",
+        "        };",
+        "        Ok(Self {",
+        "            allow: config",
+        "                .evidence",
+        "                .allow",
         "                .iter()",
-        "                .any(|error| error.contains(\"book.toml: cannot read book configuration\"))",
-        "        );",
-        "        for (configuration, expected) in ["
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 312,
-      "line_end": 316,
-      "text": [
-        "        definitions: &BTreeMap<String, Definition>,",
-        "    ) -> io::Result<()> {",
-        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
-        "        let source_links = SourceLinks::from_config(&config)?;",
-        "        let inspection = inspect_repository(root)?;"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 786,
-      "line_end": 790,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let requirements = [",
-        "            (\"ready\", \"Ready MUST work.\"),"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 974,
-      "line_end": 978,
-      "text": [
-        "                },",
-        "                {",
-        "                    \"file\": \"book.toml\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 1,"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1085,
-      "line_end": 1089,
-      "text": [
-        "            (\"readme.md\", \"markdown\"),",
-        "            (\"record.json\", \"json\"),",
-        "            (\"book.toml\", \"ini\"),",
-        "            (\"Main.java\", \"java\"),",
-        "            (\"app.js\", \"javascript\"),"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1209,
-      "line_end": 1213,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let source = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} pending\\nPending case. CITE`rules.ready`\\n:::\\n\\n:::{example} missing\\nMissing case. CITE`rules.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\");"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 33,
-      "line_end": 37,
-      "text": [
-        "    let root = cwd",
-        "        .ancestors()",
-        "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
-        "        .expect(\"cannot find Cargo and mdBook project root\");",
-        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 59,
-      "line_end": 63,
-      "text": [
-        "    cwd.ancestors()",
-        "        .find(|directory| {",
-        "            directory.join(\"Cargo.toml\").is_file() && directory.join(\"book.toml\").is_file()",
+        "                .map(|path| config.root.join(path))",
+        "                .collect(),",
+        "            disallow: config",
+        "                .evidence",
+        "                .disallow",
+        "                .iter()",
+        "                .map(|path| config.root.join(path))",
+        "                .collect(),",
+        "            credential_file: config.contains_credentials.then_some(config.path),",
         "        })",
-        "        .map(Path::to_path_buf)"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 68,
-      "line_end": 72,
-      "text": [
-        "    let cwd = std::env::current_dir()?;",
-        "    find_project_root(&cwd)",
-        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 93,
-      "line_end": 97,
-      "text": [
-        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
-        "    let root = project_root()?;",
-        "    let book_path = root.join(\"book.toml\");",
-        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_project`"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 189,
-      "line_end": 193,
-      "text": [
         "    }",
         "",
-        "    let book = match fs::read_to_string(root.join(\"book.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())"
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    pub(crate) fn allowed(&self, requested: &Path, target: &Path) -> bool {",
+        "        self.allow",
+        "            .iter()",
+        "            .any(|rule| matches_rule(rule, requested, target))",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.authoring.read_denial`",
+        "    pub(crate) fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {",
+        "        if self.disallow.is_empty() {",
+        "            return Ok(());",
+        "        }",
+        "        // Retain locations traversed before a symlink redirects the request. Resolving",
+        "        // each parent also preserves filesystem semantics for subsequent `..`.",
+        "        let locations: Vec<_> = requested",
+        "            .ancestors()",
+        "            .filter_map(|path| requested_location(path).ok())",
+        "            .collect();",
+        "        if let Some(rule) = self.disallow.iter().find(|rule| {"
       ]
     },
     {
       "file": "src/config.rs",
       "line_start": 1,
-      "line_end": 215,
+      "line_end": 330,
       "text": [
         "//! Saved configuration and resolution for evidence authoring.",
         "",
@@ -2284,182 +1997,865 @@
         "    // {impl}`requirements.configuration.loading`",
         "    // {impl}`requirements.authoring.configuration_storage`",
         "    // {impl}`requirements.authoring.configuration_serialization`",
-        "    // {impl}`requirements.authoring.concurrency`"
+        "    // {impl}`requirements.authoring.concurrency`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, \"\")?;",
+        "        config.validate(path)?;",
+        "        Ok(config)",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    pub fn to_toml(&self) -> io::Result<String> {",
+        "        self.validate(Path::new(\"user configuration\"))?;",
+        "        toml::to_string_pretty(self)",
+        "            .map_err(|error| invalid(Path::new(\"user configuration\"), \"\", error))",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {",
+        "            return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "        }",
+        "        if let Some(authoring) = &self.authoring {",
+        "            authoring.validate(path)?;",
+        "        }",
+        "        Ok(())",
+        "    }",
+        "}",
+        "",
+        "impl WorkspaceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    pub fn parse(text: &str, path: &Path) -> io::Result<Self> {",
+        "        let table = parse_document(text, path)?;",
+        "        validate_workspace_common(&table, path)?;",
+        "        let config: Self = decode(toml::Value::Table(table), path, \"\")?;",
+        "        config.validate(path)?;",
+        "        Ok(config)",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.serialization`",
+        "    // {impl}`requirements.authoring.configuration_serialization`",
+        "    pub fn to_toml(&self) -> io::Result<String> {",
+        "        self.validate(Path::new(\"workspace configuration\"))?;",
+        "        toml::to_string_pretty(self).map_err(|_| {",
+        "            invalid(",
+        "                Path::new(\"workspace configuration\"),",
+        "                \"\",",
+        "                \"cannot serialize configuration\",",
+        "            )",
+        "        })",
+        "    }",
+        "",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {",
+        "            return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "        }",
+        "        if let Some(authoring) = &self.authoring {",
+        "            if let Some(name) = &authoring.default {",
+        "                validate_name(path, \"authoring.default\", name)?;",
+        "            }",
+        "            for (name, config) in &authoring.configs {",
+        "                let setting = format!(\"authoring.configs.{name}\");",
+        "                validate_name(path, &setting, name)?;",
+        "                config.backend.validate(path, &setting)?;",
+        "            }",
+        "        }",
+        "        if let Some(evidence) = &self.evidence {",
+        "            evidence.validate(path)?;",
+        "        }",
+        "        Ok(())",
+        "    }",
+        "}",
+        "",
+        "impl EvidenceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        for (field, paths) in [(\"allow\", &self.allow), (\"disallow\", &self.disallow)] {",
+        "            for (index, entry) in paths.iter().enumerate() {",
+        "                if entry.as_os_str().is_empty() || entry.to_string_lossy().contains('\\0') {",
+        "                    return Err(invalid(",
+        "                        path,",
+        "                        &format!(\"evidence.{field}[{index}]\"),",
+        "                        \"expected a nonempty path without NUL\",",
+        "                    ));",
+        "                }",
+        "            }",
+        "        }",
+        "        Ok(())",
+        "    }",
+        "}",
+        "",
+        "impl ProjectConfig {",
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {",
+        "        let book: toml::Table = toml::from_str(text).map_err(|error| invalid(path, \"\", error))?;",
+        "        book.get(\"habeas\")",
+        "            .map(|value| {",
+        "                value",
+        "                    .clone()",
+        "                    .try_into()",
+        "                    .map_err(|error| invalid(path, \"habeas\", error))",
+        "            })"
       ]
     },
     {
-      "file": "md/requirements/configuration.md",
-      "line_start": 1,
-      "line_end": 54,
+      "file": "src/config.rs",
+      "line_start": 540,
+      "line_end": 640,
       "text": [
-        "# Configuration",
+        "}",
         "",
-        "Habeas uses a shared user configuration file and workspace settings in `habeas.toml`.",
-        "This chapter defines their locations, common structure, and loading rules. Each",
-        "configurable feature defines its own section, data structures, defaults, and",
-        "resolution rules, and cites these shared requirements.",
-        "Persistent activity history uses the user state directory defined here.",
+        "impl ResolvedAuthoringConfig {",
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    pub fn model_ref(&self) -> ModelRef {",
+        "        self.backend.model_ref()",
+        "    }",
         "",
-        "Users create and edit the files with a text editor. A configuration-management",
-        "command is not needed.",
+        "    // {impl}`requirements.authoring.concurrency`",
+        "    pub fn effective_concurrency(&self) -> usize {",
+        "        self.concurrency",
+        "            .map(NonZeroUsize::get)",
+        "            .unwrap_or_else(|| match &self.backend {",
+        "                BackendConfig::Bedrock(_) => std::thread::available_parallelism()",
+        "                    .map(NonZeroUsize::get)",
+        "                    .unwrap_or(1),",
+        "                BackendConfig::Ollama(_) => 1,",
+        "            })",
+        "    }",
+        "}",
         "",
-        "## Locations and scope",
+        "// {impl}`requirements.configuration.user_location`",
+        "pub fn user_config_path() -> io::Result<PathBuf> {",
+        "    user_config_path_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
+        "}",
         "",
-        ":::{req} user_location",
-        "Habeas MUST locate its per-user configuration at",
-        "`$XDG_CONFIG_HOME/habeas/config.toml` on Unix when XDG_CONFIG_HOME is an absolute,",
-        "nonempty path, otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST",
-        "use `%APPDATA%/habeas/config.toml`. If the required base directory cannot be",
-        "determined, an operation requiring user configuration MUST fail with an",
-        "explanatory diagnostic.",
+        "// {impl}`requirements.configuration.user_location`",
+        "pub fn user_config_path_from(",
+        "    platform: ConfigPlatform,",
+        "    lookup: impl Fn(&str) -> Option<OsString>,",
+        ") -> io::Result<PathBuf> {",
+        "    let base = match platform {",
+        "        ConfigPlatform::Windows => required_directory(&lookup, \"APPDATA\")?,",
+        "        ConfigPlatform::Unix => match absolute_directory(&lookup, \"XDG_CONFIG_HOME\") {",
+        "            Some(path) => path,",
+        "            None => required_directory(&lookup, \"HOME\")?.join(\".config\"),",
+        "        },",
+        "    };",
+        "    Ok(base.join(\"habeas/config.toml\"))",
+        "}",
         "",
-        "The same user configuration MUST be usable across projects. Its location MUST",
-        "NOT be selected relative to the current project or changed by project settings.",
-        "User-local preferences for a project MAY remain in the user configuration;",
-        "workspace settings MUST use `habeas.toml` under",
-        "{cite}`requirements.configuration.workspace_location`.",
-        ":::",
+        "// {impl}`requirements.configuration.state_location`",
+        "pub fn state_root() -> io::Result<PathBuf> {",
+        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
+        "}",
         "",
-        ":::{req} workspace_location",
-        "Habeas MUST search from its invocation directory upward for the nearest enclosing",
-        "`habeas.toml`. It MUST use that file alone, without merging ancestor workspace",
-        "files. A library operation given a project root MUST search from that root unless",
-        "its current directory is inside the project, in which case it MUST start there.",
-        "The directory containing the selected file defines the base for its relative",
-        "paths; it does not replace the Cargo and mdBook project root. A missing file MUST",
-        "mean absent workspace settings. Discovery MUST report unreadable candidate files",
-        "rather than silently selecting an ancestor. Loading MUST NOT create the file.",
-        ":::",
+        "// {impl}`requirements.configuration.state_location`",
+        "pub fn state_root_from(",
+        "    platform: ConfigPlatform,",
+        "    lookup: impl Fn(&str) -> Option<OsString>,",
+        ") -> io::Result<PathBuf> {",
+        "    match platform {",
+        "        ConfigPlatform::Windows => {",
+        "            Ok(required_directory(&lookup, \"LOCALAPPDATA\")?.join(\"habeas/state\"))",
+        "        }",
+        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
+        "            Some(path) => path.join(\"habeas\"),",
+        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),",
+        "        }),",
+        "    }",
+        "}",
         "",
-        "### Persistent state",
+        "// {impl}`requirements.configuration.user_location`",
+        "// {impl}`requirements.configuration.state_location`",
+        "fn absolute_directory(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {",
+        "    lookup(name)",
+        "        .map(PathBuf::from)",
+        "        .filter(|path| path.is_absolute())",
+        "}",
         "",
-        "Usage history belongs in the state directory described by the",
-        "[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/#variables).",
+        "// {impl}`requirements.configuration.user_location`",
+        "// {impl}`requirements.configuration.state_location`",
+        "fn required_directory(",
+        "    lookup: &impl Fn(&str) -> Option<OsString>,",
+        "    name: &str,",
+        ") -> io::Result<PathBuf> {",
+        "    absolute_directory(lookup, name).ok_or_else(|| {",
+        "        io::Error::new(",
+        "            io::ErrorKind::NotFound,",
+        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
+        "        )",
+        "    })",
+        "}",
         "",
-        ":::{req} state_location",
-        "Habeas MUST store persistent per-user activity state under",
-        "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
-        "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
-        "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
-        "state root and document their record formats and locations.",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.configuration.serialization`",
+        "pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {",
+        "    match fs::read_to_string(path) {",
+        "        Ok(text) => UserConfig::parse(&text, path).map(Some),",
+        "        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),",
+        "        Err(error) => Err(io::Error::new(",
+        "            error.kind(),",
+        "            format!(\"{}: {error}\", path.display()),",
+        "        )),",
+        "    }",
+        "}",
         "",
-        "State MUST persist across invocations and MUST NOT be stored in the project",
-        "repository, the configuration file, or a disposable cache directory. Habeas MUST",
-        "create the required directories when recording state. If it cannot determine or"
+        "// {impl}`requirements.configuration.workspace_location`",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.serialization`"
       ]
     },
     {
-      "file": "md/requirements/configuration.md",
-      "line_start": 64,
-      "line_end": 138,
+      "file": "src/config.rs",
+      "line_start": 760,
+      "line_end": 812,
       "text": [
-        "",
-        "```text",
-        "UserConfig {",
-        "    version: Integer,                         // exactly 1",
-        "    authoring: Optional<UserAuthoringConfig>,  // defined by evidence authoring",
+        "    let mut secrets = Vec::new();",
+        "    credential_values(&value, false, &mut secrets);",
+        "    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));",
+        "    value.try_into().map_err(|mut error: toml::de::Error| {",
+        "        error.set_input(None);",
+        "        let mut message = error.to_string();",
+        "        for secret in secrets {",
+        "            if !secret.is_empty() {",
+        "                message = message",
+        "                    .replace(&format!(\"{secret:?}\"), \"<redacted>\")",
+        "                    .replace(&secret, \"<redacted>\");",
+        "            }",
+        "        }",
+        "        invalid(path, setting, message)",
+        "    })",
         "}",
         "",
-        "WorkspaceConfig {",
-        "    version: Integer,                              // exactly 1",
-        "    authoring: Optional<WorkspaceAuthoringConfig>,  // defined by evidence authoring",
-        "    evidence: Optional<EvidenceConfig>,",
+        "// {impl}`requirements.authoring.credentials`",
+        "fn credential_values(value: &toml::Value, secret: bool, output: &mut Vec<String>) {",
+        "    match value {",
+        "        toml::Value::String(value) if secret => output.push(value.clone()),",
+        "        toml::Value::Integer(_)",
+        "        | toml::Value::Float(_)",
+        "        | toml::Value::Boolean(_)",
+        "        | toml::Value::Datetime(_)",
+        "            if secret =>",
+        "        {",
+        "            output.push(value.to_string())",
+        "        }",
+        "        toml::Value::Table(table) => {",
+        "            for (key, value) in table {",
+        "                credential_values(",
+        "                    value,",
+        "                    secret || matches!(key.as_str(), \"credentials\" | \"api_key\"),",
+        "                    output,",
+        "                );",
+        "            }",
+        "        }",
+        "        toml::Value::Array(values) => {",
+        "            for value in values {",
+        "                credential_values(value, secret, output);",
+        "            }",
+        "        }",
+        "        _ => {}",
+        "    }",
         "}",
         "",
-        "EvidenceConfig {",
-        "    allow: Array<Path>,                            // omitted means empty",
-        "    disallow: Array<Path>,                         // omitted means empty",
-        "}",
-        "```",
-        "",
-        "`UserConfig` is the root of the user file. `WorkspaceConfig` is the root of",
-        "`habeas.toml`; `book.toml` remains mdBook configuration. Adding a configurable",
-        "feature adds a named, typed optional field to the",
-        "applicable structure. These are explicitly defined fields, not an unrestricted",
-        "map of arbitrary settings.",
-        "",
-        ":::{req} structure",
-        "The user configuration file MUST be UTF-8 TOML serializing UserConfig. It MUST",
-        "contain `version = 1` and MAY contain the documented feature tables. The common",
-        "root MUST contain only the schema version and those feature tables; feature",
-        "settings MUST NOT occupy unscoped root keys. A user file containing only",
-        "`version = 1` MUST be valid common configuration.",
-        "",
-        "Workspace configuration MUST follow {cite}`requirements.configuration.workspace_structure`.",
-        "The absence of an optional feature section MUST be distinguishable",
-        "from that feature's explicit settings and interpreted according to its own",
-        "requirements.",
-        ":::",
-        "",
-        ":::{req} workspace_structure",
-        "`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.",
-        "Its supported feature tables are `[authoring]` and `[evidence]`; either MAY be",
-        "absent. Unknown common keys, unsupported versions, invalid field types, and",
-        "invalid TOML MUST produce a diagnostic identifying the file and setting.",
-        "Features MUST define their own data structures and loading rules under",
-        "{cite}`requirements.configuration.feature_sections`. A file containing only",
-        "`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table",
-        "inside `book.toml`.",
-        ":::",
-        "",
-        ":::{req} evidence_paths",
-        "The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and",
-        "`disallow` MUST be arrays of nonempty literal paths, each naming a file or a",
-        "directory subtree. Relative paths MUST resolve from the selected `habeas.toml`",
-        "directory; absolute paths MUST be supported. These paths are not glob patterns.",
-        "",
-        "For authoring reads, a matching disallow MUST reject the path; otherwise a",
-        "matching allow MUST permit it; otherwise the default source-access rules MUST",
-        "apply. Explicit allow MUST override every default, including Git tracking,",
-        "project containment, generated-evidence exclusion, and automatic generated-output",
-        "rules. Disallow MUST win even when an allow or generated-output rule also matches.",
-        "Both the requested path and its resolved symlink target MUST be checked for",
-        "disallow, so an allowed alias cannot expose a disallowed target.",
-        "",
-        "The same explicit disallow rules and external-path exceptions MUST apply when",
-        "resolving recorded evidence inputs, including ordinary validation and",
-        "`add-input`. Validation MUST remain independent of Git index membership: it",
-        "checks the recorded inputs' existence and contents. Loading path policy MUST NOT",
-        "resolve credentials or validate unused authoring settings.",
-        ":::",
-        "",
-        "For example, this is a complete user file with no feature settings:",
-        "",
-        "```toml",
-        "version = 1",
-        "```"
+        "// {impl}`requirements.authoring.configuration`",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.configuration.structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "pub fn resolve_authoring("
       ]
     },
     {
-      "file": "src/hook.rs",
-      "line_start": 2,
-      "line_end": 26,
+      "file": "src/config.rs",
+      "line_start": 905,
+      "line_end": 951,
       "text": [
-        "use std::io;",
-        "use std::path::{Path, PathBuf};",
+        "        .or_else(|| {",
+        "            authoring",
+        "                .and_then(|authoring| authoring.configs.get(selected))",
+        "                .map(|config| (path, config))",
+        "        });",
+        "    let (source_path, config) = configured.ok_or_else(|| {",
+        "        invalid(",
+        "            diagnostic_path,",
+        "            \"authoring\",",
+        "            format!(\"unknown configuration {selected:?}; {CONFIG_EXAMPLES}\"),",
+        "        )",
+        "    })?;",
+        "    Ok(ResolvedAuthoringConfig {",
+        "        config_path: source_path.to_owned(),",
+        "        project_root,",
+        "        name: selected.to_owned(),",
+        "        concurrency: config.concurrency,",
+        "        backend: config.backend.clone(),",
+        "    })",
+        "}",
         "",
-        "use serde_json::{Value, json};",
-        "",
-        "use crate::setup;",
-        "",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "pub(crate) fn session_start() -> Result<(), Box<dyn Error>> {",
-        "    let input: Value = serde_json::from_reader(io::stdin()).unwrap_or(Value::Null);",
-        "    let response = session_start_response(&input, &std::env::current_dir()?);",
-        "    serde_json::to_writer(io::stdout().lock(), &response)?;",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "fn validate_name(path: &Path, setting: &str, name: &str) -> io::Result<()> {",
+        "    if name",
+        "        .as_bytes()",
+        "        .first()",
+        "        .is_none_or(|first| !first.is_ascii_alphanumeric())",
+        "        || !name",
+        "            .bytes()",
+        "            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')",
+        "    {",
+        "        return Err(invalid(",
+        "            path,",
+        "            setting,",
+        "            \"configuration names must match [A-Za-z0-9][A-Za-z0-9_-]*\",",
+        "        ));",
+        "    }",
         "    Ok(())",
         "}",
         "",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn session_start_response(input: &Value, fallback_cwd: &Path) -> Value {",
-        "    let Some(event) = input.get(\"SessionStart\") else {",
-        "        return json!({\"SessionStart\": {}});",
-        "    };",
-        "    let cwd = event",
-        "        .get(\"cwd\")",
-        "        .and_then(Value::as_str)",
-        "        .map(PathBuf::from)",
-        "        .unwrap_or_else(|| fallback_cwd.to_path_buf());"
+        "// {impl}`requirements.configuration.loading`",
+        "fn invalid(path: &Path, setting: &str, message: impl std::fmt::Display) -> io::Error {",
+        "    io::Error::new(",
+        "        io::ErrorKind::InvalidInput,",
+        "        format!(\"{}: {setting}: {message}\", path.display()),",
+        "    )",
+        "}"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 231,
+      "line_end": 239,
+      "text": [
+        "",
+        "    // {impl}`requirements.configuration.structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {",
+        "            return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "        }",
+        "        if let Some(authoring) = &self.authoring {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 273,
+      "line_end": 281,
+      "text": [
+        "",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if self.version != 1 {",
+        "            return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "        }",
+        "        if let Some(authoring) = &self.authoring {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 298,
+      "line_end": 306,
+      "text": [
+        "impl EvidenceConfig {",
+        "    // {impl}`requirements.configuration.workspace_structure`",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        for (field, paths) in [(\"allow\", &self.allow), (\"disallow\", &self.disallow)] {",
+        "            for (index, entry) in paths.iter().enumerate() {",
+        "                if entry.as_os_str().is_empty() || entry.to_string_lossy().contains('\\0') {",
+        "                    return Err(invalid("
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 334,
+      "line_end": 342,
+      "text": [
+        "",
+        "impl UserAuthoringConfig {",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    pub fn validate(&self, path: &Path) -> io::Result<()> {",
+        "        if let Some(name) = &self.default {",
+        "            validate_name(path, \"authoring.default\", name)?;",
+        "        }",
+        "        for (name, config) in &self.configs {"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 398,
+      "line_end": 406,
+      "text": [
+        "",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.configuration.loading`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {",
+        "        if self.model_ref().model.is_empty() {",
+        "            return Err(invalid(",
+        "                path,",
+        "                &format!(\"{setting}.model\"),"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 492,
+      "line_end": 500,
+      "text": [
+        "",
+        "impl OptionValue {",
+        "    // {impl}`requirements.authoring.configuration_structure`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    fn validate(&self) -> io::Result<()> {",
+        "        match self {",
+        "            Self::Float(value) if !value.is_finite() => Err(io::Error::new(",
+        "                io::ErrorKind::InvalidInput,",
+        "                \"inference option floats must be finite\","
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 723,
+      "line_end": 731,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.configuration.workspace_structure`",
+        "// {impl}`requirements.configuration.loading`",
+        "fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()> {",
+        "    if table.get(\"version\").and_then(toml::Value::as_integer) != Some(1) {",
+        "        return Err(invalid(path, \"version\", \"expected version = 1\"));",
+        "    }",
+        "    if let Some(key) = table"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 923,
+      "line_end": 931,
+      "text": [
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.configuration_storage`",
+        "fn validate_name(path: &Path, setting: &str, name: &str) -> io::Result<()> {",
+        "    if name",
+        "        .as_bytes()",
+        "        .first()",
+        "        .is_none_or(|first| !first.is_ascii_alphanumeric())"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 1109,
+      "line_end": 1115,
+      "text": [
+        "        let stderr = String::from_utf8_lossy(&output.stderr);",
+        "        assert!(stderr.contains(location), \"{stderr}\");",
+        "        assert!(stderr.contains(diagnostic), \"{stderr}\");",
+        "        assert!(!stderr.contains(\"no authoring configuration\"), \"{stderr}\");",
+        "        assert!(!fixture.state.exists());",
+        "        assert!(!fixture.project.join(\"evidence\").exists());",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 260,
+      "line_end": 266,
+      "text": [
+        "        resolve_authoring_from(&config_path, None, &root, None)",
+        "            .unwrap_err()",
+        "            .to_string()",
+        "            .contains(\"no authoring configuration\")",
+        "    );",
+        "}",
+        ""
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 233,
+      "line_end": 239,
+      "text": [
+        "fn live_test_prerequisites_are_checked_without_inference() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let root = temp.path();",
+        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
+        "    let config_path = root.join(\"config/habeas/config.toml\");",
+        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
+        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 8,
+      "line_end": 12,
+      "text": [
+        "",
+        "#[derive(Default)]",
+        "pub(crate) struct PathPolicy {",
+        "    allow: Vec<PathBuf>,",
+        "    disallow: Vec<PathBuf>,"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 14,
+      "line_end": 18,
+      "text": [
+        "}",
+        "",
+        "impl PathPolicy {",
+        "    // {impl}`requirements.configuration.evidence_paths`",
+        "    // {impl}`requirements.configuration.workspace_location`"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 86,
+      "line_end": 90,
+      "text": [
+        "pub(crate) struct SourceAccess {",
+        "    tracked: Option<BTreeSet<PathBuf>>,",
+        "    policy: PathPolicy,",
+        "    generated: Vec<PathBuf>,",
+        "}"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 97,
+      "line_end": 101,
+      "text": [
+        "        Ok(Self {",
+        "            tracked: tracked_sources(root)?,",
+        "            policy: PathPolicy::load(root)?,",
+        "            generated: generated_roots(root),",
+        "        })"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 425,
+      "line_end": 429,
+      "text": [
+        "    let root = fs::canonicalize(root)?;",
+        "    let (requested, target) = resolve(&root, Path::new(file))?;",
+        "    let policy = PathPolicy::load(&root)?;",
+        "    policy.check_disallow(&root.join(file), &target)?;",
+        "    if (!requested.starts_with(&root) || !target.starts_with(&root))"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 275,
+      "line_end": 281,
+      "text": [
+        "            \"[package]\\nname = 'batch-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "        fs::write(",
+        "            project.join(\"md/SUMMARY.md\"),",
+        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n\","
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 130,
+      "line_end": 136,
+      "text": [
+        "            \"[package]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "        fs::write(",
+        "            project.join(\"md/SUMMARY.md\"),",
+        "            \"# Summary\\n\\n- [Requirements](requirements.md)\\n- [Terms](terms.md)\\n\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 17,
+      "line_end": 23,
+      "text": [
+        "        \"[package]\\nname = \\\"fixture\\\"\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "    let requirements = [",
+        "        (\"ready\", \"Ready MUST work.\"),"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 128,
+      "line_end": 134,
+      "text": [
+        "        \"[package]\\nname = 'fixture'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "    let example = \"A concrete case. CITE`rules.alpha`.\".replace(\"CITE\", \"{cite}\");",
+        "    let declarations = [",
+        "        ("
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 574,
+      "line_end": 580,
+      "text": [
+        "    assert!(!status.status.success(), \"{status:?}\");",
+        "    assert!(",
+        "        String::from_utf8_lossy(&status.stderr)",
+        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
+        "        \"{status:?}\"",
+        "    );",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 788,
+      "line_end": 794,
+      "text": [
+        "        \"[package]\\nname = \\\"fixture\\\"\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"md/rules.md\"),",
+        "        \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it works. CITE`rules.ready`\\n:::\\n\".replace(\"CITE\", \"{cite}\"),"
+      ]
+    },
+    {
+      "file": "tests/definitions.rs",
+      "line_start": 13,
+      "line_end": 19,
+      "text": [
+        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
+        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"Cargo.toml\"),",
+        "        \"[package]\\nname = 'fixture'\\n\","
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 15,
+      "line_end": 21,
+      "text": [
+        "        fs::create_dir_all(root.join(directory)).unwrap();",
+        "    }",
+        "    fs::write(root.join(\"Cargo.toml\"), \"[package]\\nname = 'fixture'\\n\").unwrap();",
+        "    fs::write(root.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "    fs::write(",
+        "        root.join(\"md/rules.md\"),",
+        "        \":::{req} ready\\nRead the data.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 143,
+      "line_end": 149,
+      "text": [
+        "        \"[package]\\nname = 'live-fixture'\\nversion = '0.1.0'\\nedition = '2024'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "    fs::write(",
+        "        project.join(\"md/SUMMARY.md\"),",
+        "        \"# Summary\\n\\n- [Requirements](requirements.md)\\n\","
+      ]
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "line_start": 17,
+      "line_end": 23,
+      "text": [
+        "        \"[package]\\nname = 'fixture'\\n\",",
+        "    )",
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
+        "    let example = \"Timeout handling retries. CITE`requirements.ready`\".replace(\"CITE\", \"{cite}\");",
+        "    let example_lines = vec![",
+        "        \":::{example} timeout\".to_owned(),"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 19,
+      "line_end": 25,
+      "text": [
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"book.toml\"),",
+        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
+        "    )",
+        "    .unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 91,
+      "line_end": 97,
+      "text": [
+        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
+        "    assert!(cargo.contains(\"habeas\"));",
+        "    assert!(cargo.contains(\"path = \"));",
+        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
+        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
+        "    assert!(book.contains(\"md/habeas.css\"));",
+        "    assert!(book.contains(\"md/custom.css\"));"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 125,
+      "line_end": 136,
+      "text": [
+        "        let temp = fixture();",
+        "        let project = temp.path();",
+        "        fs::write(",
+        "            project.join(\"book.toml\"),",
+        "            format!(\"[book]\\nsrc = \\\"md\\\"\\n\\n{configuration}\"),",
+        "        )",
+        "        .unwrap();",
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        let book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
+        "            .unwrap()",
+        "            .parse()",
+        "            .unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 170,
+      "line_end": 186,
+      "text": [
+        "    for configuration in [\"\", \"[book]\\ntitle = 'Example'\\n\"] {",
+        "        let temp = fixture();",
+        "        let project = temp.path();",
+        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
+        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
+        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
+        "        assert!(project.join(\"src/habeas.css\").is_file());",
+        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
+        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
+        "            .unwrap()",
+        "            .parse()",
+        "            .unwrap();",
+        "        book[\"book\"][\"src\"] = toml_edit::value(7);",
+        "        fs::write(project.join(\"book.toml\"), book.to_string()).unwrap();",
+        "        assert!(session_start(project, project)[\"SessionStart\"][\"additionalContext\"].is_string());",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 212,
+      "line_end": 218,
+      "text": [
+        "            \"output.html.fold must be a table\",",
+        "        ),",
+        "    ] {",
+        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
+        "        let output = Command::new(binary)",
+        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
+        "            .current_dir(project)"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 228,
+      "line_end": 234,
+      "text": [
+        "        );",
+        "    }",
+        "",
+        "    fs::write(project.join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
+        "    fs::remove_file(project.join(\"md/SUMMARY.md\")).unwrap();",
+        "    let output = Command::new(binary)",
+        "        .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 258,
+      "line_end": 264,
+      "text": [
+        "",
+        "    let css = project.join(\"md/habeas.css\");",
+        "    fs::remove_file(&css).unwrap();",
+        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
+        "    let response = session_start(project, &nested);",
+        "    let context = response[\"SessionStart\"][\"additionalContext\"]",
+        "        .as_str()"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 266,
+      "line_end": 282,
+      "text": [
+        "    assert!(context.contains(\"Habeas Codicem is not fully configured\"));",
+        "    assert!(context.contains(\"habeas setup\"));",
+        "    assert!(!css.exists(), \"the hook must not recreate the stylesheet\");",
+        "    assert_eq!(fs::read_to_string(project.join(\"book.toml\")).unwrap(), book);",
+        "",
+        "    fs::write(&css, include_str!(\"../md/habeas.css\")).unwrap();",
+        "    fs::write(",
+        "        project.join(\"book.toml\"),",
+        "        book.replace(\"habeas mdbook\", \"wrong-preprocessor\"),",
+        "    )",
+        "    .unwrap();",
+        "    let response = session_start(project, &nested);",
+        "    assert!(response[\"SessionStart\"][\"additionalContext\"].is_string());",
+        "",
+        "    fs::remove_file(project.join(\"book.toml\")).unwrap();",
+        "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "line_start": 114,
+      "line_end": 120,
+      "text": [
+        "            f\"habeas = {{ path = {json.dumps(str(local_crate))} }}\\n\"",
+        "        )",
+        "        (project / \"Cargo.lock\").write_bytes((repo / \"Cargo.lock\").read_bytes())",
+        "        (project / \"book.toml\").write_text('[book]\\nsrc = \"md\"\\n')",
+        "        (project / \"md\" / \"SUMMARY.md\").write_text(\"# Summary\\n\")",
+        "        (project / \"src\" / \"lib.rs\").write_text(\"\")",
+        "        (symposium_home / \"config.toml\").write_text("
       ]
     }
   ]
