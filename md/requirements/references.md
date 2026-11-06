@@ -113,8 +113,12 @@ its outline-relevant structure: the kinds of its named grammar nodes and the tex
 of its leaf tokens, in source order, including siblings its profile attaches to
 it. It MUST exclude whitespace and comments, except comment kinds its profile
 includes; the Rust profile MUST include doc comments. Prose, namely Markdown
-text and hashed comments, MUST be hashed as its sequence of
-whitespace-separated words, so reflowing it does not change the hash; code
+text and the text of hashed comments, MUST be hashed as its sequence of words,
+where any run of whitespace separates words and word boundaries are preserved,
+so `ab cd` and `abcd` differ. Comment delimiters, such as `//`, `///`, `//!`,
+`/*`, `*/`, and a leading `*` on a continuation line, MUST NOT be part of a
+hashed comment's text, so reflowing a comment run across more or fewer lines
+does not change the hash; code
 string literals MUST be hashed as written. A `line` node's hash MUST be the
 digest of the line's text without leading and trailing whitespace. A node's
 identity hash MUST be computed the same way but MUST also exclude its outline
