@@ -17,53 +17,113 @@ fn report(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr().lock(), "{message}");
 }
 
+/// The configuration the live test uses, and the `habeas.toml` text that gives
+/// the fixture project the checkout's workspace authoring configurations.
+// {test}`requirements.integration.live_bedrock_test`
+struct LiveSelection {
+    config: ResolvedAuthoringConfig,
+    workspace: Option<String>,
+}
+
 // {test}`requirements.integration.live_bedrock_test`
 // {test}`requirements.authoring.configuration_precedence`
-fn selected_config() -> Result<Option<ResolvedAuthoringConfig>, Box<dyn Error>> {
+fn selected_config() -> Result<Option<LiveSelection>, Box<dyn Error>> {
     let root = fs::canonicalize(env!("CARGO_MANIFEST_DIR"))?;
-    let path = config::user_config_path()?;
-    let user = config::load_user_config(&path)?;
     let explicit = match std::env::var("HABEAS_LIVE_CONFIG") {
         Ok(name) => Some(name),
         Err(std::env::VarError::NotPresent) => None,
         Err(error) => return Err(error.into()),
     };
-    let Some(authoring) = user.as_ref().and_then(|user| user.authoring.as_ref()) else {
-        return if explicit.is_some() {
-            config::resolve_authoring_from(&path, user.as_ref(), &root, explicit.as_deref())
-                .map(Some)
-                .map_err(Into::into)
-        } else {
-            Ok(None)
-        };
+    select_config(&config::user_config_path()?, &root, explicit.as_deref())
+}
+
+/// Selects a Bedrock configuration from the user file at `path` and the
+/// workspace configuration of `root`: an explicit name, else the selection
+/// authoring would make for `root` when it is Bedrock, else the first Bedrock
+/// configuration in name order.
+// {test}`requirements.integration.live_bedrock_test`
+// {test}`requirements.authoring.configuration_precedence`
+fn select_config(
+    path: &Path,
+    root: &Path,
+    explicit: Option<&str>,
+) -> Result<Option<LiveSelection>, Box<dyn Error>> {
+    let user = config::load_user_config(path)?;
+    let workspace = config::load_workspace_config(root)?;
+    let resolve = |name: &str| {
+        config::resolve_authoring_with_workspace_from(
+            path,
+            user.as_ref(),
+            workspace.as_ref(),
+            root,
+            Some(name),
+        )
     };
-    let preferred = explicit
-        .as_deref()
-        .or_else(|| {
-            authoring
-                .projects
-                .get(&root)
-                .map(|entry| entry.config.as_str())
-        })
-        .or(authoring.default.as_deref());
-    if let Some(name) = preferred {
-        let selected = config::resolve_authoring_from(&path, user.as_ref(), &root, Some(name))?;
-        if matches!(selected.backend, BackendConfig::Bedrock(_)) {
-            return Ok(Some(selected));
-        }
-        if explicit.is_some() {
+    let bedrock =
+        |selected: &ResolvedAuthoringConfig| matches!(selected.backend, BackendConfig::Bedrock(_));
+    let authoring = user.as_ref().and_then(|user| user.authoring.as_ref());
+    let local = workspace
+        .as_ref()
+        .and_then(|workspace| workspace.config.authoring.as_ref());
+    let selected = if let Some(name) = explicit {
+        let selected = resolve(name)?;
+        if !bedrock(&selected) {
             return Err(
                 format!("HABEAS_LIVE_CONFIG={name:?} must select a Bedrock configuration").into(),
             );
         }
-    }
-    let name = authoring.configs.iter().find_map(|(name, config)| {
-        matches!(config.backend, BackendConfig::Bedrock(_)).then_some(name)
-    });
-    name.map(|name| {
-        config::resolve_authoring_from(&path, user.as_ref(), &root, Some(name)).map_err(Into::into)
-    })
-    .transpose()
+        Some(selected)
+    } else {
+        // The same precedence as authoring: the user's selection for this
+        // project, then the workspace default, then the user default.
+        let preferred = authoring
+            .and_then(|authoring| authoring.projects.get(root))
+            .map(|selection| selection.config.as_str())
+            .or_else(|| local.and_then(|local| local.default.as_deref()))
+            .or_else(|| authoring.and_then(|authoring| authoring.default.as_deref()));
+        let preferred = preferred
+            .map(resolve)
+            .transpose()?
+            .filter(|selected| bedrock(selected));
+        match preferred {
+            Some(selected) => Some(selected),
+            None => {
+                let names = local
+                    .into_iter()
+                    .flat_map(|local| local.configs.keys())
+                    .chain(
+                        authoring
+                            .into_iter()
+                            .flat_map(|authoring| authoring.configs.keys()),
+                    )
+                    .collect::<std::collections::BTreeSet<_>>();
+                let mut first = None;
+                for name in names {
+                    let selected = resolve(name)?;
+                    if bedrock(&selected) {
+                        first = Some(selected);
+                        break;
+                    }
+                }
+                first
+            }
+        }
+    };
+    let Some(config) = selected else {
+        return Ok(None);
+    };
+    // The fixture project resolves `--config` against the same workspace
+    // configurations as the checkout; other workspace settings stay behind.
+    let workspace = match &workspace {
+        Some(workspace) if workspace.config.authoring.is_some() => {
+            let text = fs::read_to_string(&workspace.path)?;
+            let mut table: toml::Table = toml::from_str(&text)?;
+            table.retain(|key, _| key == "version" || key == "authoring");
+            Some(toml::to_string(&table)?)
+        }
+        _ => None,
+    };
+    Ok(Some(LiveSelection { config, workspace }))
 }
 
 // {test}`requirements.integration.live_bedrock_test`
@@ -119,7 +179,10 @@ fn live_bedrock_authoring() {
         report("warning: skipping live Bedrock test: CI is set");
         return;
     }
-    let selected = selected_config()
+    let LiveSelection {
+        config: selected,
+        workspace,
+    } = selected_config()
         .expect("cannot select live Bedrock configuration")
         .expect("no Bedrock authoring configuration; add one to your Habeas user config (see md/reference.md), or set CI=1 to disable live testing");
     let BackendConfig::Bedrock(backend) = &selected.backend else {
@@ -144,6 +207,9 @@ fn live_bedrock_authoring() {
     )
     .unwrap();
     fs::write(project.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+    if let Some(workspace) = &workspace {
+        fs::write(project.join("habeas.toml"), workspace).unwrap();
+    }
     fs::write(
         project.join("md/SUMMARY.md"),
         "# Summary\n\n- [Requirements](requirements.md)\n",
@@ -318,4 +384,121 @@ fn live_test_prerequisites_are_checked_without_inference() {
         String::from_utf8_lossy(&provider_failure.stdout).contains("live Bedrock authoring failed")
     );
     assert!(!stderr.contains("skipping live Bedrock test"), "{stderr}");
+}
+
+// {test}`requirements.integration.live_bedrock_test`
+#[test]
+fn live_configuration_selection_follows_authoring_precedence() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_path = temp.path().join("config.toml");
+    let root = temp.path().join("checkout");
+    fs::create_dir_all(&root).unwrap();
+    let root = fs::canonicalize(root).unwrap();
+    let configs = "[authoring.configs.alpha]\nbackend = 'bedrock'\nmodel = 'model-alpha'\naws_profile = 'profile-alpha'\nregion = 'us-west-2'\noptions = { temperature = 0.5 }\n\
+        [authoring.configs.beta]\nbackend = 'bedrock'\nmodel = 'model-beta'\naws_profile = 'profile-beta'\nregion = 'eu-west-1'\n\
+        [authoring.configs.aaa-local]\nbackend = 'ollama'\nmodel = 'model-local'\n";
+    let project = toml::Value::String(root.display().to_string());
+    let select = |user: Option<&str>, workspace: Option<&str>, explicit: Option<&str>| {
+        match user {
+            Some(user) => fs::write(&user_path, format!("version = 1\n{user}")).unwrap(),
+            None => {
+                let _ = fs::remove_file(&user_path);
+            }
+        }
+        match workspace {
+            Some(workspace) => fs::write(root.join("habeas.toml"), workspace).unwrap(),
+            None => {
+                let _ = fs::remove_file(root.join("habeas.toml"));
+            }
+        }
+        select_config(&user_path, &root, explicit)
+    };
+    let name = |user: Option<&str>, workspace: Option<&str>, explicit: Option<&str>| {
+        select(user, workspace, explicit)
+            .unwrap_or_else(|error| panic!("{user:?} {workspace:?} {explicit:?}: {error}"))
+            .map(|selection| selection.config.name)
+    };
+    let with = |head: &str| format!("[authoring]\n{head}\n{configs}");
+
+    // Without a selection, the first Bedrock configuration in name order,
+    // skipping the earlier Ollama one; its profile, region, model, and options
+    // come from that record.
+    let selection = select(Some(configs), None, None).unwrap().unwrap();
+    assert_eq!(selection.config.name, "alpha");
+    assert!(selection.workspace.is_none());
+    let BackendConfig::Bedrock(alpha) = &selection.config.backend else {
+        panic!("alpha is Bedrock");
+    };
+    assert_eq!(alpha.model, "model-alpha");
+    assert_eq!(alpha.aws_profile.as_deref(), Some("profile-alpha"));
+    assert_eq!(alpha.region.as_deref(), Some("us-west-2"));
+    assert_eq!(alpha.options.len(), 1);
+    // A Bedrock user default is used; an Ollama default falls back.
+    assert_eq!(
+        name(Some(&with("default = 'beta'")), None, None).unwrap(),
+        "beta"
+    );
+    assert_eq!(
+        name(Some(&with("default = 'aaa-local'")), None, None).unwrap(),
+        "alpha"
+    );
+    // The user's selection for this project wins over the default.
+    let projects = format!(
+        "[authoring]\ndefault = 'alpha'\n[authoring.projects.{project}]\nconfig = 'beta'\n{configs}"
+    );
+    assert_eq!(name(Some(&projects), None, None).unwrap(), "beta");
+    // The workspace default sits between the project selection and the user
+    // default, and workspace configurations are candidates.
+    let workspace = "version = 1\n[authoring]\ndefault = 'gamma'\n[authoring.configs.gamma]\nbackend = 'bedrock'\nmodel = 'model-gamma'\n[evidence]\ndisallow = ['src']\n";
+    let selection = select(Some(&with("default = 'alpha'")), Some(workspace), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selection.config.name, "gamma");
+    // The fixture project receives the workspace authoring configurations but
+    // not its other settings.
+    let fixture: toml::Table = toml::from_str(selection.workspace.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        fixture["authoring"]["configs"]["gamma"]["model"].as_str(),
+        Some("model-gamma")
+    );
+    assert!(fixture.get("evidence").is_none(), "{fixture:?}");
+    assert_eq!(
+        name(Some(&projects), Some(workspace), None).unwrap(),
+        "beta"
+    );
+    let workspace_only =
+        "version = 1\n[authoring.configs.gamma]\nbackend = 'bedrock'\nmodel = 'model-gamma'\n";
+    assert_eq!(name(None, Some(workspace_only), None).unwrap(), "gamma");
+    // An explicit name wins over every other selection.
+    assert_eq!(
+        name(Some(&projects), Some(workspace), Some("alpha")).unwrap(),
+        "alpha"
+    );
+    // Invalid explicit selections and malformed configuration fail.
+    let error = select(Some(configs), None, Some("aaa-local"))
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("must select a Bedrock configuration"),
+        "{error}"
+    );
+    let error = select(Some(configs), None, Some("missing")).err().unwrap();
+    assert!(
+        error.to_string().contains("unknown configuration"),
+        "{error}"
+    );
+    assert!(select(Some("[authoring"), None, None).is_err());
+    assert!(select(Some(configs), Some("version = ["), None).is_err());
+    // Without a Bedrock configuration there is nothing to select.
+    assert!(
+        name(
+            Some("[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\n"),
+            None,
+            None
+        )
+        .is_none()
+    );
+    assert!(name(None, None, None).is_none());
 }
