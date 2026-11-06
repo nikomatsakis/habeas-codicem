@@ -281,3 +281,29 @@ batch with work to do, requires the section; the batch requirement and
 relationship to it", and "The authoring spec never states which operations
 require the `[authoring]` section. The requirement obliges each feature to say
 this explicitly."
+
+## `requirements.authoring.concurrency` — throttling is retried, not failed
+
+**Old text:**
+
+> Provider errors, including throttling, MUST be reported through
+> the ordinary assessment-failure path.
+
+**New text:**
+
+> Transient provider failures, including throttling, MUST be
+> retried within the affected assessment under
+> {cite}`requirements.authoring.provider_backoff`; every other provider error MUST
+> be reported through the ordinary assessment-failure path.
+
+**Reason.** The old sentence contradicted `provider_backoff`, which requires
+throttling and other transient failures to be retried with no attempt limit and
+not reported as terminal assessment errors while recovery is in progress. The
+intended obligation of this sentence was that provider errors in a batch are
+handled per assessment rather than aborting the batch; the new text keeps that
+for permanent errors and defers transient ones to the backoff requirement.
+
+**Prompting rationale:** `evidence/requirements.authoring.concurrency.json`:
+"`ProviderBackoff::next_delay` … treats HTTP 429 and `ThrottlingException` as
+transient and retries them … So a throttled assessment never ends in the
+failure path … The two requirements contradict each other".

@@ -613,8 +613,10 @@ MUST be rejected as invalid configuration.
 Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker
 thread pool. The number of assessments running at once MUST NOT exceed the
 selected concurrency. Each assessment MUST retain its own model conversation and
-usage record. Provider errors, including throttling, MUST be reported through
-the ordinary assessment-failure path.
+usage record. Transient provider failures, including throttling, MUST be
+retried within the affected assessment under
+{cite}`requirements.authoring.provider_backoff`; every other provider error MUST
+be reported through the ordinary assessment-failure path.
 :::
 
 :::{req} configuration_storage
