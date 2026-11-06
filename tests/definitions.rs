@@ -325,6 +325,38 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
     );
 }
 
+// {test}`requirements.definitions.phrase_rendering`
+#[test]
+fn a_term_reference_renders_only_its_phrase_as_a_plain_link() {
+    let mut book = Book::new();
+    book.push_item(Chapter::new(
+        "Glossary",
+        ":::{definition} first_parent_history\n:phrase: first-parent history\n\nHistory along first parents.\n:::\n".into(),
+        "glossary.md",
+        Vec::new(),
+    ));
+    book.push_item(Chapter::new(
+        "Guide",
+        "Follow the TERM`glossary.first_parent_history`.\n".replace("TERM", "{term}"),
+        "guide.md",
+        Vec::new(),
+    ));
+    habeas::preprocess_book(&mut book, Path::new(".")).unwrap();
+    let chapters: Vec<_> = book.chapters().collect();
+    let guide = &chapters[1].content;
+    // The whole reference becomes exactly one ordinary hyperlink: no class,
+    // badge image, or other markup, and the phrase is the only link text.
+    assert_eq!(
+        guide.trim_end(),
+        "Follow the <a href=\"glossary.html#habeas-definition-glossary.first_parent_history\">first-parent history</a>."
+    );
+    assert!(
+        chapters[0]
+            .content
+            .contains("id=\"habeas-definition-glossary.first_parent_history\"")
+    );
+}
+
 // {test}`requirements.definitions.inputs`
 #[test]
 fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
