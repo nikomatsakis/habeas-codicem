@@ -23,6 +23,7 @@ pub struct UserConfig {
     pub authoring: Option<UserAuthoringConfig>,
 }
 
+// {impl}`requirements.configuration.workspace_structure`
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {}
@@ -63,6 +64,7 @@ pub struct EvidenceConfig {
     pub disallow: Vec<PathBuf>,
 }
 
+// {cite}`requirements.configuration.workspace_location`
 #[derive(Clone, Debug)]
 pub struct LoadedWorkspaceConfig {
     pub path: PathBuf,
@@ -70,6 +72,7 @@ pub struct LoadedWorkspaceConfig {
     pub config: WorkspaceConfig,
 }
 
+// {cite}`requirements.configuration.evidence_paths`
 #[derive(Clone, Debug)]
 pub struct WorkspaceEvidenceConfig {
     pub path: PathBuf,
@@ -225,6 +228,7 @@ pub struct ResolvedAuthoringConfig {
     pub backend: BackendConfig,
 }
 
+// {cite}`requirements.configuration.user_location`
 #[derive(Clone, Copy, Debug)]
 pub enum ConfigPlatform {
     Unix,

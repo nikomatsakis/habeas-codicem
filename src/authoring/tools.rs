@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 use super::inputs::AssessmentSources;
 use crate::inputs::InputSelector;
 
+// {cite}`requirements.authoring.delivered_inputs`
 pub(crate) struct ToolDelivery {
     pub(crate) result: Value,
     pub(crate) inputs: Vec<Value>,

@@ -121,6 +121,7 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
     Ok(inspect_repository(root)?.report)
 }
 
+// {cite}`requirements.authoring.batch`
 pub(crate) struct RepositoryInspection {
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) references: Vec<SourceReference>,
@@ -129,6 +130,7 @@ pub(crate) struct RepositoryInspection {
 }
 
 /// Progress within one inspection phase; discovery has no known total.
+// {cite}`requirements.authoring.progress`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InspectionProgress {
     pub(crate) stage: &'static str,
@@ -1002,6 +1004,7 @@ fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
+// {cite}`requirements.references.targets`
 pub(crate) struct SourceReference {
     pub(crate) name: String,
     pub(crate) kind: ReferenceKind,

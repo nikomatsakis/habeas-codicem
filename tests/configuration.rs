@@ -1071,7 +1071,12 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
 fn documented_configuration_examples_are_complete_valid_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut checked = 0;
-    for document in ["md/reference.md", "md/requirements/configuration.md"] {
+    let mut literal_credential_examples = 0;
+    for document in [
+        "md/reference.md",
+        "md/requirements/configuration.md",
+        "md/requirements/authoring.md",
+    ] {
         let text = fs::read_to_string(root.join(document)).unwrap();
         let blocks = text.split("```toml\n").skip(1);
         for block in blocks {
@@ -1085,17 +1090,42 @@ fn documented_configuration_examples_are_complete_valid_files() {
             };
             parsed.unwrap_or_else(|error| panic!("{document}: {error}\n{source}"));
             assert_eq!(source.lines().next(), Some("version = 1"), "{document}");
-            // Primary examples name credential sources, never literal secrets.
-            for line in source.lines() {
+            // Primary examples name credential sources. The one literal-credential
+            // example, in the authoring chapter, uses only uppercase placeholders.
+            let secrets: Vec<_> = source
+                .lines()
+                .filter(|line| {
+                    [
+                        "api_key =",
+                        "access_key_id =",
+                        "secret_access_key =",
+                        "session_token =",
+                    ]
+                    .iter()
+                    .any(|key| line.starts_with(key))
+                })
+                .collect();
+            let literal = source.contains(".credentials]")
+                || source.lines().any(|line| line.starts_with("credentials"));
+            if literal || !secrets.is_empty() {
+                assert_eq!(document, "md/requirements/authoring.md", "{source}");
+                literal_credential_examples += 1;
+            }
+            for line in secrets {
+                let value = line.split_once('=').unwrap().1.trim().trim_matches('"');
                 assert!(
-                    !line.starts_with("credentials") && !line.starts_with("api_key ="),
+                    !value.is_empty()
+                        && value
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
                     "{document}: {line}"
                 );
             }
             checked += 1;
         }
     }
-    assert!(checked >= 8, "{checked}");
+    assert_eq!(literal_credential_examples, 1);
+    assert!(checked >= 14, "{checked}");
 }
 
 // {test}`requirements.configuration.loading`

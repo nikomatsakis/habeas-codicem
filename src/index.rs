@@ -124,6 +124,7 @@ fn encode_url_segment(segment: &str) -> String {
     encoded
 }
 
+// {cite}`requirements.index.state`
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvidenceState {
     Valid,
@@ -133,6 +134,7 @@ pub(crate) enum EvidenceState {
     Invalid,
 }
 
+// {cite}`requirements.index.detail_pages`
 pub(crate) struct LoadedDetailEvidence {
     state: EvidenceState,
     record: Option<String>,
@@ -140,6 +142,7 @@ pub(crate) struct LoadedDetailEvidence {
     fixme_entries: Vec<String>,
 }
 
+// {cite}`requirements.index.detail_format`
 struct DetailEvidence<'a> {
     state: EvidenceState,
     record: Option<&'a str>,

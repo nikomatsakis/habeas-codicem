@@ -113,12 +113,14 @@ pub(crate) struct DefinitionOption {
     pub(crate) value: String,
 }
 
+// {cite}`requirements.cli.mdbook`
 pub(crate) struct Definition {
     pub(crate) path: PathBuf,
     pub(crate) text: String,
     pub(crate) kind: DefinitionKind,
 }
 
+// {cite}`requirements.references.targets`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceKind {
     Impl,
@@ -152,6 +154,7 @@ impl ReferenceKind {
     }
 }
 
+// {cite}`requirements.references.targets`
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
     end: usize,
@@ -1106,7 +1109,7 @@ mod tests {
         book.push_item(target);
         book.push_item(Chapter::new(
             "Guide",
-            "See {cite}`rules.ready`.".to_owned(),
+            concat!("See {cite}", "`rules.ready`.").to_owned(),
             "guide.md",
             Vec::new(),
         ));

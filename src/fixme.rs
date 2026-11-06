@@ -5,11 +5,13 @@ use regex::Regex;
 
 use crate::escape_html;
 
+// {cite}`requirements.cli.fixme_summary`
 #[derive(Default)]
 pub(crate) struct FixmeSummary {
     judgments: Vec<FixmeJudgment>,
 }
 
+// {cite}`requirements.cli.fixme_summary`
 struct FixmeJudgment {
     name: String,
     kind: &'static str,

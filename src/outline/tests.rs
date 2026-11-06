@@ -137,7 +137,10 @@ fn anonymous_selectors_use_identity_hashes() {
 // {test}`requirements.references.selector_raw_lines`
 #[test]
 fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
-    let base = "/// Doc.\n#[inline]\n// {cite}`a.b`\nfn run() { let x = 1; }\n";
+    let base = concat!(
+        "/// Doc.\n#[inline]\n// {cite}",
+        "`a.b`\nfn run() { let x = 1; }\n"
+    );
     let hash = |source: &str| {
         let outline = outline("src/lib.rs", source);
         let node = &outline.nodes[outline.resolve("fn[run]").unwrap()];
@@ -148,7 +151,11 @@ fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     let (moved, start, _) = hash(&format!("\n\n{base}"));
     assert_eq!((moved.as_str(), start), (original.as_str(), 3));
     assert_eq!(
-        hash("/// Doc.\n#[inline]\n// {cite}`c.d`\nfn run() {\n    let x  =  1;\n}\n").0,
+        hash(concat!(
+            "/// Doc.\n#[inline]\n// {cite}",
+            "`c.d`\nfn run() {\n    let x  =  1;\n}\n"
+        ))
+        .0,
         original
     );
     assert_ne!(hash(&base.replace("Doc.", "Docs.")).0, original);

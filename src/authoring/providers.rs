@@ -14,6 +14,7 @@ pub(super) trait CompletionProvider {
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
 }
 
+// {cite}`requirements.authoring.provider_backoff`
 pub(super) struct ProviderBackoff {
     window: Duration,
 }
@@ -93,6 +94,7 @@ fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
         .map(|deadline| deadline.duration_since(now).unwrap_or_default())
 }
 
+// {cite}`requirements.authoring.provider`
 pub(super) struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,

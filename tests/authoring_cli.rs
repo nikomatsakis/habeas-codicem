@@ -17,11 +17,13 @@ const REQUIREMENT: &str = concat!(
 const MODEL: &str = "fixture:q4_K_M";
 const AUTH: &str = "SECRET_AUTH_VALUE";
 
+// {test}`requirements.authoring.provider`
 struct Request {
     headers: String,
     body: Value,
 }
 
+// {test}`requirements.authoring.provider`
 struct Server {
     endpoint: String,
     thread: JoinHandle<Vec<Request>>,
@@ -99,6 +101,7 @@ impl Server {
     }
 }
 
+// {test}`requirements.authoring.invocation`
 struct Fixture {
     temp: TempDir,
     project: PathBuf,

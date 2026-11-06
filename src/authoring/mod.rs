@@ -30,6 +30,7 @@ use usage::UsageLog;
 // {impl}`requirements.authoring.provider_backoff`
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+// {cite}`requirements.authoring.invocation`
 pub struct AuthoringOutcome {
     pub subject: String,
     pub backend: String,
@@ -40,11 +41,13 @@ pub struct AuthoringOutcome {
     pub rationale: String,
 }
 
+// {cite}`requirements.authoring.reporting`
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuthoringOptions {
     pub verbose: bool,
 }
 
+// {cite}`requirements.authoring.invocation`
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
@@ -59,6 +62,7 @@ impl AuthoringSubject {
     }
 }
 
+// {cite}`requirements.authoring.persistence`
 pub(crate) struct PendingAssessment {
     pub(crate) subject: AuthoringSubject,
     pub(crate) record: Value,
@@ -109,6 +113,7 @@ impl PendingAssessment {
     }
 }
 
+// {cite}`requirements.authoring.invocation`
 #[derive(Clone, Copy)]
 pub enum EvidenceOutput {
     File,
@@ -583,6 +588,7 @@ mod tests {
 
     use super::*;
 
+    // {test}`requirements.authoring.submission`
     struct JudgmentProvider(Value);
 
     impl CompletionProvider for JudgmentProvider {
@@ -603,6 +609,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.provider_backoff`
     struct ThrottledProvider {
         failures: usize,
         status: u16,
@@ -629,6 +636,7 @@ mod tests {
     }
 
     /// Reads one source on the first turn, then submits.
+    // {test}`requirements.definitions.authoring_inputs`
     struct ReadingProvider {
         read: Value,
         requests: RefCell<Vec<Value>>,
@@ -724,12 +732,15 @@ mod tests {
             "Subject: requirement requirements.ready",
             "Assess only the named subject, using cited requirements and definitions as context.",
             "implements every obligation\ncompletely and exactly as stated",
-            "tests cover the interesting points in the design space",
+            "tests cover the interesting points in\nthe design space, including relevant boundaries and failure cases",
+            "When another requirement implements part of the subject, assess\nwhether its text carries out that part; do not reassess its implementation,\ntests, or evidence.",
             "without an {impl} reference to it, including code that refers to it\nonly with {cite}, is a gap",
             "behavior in the {impl} code that this\nrequirement does not specify, unless another definition that code implements\nspecifies it",
             "If there are no tests,\nassess whether simplicity or impracticality justifies their absence, and explain.",
             "For an example, assess whether test setup and assertions cover its scenario and\nexpected outcomes.",
             "with source locations",
+            "for\na requirement, explain the implementation and testing judgments.",
+            "Explain the coverage.",
         ] {
             assert!(
                 prompt.contains(criterion),
@@ -833,6 +844,7 @@ mod tests {
         assert_eq!(log["requests"][0]["outcome"], "failed");
     }
 
+    // {test}`requirements.authoring.provider_backoff`
     struct HangingProvider {
         requests: RefCell<usize>,
     }
@@ -868,6 +880,7 @@ mod tests {
     }
     /// Fails with throttling before both requests, answering the first
     /// recovered request with a source read and the second with a judgment.
+    // {test}`requirements.authoring.provider_backoff`
     struct ThrottledToolProvider {
         requests: RefCell<Vec<(tokio::time::Instant, Value)>>,
     }

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {test}`requirements.authoring.concurrency`
 #[derive(Default)]
 struct Requests {
     subjects: Vec<String>,
@@ -19,6 +20,7 @@ struct Requests {
     first_pair_overlapped: bool,
 }
 
+// {test}`requirements.authoring.batch`
 #[derive(Clone, Copy)]
 enum Behavior {
     Judgments {
@@ -34,6 +36,7 @@ enum Behavior {
     WaitAfterFirst,
 }
 
+// {test}`requirements.authoring.batch`
 struct Server {
     endpoint: String,
     requests: Arc<(Mutex<Requests>, Condvar)>,
@@ -246,6 +249,7 @@ fn serve(
     state.active -= 1;
 }
 
+// {test}`requirements.authoring.batch`
 struct Fixture {
     _temp: TempDir,
     project: PathBuf,

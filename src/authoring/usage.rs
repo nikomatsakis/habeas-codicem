@@ -11,6 +11,7 @@ use serde_json::Value;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+// {impl}`requirements.authoring.usage_storage`
 #[derive(Serialize)]
 pub(super) struct UsageRecord {
     version: u32,
@@ -37,6 +38,7 @@ pub(super) struct UsageRecord {
     tokens: TokenCounts,
 }
 
+// {impl}`requirements.authoring.usage_inputs`
 #[derive(Serialize)]
 struct InputUsage {
     origin: String,
@@ -49,6 +51,7 @@ struct InputUsage {
     sent_in_request: Option<usize>,
 }
 
+// {impl}`requirements.authoring.usage_requests`
 #[derive(Serialize)]
 struct RequestUsage {
     outcome: String,
@@ -56,6 +59,7 @@ struct RequestUsage {
     tokens: TokenCounts,
 }
 
+// {impl}`requirements.authoring.usage_requests`
 #[derive(Default, Serialize)]
 struct TokenCounts {
     input: Option<u64>,
@@ -66,6 +70,7 @@ struct TokenCounts {
     complete: bool,
 }
 
+// {cite}`requirements.authoring.usage_storage`
 pub(super) struct UsageLog {
     pub record: UsageRecord,
     pub path: PathBuf,

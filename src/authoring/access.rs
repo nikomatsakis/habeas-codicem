@@ -6,6 +6,7 @@ use std::process::Command;
 
 use super::inputs::generated_evidence_path;
 
+// {cite}`requirements.configuration.evidence_paths`
 #[derive(Default)]
 pub(crate) struct PathPolicy {
     allow: Vec<PathBuf>,
@@ -84,6 +85,7 @@ impl PathPolicy {
     }
 }
 
+// {cite}`requirements.authoring.source_tools`
 pub(crate) struct SourceAccess {
     tracked: Option<BTreeSet<PathBuf>>,
     policy: PathPolicy,
@@ -298,6 +300,7 @@ pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
     }
 }
 
+// {impl}`requirements.authoring.read_denial`
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
 }

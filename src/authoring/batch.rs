@@ -14,6 +14,7 @@ use crate::config;
 use crate::evidence::{InspectionProgress, inspect_repository_with_progress};
 use crate::index::{EvidenceState, LoadedDetailEvidence};
 
+// {cite}`requirements.authoring.batch`
 pub struct BatchOutcome {
     pub completed: Vec<AuthoringOutcome>,
     pub failures: Vec<(String, String)>,

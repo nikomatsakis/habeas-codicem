@@ -7,6 +7,7 @@ use super::AuthoringOutcome;
 use crate::evidence::InspectionProgress;
 use crate::judgment::Judgment;
 
+// {cite}`requirements.authoring.progress`
 pub(super) struct BatchProgress {
     bar: Option<ProgressBar>,
     inspection_stage: Option<(&'static str, bool)>,
@@ -207,6 +208,7 @@ mod tests {
 
     use super::*;
 
+    // {test}`requirements.authoring.progress`
     #[derive(Clone, Debug, Default)]
     struct RecordingTerm(Arc<Mutex<String>>);
 
