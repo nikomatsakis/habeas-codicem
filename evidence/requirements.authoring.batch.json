@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement\nand named example whose evidence is missing, stale, or invalid. It MUST preserve\ncurrent records without invoking a model for them, including accepted FIXME\njudgments and current false judgments. A current false judgment is reassessed\nonly when its subject or inputs change, or when it is named explicitly with\n{cite}`requirements.authoring.invocation`.\n`--all` MUST be mutually exclusive with a subject name and `--stdout`.\nFailure to discover declarations or to read, scan, or parse project sources MUST report an error,\nnot a successful empty batch. A batch with no assessments needed MUST succeed\nwithout resolving model configuration or credentials.\n\nEach subject MUST receive an independent assessment with its own prompt, inputs,\njudgment, and usage record. The command MUST report aggregate completion and each\nauthoring error under {cite}`requirements.authoring.reporting`, and retain\nsuccessful writes when another assessment fails. It MUST return a nonzero\nexit status if any assessment fails. False judgments MUST still be written as\ncompleted assessments; they remain failures under ordinary evidence validation.\nAn access-policy denial MUST abort only the affected assessment under\n{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the\nwhole batch: queued assessments MUST NOT start, running assessments MUST be\ncancelled, and an assessment whose evidence has not been written when the\ninterruption arrives MUST NOT write it. Evidence already written MUST be\nretained, and the command MUST report the number of assessments not started as\na batch failure.\n\nThe bundled Habeas skills MUST direct the supervising agent to run this command\nto create or refresh evidence. They MUST leave judgments, rationales, and input\nsnapshots to the authoring harness; the supervising agent addresses findings by\nchanging requirements, source citations, implementation, or tests.\n{cite}`requirements.authoring.concurrency`\n{cite}`requirements.authoring.usage_storage`\n{cite}`requirements.authoring.persistence`",
-  "determination": false,
-  "rationale": "**Verdict: false.** The batch behavior is mostly implemented and well tested, but interruption handling has a gap. I found no FIXME acknowledging it.\n\n**Covered**\n- **Selection:** `author_all_with_options` (`src/authoring/batch.rs`) authors a definition when its evidence is missing or invalid (stale evidence is treated as invalid). It preserves Valid, FIXME and current DeterminationFalse records, so a current false judgment is reassessed only when it goes stale or when it is named explicitly through the single-subject command.\n- **Exclusivity:** `--all` conflicts with a subject and with `--stdout` through the clap `ArgGroup` and `conflicts_with` in `src/main.rs`. `author_rejects_unknown_subjects_and_conflicting_targets` and `batch_stdout_is_rejected_before_authoring` test this.\n- **Discovery errors:** these return an error before any configuration is resolved or any model is called. `inspect_repository_with_progress` collects them, including unreadable reference sources and Rust parse failures. `discovery_errors_fail_before_configuration_or_inference` and `unreadable_reference_sources_fail_the_batch_before_inference` test this.\n- **No-op batch:** `subjects.is_empty()` returns before `resolve_authoring`. The first batch test runs with an invalid config file, then with no config file, and succeeds both times.\n- **Independence and failure handling:**\n  - Each subject runs in its own `prepare_assessment` task with its own usage log.\n  - Failures are counted and reported, and successful writes are kept. `main` returns a nonzero status on any failure.\n  - False judgments are written like any other completed assessment.\n  - Tests: `failed_assessment_keeps_other_results_and_reports_failure`, `batch_reports_false_rationales_only_when_verbose`, `terminal_progress_distinguishes_judgments_from_authoring_errors`.\n- **Read denial:** a denial aborts only that assessment, and `cancel_on_error` fires only for `Interrupted`. The two `denied_read_*` tests cover queued and in-flight assessments.\n- **Interruption in the covered paths:** the stop signal is serialized with persistence, queued work does not start, and the \"N assessments not started\" batch failure is reported. `interrupted_terminal_progress_keeps_unstarted_work_incomplete` checks that only one record was written and that the running assessment was cancelled with `evidence_written` false.\n- **Skills:** the three bundled skills direct the agent to `habeas author --all` and forbid composing evidence. They are anchored as `{impl}` and checked by `bundled_skills_direct_the_agent_to_the_authoring_harness`.\n\n**Gap: interruption is not reliably stopped**\n- SIGINT is observed only inside each running task, through `tokio::signal::ctrl_c()` in the `select!` in `prepare_assessment` (`src/authoring/mod.rs`). The batch loop has no signal listener of its own.\n- Tokio's `ctrl_c()` only reports signals delivered after the future is first polled, so a signal with no live listener is silently swallowed. Once any task has installed the handler, the default kill behavior is gone.\n- A signal arriving while no task is in the `select!` is therefore lost. The batch does not stop, the cancellation flag is never set, and queued assessments still start. That window includes:\n  - a finished task's result waiting in the loop while `write_record` and `persisted` run;\n  - the gap before the next task is spawned and polled;\n  - the synchronous `UsageLog::start` before the `select!`.\n- It matters most with concurrency 1, the Ollama default, because no other running task can pick the signal up.\n- The requirement says interruption MUST stop the whole batch and that an assessment whose evidence has not been written when the interruption arrives MUST NOT write it. A signal in these windows violates that, and the interruption test only covers a signal delivered while assessments are in flight.\n- No test or source comment acknowledges this gap, so it is not eligible for FIXME.",
+  "determination": true,
+  "rationale": "I judge `requirements.authoring.batch` satisfied. The `{impl}` code covers each obligation, the marking looks complete, and the tests cover the main cases.\n\n**Selection and preservation** (`src/authoring/batch.rs`, `author_all_with_options`)\n- It loads each requirement and named example's evidence and skips the ones whose state is `Valid`, `Fixme` or `DeterminationFalse`. Only missing, stale or invalid records are queued, so no model is invoked for current records.\n- A current false judgment is therefore reassessed only when it goes stale. Explicit naming goes through the single-subject path.\n- Tests: `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` covers FIXME and unchanged records and re-authoring only the changed subject. `batch_preserves_current_false_judgments_and_reauthors_stale_ones` covers current false records staying untouched and stale ones being reauthored.\n\n**CLI exclusivity** (`src/main.rs`, `Command::Author`)\n- A clap `ArgGroup` makes the subject and `--all` mutually exclusive, and `--all` has `conflicts_with = \"stdout\"`.\n- Tests: `author_rejects_unknown_subjects_and_conflicting_targets` (exit code 2, \"cannot be used with\") and `batch_stdout_is_rejected_before_authoring`.\n\n**Discovery failures and the no-op batch**\n- `inspect_repository_with_progress` in `src/evidence.rs` collects `discovery_errors` from declaration discovery, reference scanning and Rust parsing. `author_all_with_options` returns an error if there are any.\n- The configuration is resolved only after the subject list is found non-empty, so an empty batch needs no model configuration or credentials.\n- Tests: `discovery_errors_fail_before_configuration_or_inference` (parse error and unclosed fence) and `unreadable_reference_sources_fail_the_batch_before_inference`. Both check that no state or evidence is created. The no-op runs in the first batch test use an invalid config and no config at all, and still succeed.\n\n**Independent assessments, failure handling and reporting**\n- Each subject runs in its own `prepare_assessment` task with its own `UsageLog`, and a `JoinSet` bounds concurrency.\n- Successful writes happen as each task completes, so a failure elsewhere does not discard them.\n- `main` prints the aggregate \"N authored; M unchanged; K failed\" line and returns an error, hence a nonzero exit, if any assessment failed.\n- False judgments are written and reported through `BatchProgress::completed`. They are not treated as failures.\n- Tests: `failed_assessment_keeps_other_results_and_reports_failure`, `terminal_progress_distinguishes_judgments_from_authoring_errors` and `batch_reports_false_rationales_only_when_verbose`.\n\n**Read denial**\n- A denial fails only that assessment. `cancel_on_error` stops the batch only for `Interrupted` errors, and queued work continues.\n- Tests: `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence`. They check that no evidence is written for the denied subject, that the usage record shows the failed tool call, that other evidence is kept, and that the exit is nonzero.\n\n**Interruption**\n- `observe_interrupt`, the `select!` on `ctrl_c`, and `stop` set a shared watch channel.\n- Launching stops, and running tasks are cancelled in `prepare_assessment`.\n- Completions arriving after the stop are discarded under the cancellation borrow, and `PendingAssessment::failed` marks them \"cancelled\" with no evidence written.\n- The batch reports \"N assessments not started\" as a batch failure.\n- Test: `interrupted_terminal_progress_keeps_unstarted_work_incomplete` runs at concurrency 2 and 1. It checks one record written, a cancelled usage record with `evidence_written` false, the \"not started\" message, and a nonzero exit.\n\n**Skills**\n- The three bundled `SKILL.md` files are marked `{impl}`. They direct the agent to `habeas author --all` and forbid composing evidence, judgments, rationales or snapshots.\n- Test: `bundled_skills_direct_the_agent_to_the_authoring_harness`.\n\n**Marking and unspecified behaviour**\n- Helper code is marked `{impl}` for the requirement.\n- The atomic temp-file write in `write_record` is an implementation detail for safe concurrent reads of evidence. It adds no observable behaviour beyond the persistence and batch requirements.\n- The progress and summary output is covered by the cited `progress` and `reporting` requirements.\n- I found no implementing code marked only with `{cite}`, and no unspecified observable behaviour.\n\nNo FIXME acknowledgments are needed.",
   "inputs": [
     {
       "requirements": "requirements.authoring.batch",
@@ -111,6 +111,14 @@
         "affected assessment.",
         "Malformed tool arguments and ordinary read failures MUST retain their existing",
         "recoverable tool-error behavior.",
+        "",
+        "A dispatched model request naming a path outside the project root, before",
+        "symlinks are resolved, that no workspace allow rule or generated-output rule",
+        "permits MUST be treated as an ordinary read failure rather than an abort: it",
+        "MUST return an explanatory tool error, add no evidence input, and let the",
+        "assessment continue. An explicit workspace disallow matching such a path MUST",
+        "still abort. A mandatory input naming such a path, and a request inside the",
+        "project whose symlink target leaves it, MUST still abort.",
         ":::"
       ]
     },
@@ -185,12 +193,22 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "36deb619e4d6d1e1ec2ae64e7b26678169519fc38ff82e3a7d593fbc8989abae"
+      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[cancel_on_error]",
-      "hash": "92e01430cb780b9291ee92c557661021ff2acc665d6e2a5d4bd79b409cc2b553"
+      "hash": "724b85616cad80ea4228094ada80d8e3eb6ece526ae6ac2c8d48cf876f87d782"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[observe_interrupt]",
+      "hash": "2d95148db1e514695beed74c766f87d1d0b3e3b4bbb3d160271768dd8b53f062"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[stop]",
+      "hash": "e11c1ec939d5608bee7b5b157f1ac3b9280da7c0f742a9bac3771cfb3c59bceb"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -340,7 +358,12 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]",
-      "hash": "fd3bdb12a30338a950dd0d85dd72dcc9febe9a8a9b674e6d119f488364c12f58"
+      "hash": "1a92f700ba506a8cb5b70bb00380535d3fc0b446fe4e267587e0dfc776617993"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[assert_interruption_stops_the_batch]",
+      "hash": "6ca8a932c36e420ee1b1d15ab2c62bb918827ca88395102d7affef3c182aa02b"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -396,56 +419,6 @@
       "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
       "item": "",
       "hash": "00e96633c030f6e163775a5add5c00cb9ef55f12dffc2aa74f01392e2a2e400a"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "fn[encode_url_segment]",
-      "hash": "0aa2cca56cbaa936f10b3f61ca7bb937dea609765c71dbfc24f6b5f982426987"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "enum[EvidenceState]",
-      "hash": "6a845f420dc533ad3dcb656d3188d9eb1bc4ad724b5a843930aae6967a5697a3"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[LoadedDetailEvidence]",
-      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[DetailEvidence]",
-      "hash": "2f1e313f2d698e693a9f494ca743c7b73444bf3cb0e72311362309ccf6933c52"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[load]",
-      "hash": "796c6adf330cbdc2dc13569a0f1cb8d08c4548b9651d269809ab83e78eee4169"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[state]",
-      "hash": "971dc34522919b3ea6550bfbe568fdf012ce3c0b1ee0dfbf1b654696f69fa932"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]",
-      "hash": "90b221c5287b4f6c842d22144ce5ebe72dee4897617fe1bdbe4248899fde36af"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[EvidenceState]",
-      "hash": "52f9687ee35767424d89917de8732f29c1d0e964aca30c4eb332934fe68b93e4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DetailPlan]",
-      "hash": "6fe4eb7308da3b00ff29ff3c756c8cbf7538b13b1a25d28195d22f2cb7cc6bcd"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[author_evidence_with_output]",
-      "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
     }
   ]
 }
