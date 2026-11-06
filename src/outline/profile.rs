@@ -2,6 +2,12 @@
 
 use tree_sitter::{Language, Node};
 
+/// A profile-specific naming rule: the name's parts and the byte where the
+/// name begins.
+// {impl}`requirements.references.outlines`
+// {impl}`requirements.cli.add_input_item`
+pub(crate) type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>;
+
 /// How an outline node of a mapped kind is named.
 // {impl}`requirements.references.outlines`
 #[derive(Clone, Copy)]
@@ -16,7 +22,7 @@ pub(crate) enum NameRule {
     /// joined by an unencoded `/` in the segment, and the byte where the name
     /// begins in the source (the node's start when the name is not written
     /// there). `None` makes the node anonymous.
-    Custom(fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>),
+    Custom(CustomName),
 }
 
 /// One row of a profile's kind table.
