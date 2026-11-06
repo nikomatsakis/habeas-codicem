@@ -1,7 +1,7 @@
 {
   "requirement": "When preparing the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`, every terminology definition\nreferenced by the subject or any contributed source MUST contribute its complete\nfenced declaration, including its phrase option. Definitions referenced by those\ndefinitions MUST also be included transitively, without duplicates or\nnontermination on cycles.\n\nWhen an additional source read introduces a terminology dependency, the same\ncomplete, transitive definition set MUST be supplied to the model and recorded\nbefore accepting a submission.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** Every obligation has marked implementing code and tests that cover the main cases. One small test gap remains: no authoring-level test for an unresolvable term, which I did not count as a failure (see Testing).\n\n**Implementation**\n\n- **Initial mandatory set** (`AssessmentSources::prepare`, `src/authoring/inputs.rs`):\n  - It builds the contributed selectors: the subject, its `{cite}`d requirements, and its `{impl}`/`{test}` sources.\n  - It then calls `definition_inputs(..., &mandatory, Some(&subject.text))`. That scans the subject text and every contributed input.\n  - A contributed input can be a requirement body, a Rust comment, Markdown or plain text, or an outline node.\n  - Each resulting definition becomes a `InputSelector::Definition` through `source_input`, which delivers the full raw fenced declaration, phrase option included.\n  - `mandatory.contains` prevents duplicates.\n  - Unresolvable terms make `terms::dependencies` return an error, so `prepare` fails before any inference.\n- **Transitive closure** (`terms::close_dependencies`):\n  - It runs a work-list fixed point over a `BTreeSet` with a `visited` set.\n  - That gives the transitive closure, no duplicates, and termination on cycles.\n  - Under `requirements.definitions.dependencies` and `requirements.definitions.selection`, the code scans requirement bodies rather than fences, and skips code and escaped references.\n  - That text matches this requirement's transitive, duplicate-free, cycle-safe wording.\n- **Additional reads**:\n  - `read` and `search` in `tools.rs` call `AssessmentSources::additional_definitions`. It computes the closure over the newly delivered inputs and filters out definitions already supplied or recorded.\n  - Both tools return those definitions in the tool result and append them to `delivery.inputs`.\n  - `assess` in `mod.rs` puts `delivery.inputs` into `pending`.\n  - After the next provider response, and before a submission is accepted, it calls `record_inputs(&pending)`. `record_inputs` also deduplicates.\n  - The evidence is built from `sources.recorded_inputs()` only after that step, so definitions introduced by a read are supplied and recorded before the submission.\n- **Marking**: the `{impl}` references are on `prepare`, `record_inputs`, `additional_definitions`, `source_input`, `definition_inputs`, `assess`, `read` and `search`. These are the code paths that touch definition inputs. I found no definition-handling code outside them.\n\n**Testing**\n\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` covers a term referenced by the subject. It covers a transitive unit↔value cycle and asserts exactly 2 definition inputs. It also checks that the requirement `distant` (cited only by `base`, not by the subject) is excluded and that old evidence inputs are not carried forward.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` covers a term referenced only from a contributed Rust source comment. It also covers failure when the definition file is unstaged, and the success path.\n- `definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission` covers a read that introduces a dependency on a cyclic transitive pair.\n  - It checks the recorded definitions are exactly `[terms.unit, terms.value]`, once each.\n  - It checks each recorded definition's text starts with `:::{definition}` and then `:phrase:`.\n  - It checks the second request contains the dependency text and the first does not.\n  - It checks the definitions were delivered before the submission was accepted.\n- `reading_records_only_delivered_sources_and_their_terms` and `search_supplies_terminology_clamps_at_eof_and_reports_failures` cover the `habeas` and `ripgrep` tools delivering and recording terminology.\n- The `tests/definitions.rs` tests exercise the shared closure logic, including cycles, duplicates, and missing definitions.\n\n**Gap**\n\nNo authoring-level test checks that an unresolvable term reference fails `prepare`. The shared `close_dependencies` logic covers it (`definition_schema_deletion_and_literal_references_are_checked`). I treat this as minor.",
+  "rationale": "**Judgment:** the requirement is implemented completely and is tested, so I judge it satisfied.\n\n**Implementation**\n\n- **Initial set:** `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the contributed selectors. These are the subject, its `{cite}`d requirements, the `{impl}` and `{test}` sources and the anchors. It then calls `definition_inputs(..., &mandatory, Some(&subject.text))`.\n- **Transitive closure:** `definition_inputs` calls `terms::dependencies` (`src/terms.rs`).\n  - `direct_references` scans the subject text and every contributed input. For Rust it scans only comments. For `Requirements` inputs it scans the declaration bodies. A directly supplied `Definition` input counts as a dependency.\n  - `close_dependencies` expands to a fixed point over a `visited` set and a `BTreeSet`. That gives no duplicates and no nontermination on cycles. An unresolvable term or a malformed declaration is reported as an error.\n- **Complete declaration:**\n  - Each dependency becomes `InputSelector::Definition`, resolved by `source_input`. The resolved text is `target.raw_lines`, so it is the whole fenced declaration with its `:phrase:` option. The access policy is applied to the definition's file.\n  - The result is deduplicated against the existing mandatory inputs (`!mandatory.contains`).\n  - `initial_prompt` serialises all of `mandatory_inputs()` into the first request.\n- **Additional reads:** the `read` tool (`habeas`) and the `search` tool (`ripgrep`) in `src/authoring/tools.rs` call `additional_definitions`. That recomputes the closure over the newly delivered inputs, with `subject = None`. It filters out definitions already in those inputs or already recorded, so there are no duplicates. Both tools return the definitions to the model and append them to `ToolDelivery.inputs`.\n- **Recording:** `assess` (`src/authoring/mod.rs`) holds delivered inputs in `pending` and calls `record_inputs` once the next provider response arrives. `record_inputs` deduplicates and keeps definition inputs in full. So tool-delivered definitions are supplied to the model, and recorded before a submission is accepted. If a provider request fails, `pending` is kept for the retry.\n- **Marking:** the code that does this work carries `{impl}` markers for the requirement: `prepare`, `record_inputs`, `additional_definitions`, `source_input`, `definition_inputs`, `assess`, `read` and `search`. `terms::dependencies` is the shared closure code, and it is marked as implementing `requirements.definitions.dependencies`. I found no unmarked implementing code and no extra behaviour.\n\n**Tests**\n\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` (`inputs.rs`):\n  - The terms `unit` and `value` reference each other, which is a cycle.\n  - It asserts exactly two definition inputs, so closure, deduplication and cycle termination are covered.\n  - It also checks that definitions pulled in only through the other mandatory inputs (a cited requirement, impl and test sources) are included.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` (`inputs.rs`): a term referenced from an `{impl}` source comment is included in the mandatory set, and a definition file that is not staged is reported as an error.\n- `definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission` (`mod.rs`):\n  - A term referenced by a read source brings in a transitive, cyclic definition set.\n  - The recorded evidence contains each definition exactly once, in order, as a full `:::{definition}` declaration with its `:phrase:` line.\n  - The second request, the one that precedes the submission, carries the definitions; the first request does not.\n- `reading_records_only_delivered_sources_and_their_terms` and `search_supplies_terminology_clamps_at_eof_and_reports_failures` (`tools.rs`): the `habeas` and `ripgrep` tools supply and record the definitions. Repeated `record_inputs` calls do not duplicate. Error cases for invalid requests and unparseable files are covered.\n\n**Remaining gaps:** none that matter. A dedicated test for an unresolvable term lives with the `requirements.definitions.dependencies` code and is outside this subject.",
   "inputs": [
     {
       "requirements": "requirements.definitions.authoring_inputs",
@@ -117,7 +117,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
-      "hash": "d696dfac1be95318e44b6ab09df3e942cddecf150df34029ef7ab988e95a6442"
+      "hash": "e790b3d7c7430f6b8465159541f7048ff733c4872f04b86eca9dbb17f2cfee8e"
     },
     {
       "file": "src/terms.rs",
@@ -125,49 +125,39 @@
       "hash": "2b96ffc0104a7cae1a9be5aea04d79199d7524031c262ab97c1bb5d712e6d49b"
     },
     {
-      "file": "md/requirements/definitions.md",
-      "item": "section[Named%20definitions]",
-      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
+      "file": "src/terms.rs",
+      "item": "use@41232e72e1f3",
+      "hash": "41232e72e1f385e38ae4ad5b99da6e14207f3391487fad42ed8aa7ddd14d6cf3"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "fn[update_inputs]",
-      "hash": "b7ef0060d2ffa22cef008e764ff74687b6677260ef3fffdb29e9bc5d09b422ca"
+      "file": "src/terms.rs",
+      "item": "use@e843693d3cbe",
+      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "032c8c68261b55784929b1a92d8c2806a7cbbd71028ebde50790220a6f44595e"
+      "file": "src/terms.rs",
+      "item": "use@4e5e9454aa1a",
+      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[quoted_end]",
-      "hash": "87a33514788966792c7c7995c887c0b806fdff82f513464c2d730afb064aebb3"
+      "file": "src/terms.rs",
+      "item": "use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[char_end]",
-      "hash": "7daa981149051c72a8314f473a7328348d7f365a2529179901c8c22ad647abe2"
+      "file": "src/terms.rs",
+      "item": "use@9deeef890732",
+      "hash": "9deeef8907322f72d657fceb434a61fb71a6ba1456f75a3570b2ffd0913d8753"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[raw_string_end]",
-      "hash": "6b5d5cd0373e986ed80d2bbcf6eb15b0fb248b1df89e3f5da629c9ed119fa8a3"
+      "file": "src/terms.rs",
+      "item": "use@1e0b93d961bf",
+      "hash": "1e0b93d961bffccdab83c4784acdd4a7832c485920c14e8186806c5bb104a6a6"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[comments]",
-      "hash": "600a55f0822af75ae6b91ea65bba44227e75d102d13910f0cc2dd293ec067796"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[comment_texts]",
-      "hash": "824c6015677606eb0ea7653d3b18dabc06b2ffcd5535e40c3d72edb86e217d35"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[comment_scan_skips_string_and_character_literals]",
-      "hash": "423a8e408a3fe8d410c0b27808cef6efdaf0f40396d4df18f09075ba0e18fe35"
+      "file": "src/terms.rs",
+      "item": "fn[declaration]",
+      "hash": "5263149823d66ebe73fd2dbdf0eebb70dab76aea126cb1da175a6c5dc221d290"
     },
     {
       "file": "src/terms.rs",
@@ -190,47 +180,9 @@
       "hash": "384460cdf651e0a04222f97e6b6f61287c7fc9cc42f7c5ac81b45e282d3cd216"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[fixture]",
-      "hash": "cf3a1ca69d526c80993146d2df62c3de65c2237e886a1e07f8e5dee78c0d7e46"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[cyclic_dependencies_are_captured_once_and_changes_require_review]",
-      "hash": "e8383a7b7d9006b90746474998c85fc30706986810369d4612e46c16c360614f"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[markdown_and_plain_text_inputs_contribute_their_term_references]",
-      "hash": "2f68053776a1c3cf7da52c46fd96a43b80d2698e17a8ca218cb27c4cd8fe1751"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
-      "hash": "f92f368c46a0c959eb5bae0e823c313badde42e78b1e045a5e80421a31db0f02"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[definition_schema_deletion_and_literal_references_are_checked]",
-      "hash": "8ae4ea21d6333d2f0387bbde69364509558488d4672f0608a66b99709b8188e8"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[example_subject_and_definition_display_use_the_same_dependencies]",
-      "hash": "8837e87dd6d9951838dd5e813079052e350aafc19fb79dca8e6243459e4e53be"
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/terms.rs",
+      "item": "fn[escaped_phrase]",
+      "hash": "57b2b69d44ee4dc8e909bd34eda3be6db51c381c7a68ad4bb24703592e31a3ea"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -256,6 +208,86 @@
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[read_lines]",
       "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation]",
+      "hash": "a9f72f30b27102cfaa5697448cc58df1881aa7110ef023ca06f1d13c731c7b5e"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
+      "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_record]",
+      "hash": "bd02de1eea84805ffdba0b1bc76bb6156b1a2d6436801239dbc54a37865c39f8"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[initial_prompt]",
+      "hash": "bfe100b8b43cf49efd6375d462d16f5ec28e447db4d13e7c20be01d72ea07fc5"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[submission]",
+      "hash": "3f4acd1d1c636179b58366914e69d8b699355c761c96b5b2842314d8d7da1860"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_read_through_a_symlink_leaving_the_project_aborts_the_assessment]",
+      "hash": "1df670f93bf1d9b07a6ea4db60253668d18da22620b7b75721c79ebb02623066"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[initial_prompt_carries_the_review_criteria]",
+      "hash": "f366eda0e1082480f251e43afbd468df89c89b0f4d77cc2b432a3b583f31f549"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[retry_fixture]",
+      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
+      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[mandatory_inputs_outside_the_project_still_abort]",
+      "hash": "7f6e8d8f4b7dbb70bf1f566d57271d75b7cb1080fbb3d1c67eede7faf39f6b64"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[habeas_tool_describes_its_argument_conventions_with_an_example_per_form]",
+      "hash": "3eec68e94859ed552ac6613755d4b27f29ea02406b53e3e8fa2903bcbd7e9191"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "747c8b1b4ad7f80254ca27080bf0b199c6ef1cf0fe663fe6ea44f45765578a02"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_input]",
+      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
     }
   ]
 }
