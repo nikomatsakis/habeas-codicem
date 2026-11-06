@@ -191,8 +191,9 @@ HabeasResult {
 
 `definitions` MUST be empty when no additional terminology is required. The
 harness MUST record inputs supplied to the model in the assessment's evidence.
-A failed read MUST add no evidence input. Access-policy denials MUST abort;
-other failed reads MUST return an explanatory tool error.
+A failed read MUST add no evidence input. Access-policy denials MUST abort
+except where {cite}`requirements.authoring.read_denial` makes them ordinary read
+failures; other failed reads MUST return an explanatory tool error.
 :::
 
 :::{req} read_denial
@@ -212,6 +213,14 @@ aborting, but explicitly requesting a denied file or directory MUST abort the
 affected assessment.
 Malformed tool arguments and ordinary read failures MUST retain their existing
 recoverable tool-error behavior.
+
+A dispatched model request naming a path outside the project root, before
+symlinks are resolved, that no workspace allow rule or generated-output rule
+permits MUST be treated as an ordinary read failure rather than an abort: it
+MUST return an explanatory tool error, add no evidence input, and let the
+assessment continue. An explicit workspace disallow matching such a path MUST
+still abort. A mandatory input naming such a path, and a request inside the
+project whose symlink target leaves it, MUST still abort.
 :::
 
 :::{req} generated_inputs
@@ -257,7 +266,7 @@ project-relative paths where possible and absolute paths for permitted external
 files. Its root listing MUST also expose available generated-output directories
 and configured external allow paths. The model can list a returned
 directory in another call to explore further. A failed listing MUST return an
-explanatory tool error unless access was denied, which MUST abort under
+explanatory tool error unless access was denied, which MUST be handled under
 {cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.
 Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.
 In a Git worktree, directories MUST have at least one eligible source
@@ -291,7 +300,7 @@ named, and its current inclusive line range, nested by outline ancestry. Results
 MUST contain no source text and MUST NOT become evidence inputs; the model reads
 the nodes it relies on with the `habeas` tool. For a file using the plain-text
 profile, the outline lists its `line` nodes. Explicitly requesting an excluded
-file MUST abort under {cite}`requirements.authoring.read_denial`.
+file MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
 :::
 
 ### Search file contents: `ripgrep`
@@ -327,7 +336,7 @@ Each result MUST include the selected source text for the model.
 Setting `context` to zero MUST return only matching lines.
 Search results MUST exclude files disallowed by
 {cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
-path MUST abort under {cite}`requirements.authoring.read_denial`.
+path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
 Required terminology MUST be included under
 {cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied
 to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
