@@ -89,12 +89,15 @@ impl UsageLog {
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         let directory = state.join("authoring/usage");
-        fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{run_id}.json"));
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
+        fs::create_dir_all(&directory)
+            .and_then(|()| OpenOptions::new().write(true).create_new(true).open(&path))
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("cannot record usage at {}: {error}", path.display()),
+                )
+            })?;
         let log = Self {
             record: UsageRecord {
                 version: 1,

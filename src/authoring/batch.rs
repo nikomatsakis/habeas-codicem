@@ -36,6 +36,7 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.authoring.reporting`
 // {impl}`requirements.ci.authoring_inputs`
+// {impl}`requirements.configuration.loading`
 pub async fn author_all_with_options(
     root: &Path,
     selection: Option<&str>,

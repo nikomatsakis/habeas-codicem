@@ -109,6 +109,34 @@ impl PendingAssessment {
     }
 }
 
+/// Determines and creates the state root for authoring usage history, refusing
+/// a location inside the project repository `root` (already canonical).
+// {impl}`requirements.configuration.state_location`
+// {impl}`requirements.authoring.usage_storage`
+fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
+    let state = config::state_root()?;
+    let unwritable = |error: io::Error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot create authoring state directory {}: {error}",
+                state.display()
+            ),
+        )
+    };
+    fs::create_dir_all(&state).map_err(unwritable)?;
+    if fs::canonicalize(&state)
+        .map_err(unwritable)?
+        .starts_with(root)
+    {
+        return Err(io::Error::other(format!(
+            "authoring usage state {} must be outside the project repository",
+            state.display()
+        )));
+    }
+    Ok(state)
+}
+
 #[derive(Clone, Copy)]
 pub enum EvidenceOutput {
     File,
@@ -135,13 +163,7 @@ pub async fn author_evidence_with_output(
     output: EvidenceOutput,
 ) -> io::Result<AuthoringOutcome> {
     let root = fs::canonicalize(root)?;
-    let state = config::state_root()?;
-    fs::create_dir_all(&state)?;
-    if fs::canonicalize(&state)?.starts_with(&root) {
-        return Err(io::Error::other(
-            "authoring usage state must be outside the project repository",
-        ));
-    }
+    let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, subject)?;
     usage.record.evidence_output = match output {
         EvidenceOutput::File => "file",
@@ -196,13 +218,7 @@ pub(crate) async fn prepare_assessment(
     mut cancellation: watch::Receiver<Option<&'static str>>,
 ) -> io::Result<PendingAssessment> {
     let root = fs::canonicalize(root)?;
-    let state = config::state_root()?;
-    fs::create_dir_all(&state)?;
-    if fs::canonicalize(&state)?.starts_with(&root) {
-        return Err(io::Error::other(
-            "authoring usage state must be outside the project repository",
-        ));
-    }
+    let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, &subject.label())?;
     let result = tokio::select! {
         biased;
@@ -269,6 +285,7 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.persistence`
+// {impl}`requirements.configuration.loading`
 async fn configured_assessment(
     root: &Path,
     subject: &str,

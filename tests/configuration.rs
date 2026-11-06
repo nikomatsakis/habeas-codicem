@@ -264,6 +264,7 @@ model = "explicit:tag"
     );
 }
 
+// {test}`requirements.configuration.structure`
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.configuration_serialization`
 // {test}`requirements.authoring.configuration_storage`
@@ -590,4 +591,222 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
     ] {
         assert!(WorkspaceConfig::parse(&invalid_source, path).is_err());
     }
+}
+
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.configuration.loading`
+#[test]
+fn workspace_diagnostics_identify_the_file_and_setting() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("habeas.toml");
+    let file = path.to_str().unwrap();
+    for (source, setting) in [
+        ("version = '1'", "version"),
+        ("version = 2", "version"),
+        ("version = 1\nunknown = true", "unknown"),
+        (
+            "version = 1\n[authoring]\ndefault = 123",
+            "authoring.default",
+        ),
+        ("version = 1\n[authoring]\nbogus = 1", "authoring.bogus"),
+        (
+            "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 3",
+            "authoring.configs.cloud",
+        ),
+        (
+            "version = 1\n[evidence]\ndisallow = [42]",
+            "evidence.disallow",
+        ),
+        ("version = 1\n[evidence]\nunknown = []", "evidence.unknown"),
+        ("version = 1\n[evidence]\nallow = ['']", "evidence.allow[0]"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let errors = [
+            load_workspace_config(temp.path()).map(|_| ()),
+            WorkspaceConfig::parse(source, &path).map(|_| ()),
+        ];
+        for error in errors {
+            let error = error.unwrap_err().to_string();
+            assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
+        }
+    }
+    // The evidence loader decodes only the `[evidence]` table it uses.
+    for (source, setting) in [
+        (
+            "version = 1\n[evidence]\ndisallow = [42]",
+            "evidence.disallow",
+        ),
+        ("version = 1\n[evidence]\nunknown = []", "evidence.unknown"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let error = load_workspace_evidence(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
+    }
+    fs::write(&path, b"version = 1\n# \xff\n").unwrap();
+    let error = load_workspace_config(temp.path()).unwrap_err().to_string();
+    assert!(error.contains(file), "{error}");
+    fs::write(&path, "version = 1\n[evidence\n").unwrap();
+    let error = load_workspace_config(temp.path()).unwrap_err().to_string();
+    assert!(error.starts_with(file), "{error}");
+    assert!(
+        error.contains("invalid TOML syntax at line 2, column"),
+        "{error}"
+    );
+    let error = UserConfig::parse("version = 1\n[authoring]\ndefault = 123", &path)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with(&format!("{file}: authoring.default")),
+        "{error}"
+    );
+}
+
+// {test}`requirements.configuration.workspace_location`
+// {test}`requirements.configuration.loading`
+// {test}`requirements.configuration.structure`
+#[test]
+fn unreadable_configuration_files_are_reported_instead_of_skipped() {
+    let temp = tempfile::tempdir().unwrap();
+    let outer = temp.path().join("habeas.toml");
+    fs::write(&outer, "version = 1\n").unwrap();
+    let project = temp.path().join("project");
+    fs::create_dir_all(project.join("habeas.toml")).unwrap();
+    for error in [
+        load_workspace_config(&project).map(|_| ()),
+        load_workspace_evidence(&project).map(|_| ()),
+    ] {
+        let error = error.unwrap_err().to_string();
+        assert!(
+            error.contains(project.join("habeas.toml").to_str().unwrap()),
+            "{error}"
+        );
+    }
+    let user = temp.path().join("config.toml");
+    fs::create_dir(&user).unwrap();
+    let error = load_user_config(&user).unwrap_err().to_string();
+    assert!(error.contains(user.to_str().unwrap()), "{error}");
+    let binary = temp.path().join("binary.toml");
+    fs::write(&binary, b"version = 1\n# \xff\n").unwrap();
+    let error = load_user_config(&binary).unwrap_err().to_string();
+    assert!(error.contains(binary.to_str().unwrap()), "{error}");
+
+    // Loading an absent workspace file leaves the directory unchanged.
+    let empty = tempfile::tempdir().unwrap();
+    assert!(load_workspace_config(empty.path()).unwrap().is_none());
+    assert!(load_workspace_evidence(empty.path()).unwrap().is_none());
+    assert!(!empty.path().join("habeas.toml").exists());
+    assert_eq!(fs::read_dir(empty.path()).unwrap().count(), 0);
+}
+
+// {test}`requirements.configuration.feature_sections`
+// {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.configuration.structure`
+#[test]
+fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("habeas.toml");
+    // An absent `[evidence]` table, or omitted arrays, mean empty lists.
+    for source in ["version = 1\n", "version = 1\n[evidence]\n"] {
+        fs::write(&path, source).unwrap();
+        let policy = load_workspace_evidence(temp.path()).unwrap().unwrap();
+        assert!(policy.evidence.allow.is_empty() && policy.evidence.disallow.is_empty());
+    }
+    let config = WorkspaceConfig::parse("version = 1\n", &path).unwrap();
+    assert!(config.authoring.is_none() && config.evidence.is_none());
+    // Feature settings must stay within their sections.
+    for source in [
+        "version = 1\nallow = ['generated']\n",
+        "version = 1\ndefault = 'cloud'\n",
+        "version = 1\n[authoring]\nallow = ['generated']\n",
+        "version = 1\n[evidence]\ndefault = 'cloud'\n",
+    ] {
+        assert!(WorkspaceConfig::parse(source, &path).is_err(), "{source}");
+    }
+    assert!(UserConfig::parse("version = 1\n[evidence]\nallow = []\n", &path).is_err());
+    // The evidence feature does not reinterpret or validate authoring settings.
+    fs::write(
+        &path,
+        "version = 1\n[authoring]\ndefault = 'missing'\nunknown = 1\n[evidence]\nallow = ['generated']\n",
+    )
+    .unwrap();
+    let policy = load_workspace_evidence(temp.path()).unwrap().unwrap();
+    assert_eq!(policy.evidence.allow, vec![Path::new("generated")]);
+    // Authoring settings stay in `[authoring]`; its provider-owned options
+    // cannot replace harness settings.
+    for source in [
+        "version = 1\n[authoring.configs.c]\nbackend = 'ollama'\nmodel = 'm'\nallow = []\n",
+        "version = 1\n[authoring.configs.c]\nbackend = 'ollama'\nmodel = 'm'\n[authoring.configs.c.options]\nmodel = 'x'\n",
+    ] {
+        assert!(UserConfig::parse(source, &path).is_err(), "{source}");
+        assert!(WorkspaceConfig::parse(source, &path).is_err(), "{source}");
+    }
+    // An absent authoring section configures nothing.
+    let user = UserConfig::parse("version = 1\n", &path).unwrap();
+    assert!(user.authoring.is_none());
+}
+
+// {test}`requirements.configuration.documentation`
+#[test]
+fn documented_configuration_examples_are_complete_valid_files() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for document in ["md/reference.md", "md/requirements/configuration.md"] {
+        let text = fs::read_to_string(root.join(document)).unwrap();
+        let blocks = text.split("```toml\n").skip(1);
+        for block in blocks {
+            let source = block.split("\n```").next().unwrap();
+            let path = Path::new(document);
+            // Workspace files are the only ones with an `[evidence]` table.
+            let parsed = if source.contains("[evidence]") {
+                WorkspaceConfig::parse(source, path).map(|_| ())
+            } else {
+                UserConfig::parse(source, path).map(|_| ())
+            };
+            parsed.unwrap_or_else(|error| panic!("{document}: {error}\n{source}"));
+            assert_eq!(source.lines().next(), Some("version = 1"), "{document}");
+            // Primary examples name credential sources, never literal secrets.
+            for line in source.lines() {
+                assert!(
+                    !line.starts_with("credentials") && !line.starts_with("api_key ="),
+                    "{document}: {line}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 8, "{checked}");
+}
+
+// {test}`requirements.configuration.loading`
+#[test]
+fn commands_without_evidence_inputs_ignore_an_invalid_workspace_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path();
+    fs::write(
+        project.join("habeas.toml"),
+        "version = 1\n[evidence]\nallow = [1]\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .current_dir(project)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let hook = run(&["hook", "session-start"]);
+    assert!(hook.status.success(), "{hook:?}");
+    let setup = run(&["setup"]);
+    let stderr = String::from_utf8_lossy(&setup.stderr);
+    assert!(stderr.contains("cannot find a project"), "{stderr}");
+    assert!(!stderr.contains("habeas.toml"), "{stderr}");
+    assert!(run(&["mdbook", "supports", "html"]).status.success());
+    // Commands that resolve evidence inputs still report the invalid file.
+    let status = run(&["status"]);
+    let stderr = String::from_utf8_lossy(&status.stderr);
+    assert!(!status.status.success());
+    assert!(stderr.contains("evidence.allow"), "{stderr}");
 }

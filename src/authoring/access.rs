@@ -16,6 +16,7 @@ pub(crate) struct PathPolicy {
 impl PathPolicy {
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.configuration.workspace_location`
+    // {impl}`requirements.configuration.loading`
     // {impl}`requirements.authoring.credentials`
     pub(crate) fn load(root: &Path) -> io::Result<Self> {
         let Some(config) = crate::config::load_workspace_evidence(root)? else {
@@ -421,6 +422,7 @@ fn discover_generated_roots(build_root: &Path) -> Vec<PathBuf> {
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.authoring.generated_inputs`
+// {impl}`requirements.configuration.loading`
 pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {
     let root = fs::canonicalize(root)?;
     let (requested, target) = resolve(&root, Path::new(file))?;

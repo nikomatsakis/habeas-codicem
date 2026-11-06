@@ -168,6 +168,21 @@ unsuccessfully after the batch finishes.
 {cite}`requirements.authoring.source_tools`
 {cite}`requirements.authoring.read_denial`
 
+Habeas reads two configuration files, and you create and edit both by hand with a
+text editor; there is no configuration-management command, and Habeas never
+creates, repairs, or rewrites them. The user file, described below, holds
+settings that apply across projects. A workspace file named `habeas.toml` holds
+settings for the directory containing it and its descendants. Both are UTF-8 TOML.
+Each must start with the schema version `version = 1`; any other version is
+rejected. Apart from `version`, the top level may contain only feature tables:
+`[authoring]` in either file, and `[evidence]` in `habeas.toml`. Unknown keys,
+wrongly typed values, and invalid TOML are reported with the file and setting.
+A file containing only `version = 1` is valid and configures nothing. The
+[common data structures](requirements/configuration.md#common-data-structures)
+describe this schema in full. To remove an optional setting or selection, delete
+its key or table; omitted settings use their documented defaults.
+{impl}`requirements.configuration.documentation`
+
 The nearest enclosing `habeas.toml` supplies workspace settings. Relative paths
 in this file use its directory as their base. This complete example selects a
 user configuration named `cloud` and allows a generated directory except for one
@@ -186,6 +201,11 @@ disallow = ["generated/private"]
 
 An allow overrides all defaults; disallow wins if both match. Paths name literal
 files or directory subtrees, not globs. Absolute paths can allow external inputs.
+Replace `generated` and `generated/private` with your own paths. Add or delete
+entries in either array to change the policy. An omitted `allow` or `disallow`
+means an empty list; delete the whole `[evidence]` table to restore the default
+source-access rules, or the `[authoring]` table to use only user settings.
+{impl}`requirements.configuration.documentation`
 Workspace files can also define `[authoring.configs.<name>]` records, which
 replace same-named user records as a whole. No ancestor workspace files are
 merged. Selection order is `--config`, the user's per-project selection, workspace
@@ -234,7 +254,24 @@ Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,
 `http://localhost:11434`; add `endpoint = "http://workstation:11434"` to its table
 for a remote server, replacing `workstation` with that server's host name. For
 authentication, add `api_key_env = "OLLAMA_API_KEY"` and set that variable outside
-the file. Profiles and environment references are preferred. Literal Bedrock
+the file. This complete user file uses a remote, authenticated Ollama server;
+replace `MODEL_TAG`, `workstation`, and `OLLAMA_API_KEY` as above:
+
+```toml
+version = 1
+
+[authoring]
+default = "local"
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+endpoint = "http://workstation:11434"
+api_key_env = "OLLAMA_API_KEY"
+```
+
+Delete `endpoint` to return to the local default, or `api_key_env` to send no key.
+Profiles and environment references are preferred. Literal Bedrock
 `credentials` or Ollama `api_key` values are supported but not recommended in
 workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).
 {cite}`requirements.authoring.configuration_precedence`
@@ -274,10 +311,17 @@ whether the write succeeded.
 {cite}`requirements.authoring.persistence`
 {cite}`requirements.authoring.usage_storage`
 
-Change `authoring.default` to switch the default, or add a per-project selection
-using its canonical absolute path (replace `/absolute/path/to/project`):
+Change `authoring.default` in the user file to switch the default, or add a
+per-project selection using its canonical absolute path. In this complete user
+file, replace `/absolute/path/to/project` with that path and `MODEL_TAG` as above:
 
 ```toml
+version = 1
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+
 [authoring.projects."/absolute/path/to/project"]
 config = "local"
 ```
@@ -290,12 +334,17 @@ depend on the provider, and cannot replace the model, prompt, or tools. See the
 [configuration reference](requirements/authoring.md#configuration) for the full
 format. {cite}`requirements.authoring.configuration_storage`
 {impl}`requirements.authoring.configuration_documentation`
+{impl}`requirements.configuration.documentation`
 
 Bedrock runs assessments concurrently by default, using the available logical CPU
 count. Ollama runs one at a time. Override either default with a positive
-`concurrency` value alongside `backend` and `model` in its configuration table:
+`concurrency` value alongside `backend` and `model` in its configuration table.
+In this complete user file, replace `MODEL_ID` as above; delete `concurrency` to
+restore the default:
 
 ```toml
+version = 1
+
 [authoring.configs.cloud]
 backend = "bedrock"
 model = "MODEL_ID"
@@ -306,13 +355,21 @@ Four is an example, not a fixed default. Authoring uses asynchronous tasks on a
 fixed worker thread pool and limits simultaneous assessments to this value.
 Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work
 on records that still need attention. {cite}`requirements.authoring.concurrency`
+{impl}`requirements.configuration.documentation`
 
 For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and
 `stopSequences` directly in that options table. Habeas maps them to Converse's
 `inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.
-Use these flat keys without an `inferenceConfig` wrapper. For example:
+Use these flat keys without an `inferenceConfig` wrapper. For example, in this
+complete user file (replace `MODEL_ID` as above):
 
 ```toml
+version = 1
+
+[authoring.configs.cloud]
+backend = "bedrock"
+model = "MODEL_ID"
+
 [authoring.configs.cloud.options]
 temperature = 0.25
 maxTokens = 321
@@ -325,6 +382,7 @@ leave it to the provider. For Ollama, native options such as `num_ctx` and `seed
 go in the same options table; Rig places them in Ollama's native request.
 {cite}`requirements.authoring.configuration_storage`
 {cite}`requirements.authoring.rig_configuration_mapping`
+{impl}`requirements.configuration.documentation`
 
 The command reports the evidence destination and usage-record path. Usage
 metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to
