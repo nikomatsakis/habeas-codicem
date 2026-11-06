@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input --item <file>:<line>` MUST parse the file under {cite}`requirements.references.outlines` and add or refresh one\noutline input for every outline node declared on that line. A named node is\ndeclared on the line containing its name; an anonymous node is declared on the\nline where it starts. Each input MUST store the selected `file` under the path\nrules in {cite}`requirements.ci.schema`, the node's selector, and its structural\nhash. The command MUST report every selected node and reject a line on which no\nnode is declared.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.cli.add_input_item`. The code is marked `{impl}`, the behavior matches the text, and the tests cover the interesting cases.\n\n**Implementation**\n- **CLI.** `src/main.rs` (`enum[Command]` / `AddInput`, and `main`) takes `--item <file>:<line>` as one of two exclusive modes and passes it to `add_input` as `InputMode::ItemsAtLine`.\n- **Parsing and line parsing.** `selectors_for_mode` in `src/add_input.rs` splits the spec with `rsplit_once(':')`, so paths containing colons still work. It rejects a non-numeric line. It parses the file through `OutlineCache::parse`, which uses the outline profile chosen by file extension. That includes the plain-text profile, where each non-blank line is an anonymous `line` node (`plain_text` in `src/outline/mod.rs`).\n- **Declared-on-line rule.** `Outline::declared_on_line` selects every non-root node whose `declaration_line` equals the requested line. The builder sets `declaration_line` to the line of the name for named nodes (`Builder::name` returns the name's start byte). For anonymous nodes it uses the line where the node starts, excluding attached docs and attributes (`walk` and `finish`). Several nodes on one line, such as `fn[main]` and `fn[main]/fn[nested]`, are all selected.\n- **Rejection.** If nothing is selected, `selectors_for_mode` returns the error `<file>:<line>: no outline node is declared on this line`. Line 0 and blank lines are rejected the same way. The `?` operator aborts the command before the record is written.\n- **Stored input.** `InputSelector::to_input` in `src/inputs.rs` stores exactly `file`, `item` (the selector) and `hash` (the node's structural hash), with no source text. `file` is recorded project-relative when inside the project (`strip_prefix(root)`). Otherwise it is the absolute resolved path, which matches the path rules in `requirements.ci.schema`. `resolve` checks containment through `read_project_file`.\n- **Add, refresh, report.** `update_inputs` matches an existing input by selector. It then reports `added`, `refreshed` or `unchanged` for every selected node, followed by the selector. It leaves the record byte-identical when nothing changed.\n- **Extra behavior.** `update_inputs` also resets `determination` to false and captures definition inputs when something changed. That behavior belongs to `requirements.cli.add_input` and `requirements.definitions.capture`, and the code carries `{impl}` markers for those.\n\n**Tests** (`tests/commands.rs`)\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently`:\n  - Adding `src/main.rs:4` reports both `fn[main]` and `fn[main]/fn[nested]`.\n  - A plain-text line (`notes.txt:3`) is added as a `line@…` node.\n  - Repeating a call reports `unchanged` and leaves the file byte-identical.\n  - Rejected locations leave the record unchanged: a doc-comment line (`src/main.rs:3`), a blank line (`notes.txt:2`), a non-numeric line (`src/main.rs:x`) and a missing file (`missing.rs:1`). The first of these also has its exact error message asserted.\n  - Stored inputs equal `outline_input` results.\n  - The hash ignores a citation comment but changes with doc-comment edits.\n- `add_input_requires_one_target_and_mode_and_resets_changed_records`:\n  - Exactly one target and one mode are enforced.\n  - Unknown or wrong-kind targets are rejected before anything is written.\n  - A changed source produces `refreshed`, updating the existing input in place at the right position.\n  - A review reset follows a changed input.\n- `add_input_external_sources_respect_allow_and_disallow`: an external file is stored under its absolute path when allowed, and the command fails without modifying the record when the file is disallowed.\n\n**Minor gaps.** Multi-line declarations where the name is on a later line than the node start are not tested explicitly, and the tests exercise only the Rust and plain-text profiles. The shared `declaration_line` logic covers these cases, so I don't think they are a meaningful gap.",
+  "rationale": "**Judgment:** the implementation is complete and tested. I am marking the requirement as satisfied.\n\n**Implementation**\n- **CLI:** `src/main.rs` (`Command::AddInput` and `main`) defines `add-input --item <file:line>`. clap requires exactly one target and exactly one mode, and the command calls `habeas::add_input`.\n- **Parsing:** `selectors_for_mode` in `src/add_input.rs` splits the argument at the last `:` and parses the line number. It parses the file through `OutlineCache::parse`, which uses the outline profiles from `requirements.references.outlines`. Parse errors and missing files are returned as errors.\n- **Selecting nodes:** `Outline::declared_on_line` in `src/outline/mod.rs` returns every non-root node whose `declaration_line` equals the requested line.\n  - `Builder::name` and `Builder::walk` set that line to the name's start byte for named nodes, and to the node's start byte for anonymous ones.\n  - `Builder::finish` copies it into `declaration_line` via `lines.line(draft.declaration_byte)`.\n  - `plain_text` makes each non-blank line an anonymous `line` node declared on its own line.\n  - Together these match \"a named node is declared on the line containing its name; an anonymous node is declared on the line where it starts\".\n- **Rejection:** if no node is declared on the line, `selectors_for_mode` returns `\"{file}:{line}: no outline node is declared on this line\"`.\n- **Stored input:** `InputSelector::to_input` (`src/inputs.rs`) stores `file`, `item` (the node's selector) and `hash` (the structural hash). It stores no source text. `resolve` computes the hash.\n- **Path rules:** `selectors_for_mode` strips the project root from the file path, so project files are stored relative to it. Permitted external paths stay absolute, as `requirements.ci.schema` allows.\n- **Add or refresh:** `update_inputs` finds an existing input with the same selector. It then reports `unchanged`, `refreshed` or `added`, and each report line names the selector.\n- **Reporting:** `update_inputs` writes one report line per selected node, so every selected node is reported.\n- **Other behavior in the marked code:** the review reset and definition capture in `update_inputs` belong to `cli.add_input` and `definitions.capture`, which that function also marks.\n- **Marking:** all code that implements the requirement carries `{impl}` markers. Examples are `declared_on_line`, `plain_text`, `name`, `walk` and `finish`.\n\n**Tests** (`tests/commands.rs`, plus `src/outline/tests.rs::line_queries_find_innermost_and_declared_nodes`)\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently`:\n  - Line 4 of a Rust file has a doc comment and an attribute above a function that contains a nested function. Both `fn[main]` and `fn[main]/fn[nested]` are added and reported.\n  - A plain-text line is added as an anonymous `line@…` node.\n  - A repeated add reports `unchanged` and leaves the file byte-identical.\n  - Rejected locations leave the record untouched: a line with no declared node (`src/main.rs:3`, with the exact message), a blank line (`notes.txt:2`), a non-numeric line (`src/main.rs:x`) and a missing file (`missing.rs:1`).\n  - The stored hash ignores citation comment edits but changes when the doc comment changes, which confirms the structural hash is what is stored.\n- `add_input_requires_one_target_and_mode_and_resets_changed_records`:\n  - clap rejects invalid target and mode combinations.\n  - Unchanged inputs are reported as `unchanged`.\n  - Changed sources are refreshed in place with a `refreshed` report.\n- `add_input_external_sources_respect_allow_and_disallow` covers an external absolute file path that is allowed, which stores the absolute path. It also covers a disallowed one, which is rejected and leaves the record unchanged.\n- `line_queries_find_innermost_and_declared_nodes` tests `declared_on_line` directly. Two nodes declared on one line are returned together (`impl[Thing]` and `impl[Thing]/fn[run]`).\n\n**Minor point:** I found no test of a named node whose name sits on a later line than its start. The doc-comment and attribute case covers the main difference between the declaration line and the node's start line. This does not change my judgment.",
   "inputs": [
     {
       "requirements": "requirements.cli.add_input_item",
@@ -28,7 +28,9 @@
       "text": [
         ":::{req} outlines",
         "Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML",
-        "sources with pinned tree-sitter grammars, selected by file extension. Every",
+        "sources with pinned tree-sitter grammars, selected by file extension compared",
+        "case-insensitively. A source with any syntax error MUST fail to parse, reporting",
+        "the line of its first error. Every",
         "other text file MUST use a plain-text profile in which each line that is not",
         "blank is an anonymous outline node of kind `line`. Each supported language MUST",
         "have an outline profile that maps grammar node kinds to short outline kind names",
@@ -111,7 +113,7 @@
     {
       "file": "src/outline/mod.rs",
       "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
-      "hash": "730ff51b4a17e9c916fbe7463187ba0511ab4bc94ea117741d0c7088f52c7a41"
+      "hash": "56d485a1631eacba50fdbca88128d77fa25f44a99979e74b92a556820ec6c4a5"
     },
     {
       "file": "src/outline/mod.rs",
@@ -134,74 +136,39 @@
       "hash": "481e3d75bfef6134f7c6435db78acd1a683a5264afe57bff61afabaf466d1254"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ConfigPlatform]",
-      "hash": "816fa731bb902965f928c77a8204fb9d14c729f3e24c44320d7ff47e12dc84e7"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]",
-      "hash": "1c8c4f12d0c8aa68141f51f0b5f6210995d702934c62b76e640b7611db3a0c90"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
+      "file": "audits/requirement-rewordings/ci-references-definitions.md",
+      "item": "section[Requirement%20rewordings:%20ci,%20references,%20definitions]/section[requirements.references.outlines]",
+      "hash": "e886603e15a9915e8a9fcb7623b5173106c3ca095c1fb77eb7711fc7dacea458"
     },
     {
       "file": "src/evidence.rs",
-      "item": "struct[AnchorTarget]",
-      "hash": "5a296ee3aeaf7120d450a0662f3a7a088e1182edd16c0111e640d6a2638fe5a9"
+      "item": "mod[tests]/fn[source_references_are_covered_by_evidence_inputs]",
+      "hash": "5c13acf27bae72511a78ed897818ed1cca9f03ed4366d424fbabebabb130e4c9"
     },
     {
       "file": "src/evidence.rs",
-      "item": "impl[Anchor]",
-      "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
+      "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
+      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
     },
     {
-      "file": "src/index.rs",
-      "item": "struct[InputLocation]",
-      "hash": "99ea2be1f267223b80d87d341410380c2b14855b158cb3be7bedd36ee329724f"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[a_false_determination_fails_only_its_own_record_with_its_rationale]",
+      "hash": "e462067423cb9ee5d18cc29623b31ead903a22123ce8961a62a5446fa790b2cd"
     },
     {
-      "file": "src/index.rs",
-      "item": "impl[InputLocation]",
-      "hash": "dea18032fc35a91d2f7725791250ff4d1b26d1636aa106c78e5ee06bbbf3e604"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[OutlineCache]",
-      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]",
-      "hash": "e2b73fb5ab3ea089731a8720517490f1ac0891d24210de9fdab90341e075e6ec"
+      "item": "fn[outline_inputs_for_lines]",
+      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]",
-      "hash": "290e7c1e137a3ff4781614fe1b266f4beca497eb2fbcd3992418ae2a75f7a5f2"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_model_input]",
-      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
+      "file": "src/lib.rs",
+      "item": "use@9aa99ad89c93",
+      "hash": "9aa99ad89c9349d8907962a5fa220f06b18d4cc163e5df51d30fe3a6692ccee9"
     },
     {
       "file": "src/outline/mod.rs",
@@ -210,58 +177,13 @@
     },
     {
       "file": "src/outline/mod.rs",
-      "item": "impl[OutlineNode]",
-      "hash": "c4146800beb37f82f661491db6044922285309a9f587990b4c542d807bfc3ce6"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[ResolveError/fmt::Display]",
-      "hash": "6d8021ad7b3e368491a06b947a8eef73ef345992d6aed538b1cac8f57c7ec49d"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[ResolveError/std::error::Error]",
-      "hash": "8d040e2a42ef1900f6ff1171b36f305e5ace68921d216e461c29880363abf8e4"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse]",
-      "hash": "8133358e153dd92a174a893d815a05cccdba64227de0b233187d7526b7927a35"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse_with]",
-      "hash": "c78942451f3a6a9f5d1bd6b05e3d80b0884e352f10a15719b190429c78a96f60"
-    },
-    {
-      "file": "src/outline/mod.rs",
       "item": "fn[root_node]",
-      "hash": "88e8dce2de62a3985d605039d0b0fd56e57f784ae5ec7e1fbb309a477be53d6a"
+      "hash": "53eb875e672b899cc2ccf95e5171657444a8691c0b97c7a0656f8bd9926b8d59"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "struct[Draft]",
-      "hash": "fbbc10b5947d4c09592650e90cb9e3d7665e7d136fb62e9242b09ccfb34dc455"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[run_owner]",
-      "hash": "f407a84b4a67ebbee979c3a9b305512322e6858a2c40ee48288352f91537e574"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]",
-      "hash": "7d809597ae1071829e01cd4f956d388865f05e410ae42a96efda43f7275a61d5"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[innermost_at_line]",
-      "hash": "8d528d088614e5ee17ffa2e2c679a23195b6ecbeb96ff5f95b9f466d288b7355"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[comment_owners_at_line]",
-      "hash": "d146efc8ec0a109dda903d8a745fa3c50a29acabb0c2b7664f17d1075f0008bf"
+      "file": "src/outline/tests.rs",
+      "item": "fn[line_queries_find_innermost_and_declared_nodes]",
+      "hash": "d838571a0d96992f40a5e26430a200414da698d33682344a0324f3e3dc1efd40"
     },
     {
       "file": "src/rust_coverage.rs",
@@ -269,9 +191,29 @@
       "hash": "d111e2c751c573871d70748ea4ad6ceb354c506408d013246cf531086e84238e"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[rust_files]",
-      "hash": "6cbf8202921361b48f062ffaa7825cd1cb9306a68da954c426f0b2607d41c26b"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[negative_assessment_records_additional_reads_and_fails_validation]",
+      "hash": "0ac40fef47ad1b9b7d7799c819d2dd60a2ee6881ef2431ceb57025d79cce44b5"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
+      "hash": "7d198562a62e845ab189a2249979c3593b0c0b4692d2caee238c95b74eb32d8a"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[fixture]",
+      "hash": "fc7d08e42eeae1be9be41fb4672e615c6ba7a52beaa1d0f620ed0c9a37268bee"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
+      "hash": "a798c0a3903164d2f2f1758c0bfddce483826b6137ee6509776efbe71c14f2a6"
     }
   ]
 }

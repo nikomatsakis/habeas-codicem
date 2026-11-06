@@ -1,7 +1,7 @@
 {
   "requirement": "The Rust outline profile under {cite}`requirements.references.outlines` MUST\nidentify items by segments describing their syntactic ancestry within the file,\nsuch as `fn[run]`, `struct[Packet]`, and `mod[local]/fn[run]`, and MUST NOT\nresolve Rust modules across files. Functions, methods, structs, enums, unions,\ntraits, impls, modules, macros, constants, statics, type aliases, and extern\nblocks MUST be outline nodes. Impl segments MUST be named by their syntactic self\ntype and optional trait path, as `impl[Thing]` and `impl[Thing/Trait]`. `use`\ndeclarations and other items without a suitable name MUST be anonymous. Selector\nspelling MUST be documented.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation is fully marked `{impl}`, it is documented, and the tests cover the design space.\n\n**Implementation, `src/outline/rust.rs`**\n- `KINDS` (lines 118–142) maps these grammar nodes to outline kinds, all named by the `name` field:\n  - `function_item` and `function_signature_item` become `fn`. This covers functions, methods and foreign or trait signatures.\n  - `struct_item`, `enum_item`, `union_item`, `trait_item` and `mod_item` become `struct`, `enum`, `union`, `trait` and `mod`.\n  - `const_item` and `static_item` become `const` and `static`.\n  - `type_item` and `associated_type` become `type`.\n  - `macro_definition` becomes `macro`.\n- `impl_item` uses `impl_name` (lines 7–15). It names the node by the `type` field text, plus the `trait` field text when present. That gives `impl[Thing]` and `impl[Thing/Trait]` from the syntactic text, with no type resolution.\n- `foreign_mod_item` uses `extern_name` (lines 17–37). It names the node by the ABI string content, or `Rust` when there is no ABI. The requirement leaves extern naming open, so this fits.\n- `use_declaration` is `NameRule::Anonymous`, as required.\n- Item-position `macro_invocation` is also anonymous. `item_macro` and `in_item_list` (lines 39–53) restrict it to item position, so expression macros are not nodes. That fits \"other items without a suitable name MUST be anonymous\".\n- `extern_crate_declaration` becomes a named `extern-crate` node. It is an item, and the profile documents it.\n- Each segment is built only from the segments of its syntactic ancestors in the same file. Nothing in the profile follows `mod x;` to another file, so modules are never resolved across files.\n- Helper functions that implement other requirements (`is_comment`, `attaches`, the doc-comment helpers) carry their own `{impl}` markers. I found no unmarked behaviour that belongs to this requirement.\n\n**Documentation:** `md/reference.md` (References and Outlines sections) documents the selector spelling:\n- `kind[name]` and `kind@hash` segments, with `#N` for duplicates and percent-encoding of special characters.\n- An impl's type and trait joined by a literal `/`.\n- Anonymous `use` and item macros.\n- Modules never resolved across files.\n- A full Rust profile table.\n\n**Tests**\n- `rust_selectors_follow_syntactic_ancestry` covers:\n  - nested modules, external `mod x;`, and nested fns;\n  - inherent and trait impls, and an impl on an array type with encoded spaces and brackets;\n  - trait items, including the associated type;\n  - `extern \"C\"` and a bare `extern`, which gives `Rust`;\n  - duplicate names, which become `#1` and `#2`;\n  - macro definitions, unions, enums, consts, statics, type aliases and `extern crate`;\n  - a round trip through `resolve` and the failure of ambiguous or missing selectors.\n- `selectors_name_syntactic_ancestry_and_duplicates` additionally checks that two `use` declarations get distinct anonymous `use@` selectors.\n- `item_macros_are_anonymous_nodes_and_expression_macros_are_not` checks:\n  - anonymous item macros at the top level, in an impl and in a module;\n  - the generic impl name `impl[Wrapper<T>/Trait]`;\n  - that expression macros inside function bodies produce no nodes.\n\nThese tests exercise every kind the requirement lists plus the naming and anonymity edge cases. I found no unacknowledged gaps.",
+  "rationale": "**Verdict:** the Rust outline profile meets `requirements.references.rust_item_selectors`. The implementation is complete and marked, the spelling is documented, and the tests cover the main cases and failure paths.\n\n**Implementation**\n- `KINDS` in `src/outline/rust.rs` (118–142) maps every item class the requirement lists to a named outline kind:\n  - functions and methods (`function_item`, plus `function_signature_item` for trait and extern declarations);\n  - `struct`, `enum`, `union`, `trait`, `mod`, `const`, `static`, and `type` (including `associated_type`);\n  - `impl`, `macro` (definitions), and `extern` blocks.\n- `impl_name` (7–15) names an impl by the grammar's `type` field plus the optional `trait` field. This gives `impl[Thing]` and `impl[Thing/Trait]`, and `impl[Wrapper<T>/Trait]` for generics.\n- `extern_name` (17–37) names an extern block by its ABI string, or `Rust` when there is none. Rust does not specify a name here, so this choice is documented in `md/reference.md`.\n- `use_declaration` and item-position `macro_invocation` are `NameRule::Anonymous`, as the requirement says for items without a suitable name. `item_macro` and `in_item_list` (39–53) restrict macro nodes to item position, so expression macros inside bodies are not nodes.\n- Selectors come only from syntactic ancestry within one file, and nothing resolves `mod x;` across files.\n- Percent-encoding of names and `#N` disambiguation are done by the shared outline code under `outline_selectors`. The tests exercise both.\n- `extern-crate` is an extra kind, but it is documented and within the spirit of the profile.\n- Selector spelling is documented in `md/reference.md`: the \"References\" section (examples such as `impl[Wrapper<T>/Trait]` and `use@…`) and the \"Outline profiles\" table.\n- The `{impl}` markers are on all the relevant code: `impl_name`, `extern_name`, `in_item_list`, `item_macro`, `KINDS`, and `PROFILE`. I found no unmarked code that implements part of the requirement.\n\n**Tests**\n- `rust_selectors_follow_syntactic_ancestry` (`src/outline/tests.rs` 35–100) covers every listed item class:\n  - inline and external modules, structs, inherent and trait impls, and an impl on `[u8; 4]` with percent-encoded spelling;\n  - trait methods and associated types, `extern \"C\"` and bare `extern` blocks, nested functions, and `#N` duplicates;\n  - macros, unions, enums, consts, statics, type aliases, and `extern crate`.\n  - It also checks that selectors resolve back to the right node, that the empty selector is the root, and that an ambiguous or missing selector is an error.\n- `selectors_name_syntactic_ancestry_and_duplicates` (619–663) confirms that `use` declarations are anonymous (`use@…`) and distinct.\n- `item_macros_are_anonymous_nodes_and_expression_macros_are_not` (894–927) covers the following:\n  - anonymous item macros at top level, in an impl, and in a mod;\n  - macros that are not nodes inside function bodies;\n  - the generic impl name `impl[Wrapper<T>/Trait]`.\n\n**Remaining gaps**\nMinor edge cases are untested, such as foreign types and raw-string ABIs. They are not specified behavior and do not undermine the requirement.",
   "inputs": [
     {
       "requirements": "requirements.references.rust_item_selectors",
@@ -30,7 +30,9 @@
       "text": [
         ":::{req} outlines",
         "Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML",
-        "sources with pinned tree-sitter grammars, selected by file extension. Every",
+        "sources with pinned tree-sitter grammars, selected by file extension compared",
+        "case-insensitively. A source with any syntax error MUST fail to parse, reporting",
+        "the line of its first error. Every",
         "other text file MUST use a plain-text profile in which each line that is not",
         "blank is an anonymous outline node of kind `line`. Each supported language MUST",
         "have an outline profile that maps grammar node kinds to short outline kind names",
@@ -95,61 +97,6 @@
       "hash": "fe48f79f7210df175de4d891cd9f0c5f11a64b70dc32e1c5ad45411d74232b01"
     },
     {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "item": "section[Habeas%20evidence]",
-      "hash": "2e588d3411f5b64b00400973e450d71a01a751b48d60b38079409ee413e174c7"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[References]",
-      "hash": "45d28e2ba8209acf969ae23d46633809af4d3b3aa2e0312c0adbf517add48acb"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Outlines]",
-      "hash": "d6405ce663ba1d1f97f157edc3d8c1848f3d9b8de25b35c214d319e24a1769b9"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Outlines]/section[Outline%20profiles]",
-      "hash": "c8fc74f13ecc34d3c23958b842b42092720007311476087cf29b830459a2209e"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "a9337195a3b6b8b101529f0804f738c94b9a84356c77b6ae4cbb909e4401cc7a"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
-      "hash": "dbbf8a24786e422d2d40cc15fa0e0c324bc54769afc9ad9523065170dac3c420"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
-    },
-    {
-      "file": "src/outline/selector.rs",
-      "item": "mod[tests]/fn[parses_named_anonymous_and_ordinal_segments]",
-      "hash": "d54da2680d05549e2f490ef8cfacabe3b0dd3e949ce062b3973587679a3071bd"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[line_queries_find_innermost_and_declared_nodes]",
-      "hash": "d838571a0d96992f40a5e26430a200414da698d33682344a0324f3e3dc1efd40"
-    },
-    {
       "file": "src/outline/rust.rs",
       "item": "fn[is_comment]",
       "hash": "062e7387928f80f073be4b44da8f8b8068a5293307e39a6e8210c682952b7c29"
@@ -178,6 +125,31 @@
       "file": "src/outline/rust.rs",
       "item": "fn[attaches]",
       "hash": "dc5b39a9e6b53d96362298d3f1132f6952cf877cec1deabed79489471072d09a"
+    },
+    {
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "80f0e04a167277add8bf139cf1fb69dfb86907523e39504ef7455791f0e31e63"
+    },
+    {
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[References%20as%20authoring%20inputs]",
+      "hash": "129b55e097d757c1290d72bb678ff4f026ad559804142069bb7500986fe3cc22"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[References]",
+      "hash": "45d28e2ba8209acf969ae23d46633809af4d3b3aa2e0312c0adbf517add48acb"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Outlines]",
+      "hash": "a128c4c591110670a45a4cd707e95ba332899eee94434c291d504d3fc75b4900"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Outlines]/section[Outline%20profiles]",
+      "hash": "c8fc74f13ecc34d3c23958b842b42092720007311476087cf29b830459a2209e"
     }
   ]
 }

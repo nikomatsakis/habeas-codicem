@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `habeas` tool accepting exactly one of these request\nforms. Each form MUST correspond to one existing evidence-input kind:\n\n| Request fields | Evidence input returned | Definition |\n| --- | --- | --- |\n| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |\n| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |\n| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |\n| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |\n\nSelector arguments MUST use the syntax defined by\n{cite}`requirements.references.outline_selectors`. Reads MUST use the current\nproject working tree, including unstaged changes to tracked files and staged new\nfiles. By default, source inputs MUST stay within the project root after\nresolving symlinks; in a Git worktree, both the requested file and its resolved\ntarget MUST be present in the Git index. Projects outside Git MUST use the same\ncontainment rules without requiring an index. Failure to read an existing\nrepository's index MUST be reported as an error.\nThe project-root `evidence/` directory and an active workspace configuration\ncontaining literal credentials MUST be excluded from model reads by default,\nincluding symlink aliases. Generated build outputs MUST follow\n{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST\nfollow {cite}`requirements.configuration.evidence_paths`, including explicit\npermission for otherwise excluded inputs. A denied mandatory input or explicit\nread MUST abort under {cite}`requirements.authoring.read_denial`.\n\nLine numbers are only a way to request sources; recorded evidence MUST identify\nsources by outline selector and structural hash, never by line number. Request\nline numbers MUST be one-based and inclusive, and omitting `line_end` MUST read\nthrough EOF. A line-range request MUST be resolved to the innermost outline\nnodes covering the requested lines, which are `line` nodes in a file using the\nplain-text profile; the result MUST show the model each node's selector, current\nline range, and source text, and the harness MUST record those nodes as outline\ninputs. The model-facing tool description MUST include the argument conventions\nfrom the cited requirements, including outline selector syntax, definition\nselections, and full definition names, with a short request example for each form.\n\nA successful call MUST return the requested evidence input, populated by the\nharness with the selected source text, using the existing evidence schema.\n{cite}`requirements.ci.schema`\nRequired terminology dependencies MUST be returned alongside it as additional\ndefinition inputs under {cite}`requirements.definitions.authoring_inputs`.\nThe result MUST have this shape:\n\n```text\nHabeasResult {\n    input: EvidenceInput,\n    definitions: Array<DefinitionInput>,\n}\n```\n\n`definitions` MUST be empty when no additional terminology is required. The\nharness MUST record inputs supplied to the model in the assessment's evidence.\nA failed read MUST add no evidence input. Access-policy denials MUST abort\nexcept where {cite}`requirements.authoring.read_denial` makes them ordinary read\nfailures; other failed reads MUST return an explanatory tool error.",
-  "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The `habeas` tool, its access policy and its recording of evidence are implemented and marked `{impl}`. Tests cover the main points of the design space. I found no unmarked or unspecified behavior. One test gap is noted at the end.\n\n**Request forms and result shape** (`src/authoring/tools.rs`)\n- `definitions()` exposes `habeas` with optional `file`, `line_start`, `line_end`, `item`, `requirements` and `definition`, and `additionalProperties:false`.\n- The description gives the argument conventions and one example for each form. These cover outline selector syntax (`kind[name]`, `kind@hash`, `#N`, percent-encoding, and the empty item selecting the whole file), definition selections and globs, and full definition names.\n- `read()` enforces \"exactly one form\" through `check_keys` and the `string`/`integer` helpers. It rejects empty, mixed, incomplete and unknown-key requests.\n- Results have the shape `{input, definitions}`. Line-range reads return `{inputs, definitions}`, which the tool description documents.\n- Each form resolves to the existing input kinds: `read_lines` → `nodes_for_range` / `nodes_for_lines` for line ranges, and `source_input` → `InputSelector::{Outline, Requirements, Definition}` for the others.\n- Line numbers only locate sources. Recorded inputs carry the file, selector and hash, and the test `line_range_reads_record_the_innermost_covering_nodes` confirms they carry no `line_start` or `text`.\n- Omitted `line_end` reads through EOF, and the range is one-based and inclusive. Invalid ranges are rejected, and the tests cover line 0 and a line past EOF.\n- Terminology dependencies come back in `definitions` through `additional_definitions`, which de-duplicates against inputs already recorded.\n\n**Access policy** (`src/authoring/access.rs`)\n- `SourceAccess::path` resolves symlinks and checks disallow rules against both the requested path and its target. Allow rules override the defaults, and credential files are excluded.\n- `SourceAccess::path` also rejects generated `evidence/`, including through symlink aliases. It permits Cargo build-script output directories, and `tracked_sources` takes them from `generated_roots` without running a build.\n- Paths outside the project, or symlinks leading out of it, are denied. A path outside the project is turned into a recoverable error by `recoverable_outside_request`.\n- In a Git worktree both the requested path and its resolved target must be in the index. `tracked_sources` reports an error if the index cannot be read, and it falls back to no-index containment only outside Git.\n- Reads use the working tree, so unstaged edits and staged new files are visible.\n- Denials surface as `PermissionDenied`, and `assess` in `src/authoring/mod.rs` aborts on them.\n- Other read failures return a tool error and add no evidence input.\n\n**Tests**\n- The tests in `access.rs` cover:\n  - nested projects;\n  - an unreadable index;\n  - an invalid Git configuration;\n  - an empty `.git` in an ancestor;\n  - allow and disallow rules, including symlink aliases and ancestors;\n  - credential exclusion;\n  - an inherited `OUT_DIR` being ignored.\n- The tests in `tools.rs` cover:\n  - recording only delivered sources and their terms;\n  - malformed and mixed requests;\n  - generated evidence being excluded;\n  - symlinks leading outside the project;\n  - staged, dirty and untracked files;\n  - tracked and untracked symlink aliases;\n  - allowed external paths;\n  - Cargo output discovery and disallow of that output;\n  - outside-project requests being recoverable while a disallow aborts;\n  - innermost-node line-range resolution.\n- `tests/authoring_cli.rs` has an end-to-end abort test and a Bedrock test that checks the `habeas` schema and the tool list.\n- `src/authoring/inputs.rs` tests mandatory-input staging.\n\n**Gap**\n- No test asserts the exact wording of the `habeas` tool description, such as one example per form. The code content is clearly complete, so I do not treat this as a blocking gap.",
+  "determination": false,
+  "rationale": "**Judgment: not yet satisfied, because of one testing gap.** The implementation looks complete and correctly marked.\n\n**Implementation**\n- `tools::definitions` (src/authoring/tools.rs) exposes a `habeas` tool. Its schema has `file`, `line_start`, `line_end`, `item`, `requirements` and `definition`, with `additionalProperties:false`.\n- `tools::read` accepts exactly one form and rejects mixed, incomplete or unknown argument sets through `check_keys`, `string` and `integer`.\n- The line-range form goes through `AssessmentSources::read_lines`, `ParsedSource::nodes_for_range` and `Outline::nodes_for_lines`. This resolves the innermost covering nodes, treats `line_start` as one-based and inclusive, and reads through EOF when `line_end` is omitted. Blank lines between nodes are skipped.\n- Each node is returned with its selector, kind, current line range and text via `InputSelector::to_model_input`.\n- The item, requirements and definition forms go through `read_selector` and `source_input`.\n- The `{input, definitions}` result shape is built in `read`. `definitions` is empty when no terminology is needed.\n- The line-range result uses `{inputs, definitions}`. That is a consistent consequence of the requirement's own plural \"outline inputs for the innermost nodes\".\n- Recorded evidence inputs carry only selector and hash. The text is not stored, and inputs are recorded only after a successful delivery (`pending` handling in `assess`).\n- `SourceAccess::path`, `file` and `tracked_sources` (src/authoring/access.rs) implement these obligations:\n  - Reads use the working tree.\n  - Git-index membership is required for both the requested path and its resolved target.\n  - Non-Git projects use the same containment rules.\n  - A Git index that cannot be read is reported as an error.\n  - `evidence/` and credential-bearing config are excluded, including through symlinks.\n  - Cargo build-script output directories are permitted.\n  - Workspace allow and disallow rules apply, and disallow wins.\n  - Denials abort the assessment, except outside-project requests, which become recoverable tool errors (`OutsideProject`, `recoverable_outside_request`).\n- The `{impl}` markers are thorough across access.rs, inputs.rs, tools.rs and mod.rs. I found no unmarked behavior.\n\n**Tests**\nBehavior is well covered:\n- Git index handling: nested project, unreadable index, invalid git config, and an empty ancestor `.git`.\n- Staged, dirty and untracked sources (`git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files`, `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked`).\n- Generated evidence exclusion, including through symlinks.\n- Credentials exclusion.\n- Allow/disallow precedence and ancestor-symlink redirection.\n- Cargo output discovery, and an inherited `OUT_DIR` being ignored.\n- Outside-project requests returning recoverable errors, while a matching disallow still aborts.\n- Mixed, incomplete and unknown argument forms being rejected.\n- Out-of-range lines, a missing item, and no inputs recorded on failure.\n- Line-range semantics (`line_range_reads_record_the_innermost_covering_nodes`) and the result shape and recorded inputs (`reading_records_only_delivered_sources_and_their_terms`).\n\n**Gap**\n- The requirement says \"The model-facing tool description MUST include the argument conventions from the cited requirements, including outline selector syntax, definition selections, and full definition names, with a short request example for each form.\"\n- The `habeas` description string in `tools::definitions` does contain these conventions and four examples.\n- No test asserts any of it. The `outline` and `references` tools each have a description test (`outline_tool_is_advertised_with_a_required_file_argument`, `references_tool_is_advertised_with_an_optional_selection`), but nothing equivalent exists for `habeas`.\n- The Bedrock CLI test only checks the parameter schema, not the description.\n- The description is a distinct MUST obligation, a test would be trivial to write, and the gap is not acknowledged by any FIXME. It could regress unnoticed, so the requirement is not fully verified.",
   "inputs": [
     {
       "requirements": "requirements.authoring.source_tools",
@@ -170,6 +170,11 @@
         "`disallow` MUST be arrays of nonempty literal paths, each naming a file or a",
         "directory subtree. Relative paths MUST resolve from the selected `habeas.toml`",
         "directory; absolute paths MUST be supported. These paths are not glob patterns.",
+        "An omitted `allow` or `disallow` MUST mean an empty array, and an absent",
+        "`[evidence]` table MUST mean both are empty, so only the default source-access",
+        "rules apply. No operation requires the section. The table has no user-file",
+        "counterpart, and these rules have no invocation options. This section refines",
+        "{impl}`requirements.configuration.feature_sections` for the evidence feature.",
         "",
         "For authoring reads, a matching disallow MUST reject the path; otherwise a",
         "matching allow MUST permit it; otherwise the default source-access rules MUST",
@@ -541,79 +546,144 @@
       ]
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@e1f72b0ff927",
-      "hash": "e1f72b0ff927b84b9330bf2862b7f33ee8526b4ced8475735c2d0d791d89280f"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[tool_definitions]",
+      "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[outline_tool_is_advertised_with_a_required_file_argument]",
+      "hash": "179d8cc270abb4eeaca5a1459c3fc22c85ea0adb987970b748ec3641d5c11cd1"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[references_tool_is_advertised_with_an_optional_selection]",
+      "hash": "0b9d07088af9ce09ea4d5960f92c0f29d97a6cd1f3f335fb4adb37985be7c3f1"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@b9fce3e500fd",
-      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[completed]",
+      "hash": "4419037b895202f6e034f1ce1cf77060cb31b4d394cc22d59692bea42f4fe91a"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@005abb79b847",
-      "hash": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[refresh]",
+      "hash": "b9622df9d0cc13daa1a7097000baf9f960c647559e1caea910c2bba1fd592094"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "use@ef65439d8cc7",
-      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "struct[PathPolicy]",
-      "hash": "deec21bca0141b9262967d0feccc1b312fa13f1529416611a7c9e4557b42e0f5"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Evidence]",
+      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]",
-      "hash": "3cbf909ef188ad797d961bb616d0f75643b592e1115e1fa24e951f6c977dc916"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Outlines]/section[Selectors]",
+      "hash": "b619e075e467ca81ed40da0fedba876f7ea1cb99d8b68a1d5577d7a82a042d7e"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]",
-      "hash": "ecac5f53614daa737173885275e4613df5e9d31bb6352e66d7a0953c05dde898"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Outlines]/section[Hashes]",
+      "hash": "a8739668ce015c42249b3f90afdd00770bf349e68c357427bcdf9a256e51447f"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[matches_rule]",
-      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+      "file": "md/requirements/definitions.md",
+      "item": "section[Named%20definitions]",
+      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[requested_location]",
-      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "80f0e04a167277add8bf139cf1fb69dfb86907523e39504ef7455791f0e31e63"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ReadingProvider/CompletionProvider]/fn[complete]",
+      "hash": "2c2cd012013bd3ba5d2db61b188401f4ed24bc1c0b5a6f0a52ce2cb2aacf6d16"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[OutsideProject/std::fmt::Display]",
-      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledToolProvider/CompletionProvider]/fn[complete]",
+      "hash": "9de72658ffcb46ea53a422b10166ca3cec5f29e249c266328eea3e2bbf6860b7"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[OutsideProject/std::error::Error]",
-      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]",
+      "hash": "6ba74988b38323d56108368477c0f1ff43944a2468c7ac12cff65dff781da84e"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
+      "file": "src/config.rs",
+      "item": "impl[ProjectConfig]/fn[from_book_toml]",
+      "hash": "04e0bdc01fe59736d2feec995e4632d104c4e945854efe867a35b57b67cc3f62"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root_from]",
+      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "struct[Cli]",
+      "hash": "398355e81f1bcb005605783c9c24e85f72468cea06cf67d2baed5970125ecdcb"
+    },
+    {
+      "file": "src/outline/selector.rs",
+      "item": "",
+      "hash": "1289fa950c17e1189c47d20b1d50b08d76a946be6e7d102dd9ad95267aec7fb5"
+    },
+    {
+      "file": "src/outline/selector.rs",
+      "item": "fn[parse_segment]",
+      "hash": "72b5a839544efee8a56d3956beed5a94cf31e89f508edc009a0fb019ad81b938"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[has_habeas_dev_dependency]",
+      "hash": "fd6c6654032f55266b631a59c7f82c166cc847be6618f57bc4ebea84f0708314"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[run]",
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[is_configured]",
+      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "2abd61bf181092cf6b92510567cd78b74e382e59f42483dfa9ac64be0690abd4"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[locations_use_absolute_xdg_values_and_platform_fallbacks]",
+      "hash": "d74719353ea80d5e405a2afc88374e109d7bd64a0b8b768da97dcf6e6a3573d6"
+    },
+    {
+      "file": "tests/repository.rs",
+      "item": "fn[symposium_plugin_installs_the_cli_globally_for_its_session_start_hook]",
+      "hash": "effd870cb429be766cf75de51071916c4733ee9e7216e1e6b79ff6dfb2ce0aff"
+    },
+    {
+      "file": "tests/setup.rs",
+      "item": "fn[setup_is_repeatable]",
+      "hash": "30a39e682c0610b494ff35376499b4be11ce769333c8f3bebdbb82b06e232bab"
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "item": "def[main]",
+      "hash": "e225275a81a6d0a67573ef7addd83be5cc6b4615e29795ac5b0991d053484943"
     }
   ]
 }

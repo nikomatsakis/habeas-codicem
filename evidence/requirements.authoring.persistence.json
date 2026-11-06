@@ -1,7 +1,7 @@
 {
   "requirement": "After one valid judgment, the harness MUST write the subject text, submitted\ndetermination and rationale, and recorded inputs using the existing evidence\nschema. {cite}`requirements.ci.schema`\nBy default, it MUST write the subject's evidence file. With `--stdout`, it MUST\nemit a single evidence JSON object followed by a newline to stdout and MUST NOT\ncreate or change evidence files or directories. All three outcomes MUST be\nwritten to the selected destination as completed assessments; their validation\nstatus MUST follow {cite}`requirements.ci.determination`.",
   "determination": true,
-  "rationale": "**Verdict: the persistence requirement is met.** The {impl} code does what it says, and the tests cover the destinations and outcomes. Two small points are noted at the end; neither is a gap against this requirement.\n\n**Implementation**\n- **Evidence content.** `assess` (src/authoring/mod.rs:435) builds the record after exactly one valid `submit_judgment`. It is `{<requirement|example>: subject_text, determination: judgment.to_value(), rationale, inputs: sources.recorded_inputs()}`, which matches the evidence schema.\n- **All three outcomes.** `Judgment::to_value` (src/judgment.rs:42) serializes `true`, `false` and `{\"FIXME\":[…]}`.\n- **Default file destination.** `configured_assessment` (src/authoring/mod.rs:286) writes `evidence/<subject>.json`, followed by a newline, in `EvidenceOutput::File` mode. It sets `evidence_written` only after a successful write. In batch mode `write_record` (src/authoring/batch.rs:229) writes the same record to the same path. It uses a temp file and an atomic persist, and `persisted` (src/authoring/mod.rs:70) then marks the run completed.\n- **`--stdout`.** In `EvidenceOutput::Stdout` mode, `configured_assessment` writes one pretty-printed JSON object plus `\\n` to stdout and flushes. It never touches the project's `evidence/` directory. The completion report goes to stderr (main.rs), so stdout carries only the JSON. `--all` conflicts with `--stdout` in clap, so batch mode never emits to stdout.\n- **Completed assessments.** A `false` or `FIXME` judgment is written exactly like `true`. Whether validation passes is left to the existing `ci.determination` checks, which this code does not alter.\n\n**Tests (all marked {test})**\n- `stdout_emits_only_evidence_json_without_changing_project_files` (tests/authoring_cli.rs:852) covers `true`, `false` and `FIXME`. It checks that stdout parses as a single JSON object ending in `\\n`, with the right subject, determination, rationale and inputs. It also checks that the existing evidence file is byte-identical, and that a missing `evidence/` directory is not created.\n- `false_is_a_completed_assessment` and `verbose_single_author_reports_only_false_rationale_without_source_inputs` cover default file writes for `false` and `true`. They check that outline inputs store a selector and hash, not source text, and that usage is `completed`.\n- The batch tests in tests/authoring_batch.rs write true, false and FIXME records. They also check that a denied-read assessment writes nothing while the others keep their writes.\n- `failed_evidence_write_keeps_the_accepted_judgment_in_usage` covers a failed write: usage records `evidence_written` false.\n- `explicit_untracked_reads_abort_without_another_request_or_evidence_write` covers that no evidence is written, and nothing goes to stdout, when an assessment aborts.\n- `live_bedrock_authoring` checks the stdout path against a real provider.\n\n**Notes, not gaps**\n1. The `--stdout` flag in main.rs, the `EvidenceOutput` enum and `author_evidence_with_output` carry only invocation, usage and batch {impl} marks, not a persistence mark. They only select and route the destination. The behavior itself is in the marked `configured_assessment`.\n2. `write_record` creates a temp file with `tempfile`, so batch evidence files may get restrictive permissions. The single-subject path uses plain `fs::write`. This is a minor inconsistency in how files are written, not a content or contract difference.",
+  "rationale": "## Judgment\n\n`requirements.authoring.persistence` is satisfied. The implementation is complete and marked, and the tests cover the outcomes, both destinations and the write-failure case. I found no gaps, so no FIXME applies.\n\n## Implementation\n\n**Record contents.** `assess` (src/authoring/mod.rs, `fn[assess]`) runs after exactly one valid `submit_judgment`. It builds the record `{<requirement|example>: subject_text, determination: judgment.to_value(), rationale, inputs: sources.recorded_inputs()}`.\n- `Judgment::to_value` (src/judgment.rs) emits `true`, `false` or `{\"FIXME\": [...]}`. This is the existing schema, and `recorded_inputs` holds only the inputs delivered to the model. The `assess` and `to_value` items carry `{impl}` marks for persistence.\n- The record is built only after the submission passes validation, and every failure path returns an error before it. No evidence is produced for failed assessments.\n\n**Default destination.**\n- Single subject: `configured_assessment` (`fn[configured_assessment]`) writes `evidence/<subject>.json`. It creates the directory if needed and writes pretty-printed JSON plus a newline.\n- Batch: `write_record` in src/authoring/batch.rs does the same through an atomic temp-file persist. `PendingAssessment::persisted` then marks `evidence_written`.\n- All three outcomes take the same write path, so `true`, `false` and `FIXME` are all stored as completed assessments. Validation status is left to `requirements.ci.determination`, which this requirement only cites.\n\n**`--stdout`.**\n- The `EvidenceOutput::Stdout` branch writes the pretty-printed JSON and a trailing newline, then flushes. It never calls `create_dir_all` or `fs::write`.\n- The summary and diagnostics go to stderr (src/main.rs, `Command::Author`).\n- Usage state is kept outside the project (`usage_state_root`).\n\n**Marking.** Every writing site is marked `{impl}` for persistence: `configured_assessment`, `write_record`, `PendingAssessment::persisted`, `assess` and `Judgment::to_value`.\n- `PendingAssessment` (the struct) carries only a `{cite}`. It is a passive holder of the record and carries no persistence behavior, so I do not count it as a gap.\n- The atomic temp-file replace in `write_record` is how the write is done. It adds no unspecified behavior.\n\n## Tests\n\n- `stdout_emits_only_evidence_json_without_changing_project_files` (tests/authoring_cli.rs) runs `true`, `false` and `FIXME` with `--stdout`. It covers existing and absent `evidence/`, with and without `-v`.\n  - It parses stdout as one JSON object and checks that it ends with `\\n`.\n  - It checks the fields `requirement`, `determination`, `rationale` and `inputs`, including requirements, definition and outline inputs.\n  - It checks that the existing evidence file is byte-identical, or that the `evidence` directory was not created.\n  - It checks that usage records `evidence_output=stdout` and `evidence_written=true`.\n- `false_is_a_completed_assessment` and `verbose_single_author_reports_only_false_rationale_without_source_inputs` check that file-mode evidence is written for `false` and `true`. They check the determination, the rationale and that outline inputs hold selectors and hashes, never source text.\n- The batch tests in tests/authoring_batch.rs write all three outcomes to files: `terminal_progress_distinguishes_judgments_from_authoring_errors` checks the false and FIXME records. The read-denial tests check that aborted assessments write no evidence while others are retained.\n- `failed_evidence_write_keeps_the_accepted_judgment_in_usage` covers the failure case. When the write fails, the usage record shows `evidence_written=false`.\n- `explicit_untracked_reads_abort_without_another_request_or_evidence_write` and `live_bedrock_authoring` check that no evidence is written on abort and that stdout mode leaves the checkout unchanged.\n- Validation status for the three outcomes is covered by `a_false_determination_fails_only_its_own_record_with_its_rationale` in src/evidence.rs, which belongs to `requirements.ci.determination`.\n\nA single-subject file write of a FIXME judgment is not asserted directly. The batch test covers FIXME file persistence, and the code path is the same for all outcomes, so this is not a material gap.",
   "inputs": [
     {
       "requirements": "requirements.authoring.persistence",
@@ -124,9 +124,42 @@
       "hash": "372d4143227c94e60be30077a9386da7eb61c0791690cc9b8d28686c026fda5d"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "fn[add_definition_inputs]",
-      "hash": "8a2ad3ff040eb1f154a23a55672802210218199361fdfe60f4c11f91c86fc8f4"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "04beca975a77e6b070e128c5ffb41fe2f45429f74f2ace3f14ff672ad6372cca"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]",
+      "hash": "080fa2531bac2321784665f9393321568885c4f793c5d4c2da706b33849dc89b"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Examples]",
+      "hash": "77acd62baa48c472b3b53a31951245276d7e9a73fb70fc83f9f0494028d9dd36"
+    },
+    {
+      "file": "md/requirements/integration.md",
+      "item": "section[Project%20integration]",
+      "hash": "32647fd4ab96f86dbd23aaa782cd45e9b12735284d494d22589dd91970dcd36a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "struct[PendingAssessment]",
+      "hash": "7bf1a9e1e151e73bd0479a1abafbd02269c3bac9a2b1211140ce53c4c77e3dac"
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     },
     {
       "file": "src/authoring/access.rs",
@@ -177,11 +210,6 @@
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
       "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all_with_options]",
-      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -260,8 +288,23 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[usage_state_root]",
+      "hash": "b721c9327b86eaabc87f13eca86692c5d6bb6e961cefb6cafb21610f45554bf7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]",
+      "hash": "37e48cc1515b97a14a38ca10ba6cbcbc9388841b3da9abc899d1466ae928e302"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
       "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
+      "hash": "1549d324033cfafeb2ecb0b02619327b33856c95477886a13a0185a8000a47da"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -350,18 +393,48 @@
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "struct[UsageRecord]",
-      "hash": "62f87e958bce86f096870fd381f6412988268344de7eb23c5762ff6c72309137"
-    },
-    {
-      "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[start]",
-      "hash": "c17a45260649764a47ed1f355267f8c78a83539022b722a81fd76971409cc394"
+      "hash": "cd20e8dedb70eb0dcd2819c9047ae13cd38bce7f08b9f3f1f7959bb1a9a165cf"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "",
+      "hash": "67cbb2206f5f45359fb7f27b75141590df8e0a6157a9ff02b9cac9859568ac02"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[add_definition_inputs]",
+      "hash": "6bb48b108821fa5a7e69bfc11db67f51a55bab9622a6979b2eb34d9f1ab8dfa3"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@18dc39a869d7",
+      "hash": "18dc39a869d79efeb360785e63c656bdc3fa8ff5bc7365b86167012bfa4d4014"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all_with_options]",
+      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]",
+      "hash": "58eca1f55681587adbff8cf82af2f46a8a8a08c6f6b69db82422cc4520dfdc16"
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+      "item": "impl[UsageLog]/fn[save]",
+      "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
     },
     {
       "file": "src/evidence.rs",
@@ -405,6 +478,46 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
+      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
+      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
+      "hash": "ebe3e1849fc7abacd0b1b60e8992a85eacb41d2c04bf4194fb99ca50a278797d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[a_false_determination_fails_only_its_own_record_with_its_rationale]",
+      "hash": "e462067423cb9ee5d18cc29623b31ead903a22123ce8961a62a5446fa790b2cd"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[changed_requirement_text_names_the_record_and_location_with_a_diff]",
+      "hash": "442781e8cf4b0bf058e05036291478774ec9fa0cb5f6f24ebbc06007e71479b1"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirement_bodies_are_compared_without_surrounding_whitespace]",
+      "hash": "e113eb48763e0c67a3bbc7a55fb0b1a678848c9d22d2bd5af76d94377cbb9f6b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[invalid_full_names_from_chapter_paths_are_reported_and_not_defined]",
+      "hash": "e2fff805c66e6f492d56304ccbc6970051f932a8d4cba86cf0a4c76b1a8468fb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[reference_discovery_skips_evidence_snapshots_and_build_output]",
+      "hash": "c2820f19df86b124e8dcc08364a8b5248a0b1ea9746479c26d989c5c9ed20ed9"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "mod[tests]/fn[colon_requirement_span_includes_markdown_and_excludes_following_text]",
       "hash": "ca0ffcd00164e0ebe3d50d787c9605e3db025b6e49d19ccdce46070a0be1a775"
     },
@@ -421,7 +534,7 @@
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "0588470ebd00187b0af8f3ddd82ed1739c36d83a5f9cca355a2837130828c8ba"
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
     },
     {
       "file": "src/evidence.rs",
@@ -459,6 +572,11 @@
       "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
     },
     {
+      "file": "src/hook.rs",
+      "item": "fn[session_start]",
+      "hash": "c28ada26f6b4ce138a6174cfbaa066b2b6204d3e217af0404e08884a6a330f29"
+    },
+    {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
       "hash": "7c8d01bf4965121af7b3b98692c5407a0a47611448986c92edfce95d33bf5c59"
@@ -484,6 +602,11 @@
       "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
     },
     {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
+      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
+    },
+    {
       "file": "src/lib.rs",
       "item": "mod[tests]/fn[book_root]",
       "hash": "d3f3bc4ab6a8cf07d968b7b0ee95b6a64ebded467e9f792221b1b3fa6038a5ea"
@@ -491,12 +614,12 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "209601c59434068ecff945202b701ec4cd80c8208b01012a83ee35625c7f0f94"
+      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
     },
     {
       "file": "src/rust_coverage.rs",
       "item": "mod[tests]/fn[reports_all_files_and_parse_failures]",
-      "hash": "8f3a0961f2d0bec2bebd32c254694af124a1643d8aa1d79767765a3700e9b206"
+      "hash": "5dbafd8c36603a2df64817f5c318b12ac256daa166e31957aded64607dd04f33"
     },
     {
       "file": "src/rust_coverage.rs",
@@ -514,62 +637,29 @@
       "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     },
     {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
+      "file": "src/authoring/inputs.rs",
+      "item": "struct[AssessmentSources]",
+      "hash": "9c5d8ba90a9b834e29500213852a01ff2bee426f13f73ed4d335d359cd2b76f3"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[usage_state_root]",
-      "hash": "91674585854f9ff20dca2e87335d81f75be47c71f280b8a7cb86f151ff9c993b"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[resolved_location]",
-      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
+      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
+      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]",
-      "hash": "fe4e30ebfd9f26069aef8718887f6fd4ed6aee8b064ab42210aa5352ad03b0af"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Submit%20the%20result:%20`submit_judgment`]",
-      "hash": "96de4010eedd501d7e11518ad922ab6c705bbf961a3aaff5cc3477b95d4011c8"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Initial%20prompt]",
-      "hash": "fff7d00e8e17bfe894dbecf2109100b5a139baa77a87a56a8d350193d1b20e3b"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Recording%20results]",
-      "hash": "1343ea12b8521449038d642876ecdc285af2b3bb058bfc08c1d001e176543389"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Recording%20results]/section[Usage%20history]",
-      "hash": "546ff5ad3a9765c8afb926c98516916ce4d53e2c4ec32c8410b720f0e135da1e"
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[record_inputs]",
+      "hash": "2b4b1c437218feacfb819597643fe1a6ab99035b71b6001fd0a5cc1751ffbe50"
     }
   ]
 }

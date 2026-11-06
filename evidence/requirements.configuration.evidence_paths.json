@@ -1,7 +1,7 @@
 {
   "requirement": "The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and\n`disallow` MUST be arrays of nonempty literal paths, each naming a file or a\ndirectory subtree. Relative paths MUST resolve from the selected `habeas.toml`\ndirectory; absolute paths MUST be supported. These paths are not glob patterns.\nAn omitted `allow` or `disallow` MUST mean an empty array, and an absent\n`[evidence]` table MUST mean both are empty, so only the default source-access\nrules apply. No operation requires the section. The table has no user-file\ncounterpart, and these rules have no invocation options. This section refines\n{impl}`requirements.configuration.feature_sections` for the evidence feature.\n\nFor authoring reads, a matching disallow MUST reject the path; otherwise a\nmatching allow MUST permit it; otherwise the default source-access rules MUST\napply. Explicit allow MUST override every default, including Git tracking,\nproject containment, generated-evidence exclusion, and automatic generated-output\nrules. Disallow MUST win even when an allow or generated-output rule also matches.\nBoth the requested path and its resolved symlink target MUST be checked for\ndisallow, so an allowed alias cannot expose a disallowed target.\n\nThe same explicit disallow rules and external-path exceptions MUST apply when\nresolving recorded evidence inputs, including ordinary validation and\n`add-input`. Validation MUST remain independent of Git index membership: it\nchecks the recorded inputs' existence and contents. Loading path policy MUST NOT\nresolve credentials or validate unused authoring settings.",
   "determination": true,
-  "rationale": "I judge the requirement satisfied. The implementation covers each obligation and is marked `{impl}`. The tests cover the main design space. Two small cases, glob-literal paths and NUL rejection, are not tested directly (see the last section).\n\n**Configuration shape**\n- `EvidenceConfig` in `src/config.rs` derives `Serialize` and `Deserialize`. It has `deny_unknown_fields`, and `allow` and `disallow` are `#[serde(default)]` `Vec<PathBuf>`. An omitted array therefore means empty.\n- `EvidenceConfig::validate` rejects empty entries and entries containing NUL. Non-string entries are rejected by the type.\n- `load_workspace_evidence` treats an absent `[evidence]` table as the default, which is two empty arrays. It returns `None` when no `habeas.toml` exists.\n- Credentials are only detected as present, as a boolean. They are not resolved, and the `[authoring]` settings are not validated. This matches \"Loading path policy MUST NOT resolve credentials or validate unused authoring settings\".\n- Relative rules resolve against the directory of the selected `habeas.toml`. `PathPolicy::load` does `config.root.join(path)`, and `Path::join` leaves absolute rules unchanged, so absolute paths work.\n- Rules are matched with `Path::starts_with` on canonicalized or location-resolved paths, in `matches_rule`. No glob syntax is interpreted, so rules are literal.\n\n**Precedence and aliases for authoring reads (`SourceAccess::path`)**\n- The order is: `check_disallow`, then `allowed` (which returns before the credentials, generated-evidence, containment and Git-tracking checks), then the defaults. This gives \"disallow wins, then allow overrides every default\".\n- `check_disallow` checks the requested path and the symlink-resolved target. It also checks every traversed ancestor location, so a disallowed directory cannot be used to reach an allowed target.\n- `has_source_under`, `extra_roots`, `list_files`, `search` and `omit_generated_evidence` apply the same policy to discovery, search and mandatory inputs.\n\n**Recorded evidence inputs**\n- `resolve_evidence_file` applies disallow and permits external paths only through an allow rule or a discovered generated root. It does not consult the Git index, so validation stays independent of index membership.\n- `check_project_file` in `src/inputs.rs` routes validation and `add-input` through it. `validate_outline_input` in `src/evidence.rs` and `selectors_for_mode` in `src/add_input.rs` are marked `{impl}`.\n\n**Tests**\n- `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` covers allow overriding the defaults, external absolute paths, a nested disallow, and a symlink alias to a disallowed target. It also checks `resolve_evidence_file`.\n- `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees` cover symlinks and `..` handling.\n- `workspace_credentials_are_excluded_unless_explicitly_allowed` covers allow overriding the credentials default.\n- `disallowed_mandatory_inputs_abort_preparation` and `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` cover mandatory inputs and tool discovery. The same file's cargo-output test (`cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files`) covers automatic generated-output rules overridden by disallow.\n- `tests/configuration.rs` covers the following:\n  - the absent-table and omitted-array defaults;\n  - rejection of an empty path, a non-string entry and an unknown key;\n  - no user-file `[evidence]` table;\n  - relative path resolution;\n  - ignoring unused authoring settings.\n- `tests/evidence_boundaries.rs` and `tests/commands.rs` cover ordinary validation and `add-input`:\n  - external allow;\n  - the same input rejected once disallow is added, and rejected as \"outside the repository\" once allow is removed;\n  - freshness of external inputs;\n  - symlinked disallowed ancestors;\n  - disallow applied to existing evidence in `status`.\n\n**Minor test gaps**\n- There is no explicit test that glob metacharacters in a rule are treated literally. Literal matching follows directly from the `starts_with` implementation.\n- There is no explicit test for NUL rejection.\n- Neither gap is serious enough to fail the requirement.",
+  "rationale": "**Judgment: the requirement is met.** Each obligation has marked `{impl}` code and tests, and I found no unmarked implementation and no unspecified behavior.\n\n**Implementation**\n- **Config shape.** `EvidenceConfig` (`src/config.rs`) derives `Serialize` and `Deserialize`. It denies unknown fields, and `allow` and `disallow` default to empty when omitted. `load_workspace_evidence` uses `unwrap_or_default()` when `[evidence]` is absent. `EvidenceConfig::validate` rejects empty entries and entries containing NUL.\n- **Literal paths.** `matches_rule` compares component prefixes with `starts_with` and does no glob expansion.\n- **Resolution.** `PathPolicy::load` joins each rule onto the directory of the selected `habeas.toml`. Joining an absolute rule replaces the base, so absolute paths work.\n- **Authoring precedence.** `SourceAccess::path` runs `check_disallow` first, then `allowed`, which returns before the credential, generated-evidence, project-containment, and Git-tracking checks. That gives disallow, then allow, then the defaults, and an explicit allow overrides every default. Disallow is checked before the generated-output rules, so it wins over them.\n- **Alias targets.** `check_disallow` tests the requested path, each resolved ancestor location, and the resolved symlink target. An allowed alias therefore cannot expose a disallowed target, and a disallowed ancestor symlink cannot redirect a read.\n- **Recorded evidence inputs.** `resolve_evidence_file` (reached through `check_project_file` and `InputSelector::resolve`) loads the same policy and applies disallow. It permits outside-project paths only through allow or discovered generated roots, and it never consults the Git index. `add-input` resolves through the same path, so the same rules apply.\n- **Loading.** `load_workspace_evidence` only detects whether credentials are present (a boolean) and does not validate `[authoring]`. `main.rs` loads only the evidence section for non-authoring commands.\n- **Marking.** The functions that carry the behavior all carry `{impl}`: `PathPolicy::load`, `allowed`, `check_disallow`, `matches_rule`, `requested_location`, `resolve`, `resolve_evidence_file`, `omit_generated_evidence`, `extra_roots`, the tool entry points, and `check_project_file`. `SourceAccess::file` only wraps `path` and adds an is-file check.\n\n**Tests**\n- **Allow and disallow.**\n  - `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` covers allow overriding the defaults and a disallowed symlink alias. It also covers an external absolute allow, and both `file` and `resolve_evidence_file`.\n  - `workspace_credentials_are_excluded_unless_explicitly_allowed` covers allow overriding the credential exclusion.\n  - `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` covers allow overriding Git ignore and project containment. It also covers disallowed descendants under `habeas`, `list_files`, and `ripgrep`.\n  - The Cargo-output test covers disallow beating automatic generated-output rules.\n- **Symlinks and `..`.** The symlink and `..` tests in `access.rs` and `tools.rs` cover disallowed ancestor symlinks, `alias/../private` rules, and the case where a wrong subtree is not allowed.\n- **Validation and `add-input`.** The validation tests in `tests/evidence_boundaries.rs` cover external allow, the rejection when the allow is removed, freshness checks, and disallow. They also cover a disallowed ancestor symlink and a relative disallow of `../external-build`. `tests/commands.rs` covers `status` with a disallow and `add-input` with external allow and disallow, including that the evidence file is left unchanged on denial.\n- **Config structure.** `tests/configuration.rs` covers an absent `[evidence]` table and omitted arrays, empty and wrong-typed entries, unknown keys, and use only inside the `[evidence]` section. It also covers the rule that the user file rejects `[evidence]`, no credential leakage, and no validation of unused authoring settings.\n- **Gaps.** Two small points are not directly tested: NUL rejection, and relative resolution from a nested `habeas.toml`. Both are simple, and the second is partly exercised by the nearest-file and relative-disallow tests. I do not consider either a gap that matters.",
   "inputs": [
     {
       "requirements": "requirements.configuration.evidence_paths",
@@ -64,7 +64,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "633e94e0bfaf8edbc4e4892768672ffa57410694e16bbfc774a7a1bba3079cf4"
+      "hash": "6e0a0e59238c31798ac3e76fa0a480691a52dfd3f961d9761ec56830b0948d9b"
     },
     {
       "file": "src/authoring/access.rs",
@@ -144,7 +144,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
+      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -252,74 +252,109 @@
       "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[fixture]",
-      "hash": "fc7d08e42eeae1be9be41fb4672e615c6ba7a52beaa1d0f620ed0c9a37268bee"
+      "file": "src/authoring/access.rs",
+      "item": "struct[PathPolicy]",
+      "hash": "deec21bca0141b9262967d0feccc1b312fa13f1529416611a7c9e4557b42e0f5"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups]",
-      "hash": "20a73b3a131bb18757d4d4fd6d2ab8fd533e94a06cd21a9e93e8de542288e84e"
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "3cbf909ef188ad797d961bb616d0f75643b592e1115e1fa24e951f6c977dc916"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[status_preserves_repository_wide_rust_findings_in_every_form]",
-      "hash": "17f7b91420c26592d7105d4902e3fd638986c67295684780a75f197ce086b51f"
+      "file": "src/authoring/access.rs",
+      "item": "struct[SourceAccess]",
+      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[info_renders_exact_and_glob_matches_as_markdown_without_an_index]",
-      "hash": "ad225732d2ece2c8fd904dd848c3647bdc2285e0321478ca6c21691fd35cabc6"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[nested_project_uses_only_its_part_of_the_git_index]",
+      "hash": "dea11d109c0202e1b5b6a7f89fc5e0b4864ee3a773393d4d2cb7f52f55a48595"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[commands_report_invalid_arguments_and_unmatched_selectors]",
-      "hash": "d3e5ef37c8bcb051fba22c0908323dcc2b280d531c816faf752615a2b1349afc"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
+      "hash": "04e0bb3382ec1ba0982960e6e5a2254e7cacc9ce324a0d46442a9271c9c9e5d8"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[status_and_info_accept_a_definition_selection]",
-      "hash": "c5b67129dac964e55e3e2c039a73be46c0f38efac04ae648e904ea4136b0604c"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree]",
+      "hash": "db8bdfdbb6c83a98321c48f79a8adb3c376b8e26b0df2e9b5fba12f8e3f46d83"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
-      "hash": "481e3d75bfef6134f7c6435db78acd1a683a5264afe57bff61afabaf466d1254"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
+      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
     },
     {
-      "file": "tests/commands.rs",
-      "item": "fn[definition_glob_lists_a_requirement_and_an_example_in_info_and_status]",
-      "hash": "0ca78cc871b7e73f619ebf8ccf81cc73c21b7617bd173439abcc1ee94251d46c"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
+      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
     },
     {
-      "file": "tests/configuration.rs",
-      "item": "fn[documented_configuration_examples_are_complete_valid_files]",
-      "hash": "5dcbe6aa922eec7be6c68e2c39bb48db304ebc4a07b8bbbaa453afbda6553d80"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[globs_exclude_terms_but_capture_referenced_terms_outside_the_glob]",
-      "hash": "43afa0f49dae2c074caa56fad5d6e5afc4a7510d4423bdbd53c30195a0f00f70"
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "ed9509a1f75089d757aaed673cca2b9af204bbb5971b09a403f604a3958ef909"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[phrases_are_plain_links_and_markdown_literals_are_preserved]",
-      "hash": "6676dec9f409e7e70839a3dcc1bf4ccc2659da1f7127c73f9bc45d900df38b8e"
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[definition_schema_deletion_and_literal_references_are_checked]",
-      "hash": "8ae4ea21d6333d2f0387bbde69364509558488d4672f0608a66b99709b8188e8"
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
     },
     {
-      "file": "tests/symposium_hook_smoke.py",
-      "item": "def[interactive_sync]",
-      "hash": "a5f5f7ca74c8a93706dcd175f2c270746a934805f1eb80d6e2d49d4e9fff6fbb"
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
     },
     {
-      "file": "tests/symposium_hook_smoke.py",
-      "item": "def[main]",
-      "hash": "e225275a81a6d0a67573ef7addd83be5cc6b4615e29795ac5b0991d053484943"
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[file]",
+      "hash": "d657c7657a2da7dbabe6bbe2388ea5f93672f99948fbc74d2b7072658d5703ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]",
+      "hash": "ecac5f53614daa737173885275e4613df5e9d31bb6352e66d7a0953c05dde898"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::fmt::Display]",
+      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[parse_file]",
+      "hash": "60bcb250ef0b20cccfac78923540d1637b80fbea9c68d624ec1f775aca96cb29"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_lines]",
+      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[insert_selector]",
+      "hash": "54d9a173878107f95099d460a21bc217892ddadd5bab92477695cfd3f3b84496"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[references]",
+      "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
     }
   ]
 }

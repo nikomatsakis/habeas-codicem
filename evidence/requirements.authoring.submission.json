@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `submit_judgment` tool accepting exactly these fields:\n\n```text\nsubmit_judgment({ determination: Judgment, rationale: String })\n\nJudgment = Boolean | { FIXME: Array<String> }\n```\n\nThe judgment MUST use the three outcomes and nonempty FIXME entries defined by\n{cite}`requirements.ci.outcomes`.\n`rationale` MUST be nonempty Markdown. This tool call MUST supply the final\nassessment result. The model MUST invoke it exactly once over the entire\nassessment. If the model finishes without invoking it, or invokes it more than\nonce, the harness MUST report an error and leave existing evidence unchanged.\nThe harness MUST check the complete model response for multiple submissions\nbefore accepting one. Invalid submission arguments MUST also fail the assessment.\nA valid single submission MUST finish the assessment; there is no submission\nrepair or resubmission loop. An assessment that fails before accepting a valid\njudgment MUST emit no evidence JSON to stdout.",
   "determination": true,
-  "rationale": "**Verdict: true.** The sources implement every obligation in `requirements.authoring.submission`, and the tests cover the main cases.\n\n**Tool exposure.** `tool_definitions` (src/authoring/mod.rs:419) adds `submit_judgment` to the tool list. Its schema:\n- It has `additionalProperties:false` and requires `determination` and `rationale`.\n- `determination` is `oneOf` a boolean or an object with only `FIXME`, which is an array with `minItems` 1 of strings with `minLength` 1.\n- `rationale` is a string with `minLength` 1.\n\nThe Bedrock test checks this schema as sent on the wire.\n\n**Argument validation.** `submission` (src/authoring/mod.rs:398) enforces the rest:\n- The arguments must be an object with exactly the two keys `determination` and `rationale`.\n- `Judgment::from_value` (src/judgment.rs) accepts only `true`, `false`, or `{FIXME:[nonempty, nonblank strings…]}`.\n- The rationale must be a nonblank string.\n\nAny failure returns an error, which fails the assessment.\n\n**Submission handling in `assess`.**\n- The whole response's tool calls are collected and every `submit_judgment` call is counted before one is accepted. More than one submission returns an error.\n- A response with no tool calls returns \"model finished without invoking submit_judgment\".\n- Invalid arguments propagate with `?`.\n- A valid single submission records the determination and returns the evidence immediately. There is no repair or resubmission loop.\n- Other tool calls in the same turn are skipped.\n\n**Evidence on failure.** Evidence is written only after `assess` succeeds. This happens in `configured_assessment` and via `prepare_assessment` → `PendingAssessment`. On error, only the usage log is finished, with outcome \"failed\". Nothing is written to stdout or to the evidence file.\n\n**Outcomes.** `Judgment::from_value` and `to_value` implement `requirements.ci.outcomes`: the three outcomes and nonempty FIXME entries. The `{impl}` markers on these functions cover it.\n\n**Tests.**\n- `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` (tests/authoring_cli.rs:948) covers four failure cases, each in file and `--stdout` modes:\n  - no submission;\n  - duplicate submissions;\n  - an empty rationale;\n  - an empty FIXME array.\n\n  In each case it asserts a non-success exit, empty stdout, unchanged existing evidence, outcome \"failed\", `evidence_written` false, and a null determination.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` covers the success path and the `submit_judgment` schema.\n- The unit-test provider in `src/authoring/mod.rs` exercises valid submissions.\n- `live_bedrock_authoring` covers an end-to-end submission with a real model.\n\n**Minor gaps (not enough to fail).** Extra or missing top-level keys and a non-boolean, non-object `determination` are not tested directly. They are handled by the same validation code paths that the covered cases exercise.\n\n**Unspecified behaviour.** No behaviour in the `{impl}` code goes beyond this requirement or the other requirements it is marked for.",
+  "rationale": "**Judgment: true.** The code marked {impl} implements every obligation of `requirements.authoring.submission`. The tests cover the main success and failure paths. Two small edge cases (below) are covered only by code or schema, not by a test.\n\n**Implementation**\n\n- **Tool schema.** `tool_definitions` in `src/authoring/mod.rs` registers `submit_judgment` with exactly `determination` and `rationale`. Both are required and `additionalProperties` is false.\n  - `determination` is `oneOf` a boolean or an object with only `FIXME`, a non-empty array of strings with `minLength` 1.\n  - `rationale` is a string with `minLength` 1.\n- **Argument validation.** `fn submission` rejects non-object arguments. It rejects any argument set that is not exactly the two keys `determination` and `rationale`.\n  - It validates `determination` through `Judgment::from_value` in `src/judgment.rs`. That accepts `true`, `false`, or `{FIXME: [...]}` with a non-empty array of non-blank strings. This matches `requirements.ci.outcomes`, which `from_value` also marks as implemented.\n  - It rejects an empty or whitespace-only `rationale`.\n  - Any error is returned from `assess`, so invalid arguments fail the assessment.\n- **Exactly one submission.**\n  - `assess` collects all `submit_judgment` calls from the complete response before accepting one. Two or more produce an error.\n  - A response with no tool calls produces \"model finished without invoking submit_judgment\".\n  - A valid single submission returns immediately, so there is no repair or resubmission loop.\n- **Failure leaves evidence unchanged.** Evidence is written, to a file or to stdout, only in `configured_assessment` after `assess` returns `Ok`. Every failure path returns early, so nothing reaches stdout and existing evidence files are untouched.\n- **Marking.** The three functions that carry out the requirement (`submission`, `tool_definitions`, `assess`) carry `{impl}` markers.\n- **Behavior outside the requirement.** `assess` does extra usage bookkeeping, such as `usage.skipped_tool`. Other requirements specify it (usage storage and the others listed on `assess`), so I don't count it as unspecified behavior.\n\n**Tests**\n\n- `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` in `tests/authoring_cli.rs` covers four failure cases, each with file output and `--stdout`:\n  - no submission;\n  - two submissions in one response;\n  - an empty rationale;\n  - an empty `FIXME` array.\n- For each of those cases it asserts all of the following:\n  - the process fails;\n  - stdout is empty;\n  - the existing evidence file is byte-identical;\n  - usage records `failed`, `evidence_written` false and a null determination.\n- Success paths for `true`, `false` and `FIXME` are covered by `stdout_emits_only_evidence_json_without_changing_project_files`, `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` and `false_is_a_completed_assessment`.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts the `submit_judgment` schema as sent to the provider, including the boolean or FIXME `oneOf`, `minItems` 1 and `minLength` 1. It also asserts that a single submission completes the assessment.\n- `tests/outcomes.rs` unit-tests `Judgment::from_value` against many invalid FIXME shapes, including empty strings, whitespace, non-strings, extra keys and a lower-case `fixme` key.\n- `tests/live_bedrock.rs` is an opt-in live check.\n- Gaps in coverage:\n  - The \"exactly determination and rationale\" key check (missing or extra top-level keys) is not directly tested at the CLI level.\n  - A whitespace-only rationale is not tested.\n  - Both are simple, small branches of `submission`, and the schema also constrains them, so I don't consider these gaps material.",
   "inputs": [
     {
       "requirements": "requirements.authoring.submission",
@@ -80,6 +80,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[JudgmentProvider]",
+      "hash": "a4d3bcc945e5ff73273efd38fe12c07e22eca04ce1dff12db82626cc57940bcc"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]/fn[complete]",
       "hash": "a6fd62b403a44e80994835bb8e567c5cf017c7d49ff4f1ccfbba2efa5da696db"
     },
@@ -120,6 +125,21 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_output]",
+      "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[usage_state_root]",
+      "hash": "b721c9327b86eaabc87f13eca86692c5d6bb6e961cefb6cafb21610f45554bf7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
       "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
     },
@@ -137,6 +157,46 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt]",
       "hash": "bfe100b8b43cf49efd6375d462d16f5ec28e447db4d13e7c20be01d72ea07fc5"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]",
+      "hash": "72df1338ac52c0edbc0722c019068bd974865780828fe079cf0f37a9b5cce7c0"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[false_is_a_completed_assessment]",
+      "hash": "cc03e68ca2a242b8553d12ca5d46ce18a5d39a4491c1281ccc8ccf2efcd2812c"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[negative_assessment_records_additional_reads_and_fails_validation]",
+      "hash": "0ac40fef47ad1b9b7d7799c819d2dd60a2ee6881ef2431ceb57025d79cce44b5"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[stdout_emits_only_evidence_json_without_changing_project_files]",
+      "hash": "753338b292a85b536df354e8e5f9b9121cf87b9fe3bcf562088561104e2ea455"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[failed_evidence_write_keeps_the_accepted_judgment_in_usage]",
+      "hash": "97289ea34489e50cc20ffd1d1e903ff64456716ca0f926e2db15e26777315ba0"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[judgments_round_trip_and_reject_invalid_fixme_shapes]",
+      "hash": "5e53d5bc17d1c06f4617144b9f2e9c085c86d11acdb183e450f88fde2a8d8530"
     }
   ]
 }

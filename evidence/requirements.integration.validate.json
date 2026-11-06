@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.\nIts failure message MUST instruct the agent to run `habeas author --all`, address\nthe reported gaps, and rerun tests. Validation MUST remain deterministic and MUST\nNOT invoke authoring itself. {cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.deterministic_validation`",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.**\n\n**Implementation.** `habeas::validate()` in `src/lib.rs` (lines 26–49) is marked `{impl}` for `requirements.integration.validate`. It does what the requirement says:\n- It finds the project root by walking up from the current directory to the first ancestor with both `Cargo.toml` and `book.toml`. It panics if none exists, so the calling Cargo test fails.\n- It calls `validate_repository(root)`, which in `src/evidence.rs` runs `inspect_repository_with_progress`. That function collects every error: workspace config, definitions, evidence files, orphans, missing evidence, references and Rust citations. It does not stop at the first one.\n- If the report has errors, it panics with a message that lists all of them (`report.errors.join(\"\\n- \")`) with the counts. The message tells the agent to \"Run `habeas author --all` … then address any reported gaps and rerun the tests.\"\n- Validation is deterministic and never authors. The code path is only filesystem inspection and config loading, with no model or authoring call. This also satisfies the cited `requirements.authoring.deterministic_validation`, because missing or stale evidence is reported as a validation error and is not repaired. The cited `requirements.authoring.batch` defines the `habeas author --all` command that the message points to.\n- The inspection code is marked for its own requirements, such as `report_api` and `ci.*`. The only behavior in `validate` beyond the requirement is the extra advice \"Do not write evidence judgments or snapshots by hand.\" That sentence is consistent with the requirement and is not a gap.\n\n**Tests.** `tests/validate.rs` runs `validate()` in a child test process against temporary fixture projects:\n- `validate_fails_the_test_with_every_error_and_authoring_instructions` starts from a nested `src/nested` directory and checks that the project root is found.\n  - It checks that the child exits nonzero.\n  - It checks that the message contains both a missing-evidence error (`rules.ready`) and a malformed-evidence error (`evidence/rules.broken.json`), which shows all errors are reported.\n  - It checks for the `habeas author --all` instruction and \"address any reported gaps and rerun the tests\".\n  - It checks that no evidence is written and that the state directory stays empty, so validation does not author.\n  - It checks that a repeated run produces the same error lines, which shows determinism.\n  - It checks that valid evidence passes.\n- `validate_fails_outside_a_cargo_and_mdbook_project` checks the failure when the project root cannot be found.\n- The helper functions `validate_child` and `validate_in` are also marked `{test}`.\n\nThis covers the main points in the design space. Specific stale-evidence cases are exercised by the shared validation tests for other requirements, so the omission here is minor.",
+  "rationale": "**Verdict:** `habeas::validate()` meets `requirements.integration.validate`, and the tests cover its obligations. The one wording addition noted below is harmless.\n\n**Implementation** (`src/lib.rs`, `fn validate`, marked `{impl}`):\n- It starts from the current directory. It walks up the ancestors to the first one containing both `Cargo.toml` and `book.toml`. If none exists, it panics with \"cannot find Cargo and mdBook project root\".\n- It calls `validate_repository(root)`, which is `inspect_repository(...).report` in `src/evidence.rs`. That function gathers every error in one pass: evidence files, missing evidence, reference coverage, and Rust function coverage. It does not stop at the first error.\n- If the report has errors, `validate` panics, which fails the Cargo test. The message gives the counts and lists all errors, one per `- ` line.\n- The message says to run `habeas author --all`, \"then address any reported gaps and rerun the tests\". That is the required instruction.\n- Validation stays deterministic and does not author. `inspect_repository_with_progress` reports missing evidence as an error (\"evidence/…json: missing for …\"). A comment there cites `requirements.authoring.deterministic_validation`. `validate` never calls the authoring module, models, or credentials.\n- The message also says \"Do not write evidence judgments or snapshots by hand\". The requirement does not state this. It is consistent with the batch requirement's rule that the harness owns judgments and snapshots, so it is not a gap.\n\n**Tests** (`tests/validate.rs`, all marked `{test}`). `validate_child` and `validate_in` are helpers that run `validate()` in a child process.\n- `validate_fails_the_test_with_every_error_and_authoring_instructions` builds a fixture project with one requirement lacking evidence and one malformed evidence file. It runs from a nested directory, so root discovery is exercised.\n  - It asserts that the process fails and that the message contains the header and both distinct errors.\n  - It asserts that the message contains the `habeas author --all` and \"address any reported gaps and rerun the tests\" text.\n  - It asserts that no evidence or state files were written, so validation does not author.\n  - A second run from the project root produces identical error lines, which shows determinism.\n  - After the fixture is made valid, validation succeeds.\n- `validate_fails_outside_a_cargo_and_mdbook_project` covers the failure case where no `book.toml` exists.\n\n**Gaps:** I found none, and there are no FIXMEs. The citations that `validate` and `validate_repository` carry (`report_api`, `deterministic_validation`) are context, and the implementation is marked completely.",
   "inputs": [
     {
       "requirements": "requirements.integration.validate",
@@ -32,7 +32,7 @@
         "only when its subject or inputs change, or when it is named explicitly with",
         "{cite}`requirements.authoring.invocation`.",
         "`--all` MUST be mutually exclusive with a subject name and `--stdout`.",
-        "Failure to discover declarations or parse project sources MUST report an error,",
+        "Failure to discover declarations or to read, scan, or parse project sources MUST report an error,",
         "not a successful empty batch. A batch with no assessments needed MUST succeed",
         "without resolving model configuration or credentials.",
         "",
@@ -43,7 +43,12 @@
         "exit status if any assessment fails. False judgments MUST still be written as",
         "completed assessments; they remain failures under ordinary evidence validation.",
         "An access-policy denial MUST abort only the affected assessment under",
-        "{cite}`requirements.authoring.read_denial`.",
+        "{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the",
+        "whole batch: queued assessments MUST NOT start, running assessments MUST be",
+        "cancelled, and an assessment whose evidence has not been written when the",
+        "interruption arrives MUST NOT write it. Evidence already written MUST be",
+        "retained, and the command MUST report the number of assessments not started as",
+        "a batch failure.",
         "",
         "The bundled Habeas skills MUST direct the supervising agent to run this command",
         "to create or refresh evidence. They MUST leave judgments, rationales, and input",
@@ -95,6 +100,121 @@
       "hash": "589265abb0ebca581fcefed0224fc885b38b3fce09cca60c05ffa007a0a194ec"
     },
     {
+      "file": "src/lib.rs",
+      "item": "use@420a7d4fdb66",
+      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@95d18074761c",
+      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@db40086bd51e",
+      "hash": "db40086bd51eefdb0a29038e981ff139126c3445cdc5fe2023c09a5d71fe2469"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@b9fce3e500fd",
+      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@d588b8bc294c",
+      "hash": "d588b8bc294c8ef60dbaf342b9a87fbc310fb5a428e7543a471eafb549c12f12"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@93013b067bff",
+      "hash": "93013b067bff50c284178a25b3ddd82e8ff9784d50a7bca6914ac30934a29dd6"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[add_input]",
+      "hash": "3002f31015d450b28bd63d702fa14c6ba70f52646f168ae774dafc87df8cee0b"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[authoring]",
+      "hash": "931cc87bcdd845c866365bfecf12600762b2a35858e471116fa35285e8614c8c"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[config]",
+      "hash": "e879b80085b71e7ff6548c87f8009794996fa037e3ce6cae5dd809ee8d8d3130"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[definition_glob]",
+      "hash": "62708327e7e6f6ffb3b66787eda4a6b124a30d8372f3bc8247b3bf5d935b53e4"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[evidence]",
+      "hash": "93be5a2d8c24e2da5d4ac927cbae2301fdefeeade8ae36cc767791ba69499ac0"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[fixme]",
+      "hash": "28599fddc50c0ec33af1519bcac3fdd4819c5674e1516e175be90be3ef0120b3"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[index]",
+      "hash": "343817dd94e48f40d40f84652eaf665187c33adea0e0db284f40fb80ed2d9d29"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[inputs]",
+      "hash": "2424b8d775149239e8712afc2f7a1bab3763b0f0eb901e2f6c91779c5b073ef3"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[judgment]",
+      "hash": "4a9965400c0a7281208c9e1f33871ce600c3735b892420c833e5d9410b93621d"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[outline]",
+      "hash": "d3bd6c12c0b422035d79bf75653de114c598d54745301d6c6d86fb98f8030544"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[rust_coverage]",
+      "hash": "1e6b1e91cd98214ce039f09cdb27238a64a1a03d0e42157e8ecc2dbb9ee22fcb"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[terms]",
+      "hash": "43ffc28e2f2f736a74c6a3942b9db80b346f48f76536087cadcb8ee7c371f20a"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@bc85dd3c96fa",
+      "hash": "bc85dd3c96fa928f0146f9c0bd49b447f117e6e0d0f9c7827bf65e1be79cf90d"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@38a1ecc34ff1",
+      "hash": "38a1ecc34ff127180299c77e3b6304213f72ffea94a27b45c7a8bfc17f967636"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@9aa99ad89c93",
+      "hash": "9aa99ad89c9349d8907962a5fa220f06b18d4cc163e5df51d30fe3a6692ccee9"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "enum[DefinitionKind]",
+      "hash": "114078647e35bf8f8fcff4d4272f2144547a2e4ecd69fe5236aca58b1b9c3ace"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "impl[DefinitionKind]",
+      "hash": "7aa37bf1c91f106550312e635107591d641e054917e54f5e22b167c954c65262"
+    },
+    {
       "file": "src/evidence.rs",
       "item": "impl[Anchor]",
       "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
@@ -125,19 +245,39 @@
       "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
     },
     {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
-      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
-      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "ed9509a1f75089d757aaed673cca2b9af204bbb5971b09a403f604a3958ef909"
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "1ccc4046a314160559504cfc1042ca910c997e28ae25c5c51c9a0791a5faf6eb"
+      "item": "fn[validate_references]",
+      "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references]",
+      "hash": "d02baf54544d3b01a24f6ae3d071d7432bcd7b24e0f1ecc2777efbe157fe10cc"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references_with_progress]",
+      "hash": "93d27acc2c376f3ff8d2049397cd679c542efd3b5a1c423ec4fe08ba9ad3eebb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[fixture]",
+      "hash": "61c07880cbe6294572e0fbb36f305866e58a558759bd71f7cf2d238fb4c10f56"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
+      "hash": "3a95e96496e59dc43099c9706020e030bcea1e25af3006c617f702a65cdf5ae6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
+      "hash": "01beeb1f859a67450bf04cf20e2aba05971ee91df7a46ff76eab1315fa5035d7"
     }
   ]
 }

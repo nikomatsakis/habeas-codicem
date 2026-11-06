@@ -1,7 +1,7 @@
 {
   "requirement": "Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs.\n\nHabeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.\n\nValidation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
-  "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers every obligation and is marked `{impl}`. Tests cover the main points in the design space. I found no unmarked implementation and no unspecified behavior.\n\n**Implementation**\n\n- **Dependency collection (`src/terms.rs`, `dependencies`):**\n  - It seeds the set from the subject text and from every reviewed input. Input text is read from the recorded `text` array, or from the current source for outline inputs that carry none.\n  - Definition inputs seed their own names. Rust inputs are scanned only in comments. Markdown inputs and requirements-selection inputs are scanned over declaration bodies, so code protection and escapes apply.\n  - A worklist (`pending` / `required`) then expands the closure through each definition's body. A name already in `required` is skipped, so the walk reaches a fixed point, tolerates cycles and terminates.\n  - A term with no matching named definition returns a \"no matching named definition\" error.\n- **`referenced_terms`** extracts only `Term` references, so escaped and code-fenced references stay literal.\n- **Validation (`src/terms.rs`, `validate_dependencies`, called from `src/evidence.rs`, `validate_evidence_file`):**\n  - It recomputes the required set and reports any required definition whose input count is not exactly one (\"expected exactly one definition input for X, found N\").\n  - It only reports. It never rewrites records, so there is no silent refresh.\n- **Capture (`src/add_input.rs`, `update_inputs`):**\n  - It adds or refreshes one definition input per required term, removes duplicates, and sets the determination to false when anything changed.\n  - That determination reset and the duplicate handling belong to `requirements.definitions.capture`, which the same function marks with `{impl}`.\n- **Other callers:** `authoring/inputs.rs` calls `terms::dependencies` and carries its own `{impl}` marker for `authoring_inputs`. Reusing the shared function is not unmarked partial implementation.\n\n**Tests (`tests/definitions.rs`, all marked `{test}`)**\n\n- **`cyclic_dependencies_are_captured_once_and_changes_require_review`:**\n  - A→B→A cycle in the fixture captures exactly 3 inputs: the requirement's own input plus one each for `glossary.a` and `glossary.b`.\n  - Re-capture leaves the file byte-identical.\n  - A change to B's phrase or body makes validation fail without modifying the record.\n  - Re-capture then leaves the determination false.\n  - A missing required definition input reports \"found 0\".\n  - A duplicate reports \"found 2\".\n  - Re-capture repairs the record to 3 inputs.\n- **`outline_inputs_capture_terms_without_counting_them_as_citations`:** terms referenced in Rust comments of an outline input are captured transitively. A change to a transitive dependency invalidates the record.\n- **`definition_schema_deletion_and_literal_references_are_checked`:**\n  - Deleting a referenced definition reports \"no matching named definition\".\n  - Escaped references, inline-code references and fenced-code references are not treated as dependencies (the record keeps 1 input).\n- **`example_subject_and_definition_display_use_the_same_dependencies`:** subject text of an example contributes its term dependencies.\n\nNot covered are Markdown-file outline inputs and requirements-glob inputs in this file. The glob case belongs to `selection`, a separate requirement. These gaps are minor, and the shared code path is exercised.\n\nNo FIXME or acknowledged gaps are present.",
+  "determination": false,
+  "rationale": "## Verdict\nThe core of the requirement is implemented and tested well. I am choosing false because of one gap: the hand-written Rust comment scanner has almost no tests, and no FIXME acknowledges that.\n\n## Implementation\n- **Referenced terms.**\n  - `terms::direct_references` collects term references from the subject text and from every recorded input.\n  - `referenced_terms` is the shared role scanner. It is also used by the definitions.references requirement.\n  - For each input kind it scans:\n    - **Definition input:** the named term is added directly.\n    - **Requirements input:** the recorded body text of each definition block, excluding the colon fences.\n    - **Outline input:** the node's recorded text, or its current source when no text is recorded.\n    - **Rust outline input:** comments only, via `rust_coverage::comments`.\n    - **Markdown outline input:** scanned as Markdown.\n    - **Other outline inputs:** scanned as plain text.\n- **Fixed point.** `terms::close_dependencies` keeps a pending set and a visited set. Each term's current declaration body is scanned for further terms until nothing new appears.\n  - Cycles are harmless because visited terms are skipped.\n  - Every unresolvable term, or term with an invalid declaration, is reported rather than stopping at the first.\n- **Exactly one definition input per record.**\n  - `add_input::update_inputs` calls `terms::dependencies`.\n  - For each required term it removes duplicates and pushes one freshly resolved definition input.\n  - It resets the determination to false and the rationale to a review-pending note when anything changed.\n- **Validation.**\n  - `evidence::validate_evidence_file` calls `terms::validate_dependencies`.\n  - That reports unresolvable terms (\"definition dependencies: term X: no matching named definition\").\n  - It reports any required term whose definition-input count is not exactly one (\"expected exactly one definition input for X, found N\").\n  - It only appends to the error list, so validation never rewrites a snapshot.\n- **Marking.** The `{impl}` markers cover all of this code. `authoring/inputs.rs::definition_inputs` also calls `dependencies`, but it is marked with the authoring_inputs requirement, which is a different obligation.\n\n## Tests (`tests/definitions.rs`)\n- `cyclic_dependencies_are_captured_once_and_changes_require_review`:\n  - covers a two-term cycle (a to b to a) with transitive capture and exactly 3 inputs;\n  - covers idempotent re-capture (byte-identical file);\n  - covers a snapshot change being reported by validation without the file being touched;\n  - covers a refresh that resets the determination to false;\n  - covers a missing definition input (\"found 0\") and a duplicate (\"found 2\"), then repair.\n- `definition_schema_deletion_and_literal_references_are_checked`:\n  - deleting a term gives \"no matching named definition\";\n  - literal, code-fenced and backslash-escaped term roles are not counted as dependencies.\n- `outline_inputs_capture_terms_without_counting_them_as_citations`: a term referenced in a Rust comment of an outline input is captured transitively and is tracked for staleness.\n- `example_subject_and_definition_display_use_the_same_dependencies`: an example's subject text and a Requirements input both yield dependencies.\n\n## Gap\nThe hand-written Rust scanner (`rust_coverage::comments`, `quoted_end`, `char_end`, `raw_string_end`) is marked `{impl}` of this requirement. It decides which Rust text counts as a term reference.\n\nThe only test that reaches it uses simple `//` line comments. Nothing tests:\n- skipping a term role inside string literals, raw strings, byte strings or char literals;\n- block comments or nested block comments;\n- lifetimes or escaped characters;\n- unterminated literals.\n\nIts own module tests cover a different tree-sitter-based function. This is substantial branching logic with boundary cases and no direct tests.\n\nThe tests also never exercise a Markdown or plain-text outline input as a source of term references.\n\nNo FIXME or other source comment acknowledges these gaps, so this is false rather than a FIXME determination.",
   "inputs": [
     {
       "requirements": "requirements.definitions.dependencies",
@@ -26,7 +26,27 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_evidence_file]",
-      "hash": "e7333d3e41b95312e527d78ad2e0fd83c91ca74ffb2a6a09e8084dbb2c9e8684"
+      "hash": "032c8c68261b55784929b1a92d8c2806a7cbbd71028ebde50790220a6f44595e"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[quoted_end]",
+      "hash": "87a33514788966792c7c7995c887c0b806fdff82f513464c2d730afb064aebb3"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[char_end]",
+      "hash": "7daa981149051c72a8314f473a7328348d7f365a2529179901c8c22ad647abe2"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[raw_string_end]",
+      "hash": "6b5d5cd0373e986ed80d2bbcf6eb15b0fb248b1df89e3f5da629c9ed119fa8a3"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[comments]",
+      "hash": "600a55f0822af75ae6b91ea65bba44227e75d102d13910f0cc2dd293ec067796"
     },
     {
       "file": "src/terms.rs",
@@ -36,12 +56,22 @@
     {
       "file": "src/terms.rs",
       "item": "fn[dependencies]",
-      "hash": "3c2ddcd06f8a2731215a0c27627369e0f4ac60a2549f1600d0cb7f5ee1c4a213"
+      "hash": "2b96ffc0104a7cae1a9be5aea04d79199d7524031c262ab97c1bb5d712e6d49b"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[direct_references]",
+      "hash": "98ea11a7e7fa5ffc06d25053633f2e9e32a04916216708d865d62bd6ed744df9"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[close_dependencies]",
+      "hash": "7505912bdea9e2777bb6ca92e2ed4255ac0e6322bb358a0e33dcd732b900ca29"
     },
     {
       "file": "src/terms.rs",
       "item": "fn[validate_dependencies]",
-      "hash": "79abdca9c4c81c31edd3e009125bb6a500be42c88446dbc667c0a1d7fdf1e06c"
+      "hash": "384460cdf651e0a04222f97e6b6f61287c7fc9cc42f7c5ac81b45e282d3cd216"
     },
     {
       "file": "tests/definitions.rs",
@@ -74,6 +104,16 @@
       "hash": "cd3f67cdd56cbd6d5733e8033921f0c837d23f6bd725097b44171ffe48a317ba"
     },
     {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
+      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "ed9509a1f75089d757aaed673cca2b9af204bbb5971b09a403f604a3958ef909"
+    },
+    {
       "file": "src/evidence.rs",
       "item": "fn[collect_definitions]",
       "hash": "6e0d1bcbefe2f48a1562a260a5dd81fc25e54da33c79bd059f85f76df0b5db1e"
@@ -81,7 +121,7 @@
     {
       "file": "src/lib.rs",
       "item": "fn[replace_definitions]",
-      "hash": "24059237d9a5bdbfdb3c48f10b6191995590aa8525bdfb1b628a2fe80ed18337"
+      "hash": "d6f8128ea3f877ee9614d552540b6574455baf37a11dd435f271ade95650ba00"
     },
     {
       "file": "src/lib.rs",
@@ -89,22 +129,394 @@
       "hash": "f6346cb8e4304b6412a888b691430412882f83f2cce6c5916d65b74e3da4e006"
     },
     {
-      "file": "md/requirements/definitions.md",
-      "item": "section[Named%20definitions]",
-      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
     },
     {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::fmt::Display]",
+      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::error::Error]",
+      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[tracked_sources]",
+      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]",
+      "hash": "f4523290853d623e10ee05ed1a8cd475df3c2cf9bc48cf8432bd63cf131eea3c"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_output]",
+      "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[usage_state_root]",
+      "hash": "b721c9327b86eaabc87f13eca86692c5d6bb6e961cefb6cafb21610f45554bf7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[decoded_setting]",
+      "hash": "5e1b71d9894d744a325566cd5baf422130ba6f2006a66db39941b435eb491520"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[credential_values]",
+      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring]",
+      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_from]",
+      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[Anchor]",
+      "hash": "5a2a5470e6528b90894f59fbeeeaa1e27264f4d4950c72ecbabba671039a0585"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[AnchorTarget]",
+      "hash": "5a296ee3aeaf7120d450a0662f3a7a088e1182edd16c0111e640d6a2638fe5a9"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[Anchor]",
+      "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_repository]",
+      "hash": "f2052cf4a6e46c972d3d01cb902f0b784a9701ea210a47fd574690be652b4df7"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_sections]",
+      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[InputLocation]",
+      "hash": "99ea2be1f267223b80d87d341410380c2b14855b158cb3be7bedd36ee329724f"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[InputLocation]",
+      "hash": "dea18032fc35a91d2f7725791250ff4d1b26d1636aa106c78e5ee06bbbf3e604"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@a26087e08c80",
+      "hash": "a26087e08c80d5c75559c00d6f08909f5a03a0bd909c8c903061c37b78950102"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@17891119f0eb",
+      "hash": "17891119f0eb9d10b48f727e590ef4be9050f4cdc2813283f53abf585dfe721a"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@945e92f43fad",
+      "hash": "945e92f43fad9a4c59b94afe789e6ef9514106d005841b29a86ecf6cee616e26"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@94c7012d1800",
+      "hash": "94c7012d18006bc204d06850f929668e869b47eba6b9b2d8ef109add66dee46f"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[SourceRange]",
+      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ParsedSource]",
+      "hash": "4f4059c40992e04f4b5cb4cb7194b6c2f3c5eff777932ad61c824749a5a1820c"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "e2b73fb5ab3ea089731a8720517490f1ac0891d24210de9fdab90341e075e6ec"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "290e7c1e137a3ff4781614fe1b266f4beca497eb2fbcd3992418ae2a75f7a5f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "747c8b1b4ad7f80254ca27080bf0b199c6ef1cf0fe663fe6ea44f45765578a02"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[trailing_owner]",
+      "hash": "ae50a27e459297a348cefa7254c268c4688a0c705588f2d4f8647b210fc59525"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[run_owner]",
+      "hash": "f407a84b4a67ebbee979c3a9b305512322e6858a2c40ee48288352f91537e574"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]",
+      "hash": "7d809597ae1071829e01cd4f956d388865f05e410ae42a96efda43f7275a61d5"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
+      "hash": "56d485a1631eacba50fdbca88128d77fa25f44a99979e74b92a556820ec6c4a5"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[assign_comments]",
+      "hash": "9c002ba5be7ea1e4ef5a8e13cd64abb4f579be8bf8cd487f591a07dbbdfa0fa7"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
+      "hash": "9542cefc7e015427e3b771eea77d2244ed2232e0bc3ea41296f3a63f1c479e63"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[markdown_comments_are_html_comment_blocks_not_inline_comments]",
+      "hash": "a12e2c4992104db70b0db755bbe8d000f286d32738a663fdcb8e5428995f6951"
+    },
+    {
+      "file": "tests/setup.rs",
+      "item": "fn[setup_is_repeatable]",
+      "hash": "30a39e682c0610b494ff35376499b4be11ce769333c8f3bebdbb82b06e232bab"
+    },
+    {
+      "file": "tests/setup.rs",
+      "item": "fn[session_start_advises_only_when_setup_is_incomplete]",
+      "hash": "c6179f13893c158ba3ee2b8f3b47f1f5c6c6d6e0113ddb8ed3e13474293b4af2"
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
+      "item": "def[main]",
+      "hash": "e225275a81a6d0a67573ef7addd83be5cc6b4615e29795ac5b0991d053484943"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]",
+      "hash": "6ec1e7760cc9caf3aeadb4f123c95f3cd81dedefe25adea2b9eb1ce612444b38"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[finds_uncited_functions_without_using_enclosing_or_string_references]",
+      "hash": "b707b4cf148516e3b47217e474889a688002037b2f3647cd7896c8a24414fad4"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[checks_trait_test_helper_and_nested_functions_separately]",
+      "hash": "bd320cbf33ed73373b2e16e22a3b7265566cda6dbe589bbe6315febcf6c0f3bc"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[locates_functions_after_unicode_text]",
+      "hash": "9530c2f8a1e5893ec5d3fa85a6ded2a0d64b82f5afdb9f73622d4b4f76074d8e"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[reports_all_files_and_parse_failures]",
+      "hash": "5dbafd8c36603a2df64817f5c318b12ac256daa166e31957aded64607dd04f33"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[rust_function_coverage_reports_counted_progress_per_file]",
+      "hash": "bb79388a6bafcd20927c94bb08863e95891782b23c7af20cade7ca4f5085651b"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[structs_enums_and_unions_need_references_attached_or_inside]",
+      "hash": "80ad250f6e96ec348bacacddb150c1a1ef849bff07a1ddb3cce2237a33dd6eea"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run_in_pty_with_args]",
+      "hash": "d5743ba8cc8ae65f67cc740181164483b659f6353914f5fbf6f10a224f249207"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
+      "hash": "4682a1c95ac85718935f1342508f0d5a28acba4f4ed39f9de1d7c6d9d7d4e919"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[provider_rejection_of_inference_options_is_reported]",
+      "hash": "9fe3fdaba0abd95abf9f89268b8f887096a3133ff7293e72ef55fd5e1a934ebb"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[fixture]",
+      "hash": "fc7d08e42eeae1be9be41fb4672e615c6ba7a52beaa1d0f620ed0c9a37268bee"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_loads_nearest_workspace_file_without_validating_authoring]",
+      "hash": "8cd2df70c7a017a2aeb156b1379210a9d7446e39ad7e16777ffb9f4906e283d5"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_lists_nonvalid_requirements_and_all_option_in_name_order]",
+      "hash": "007e5bc1743b81fe5c0f6cc7245991c263471e21dfbc885a4c02939f8773f4c8"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_preserves_repository_wide_rust_findings_in_every_form]",
+      "hash": "17f7b91420c26592d7105d4902e3fd638986c67295684780a75f197ce086b51f"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[backend_configuration_round_trips_without_materializing_defaults]",
+      "hash": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
+      "hash": "eae9d7ae7e419e4c87f6d4f1cd77a36df6e6a94d7fa839eac97846478aa578c0"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
+      "hash": "4a1e5484da50abc6d54cccb531029d25ed1996e173f5eb014ecdfa9e69dcc20f"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[user_and_workspace_authoring_tables_round_trip_every_map]",
+      "hash": "34fae851fb0afe1cf07314e2d97f3941995a972552b06b666bf52e300391ce8a"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[storage_rules_reject_each_invalid_field_with_its_setting]",
+      "hash": "1d5ec2ad2a1a63f42fae93daef815c9f78837090da51165a6e6dc9f7b95b8e57"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[nested_evidence_files_are_reported]",
+      "hash": "2e3d1660a6c496c838526f920cedbc95c013f14d538c50e3620d6af7b59b4498"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[valid_fixme_remains_visible_in_status_info_and_book]",
+      "hash": "6ffad3ae12ca5ea946aec039bfd1f3f4e28fb1fd9bc88d710ca83bac435d020b"
+    },
+    {
+      "file": "tests/setup.rs",
+      "item": "fn[setup_finds_the_nearest_cargo_and_mdbook_ancestor]",
+      "hash": "cb2306934eb761c635ddcfb354076b085ae5503a971ce55cebf4e5ace10e1349"
+    },
+    {
+      "file": "tests/validate.rs",
+      "item": "fn[validate_fails_the_test_with_every_error_and_authoring_instructions]",
+      "hash": "631fef3ecc2be93edc225ff64760a076642958107f38e93778a266e573d0412e"
     }
   ]
 }

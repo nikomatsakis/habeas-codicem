@@ -1,7 +1,7 @@
 {
   "requirement": "When `habeas author` assesses a subject with existing evidence, that evidence\nMUST only determine whether the subject needs assessment. Its inputs,\ndetermination, and rationale MUST NOT contribute to the mandatory input set\ndefined by {cite}`requirements.authoring.mandatory_inputs` or otherwise be\nsupplied to the model. A new assessment's evidence MUST record only the inputs\nsupplied to it, so sources that an earlier assessment read but that no longer\nexist or are no longer relevant cannot block or shape reassessment.",
   "determination": true,
-  "rationale": "**Verdict:** the requirement is met. The implementation matches each obligation, the `{impl}` marking covers the relevant code, and the tests cover the main cases.\n\n**Existing evidence only decides whether to reassess**\n- In `src/authoring/batch.rs`, `author_all_with_options` loads each definition's evidence with `LoadedDetailEvidence::load`. It uses only `evidence.state()` to count the subject as unchanged (Valid, Fixme or DeterminationFalse) or queue it for assessment. The prior inputs, determination and rationale go no further than that state check.\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the mandatory set from the subject text, `{cite}` references, `{impl}`/`{test}` sources, anchors and term dependencies. It never reads the existing evidence record. The in-code comment says: \"Existing evidence only decides whether to reassess; its inputs are not carried forward.\"\n- Because the evidence file is never read, unresolvable earlier inputs cannot block reassessment.\n- `prepare` also drops selectors that point into generated `evidence/` output, using `generated_evidence_selector`, `SourceAccess::omit_generated_evidence` and `generated_evidence_path`. So an earlier judgment cannot re-enter the set through a source reference.\n- `configured_record` and `initial_prompt` (`src/authoring/mod.rs`) put only `sources.mandatory_inputs()` into the prompt. The single-subject `author_evidence` path never loads old evidence at all.\n\n**New evidence records only the inputs supplied**\n- `assess` (`src/authoring/mod.rs`) starts `pending` from the mandatory inputs plus tool deliveries. It moves them into `sources.record_inputs` only after the provider has returned a response.\n- The submitted record is built from `sources.recorded_inputs()`, which starts empty. Nothing from earlier evidence is added, so stale or no-longer-relevant sources cannot appear in a new record.\n\n**Tests (all marked `{test}` for this requirement, in `src/authoring/inputs.rs`)**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors`:\n  - Old evidence contains `determination: false`, the rationale \"old secret judgment\" and an input on `notes.txt`.\n  - It asserts that `notes.txt` and the old rationale are absent from the mandatory inputs, and that `recorded_inputs()` is empty after `prepare`.\n- `unresolvable_earlier_inputs_do_not_block_reassessment`: earlier evidence names a missing file, a removed Rust item and a removed requirement. `prepare` still succeeds and yields only the subject's own input.\n- `earlier_evidence_inputs_and_judgments_are_not_carried_forward`:\n  - Old evidence even lists `evidence/requirements.ready.json` itself and `notes.txt` as inputs.\n  - The test shows neither the file names nor the old rationale reach the supplied set, and the old evidence file is left unchanged.\n- Related coverage elsewhere: the retry tests in `src/authoring/mod.rs` check that recorded inputs equal the mandatory inputs after success and are empty when no response was received. The tool tests in `src/authoring/tools.rs` check that generated evidence is excluded from reads, search and discovery.\n\n**Gaps**\n- I found no unmarked implementing code and no unspecified behaviour.\n- The other `{impl}` markers on the functions above belong to the requirements those functions already implement.\n- The batch skip decision is not tested directly against this requirement. It is simple state-based selection and is covered by other batch tests, so I do not count it as a gap.",
+  "rationale": "**Judgment: the requirement is met.**\n\n**Implementation**\n- `AssessmentSources::prepare` (src/authoring/inputs.rs:43-182) builds the mandatory set only from these sources:\n  - the subject itself,\n  - the subject's `{cite}` targets,\n  - `{impl}`/`{test}` sites and anchors that point at the subject,\n  - the terminology those inputs bring in.\n- It never reads `evidence/<subject>.json`, so an earlier record's inputs, determination and rationale cannot enter the mandatory set. The comment \"Existing evidence only decides whether to reassess; its inputs are not carried forward\" matches the code.\n- `recorded: Vec::new()` starts empty. `assess` (src/authoring/mod.rs:449-579) calls `record_inputs` only for inputs actually delivered: the mandatory set plus tool deliveries, and only after a provider response. The evidence is built from `sources.recorded_inputs()`. A new record therefore holds only what was supplied in the new run, and stale or removed sources cannot block or shape reassessment.\n- `author_all_with_options` (src/authoring/batch.rs:33-185) uses `LoadedDetailEvidence::load` and its `EvidenceState` solely to decide whether a subject needs assessment. Valid, Fixme and DeterminationFalse records are left unchanged. It passes only the subject name to `prepare_assessment`, so the old record's content is not forwarded to the model.\n- `omit_generated_evidence`, `generated_evidence_path` and `generated_evidence_selector` keep generated `evidence/` content, including symlink aliases, out of the mandatory set by default. Explicit workspace allow and disallow rules are respected. `source_input` and `prepare` enforce read denial. The `{impl}` markers are present on all of these.\n- `configured_assessment` (the single-subject path) does not read old evidence either.\n\n**Tests** (src/authoring/inputs.rs)\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` (481-566) writes an old record that contains a false determination, a rationale and a `notes.txt` input. It asserts that:\n  - the mandatory inputs omit `notes.txt` and the old rationale,\n  - the recorded inputs are empty.\n- `unresolvable_earlier_inputs_do_not_block_reassessment` (568-596) puts missing files, a removed Rust item and a removed requirement in the old record. `prepare` still succeeds, and the result is exactly the subject input.\n- `earlier_evidence_inputs_and_judgments_are_not_carried_forward` (598-625) asserts that the supplied inputs contain no `evidence/` path, no old source and no old judgment. It also asserts that the old file is left unchanged.\n- Related tests cover generated-evidence omission, default exclusion, symlink aliases, explicit allow and disallow aborts (inputs.rs:899-991, tools.rs:823-948).\n\n**Gaps and risks**\n- There is no end-to-end test through `assess` or the batch path that checks the final persisted record. `prepare` and `recorded_inputs` are tested, and the code path from them to the record is short.\n- With an explicit workspace allow of `evidence/`, the model's tools could read an old record. That follows `requirements.configuration.evidence_paths` and `requirements.authoring.mandatory_inputs`, not this requirement.\n- Neither affects the judgment.",
   "inputs": [
     {
       "requirements": "requirements.ci.authoring_inputs",
@@ -49,12 +49,12 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "36deb619e4d6d1e1ec2ae64e7b26678169519fc38ff82e3a7d593fbc8989abae"
+      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
     },
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "6e76d4530e2ab7b3340be9acf20a4aec904dabdaf09041e1fbbcd441575f11e0"
+      "hash": "7f44b1eb1961d9f7468b69882817455cf4f07a7a354c6a9fea1220329a992f86"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -89,7 +89,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "5f8b1ef1810f66594db0b41d13c0db15986ecf4604139826afba4d22012df1d1"
+      "hash": "f8340e9a96b5dad7f636316ee5cc43e0ba60b76f46521d79b3bdc6e253306d04"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -133,13 +133,18 @@
     },
     {
       "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
+      "hash": "1549d324033cfafeb2ecb0b02619327b33856c95477886a13a0185a8000a47da"
+    },
+    {
+      "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
       "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
-      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
+      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
+      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -187,21 +192,6 @@
       "hash": "a9830dc8abda6a1630b308950385476f56d0ff614c9da33c26053edf3b8290f9"
     },
     {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "mod[tests]",
-      "hash": "4b95b1fdb8f14bedc0e602c763ba8fd2aa1ca5208eaa7f60a6fa01693c608d1d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "6e0d1bcbefe2f48a1562a260a5dd81fc25e54da33c79bd059f85f76df0b5db1e"
-    },
-    {
       "file": "src/index.rs",
       "item": "enum[EvidenceState]",
       "hash": "6a845f420dc533ad3dcb656d3188d9eb1bc4ad724b5a843930aae6967a5697a3"
@@ -232,54 +222,29 @@
       "hash": "d55ef7a30f775cb673eed234ff863550ce9e090a37e6eba509b7ff53085577ab"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[walk]",
-      "hash": "05a24bc13c26a59d9e0ced08b8dd9cc1b36d228cab3dd1f8a25818f02a24d31e"
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "fn[assign_comments]",
-      "hash": "9c002ba5be7ea1e4ef5a8e13cd64abb4f579be8bf8cd487f591a07dbbdfa0fa7"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[finds_uncited_functions_without_using_enclosing_or_string_references]",
-      "hash": "b707b4cf148516e3b47217e474889a688002037b2f3647cd7896c8a24414fad4"
+      "file": "src/authoring/batch.rs",
+      "item": "fn[write_record]",
+      "hash": "b3b6686669040f0112a6ea09a74591eea0fd401fee4ea1ffcc59c3a7a517916d"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "",
-      "hash": "f70a1891074f2ee2f6b56456012785d3a3be9f41784f2270695a074db4f6577f"
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
+      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "struct[AuthoringOutcome]",
-      "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[PendingAssessment]/fn[persisted]",
-      "hash": "b9906cda4e627566dda223ca74d59cc10caa20f8fe34d0862945adba72069d1a"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "enum[EvidenceOutput]",
-      "hash": "cab30597e013082ecb5998ce9a0870adf314fe31f1abc4a3df1df7da41516fde"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[author_evidence]",
-      "hash": "f6bba8aa9a5bb04e6b600c81cdb9ff1f13f7a7044b0605bcc8e12867dbaef5ca"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[author_evidence_with_output]",
-      "hash": "6a462d7a3ecd5ded2c069ff64b0748c9cea3e07c6ba401e96764380d12991119"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "79eec9a94a940b053e0424d9dbed70e95173f7897668dba69990894b1a610ae6"
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[generated_evidence_references_are_omitted_by_default]",
+      "hash": "ea1f47438ed79131e5835a50a8dbb99ce9a857b91958a6629036e6bf78fd3687"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -287,9 +252,19 @@
       "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[initial_prompt]",
-      "hash": "bfe100b8b43cf49efd6375d462d16f5ec28e447db4d13e7c20be01d72ea07fc5"
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
+      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[start]",
+      "hash": "cd20e8dedb70eb0dcd2819c9047ae13cd38bce7f08b9f3f1f7959bb1a9a165cf"
     }
   ]
 }

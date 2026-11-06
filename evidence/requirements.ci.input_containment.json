@@ -1,7 +1,7 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** I found no gaps that need a FIXME.\n\n**Implementation**\n- `resolve_evidence_file` (src/authoring/access.rs:421) is the single gate for evidence inputs. It canonicalizes the root. `resolve` returns both the requested location (canonical parent plus final name) and the fully resolved symlink target.\n- It calls `PathPolicy::check_disallow` on both the requested path and the target, and also checks every ancestor location, so a symlink cannot hide a disallowed ancestor.\n- It then requires that the requested path and the target both lie under the root. Otherwise it accepts them only if `policy.allowed` matches (workspace `allow`) or both fall inside a discovered Cargo generated-output directory (`generated_roots`).\n- Failures are reported as errors:\n  - A missing file gives \"cannot open …\" from `resolve`.\n  - A path outside the root gives \"resolves outside the repository …\".\n  - A disallowed path gives \"disallowed by habeas.toml rule …\".\n  - A non-file gives \"is not a project file\".\n  - An unreadable file gives \"cannot read …\" from `read_project_file`.\n- The check does not depend on Git tracking.\n- `generated_roots` only runs `cargo metadata --offline --locked --no-deps` and reads existing `root-output` records. It never runs a build. Disallow is checked before the generated-root exemption, so disallow wins.\n- All input kinds go through this gate:\n  - Outline inputs: `OutlineCache::parse`, then `read_project_file`, then `check_project_file`, then `resolve_evidence_file`.\n  - Definition inputs and requirements inputs: `InputSelector::resolve` calls `check_project_file` on each declaring file.\n  - `validate_input`, `validate_outline_input` and `validate_resolved_input` collect the resulting errors.\n- The requirement says \"same policy\" for symlink targets, and the target checks above do that.\n\n**Tests**\n- `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` covers an internal symlink (valid), a symlink to a sibling directory sharing the root's prefix (rejected), and containment.\n- `unreadable_and_missing_inputs_are_reported` covers missing and unreadable files.\n- `definition_and_requirements_inputs_obey_containment_for_declaring_files` covers disallow applied to definition and requirements inputs.\n- `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` covers an external file that is rejected without `allow`, accepted with it, flagged stale when it changes, and rejected again when disallowed.\n- `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources` covers disallowed ancestors, symlinks, and `..` traversal.\n- `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` covers a discovered external Cargo output directory: it is accepted, stale content is detected, and disallow overrides it. It also asserts the target directory is never created, so no build ran.\n- Unit tests in access.rs cover allow-over-default, disallow-wins, alias targets, and symlink-before-`..` resolution.\n- `tests/commands.rs` covers `status` and `add-input` against disallow and external allow rules.\n\n**Marking**\n- `PathPolicy::allowed`, `PathPolicy::check_disallow` and `generated_roots` carry `{impl}` for `evidence_paths` or `generated_inputs`, not for `input_containment`. This requirement cites those two requirements for exactly those behaviours, and `resolve_evidence_file` carries `{impl}` for all three. I judge this acceptable rather than an unmarked gap.",
+  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers each obligation, it is marked with `{impl}`, and the tests cover the main boundaries and failure cases.\n\n**Implementation**\n- **Single choke point.** Every evidence input goes through `check_project_file` in `src/inputs.rs`, which calls `resolve_evidence_file` in `src/authoring/access.rs`.\n  - Outline inputs reach it through `OutlineCache::parse` and `read_project_file`.\n  - Definition and requirements inputs reach it through `check_project_file` on each declaring file in `InputSelector::resolve`. This covers the \"file resolved from its selector\" case.\n  - `validate_input`, `validate_outline_input` and `validate_resolved_input` in `src/evidence.rs` turn each failure into a labelled error.\n- **Containment and symlinks.** `resolve_evidence_file` canonicalizes the root. It resolves both the requested location (`requested_location`) and the symlink target (`resolve`). If either lies outside the root, it requires an explicit workspace allow or a discovered Cargo output directory. The Cargo exception requires both the requested path and the target to be inside that directory.\n- **Disallow.** `PathPolicy::check_disallow` runs first and is checked against the requested path, its resolved ancestors and the symlink target. Disallow therefore wins over allow and over generated-output permission, and a disallowed ancestor cannot redirect a read to an allowed target.\n- **Missing and unreadable files.** A missing file gives \"cannot open …\" from `resolve`. An unreadable one gives \"cannot read …\" from `read_project_file`. A non-file gives \"is not a project file\". Disallowed files report \"disallowed by habeas.toml rule …\".\n- **No Git or build.** Validation does not consult the Git index.\n  - `generated_roots` only runs `cargo metadata --offline --locked --no-deps` and reads existing `root-output` records. It does not run a build.\n  - It tolerates failures by returning an empty list.\n  - It is marked as an implementation of `generated_inputs`, which the requirement cites.\n- **Marking.** The functions that do this work carry `{impl}` for `requirements.ci.input_containment`: `requested_location`, `normalize`, `resolve`, `resolve_evidence_file`, `check_project_file`, `read_project_file`, `OutlineCache::parse` and `InputSelector::resolve`, plus the evidence validators. I found no unmarked containment code.\n- **Extra behaviour.** The Git-tracking and credential logic in `SourceAccess::path` applies to authoring reads, not to validation. Other requirements (`source_tools`, `read_denial`, `credentials`) cover it, so it is not extra behaviour under this requirement.\n\n**Tests**\n- `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix`: an in-root symlink is accepted. A symlink to a sibling directory with the same name prefix is rejected with \"resolves outside the repository\".\n- `unreadable_and_missing_inputs_are_reported`: missing files report \"cannot open\", and mode-000 files report \"cannot read\".\n- `definition_and_requirements_inputs_obey_containment_for_declaring_files`: a disallow rule on the declaring files of definition and requirements inputs yields \"disallowed\" errors.\n- `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`: an external path is rejected without an allow rule and accepted with one. It still gets staleness checks, and a disallow rule overrides the allow.\n- `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`: a disallowed ancestor symlink cannot reach an allowed target, including through `..`.\n- `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`: an external Cargo build output is accepted without any allow rule, is subject to freshness checks, and is rejected by disallow. The test also asserts that the target directory is never created, so no build ran.\n- Unit tests in `access.rs` (allow versus disallow with alias targets, symlink-before-`..` handling, `resolve_evidence_file` calls).\n- Command tests: `status_applies_workspace_disallow_to_existing_evidence` and `add_input_external_sources_respect_allow_and_disallow`.\n\nThere are no acknowledged gaps or FIXMEs.",
   "inputs": [
     {
       "requirements": "requirements.ci.input_containment",
@@ -25,6 +25,11 @@
         "`disallow` MUST be arrays of nonempty literal paths, each naming a file or a",
         "directory subtree. Relative paths MUST resolve from the selected `habeas.toml`",
         "directory; absolute paths MUST be supported. These paths are not glob patterns.",
+        "An omitted `allow` or `disallow` MUST mean an empty array, and an absent",
+        "`[evidence]` table MUST mean both are empty, so only the default source-access",
+        "rules apply. No operation requires the section. The table has no user-file",
+        "counterpart, and these rules have no invocation options. This section refines",
+        "{impl}`requirements.configuration.feature_sections` for the evidence feature.",
         "",
         "For authoring reads, a matching disallow MUST reject the path; otherwise a",
         "matching allow MUST permit it; otherwise the default source-access rules MUST",
@@ -250,7 +255,37 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]",
-      "hash": "8237cdecabc4cc74e98cf079bf320f20c058cdeef6996777ad501c8d39f8e1c3"
+      "hash": "ecac5f53614daa737173885275e4613df5e9d31bb6352e66d7a0953c05dde898"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[matches_rule]",
+      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::fmt::Display]",
+      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::error::Error]",
+      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
     },
     {
       "file": "src/authoring/access.rs",

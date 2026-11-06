@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request. There MUST be no retry-attempt limit;\ninterruption MUST cancel both the wait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
-  "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.authoring.provider_backoff`. The implementation is marked and covers each obligation, and the tests exercise the main points in the design space.\n\n**Implementation**\n\n- **Transient classification** (`ProviderBackoff::next_delay`, `src/authoring/providers.rs`):\n  - HTTP 429, 500, 502, 503 and 504 are transient.\n  - Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException` are transient when no HTTP status of 400 or above rules them out.\n  - `io::ErrorKind::TimedOut` is transient.\n  - Other 4xx statuses (400, 403) and 501 are permanent.\n  - Errors that carry no `ProviderError` return `None`, so a message that merely mentions tokens never triggers a retry.\n  - `provider_failure` wraps Rig's `ProviderError` unchanged so status, code and headers survive.\n- **Ten-minute timeout** (`assess`, `src/authoring/mod.rs`): `REQUEST_TIMEOUT` is 600 s and wraps each `provider.complete` call in `tokio::time::timeout`. A timeout becomes a `TimedOut` error, which is retried.\n- **Backoff window and jitter:**\n  - The window starts at 1 s, doubles per consecutive transient failure, and is capped at 60 s.\n  - Each delay is drawn uniformly from `window/2..=window`.\n  - `Retry-After`, in seconds or HTTP-date form, is a floor (`jittered.max(minimum)`) and can exceed the window.\n  - A successful response resets the backoff (`backoff = ProviderBackoff::default()`).\n  - There is no attempt limit.\n- **Same request retried:** the loop reuses `request.clone()`, so the prompt, history and tools are unchanged. Tool calls run only after a successful response, so completed tool calls are never repeated and the assessment is not restarted.\n- **Pending inputs:** `sources.record_inputs(&pending)` runs only after a successful response.\n- **Usage recording:** every attempt calls `usage.begin_request` and `usage.end_request`, including failed and timed-out ones.\n- **Hidden SDK retries:** `bedrock_sdk_config` sets `RetryConfig::disabled()`. The Ollama path uses Rig's reqwest transport, and a code comment says it has no retry layer.\n- **Interruption:** `prepare_assessment` and `author_evidence_with_output` race the assessment against cancellation or Ctrl-C in a `select!`. Dropping the future cancels both the sleep and any further retries.\n- **No terminal report during recovery:** transient errors only `continue` the loop, so they are not reported as judgments or terminal errors.\n\n**Tests**\n\n- `src/authoring/providers.rs`:\n  - A classification matrix covers transient and permanent statuses and codes, including 400 with `ThrottlingException`, 501, a plain \"Too many tokens; HTTP 429\" message, and a timeout.\n  - A 100-attempt run checks the window growth, the 60 s cap, the jitter bounds and that there is no attempt limit.\n  - `Retry-After` is tested in seconds, future-date, past-date and invalid forms, and honored at 90 s even though that exceeds the window.\n  - `bedrock_sdk_retries_are_disabled` asserts one max attempt.\n  - `rig_failures_keep_their_provider_report_for_backoff` checks the wrapping.\n- `src/authoring/mod.rs`, using paused tokio time:\n  - Eight 429 failures followed by a success send identical requests, record nine usage entries, and record inputs only after success.\n  - A permanent 400 returns immediately after one request with no wait.\n  - Cancelling during the backoff leaves exactly one request and no recorded inputs.\n  - A hanging provider is abandoned at 600 s and retried.\n  - `success_resets_backoff_and_retries_keep_history_without_repeating_tools` checks that the window resets after a success, that retries after a tool turn resend the same history, that the tool ran once, and that its inputs were recorded only after the retried request succeeded.\n\n**Remaining observations (not gaps):**\n\n- Passing `Retry-After` headers through Bedrock is not separately tested, but the requirement only asks for it \"when available\".\n- No FIXME markers were found.",
+  "determination": false,
+  "rationale": "## Judgment\n\nThe backoff is mostly implemented and well tested. One classification rule contradicts the requirement text and is locked in by a test, so I judge the requirement not fully satisfied.\n\n## What is implemented correctly\n\n- **Retry loop** (`assess`, src/authoring/mod.rs):\n  - It resends the same `request` clone after a transient failure.\n  - The prompt, history, tools and pending inputs are therefore retained.\n  - The assessment is not restarted and no tool call is re-run.\n  - `sources.record_inputs(&pending)` runs only after a successful response.\n  - There is no retry cap.\n  - Each attempt is bracketed by `usage.begin_request` / `end_request`, so every attempt is recorded.\n  - Transient failures `continue` the loop rather than returning an error.\n- **Ten-minute timeout**: `REQUEST_TIMEOUT` (600 s) wraps `provider.complete` in `tokio::time::timeout`. An unanswered request is abandoned and turned into a `TimedOut` error, which is retried.\n- **Backoff schedule** (`ProviderBackoff`, src/authoring/providers.rs):\n  - The window starts at 1 s and doubles to a cap of 60 s.\n  - Each delay is drawn uniformly from window/2 to window.\n  - `Retry-After` is parsed in seconds or HTTP-date form and applied as a minimum via `jittered.max(minimum)`.\n  - `assess` creates a fresh `ProviderBackoff` after each success, which resets the window.\n- **Hidden SDK retries**: `bedrock_sdk_config` uses `RetryConfig::disabled()`, and `bedrock_sdk_retries_are_disabled` checks that `max_attempts()` is 1.\n- **Message text is ignored**: errors that are not `ProviderError` and not `TimedOut` return `None`, so a message that merely says \"Too many tokens\" does not trigger a retry.\n- **Interruption**: the retry loop is an ordinary future, so dropping it cancels both the sleep and any further retries.\n  - `ctrl_c` in `author_evidence_with_output` and `prepare_assessment` drops the future.\n  - The batch cancellation channel does the same.\n  - `cancelling_during_backoff_prevents_another_request` tests this by dropping the future.\n\n## Gap: classification does not follow the requirement\n\nThe requirement says transient failures include \"a Bedrock `ThrottlingException`\" and \"a Bedrock `ServiceUnavailableException`, `InternalServerException`, or `ModelNotReadyException`\".\n\n`next_delay` first checks the HTTP status:\n\n```rust\nSome(429 | 500 | 502 | 503 | 504) => true,\nSome(status) if status >= 400 => false,\n_ => matches!(code, ...)\n```\n\n- Any other 4xx/5xx status therefore overrides the Bedrock exception code.\n- A `ThrottlingException` that arrives with HTTP 400 is treated as permanent. Many AWS JSON services report throttling that way.\n- A `ServiceUnavailableException` or `InternalServerException` with an unlisted status such as 501 is also treated as permanent.\n- The test `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors` asserts this directly with `(Some(400), Some(\"ThrottlingException\"))` and `(Some(501), None)`.\n- The requirement does not specify this \"status wins over code\" behavior, and it excludes cases the requirement lists as transient.\n- No FIXME or other acknowledgement of the gap appears in the source or tests.\n\n## Other points\n\n- Rig's real Bedrock and Ollama error mapping, meaning that the status, code and `Retry-After` header reach `ProviderError`, is asserted in comments. Tests only use hand-built `ProviderError` values, so the end-to-end mapping is unverified. This is secondary to the gap above.\n- `ProviderBackoff` carries only a `{cite}` on its struct. The impl is marked on `default`, `next_delay`, `retry_after`, `provider_failure`, `REQUEST_TIMEOUT` and `assess`, which is adequate.\n\n## Tests\n\nCoverage is good:\n- unchanged resend and per-attempt usage recording over nine attempts;\n- the permanent 400 error returns immediately;\n- cancellation during backoff;\n- the ten-minute timeout abandon and retry;\n- backoff reset after a successful tool turn, with history retained and the tool run only once;\n- the jitter range and the 60 s ceiling over 100 attempts;\n- `Retry-After` in seconds, future date, past date and invalid form;\n- Bedrock SDK retries disabled.\n\nNo test covers a transient Bedrock code arriving with a non-listed 4xx or 5xx status. The existing test asserts the opposite of the requirement.\n\nBecause the implementation deviates from the stated transient-failure rule, the result is false.",
   "inputs": [
     {
       "requirements": "requirements.authoring.provider_backoff",
@@ -97,6 +97,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[ThrottledProvider]",
+      "hash": "b939d2cff6e7f5ca0ee329226794fe690cc625ffd0a9e622a272a25d9a06b546"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]/fn[complete]",
       "hash": "4f289871c9861ae8a0cb2312b2afc8d441a0a9e290ea3e966395ee81879c59b7"
     },
@@ -122,6 +127,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[HangingProvider]",
+      "hash": "607bfb6be5ecfce2b13f28ae13283c4162a0fa6145c9d23a4ab99a000aaf2704"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/impl[HangingProvider/CompletionProvider]/fn[complete]",
       "hash": "1662d498ab7bd083412cf939033fddfeaf5ae46ca665c6121e30a8e27f785194"
     },
@@ -129,6 +139,11 @@
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]",
       "hash": "2af79a330e536398fbf1e0d2c982568cde39eaa253e84e26b029f46bc9de9922"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[ThrottledToolProvider]",
+      "hash": "7d7478f532f8ef60c3da4e501175059040b52799370a347ce6cdfbe7b8d0c7d2"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -201,44 +216,54 @@
       "hash": "22658c5f75ef471aeb85fde0e1bd3c534d087f262d44451d17ed4b48586e9ec2"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all_with_options]",
+      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@7d949f3dd9b8",
-      "hash": "7d949f3dd9b8f004dc89a84c71fe59a62b5f5ca0e84320f27245e882f1d23189"
+      "file": "src/authoring/batch.rs",
+      "item": "fn[observe_interrupt]",
+      "hash": "2d95148db1e514695beed74c766f87d1d0b3e3b4bbb3d160271768dd8b53f062"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@835bc5929e6d",
-      "hash": "835bc5929e6d97de26c368f72d95325f6d7399dad7d665fdcdace0d2d19d0a71"
+      "file": "src/authoring/mod.rs",
+      "item": "struct[AuthoringOutcome]",
+      "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@36004768e609",
-      "hash": "36004768e609c764cdec317e08fe2e411f75a96c197839308024bff4d7c951a8"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_output]",
+      "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@fafb3a0aec25",
-      "hash": "fafb3a0aec25cddf8ec4d346f92f03126df2fce1b33c779de5ad2aa5866794b4"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@bd1b5107617c",
-      "hash": "bd1b5107617c0609840c71d2ae9c53a0c9e99ea8d688d0bc0518063a8cf292a2"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]",
+      "hash": "c9a27e858bb5439c186bc61d4ee26fbd809137f95ebb5a3016e51c3c46e1256d"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4e5e9454aa1a",
-      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]",
+      "hash": "04043e25feb9635df0fe5fbadfcfecc9b84c292bab8c977f7c8be9769cca86b8"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4b4262645144",
-      "hash": "4b426264514446318af5d7118fad8cce9bdae44294b7d3e84d4ce1d90aab12af"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[initial_prompt_carries_the_review_criteria]",
+      "hash": "f366eda0e1082480f251e43afbd468df89c89b0f4d77cc2b432a3b583f31f549"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[HangingProvider/CompletionProvider]",
+      "hash": "ce3bab49ef2a1d3b2e43aa9a4a6b13167c3bf583fce6818ee415277480da62fd"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledToolProvider/CompletionProvider]",
+      "hash": "339d36725d9357b6845cc2c685c102cf5163b77a288559940d643e161e3d1662"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -262,83 +287,31 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "struct[RigProvider]",
-      "hash": "514a07edf3e620d7fc3b2e39eaaad9e7a3dc3240ca2d0d889b1822a07da4c6a0"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "7a3013d0ca73f65f6499e84a0566193f302e57376276b30d62f03c6c8f870d2d"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "df8166a440166e00a72e0c5e8f4971e3b597d6098ec0e5d342859f53b28c4ac9"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[normalize_bedrock_client_calls]",
-      "hash": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[apply_bedrock_options]",
-      "hash": "dad4f93bc7be7a135e932670c9a35592a5244c07057a70e8c2020b36df1345dd"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[option_type]",
-      "hash": "0654c240bf76e5d922abbfbd0c44b1b149914a0687d7d718899237175aa89b82"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]",
-      "hash": "c800f0ce51e4bf22e32cb403128218ce3e1861b3c97bb89e6907ffd7d1ce7b01"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all_with_options]",
-      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[cancel_on_error]",
-      "hash": "724b85616cad80ea4228094ada80d8e3eb6ece526ae6ac2c8d48cf876f87d782"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[observe_interrupt]",
-      "hash": "2d95148db1e514695beed74c766f87d1d0b3e3b4bbb3d160271768dd8b53f062"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "struct[AuthoringOutcome]",
-      "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[PendingAssessment]/fn[failed]",
-      "hash": "3f4ce9f8ba6a11a7051dc44262d6874b939929cd29cc397252ab2ccf435c20c7"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[author_evidence_with_output]",
-      "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[finish]",
-      "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
-    },
-    {
-      "file": "src/authoring/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
       "hash": "b42c72a2c67dff0921cbf94b97faec5fd6f78f21b9addf21946abc0dc6c901e6"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/use@944727b459e2",
+      "hash": "944727b459e2ea08a7586f8fcc5fdab323588c75dd91da10f0d0655cabae4082"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]",
+      "hash": "080fa2531bac2321784665f9393321568885c4f793c5d4c2da706b33849dc89b"
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     }
   ]
 }
