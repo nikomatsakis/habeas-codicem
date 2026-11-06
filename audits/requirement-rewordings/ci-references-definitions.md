@@ -27,6 +27,29 @@ Prompted by: `evidence/requirements.references.targets.json`, gap 3 ("The
 `.git`, `target`, `book` and `evidence` exclusions apply only at the project
 root ... The requirement does not state this either way.").
 
+## requirements.references.outlines
+
+Old:
+
+> Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML sources with pinned tree-sitter grammars, selected by file extension.
+
+New:
+
+> Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML sources with pinned tree-sitter grammars, selected by file extension compared case-insensitively. A source with any syntax error MUST fail to parse, reporting the line of its first error.
+
+Reason: `profile_for_path` compares extensions case-insensitively, and
+`check_errors` rejects any tree containing an error node and reports the first
+error's line. Both are intended, but no definition specified them. New tests
+cover both. In the same change, the line-query helpers the reviewer flagged
+(`declared_on_line`, `node_lines`, `innermost_at_line`, `display_name`) were
+marked with the requirements that specify their behaviour (`cli.add_input_item`,
+`ci.outline_inputs`, `outline_comments`, `authoring.outline_tool`,
+`rust_item_coverage`). `check_errors` was also marked for `ci.outline_inputs`.
+
+Prompted by: the second reassessment of `evidence/requirements.references.outlines.json`,
+gaps 1 and 2. This record was not reassessed again: it used its two
+reassessments, so its current evidence is false and stale.
+
 ## requirements.references.rust_item_coverage
 
 Old (first sentence):

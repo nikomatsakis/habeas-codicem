@@ -77,7 +77,9 @@ spelling MUST be documented.
 
 :::{req} outlines
 Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML
-sources with pinned tree-sitter grammars, selected by file extension. Every
+sources with pinned tree-sitter grammars, selected by file extension compared
+case-insensitively. A source with any syntax error MUST fail to parse, reporting
+the line of its first error. Every
 other text file MUST use a plain-text profile in which each line that is not
 blank is an anonymous outline node of kind `line`. Each supported language MUST
 have an outline profile that maps grammar node kinds to short outline kind names
