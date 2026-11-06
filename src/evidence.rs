@@ -241,6 +241,9 @@ pub(crate) fn inspect_repository_with_progress(
     });
 
     // {impl}`requirements.ci.coverage`
+    // Missing evidence is reported as a validation error; inspection never
+    // starts authoring.
+    // {impl}`requirements.authoring.deterministic_validation`
     for (name, definition) in &definitions {
         if definition.kind != DefinitionKind::Term && !present.contains(name) {
             errors.push(format!(
@@ -251,7 +254,12 @@ pub(crate) fn inspect_repository_with_progress(
         }
     }
 
+    // Unreadable reference sources are discovery failures: a batch must not
+    // treat a partial scan as complete.
+    // {impl}`requirements.authoring.batch`
+    let scanned = errors.len();
     let references = collect_references_with_progress(&root, &mut errors, &mut progress);
+    discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_references(
         &root,
         &definitions,
@@ -261,16 +269,12 @@ pub(crate) fn inspect_repository_with_progress(
         &mut progress,
     );
     // {impl}`requirements.references.rust_item_coverage`
-    progress(InspectionProgress {
-        stage: "Rust citations",
-        completed: 0,
-        total: None,
-    });
     crate::rust_coverage::validate_rust_functions(
         &root,
         &definitions,
         &mut errors,
         &mut discovery_errors,
+        &mut progress,
     );
 
     let examples = definitions

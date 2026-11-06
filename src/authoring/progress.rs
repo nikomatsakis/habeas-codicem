@@ -277,21 +277,21 @@ mod tests {
             errors: 0,
         };
         progress.inspect(InspectionProgress {
-            stage: "Rust sidecar coverage",
+            stage: "Rust function coverage",
             completed: 0,
             total: None,
         });
         let discovery = std::mem::take(&mut *terminal.0.lock().unwrap());
-        assert!(discovery.contains("Phase: Rust sidecar coverage"));
+        assert!(discovery.contains("Phase: Rust function coverage"));
         assert!(!discovery.contains('%'), "{discovery}");
 
         progress.inspect(InspectionProgress {
-            stage: "Rust sidecar coverage",
+            stage: "Rust function coverage",
             completed: 2,
             total: Some(4),
         });
         let counted = std::mem::take(&mut *terminal.0.lock().unwrap());
-        assert!(counted.contains("Phase: Rust sidecar coverage"));
+        assert!(counted.contains("Phase: Rust function coverage"));
         assert!(counted.contains("50% 2/4"), "{counted}");
     }
 

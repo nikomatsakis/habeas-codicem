@@ -607,6 +607,206 @@ fn false_is_a_completed_assessment() {
     );
 }
 
+// {test}`requirements.authoring.negative_assessment`
+#[test]
+fn negative_assessment_records_additional_reads_and_fails_validation() {
+    let rationale =
+        "src/lib.rs implements readiness, but extra.txt line 6 shows the needle case is unhandled.";
+    let server = Server::start(vec![
+        reply(vec![call(
+            "read",
+            "habeas",
+            json!({"file":"extra.txt","line_start":6,"line_end":6}),
+        )]),
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination":false,"rationale":rationale}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2, "the model made one additional read");
+
+    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    assert_eq!(evidence["determination"], false);
+    assert_eq!(evidence["rationale"], rationale);
+    let inputs = evidence["inputs"].as_array().unwrap();
+    // Every supplied input is saved: the mandatory sources and the additional read.
+    assert!(
+        inputs.iter().any(|input| input["file"] == "src/lib.rs"),
+        "mandatory source input missing from {inputs:?}"
+    );
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input["definition"] == "terms.readiness")
+    );
+    for line in habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 6, 6).unwrap() {
+        assert!(inputs.contains(&line), "additional read {line} missing");
+    }
+    assert_eq!(fixture.usage()["outcome"], "completed");
+    assert_eq!(fixture.usage()["determination"], "false");
+
+    // Ordinary evidence validation reports the written false determination.
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(
+        report.errors.iter().any(|error| error.contains(&format!(
+            "evidence/{SUBJECT}.json: determination is false: {rationale}"
+        ))),
+        "{:?}",
+        report.errors
+    );
+}
+
+// {test}`requirements.authoring.initial_prompt`
+#[test]
+fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
+    let chapter = include_str!("../md/requirements/authoring.md");
+    let start = chapter
+        .find("Bring your expert judgment to the task")
+        .unwrap();
+    let template = chapter[start..].split("\n```").next().unwrap();
+    for (subject, kind) in [
+        (SUBJECT, "requirement"),
+        ("requirements.ready_case", "example"),
+    ] {
+        let server = Server::start(vec![reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination":true,"rationale":"covered"}),
+        )])]);
+        let fixture = Fixture::new(&server.endpoint);
+        fs::write(
+            fixture.project.join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\n{REQUIREMENT}\n:::\n\n:::{{example}} ready_case\nCalling ready succeeds. {{cite}}`requirements.ready`\n:::\n"
+            ),
+        )
+        .unwrap();
+        let output = fixture.run(&["author", subject]);
+        assert!(output.status.success(), "{output:?}");
+        let requests = server.finish();
+        let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
+
+        let (before, after) = template.split_once("{{mandatory_inputs}}").unwrap();
+        let before = before
+            .replace("{{subject_kind}}", kind)
+            .replace("{{subject_name}}", subject);
+        assert!(
+            before.contains(&format!("\nSubject: {kind} {subject}\n")),
+            "{before}"
+        );
+        assert!(!before.contains("{{") && !after.contains("{{"));
+        // Apart from the substitutions, the prompt is the template as written.
+        assert!(prompt.starts_with(&before), "{prompt}");
+        assert!(prompt.ends_with(after), "{prompt}");
+        let rendered = &prompt[before.len()..prompt.len() - after.len()];
+
+        // The mandatory inputs are a JSON array of evidence inputs.
+        let inputs: Vec<Value> = serde_json::from_str(rendered).unwrap();
+        assert!(!inputs.is_empty());
+        for input in &inputs {
+            let forms = [
+                ("file", &["item", "hash", "text"][..]),
+                ("requirements", &["matches", "text"][..]),
+                ("definition", &["text"][..]),
+            ];
+            let matching = forms
+                .iter()
+                .filter(|(key, _)| input.get(key).is_some())
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "one evidence-input form: {input}");
+            for field in matching[0].1 {
+                assert!(input.get(field).is_some(), "{input} lacks {field}");
+            }
+        }
+        let defined = |name: &str| {
+            inputs
+                .iter()
+                .any(|input| input["definition"] == name || input["requirements"] == name)
+        };
+        assert!(defined(subject), "{inputs:?}");
+        if kind == "example" {
+            assert!(defined(SUBJECT), "cited requirement supplied: {inputs:?}");
+        } else {
+            assert!(defined("terms.readiness"), "{inputs:?}");
+        }
+    }
+}
+
+// {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.batch`
+#[test]
+fn author_rejects_unknown_subjects_and_conflicting_targets() {
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    let output = fixture.run(&["author", "requirements.absent"]);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requirements.absent"), "{stderr}");
+    for args in [
+        ["author", SUBJECT, "--all"],
+        ["author", "--all", "--stdout"],
+        ["author-evidence", SUBJECT, "--all"],
+    ] {
+        let output = fixture.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("cannot be used with"), "{stderr}");
+    }
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+}
+
+// {test}`requirements.authoring.batch`
+#[test]
+fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
+    for skill in [
+        include_str!("../assets/skills/habeas-requirements/SKILL.md"),
+        include_str!("../assets/skills/habeas-evidence/SKILL.md"),
+        include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
+    ] {
+        assert!(skill.contains("habeas author --all"), "{skill}");
+        assert!(skill.contains("must not compose"), "{skill}");
+    }
+}
+
+// {test}`requirements.authoring.usage_storage`
+#[test]
+fn usage_state_inside_the_project_is_refused_before_creating_it() {
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    let inside = fixture.project.join("state");
+    for args in [vec!["author", SUBJECT], vec!["author", SUBJECT, "--stdout"]] {
+        let output = fixture
+            .command()
+            .env("XDG_STATE_HOME", &inside)
+            .env("LOCALAPPDATA", &inside)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("authoring usage state must be outside the project repository"),
+            "{stderr}"
+        );
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(!inside.exists(), "state directory created inside project");
+    }
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+}
+
 // {test}`requirements.authoring.reporting`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.persistence`
@@ -818,6 +1018,81 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
     assert_eq!(
         fs::read_to_string(&fixture.evidence).unwrap(),
         fixture.original
+    );
+}
+
+// {test}`requirements.authoring.deterministic_validation`
+#[test]
+fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
+    let changed = format!(":::{{req}} ready\n{REQUIREMENT} Changed.\n:::\n");
+    for (case, expected) in [("missing", "missing for requirement"), ("stale", "changed")] {
+        if case == "missing" {
+            fs::remove_file(&fixture.evidence).unwrap();
+        } else {
+            fs::write(&fixture.evidence, &fixture.original).unwrap();
+            fs::write(fixture.project.join("md/requirements.md"), &changed).unwrap();
+        }
+        let report = habeas::validate_repository(&fixture.project).unwrap();
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains(SUBJECT) && error.contains(expected)),
+            "{case}: {:?}",
+            report.errors
+        );
+        // Status and book rendering need no authoring credentials.
+        let status = fixture
+            .command()
+            .env_remove("HABEAS_TEST_MODEL_KEY")
+            .args(["status", "--all"])
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{case}: {status:?}");
+        assert!(
+            String::from_utf8_lossy(&status.stdout).contains(SUBJECT),
+            "{case}: {status:?}"
+        );
+
+        let mut book = mdbook_preprocessor::book::Book::new();
+        book.push_item(mdbook_preprocessor::book::Chapter::new(
+            "Requirements",
+            fs::read_to_string(fixture.project.join("md/requirements.md")).unwrap(),
+            "requirements.md",
+            Vec::new(),
+        ));
+        let context = mdbook_preprocessor::PreprocessorContext::new(
+            fixture.project.clone(),
+            mdbook_preprocessor::config::Config::default(),
+            "html".to_owned(),
+        );
+        let mut render = fixture
+            .command()
+            .env_remove("HABEAS_TEST_MODEL_KEY")
+            .arg("mdbook")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        serde_json::to_writer(render.stdin.take().unwrap(), &(&context, &book)).unwrap();
+        let rendered = render.wait_with_output().unwrap();
+        assert!(rendered.status.success(), "{case}: {rendered:?}");
+        let rendered: Value = serde_json::from_slice(&rendered.stdout).unwrap();
+        assert!(rendered.to_string().contains(SUBJECT), "{case}");
+    }
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "validation, status, or rendering contacted the provider"
+    );
+    assert!(!fixture.state.exists(), "no authoring usage was recorded");
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original,
+        "validation did not author evidence"
     );
 }
 

@@ -38,6 +38,9 @@ enum Command {
         /// A full requirement or example name, or a definition glob.
         selection: String,
     },
+    // The single-subject syntax, its alias, and the `--all` exclusions.
+    // {impl}`requirements.authoring.invocation`
+    // {impl}`requirements.authoring.batch`
     #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
     Author {
         subject: Option<String>,
@@ -91,6 +94,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // {impl}`requirements.configuration.workspace_location`
     // {impl}`requirements.configuration.workspace_structure`
     // {impl}`requirements.configuration.loading`
+    // Commands other than `author` load only the evidence settings, so status
+    // and book rendering never need authoring configuration or credentials.
+    // {impl}`requirements.authoring.deterministic_validation`
     if !matches!(
         cli.command,
         Command::Mdbook {

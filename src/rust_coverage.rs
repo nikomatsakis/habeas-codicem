@@ -3,9 +3,12 @@ use std::fs;
 use std::ops::Range;
 use std::path::Path;
 
-use crate::evidence::Declaration;
+use crate::evidence::{Declaration, InspectionProgress};
 use crate::outline::{self, OutlineError};
 use crate::reference_roles;
+
+/// The inspection phase label for Rust function coverage.
+const RUST_COVERAGE_STAGE: &str = "Rust function coverage";
 
 // {impl}`requirements.references.rust_item_coverage`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
@@ -218,16 +221,29 @@ pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path
 }
 
 // {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.authoring.progress`
 pub(crate) fn validate_rust_functions(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
     discovery_errors: &mut Vec<String>,
+    progress: &mut impl FnMut(InspectionProgress),
 ) {
+    progress(InspectionProgress {
+        stage: RUST_COVERAGE_STAGE,
+        completed: 0,
+        total: None,
+    });
     let initial_errors = errors.len();
     let files = rust_files(root, errors);
     discovery_errors.extend(errors[initial_errors..].iter().cloned());
-    for file in files {
+    let total = files.len();
+    for (completed, file) in files.into_iter().enumerate() {
+        progress(InspectionProgress {
+            stage: RUST_COVERAGE_STAGE,
+            completed,
+            total: Some(total),
+        });
         let label = display_path(root, &file);
         let source = match fs::read_to_string(&file) {
             Ok(source) => source,
@@ -256,6 +272,11 @@ pub(crate) fn validate_rust_functions(
             }
         }
     }
+    progress(InspectionProgress {
+        stage: RUST_COVERAGE_STAGE,
+        completed: total,
+        total: Some(total),
+    });
 }
 
 // {impl}`requirements.references.rust_item_coverage`
@@ -455,7 +476,13 @@ fn outer() {
         .unwrap();
 
         let mut errors = Vec::new();
-        validate_rust_functions(project.path(), &definitions(), &mut errors, &mut Vec::new());
+        validate_rust_functions(
+            project.path(),
+            &definitions(),
+            &mut errors,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
         assert_eq!(errors.len(), 3, "{errors:?}");
         assert!(errors.iter().any(|error| {
             error.contains("src/lib.rs:1: function uncited has no requirement or example citation")
@@ -469,6 +496,35 @@ fn outer() {
             errors
                 .iter()
                 .any(|error| error.contains("tests/broken.rs:1: cannot parse Rust source"))
+        );
+    }
+
+    // {test}`requirements.authoring.progress`
+    #[test]
+    fn rust_function_coverage_reports_counted_progress_per_file() {
+        let project = TempDir::new().unwrap();
+        fs::create_dir_all(project.path().join("src")).unwrap();
+        for name in ["a", "b", "c"] {
+            fs::write(project.path().join(format!("src/{name}.rs")), "").unwrap();
+        }
+        let mut updates = Vec::new();
+        validate_rust_functions(
+            project.path(),
+            &definitions(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut |update| updates.push((update.stage, update.completed, update.total)),
+        );
+        let stage = "Rust function coverage";
+        assert_eq!(
+            updates,
+            [
+                (stage, 0, None),
+                (stage, 0, Some(3)),
+                (stage, 1, Some(3)),
+                (stage, 2, Some(3)),
+                (stage, 3, Some(3)),
+            ]
         );
     }
 

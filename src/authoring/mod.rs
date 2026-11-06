@@ -135,13 +135,7 @@ pub async fn author_evidence_with_output(
     output: EvidenceOutput,
 ) -> io::Result<AuthoringOutcome> {
     let root = fs::canonicalize(root)?;
-    let state = config::state_root()?;
-    fs::create_dir_all(&state)?;
-    if fs::canonicalize(&state)?.starts_with(&root) {
-        return Err(io::Error::other(
-            "authoring usage state must be outside the project repository",
-        ));
-    }
+    let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, subject)?;
     usage.record.evidence_output = match output {
         EvidenceOutput::File => "file",
@@ -184,6 +178,37 @@ pub async fn author_evidence_with_output(
     })
 }
 
+/// Resolves the usage state root, refusing a location inside the project
+/// before any state directory is created.
+// {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.configuration.state_location`
+fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
+    let state = config::state_root()?;
+    if resolved_location(&state)?.starts_with(root) {
+        return Err(io::Error::other(format!(
+            "authoring usage state must be outside the project repository: {}",
+            state.display()
+        )));
+    }
+    fs::create_dir_all(&state)?;
+    Ok(state)
+}
+
+/// Resolves symlinks in the nearest existing ancestor of `path`, keeping the
+/// components that do not exist yet.
+// {impl}`requirements.authoring.usage_storage`
+fn resolved_location(path: &Path) -> io::Result<PathBuf> {
+    let path = std::path::absolute(path)?;
+    let existing = path
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .expect("an absolute path has an existing root");
+    let missing = path
+        .strip_prefix(existing)
+        .expect("ancestor is a prefix of its path");
+    Ok(fs::canonicalize(existing)?.join(missing))
+}
+
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
@@ -196,13 +221,7 @@ pub(crate) async fn prepare_assessment(
     mut cancellation: watch::Receiver<Option<&'static str>>,
 ) -> io::Result<PendingAssessment> {
     let root = fs::canonicalize(root)?;
-    let state = config::state_root()?;
-    fs::create_dir_all(&state)?;
-    if fs::canonicalize(&state)?.starts_with(&root) {
-        return Err(io::Error::other(
-            "authoring usage state must be outside the project repository",
-        ));
-    }
+    let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, &subject.label())?;
     let result = tokio::select! {
         biased;

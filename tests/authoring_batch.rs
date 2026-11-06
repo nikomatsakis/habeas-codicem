@@ -822,6 +822,17 @@ fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
             .count(),
         1
     );
+    // The assessment running at the interruption is cancelled without writing.
+    assert!(
+        usage
+            .iter()
+            .any(|run| run["outcome"] == "cancelled" && run["evidence_written"] == false),
+        "{usage:?}"
+    );
+    let written = fs::read_dir(fixture.project.join("evidence"))
+        .unwrap()
+        .count();
+    assert_eq!(written, 1, "only the finished assessment wrote evidence");
 }
 
 // {test}`requirements.authoring.batch`
@@ -1113,4 +1124,31 @@ fn discovery_errors_fail_before_configuration_or_inference() {
         assert!(!fixture.state.exists());
         assert!(!fixture.project.join("evidence").exists());
     }
+}
+
+// {test}`requirements.authoring.batch`
+#[cfg(unix)]
+#[test]
+fn unreadable_reference_sources_fail_the_batch_before_inference() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new("http://127.0.0.1:9", None);
+    let unreadable = fixture.project.join("notes.txt");
+    fs::write(&unreadable, "a reference source\n").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&unreadable).is_ok() {
+        // Permission bits do not restrict this user (for example, root).
+        return;
+    }
+    fs::remove_file(&fixture.config).unwrap();
+    let output = fixture.run(&["author", "--all"]);
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("notes.txt: cannot read reference source"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("no authoring configuration"), "{stderr}");
+    assert!(!fixture.state.exists());
+    assert!(!fixture.project.join("evidence").exists());
 }
