@@ -81,6 +81,7 @@ pub(crate) fn dispatch(
         "references" => references(sources, arguments),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
+    .map_err(super::access::recoverable_os_denial)
     .map_err(super::access::recoverable_outside_request)
 }
 
@@ -989,6 +990,113 @@ mod tests {
         assert!(dispatch(&sources, "list_files", &json!({"path":"outside"})).is_err());
     }
 
+    // {test}`requirements.authoring.read_denial`
+    #[cfg(unix)]
+    #[test]
+    fn operating_system_permission_failures_are_ordinary_read_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = project();
+        fs::create_dir(root.path().join("locked")).unwrap();
+        fs::write(root.path().join("locked.rs"), "fn locked() {}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for path in ["locked", "locked.rs"] {
+            fs::set_permissions(root.path().join(path), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let unreadable = fs::read(root.path().join("locked.rs")).is_err();
+        let results = [
+            dispatch(&sources, "list_files", &json!({"path": "locked"})),
+            dispatch(
+                &sources,
+                "habeas",
+                &json!({"file": "locked.rs", "line_start": 1}),
+            ),
+        ];
+        for path in ["locked", "locked.rs"] {
+            fs::set_permissions(root.path().join(path), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        if !unreadable {
+            // Permission bits do not restrict this user, e.g. root.
+            return;
+        }
+        for result in results {
+            let error = result.err().expect("the read fails");
+            assert_ne!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        }
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    #[test]
+    fn untracked_diagnostics_name_git_add_and_an_allow_rule() {
+        let root = project();
+        fs::write(root.path().join("tracked.txt"), "tracked\n").unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        fs::create_dir(root.path().join("untracked-dir")).unwrap();
+        fs::write(root.path().join("untracked-dir/file.rs"), "fn f() {}\n").unwrap();
+        fs::write(root.path().join("untracked.rs"), "fn g() {}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (name, arguments) in [
+            ("habeas", json!({"file": "untracked.rs", "line_start": 1})),
+            ("list_files", json!({"path": "untracked-dir"})),
+        ] {
+            let error = dispatch(&sources, name, &arguments).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            let message = error.to_string();
+            assert!(message.contains("git add"), "{message}");
+            assert!(message.contains("habeas.toml allow rule"), "{message}");
+        }
+        // The harness neither stages nor permits the files itself.
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        let status = String::from_utf8(status.stdout).unwrap();
+        assert!(status.contains("?? untracked-dir/"), "{status}");
+        assert!(status.contains("?? untracked.rs"), "{status}");
+        assert!(!root.path().join("habeas.toml").exists());
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    #[cfg(unix)]
+    #[test]
+    fn requests_through_symlinks_leaving_the_project_are_denials() {
+        let root = project();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.rs"),
+            root.path().join("outside.rs"),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (name, arguments) in [
+            ("habeas", json!({"file": "outside.rs", "line_start": 1})),
+            (
+                "habeas",
+                json!({"file": "outside.rs", "item": "fn[secret]"}),
+            ),
+            ("outline", json!({"file": "outside.rs"})),
+            (
+                "ripgrep",
+                json!({"path": "outside.rs", "pattern": "secret"}),
+            ),
+            ("list_files", json!({"path": "outside"})),
+        ] {
+            let error = dispatch(&sources, name, &arguments).err().unwrap();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{name} {arguments}: {error}"
+            );
+            assert!(
+                error.to_string().contains("outside the project"),
+                "{name} {arguments}: {error}"
+            );
+        }
+    }
+
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
@@ -1618,6 +1726,60 @@ mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("outside the project"), "{error}");
+    }
+
+    // {test}`requirements.authoring.source_tools`
+    #[test]
+    fn habeas_tool_describes_its_argument_conventions_with_an_example_per_form() {
+        let definitions = definitions();
+        let habeas = definitions
+            .iter()
+            .find(|definition| definition["name"] == "habeas")
+            .expect("habeas tool is advertised");
+        let description = habeas["description"].as_str().unwrap();
+        for phrase in [
+            // Request forms and line conventions.
+            "exactly one request form",
+            "one-based and inclusive",
+            "omitted line_end reads through EOF",
+            "{inputs, definitions}",
+            "{input, definitions}",
+            // Outline selector syntax.
+            "kind[name]",
+            "impl[Thing/Trait]",
+            "kind@hash",
+            "#N",
+            "percent-encoded",
+            // Definition selections and full definition names.
+            "definition selection",
+            "* matches any characters including dots",
+            "full terminology name",
+            // A short request example for each form.
+            r#"{"file":"src/lib.rs","line_start":10,"line_end":20}"#,
+            r#"{"file":"src/lib.rs","item":"impl[Thing]/fn[run]"}"#,
+            r#"{"requirements":"requirements.cli.*"}"#,
+            r#"{"definition":"glossary.command"}"#,
+        ] {
+            assert!(
+                description.contains(phrase),
+                "missing {phrase:?}: {description}"
+            );
+        }
+        assert_eq!(
+            habeas["parameters"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            [
+                "file",
+                "line_start",
+                "line_end",
+                "item",
+                "requirements",
+                "definition"
+            ]
+        );
     }
 
     // {test}`requirements.authoring.outline_tool`

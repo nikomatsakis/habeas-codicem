@@ -637,6 +637,7 @@ mod tests {
 
     /// Reads one source on the first turn, then submits.
     // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.authoring.read_denial`
     struct ReadingProvider {
         read: Value,
         requests: RefCell<Vec<Value>>,
@@ -644,6 +645,7 @@ mod tests {
 
     impl CompletionProvider for ReadingProvider {
         // {test}`requirements.definitions.authoring_inputs`
+        // {test}`requirements.authoring.read_denial`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
                 .borrow_mut()
@@ -720,6 +722,86 @@ mod tests {
         let delivered = requests[1].to_string();
         assert!(delivered.contains("A unit of"), "{delivered}");
         assert!(!requests[0].to_string().contains("A unit of"));
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    #[tokio::test]
+    async fn malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues() {
+        for read in [
+            json!({"file": "src/lib.rs", "line_start": "one"}),
+            json!({"file": "src/lib.rs"}),
+            json!({"file": "src/lib.rs", "item": "fn[work]", "requirements": "*"}),
+            json!({"file": "missing.rs", "line_start": 1}),
+            json!({"file": "src/lib.rs", "item": "fn[absent]"}),
+            json!({"file": "src/lib.rs", "line_start": 99}),
+        ] {
+            let project = inputs::tests::project();
+            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let provider = ReadingProvider {
+                read: read.clone(),
+                requests: RefCell::default(),
+            };
+            let failure = tools::dispatch(&sources, "habeas", &read)
+                .err()
+                .unwrap_or_else(|| panic!("{read} fails"));
+            assert_ne!(failure.kind(), io::ErrorKind::PermissionDenied, "{read}");
+            let (_, evidence) = assess(&provider, &mut sources, &mut usage)
+                .await
+                .unwrap_or_else(|error| panic!("{read}: {error}"));
+            // The failure went back to the model as a tool error, and the model
+            // then submitted in a second request.
+            let requests = provider.requests.borrow();
+            assert_eq!(requests.len(), 2, "{read}");
+            let message = serde_json::to_string(&failure.to_string()).unwrap();
+            let message = message.trim_matches('"');
+            assert!(!requests[0].to_string().contains(message), "{read}");
+            assert!(requests[1].to_string().contains(message), "{read}");
+            assert!(
+                evidence["inputs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|input| input
+                        .get("file")
+                        .is_none_or(|file| file != "src/lib.rs" && file != "missing.rs")),
+                "{read}: {evidence}"
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_through_a_symlink_leaving_the_project_aborts_the_assessment() {
+        let project = inputs::tests::project();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.rs"),
+            project.path().join("src/escape.rs"),
+        )
+        .unwrap();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = ReadingProvider {
+            read: json!({"file": "src/escape.rs", "line_start": 1}),
+            requests: RefCell::default(),
+        };
+        let error = assess(&provider, &mut sources, &mut usage)
+            .await
+            .expect_err("the escaping read aborts");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("src/escape.rs"), "{error}");
+        assert!(error.to_string().contains("outside the project"), "{error}");
+        // No result went back to the model and no further request was made.
+        assert_eq!(provider.requests.borrow().len(), 1);
     }
 
     // {test}`requirements.ci.review_criteria`

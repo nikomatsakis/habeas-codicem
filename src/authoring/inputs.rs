@@ -691,6 +691,31 @@ pub(super) mod tests {
         );
     }
 
+    // {test}`requirements.authoring.read_denial`
+    #[cfg(unix)]
+    #[test]
+    fn mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation() {
+        let root = project();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.rs"),
+            root.path().join("src/escape.rs"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/escape.rs\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("src/escape.rs"), "{error}");
+        assert!(error.to_string().contains("outside the project"), "{error}");
+    }
+
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.read_denial`

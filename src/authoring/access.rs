@@ -157,7 +157,7 @@ impl SourceAccess {
                 if !self.has_source_under(root, &requested) || !self.has_source_under(root, &target)
                 {
                     return Err(denied(format!(
-                        "{} contains no eligible sources; use git add to stage sources or update habeas.toml before retrying",
+                        "{} contains no eligible sources; use git add to stage sources or add an explicit habeas.toml allow rule before retrying",
                         relative.display()
                     )));
                 }
@@ -300,9 +300,44 @@ pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
     }
 }
 
+/// A source-access policy denial. Only these, and [`OutsideProject`] denials
+/// of mandatory inputs, abort an assessment; an operating-system permission
+/// failure is an ordinary read failure.
+// {impl}`requirements.authoring.read_denial`
+#[derive(Debug)]
+struct PolicyDenial(String);
+
+impl std::fmt::Display for PolicyDenial {
+    // {impl}`requirements.authoring.read_denial`
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PolicyDenial {}
+
+/// Turns a permission error that did not come from source-access policy, such
+/// as an operating-system `EACCES`, into an ordinary read failure, leaving
+/// policy denials and every other error unchanged.
+// {impl}`requirements.authoring.read_denial`
+pub(crate) fn recoverable_os_denial(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::PermissionDenied
+        && !error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<PolicyDenial>() || inner.is::<OutsideProject>())
+    {
+        io::Error::other(error.to_string())
+    } else {
+        error
+    }
+}
+
 // {impl}`requirements.authoring.read_denial`
 fn denied(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message.into())
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        PolicyDenial(message.into()),
+    )
 }
 
 // {impl}`requirements.authoring.source_tools`

@@ -12,6 +12,7 @@ use serde_json::Value;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 // {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.authoring.usage_requests`
 #[derive(Serialize)]
 pub(super) struct UsageRecord {
     version: u32,
@@ -81,6 +82,7 @@ pub(super) struct UsageLog {
 
 impl UsageLog {
     // {impl}`requirements.authoring.usage_storage`
+    // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.configuration.state_location`
     pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {
         let start_time_ms = timestamp();
@@ -560,6 +562,40 @@ mod tests {
         assert_eq!(cancelled["tokens"]["input"], 2);
         assert_eq!(cancelled["tokens"]["output"], 3);
         assert_eq!(cancelled["requests"][first]["tokens"]["input"], 2);
+    }
+
+    // {test}`requirements.authoring.usage_requests`
+    #[test]
+    fn completed_requests_and_the_run_record_elapsed_time() {
+        let state = tempfile::tempdir().unwrap();
+        let mut log =
+            UsageLog::start(state.path(), Path::new("/project"), "requirements.case").unwrap();
+        assert_eq!(persisted(&log)["elapsed_ms"], 0);
+        log.started = Instant::now() - Duration::from_millis(50);
+        let request = log.begin_request().unwrap();
+        // The caller measures each attempt, including its abandoned waits.
+        log.end_request(
+            request,
+            20,
+            Some(&Usage::new().input_tokens(1).output_tokens(1)),
+        )
+        .unwrap();
+        let during = persisted(&log);
+        assert_eq!(during["requests"][request]["outcome"], "completed");
+        let request_elapsed = during["requests"][request]["elapsed_ms"].as_u64().unwrap();
+        assert_eq!(request_elapsed, 20, "{during}");
+        assert!(during["elapsed_ms"].as_u64().unwrap() >= 50, "{during}");
+        log.finish("completed").unwrap();
+        let finished = persisted(&log);
+        let run_elapsed = finished["elapsed_ms"].as_u64().unwrap();
+        assert!(run_elapsed >= 50, "{finished}");
+        assert!(run_elapsed >= request_elapsed, "{finished}");
+        assert_eq!(
+            finished["requests"][request]["elapsed_ms"]
+                .as_u64()
+                .unwrap(),
+            request_elapsed
+        );
     }
 
     // {test}`requirements.authoring.usage_requests`
