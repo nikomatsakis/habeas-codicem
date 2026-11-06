@@ -1,7 +1,7 @@
 {
   "requirement": "An outline selector MUST be a `/`-separated path of segments from the file's\nroot node to an outline node; the empty selector MUST select the root node. A\nnamed node's segment MUST be `kind[name]`. An anonymous node's segment MUST be\n`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity\nhash under {cite}`requirements.references.structural_hash`. Siblings whose\nsegments would otherwise be identical MUST be disambiguated by `#N`, their\none-based position among those siblings in source order, except `line` nodes:\nidentical lines are interchangeable, so a `line` selector MUST resolve when any\nline with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,\n`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are\nreversible. Line numbers MUST NOT form part of a selector.",
-  "determination": false,
-  "rationale": "**Verdict: false.** The selector logic is largely implemented and tested, but one part of it has no `{impl}` marker for this requirement.\n\n**What is covered**\n- **Grammar and parsing.** `parse_selector`, `split_segments` and `parse_segment` in `src/outline/selector.rs` handle:\n  - the empty selector, which selects the root;\n  - `kind[name]` and `kind@<12 hex>` segments;\n  - the `#N` suffix;\n  - rejection of malformed selectors.\n- **Encoding.** `encode_name` and `decode_name` percent-encode `%`, `[`, `]`, `/`, `#`, `@` and whitespace as UTF-8 bytes, and they reverse each other.\n- **Anonymous labels.** `Builder::finish` in `src/outline/mod.rs` builds the label from `identity_hash[..HASH_DIGITS]` with `HASH_DIGITS` = 12.\n- **Disambiguation.** `disambiguate` appends one-based `#N` in source order to sibling segments that would otherwise be identical, and skips `line` nodes. `Outline::resolve` resolves a `line` segment to the first line with that content.\n- **No line numbers.** No selector contains a line number.\n- **Resolution errors.** `ParsedSource::resolve` in `src/inputs.rs` reports invalid, ambiguous and missing selectors.\n- **Tests.**\n  - `names_round_trip_through_percent_encoding` and `parses_named_anonymous_and_ordinal_segments` in `src/outline/selector.rs`.\n  - `rust_selectors_follow_syntactic_ancestry`, `anonymous_selectors_use_identity_hashes` and `plain_text_lines_are_interchangeable_anonymous_nodes` in `src/outline/tests.rs`.\n  \n  Together they cover the empty selector, ambiguous and missing selectors, `#N` ordinals, hash stability under insertion and edits, interchangeable lines, and an encoded name (`impl[%5Bu8;%204%5D]`).\n\n**Gap: incomplete `{impl}` marking**\n- `plain_text` in `src/outline/mod.rs` (lines 235–280) builds the `line@<12-hex>` segment for every line node. It does so with `Segment::base(\"line\", &Label::Hash(hash[..HASH_DIGITS]))`, and it sets each node's `selector` and `segment`. This is the anonymous-segment obligation, and it is also what makes line selectors a bare `line@hash` that is never `#N`-suffixed. The function is marked `{impl}` only for `outlines` and `structural_hash`, not for `outline_selectors`.\n- `root_node` (lines 282–304) sets the root's empty `segment` and `selector`. This is the \"empty selector selects the root\" convention, and it is marked `{impl}` only for `outlines`.\n\nThe task says code that implements part of the requirement without an `{impl}` reference to it is a gap. No FIXME in the sources acknowledges this, so the result is false rather than FIXME. Adding `{impl}`requirements.references.outline_selectors`` to `plain_text` and `root_node` would close it.",
+  "determination": true,
+  "rationale": "The sources satisfy the requirement. I checked each obligation against the {impl} code and the tests, and I found no gaps. I did not read the per-language profile code that builds outline nodes for Markdown, TOML, YAML and Rust.\n\n**Implementation**\n- **Path and root.** `parse_selector` returns no segments for the empty selector. `Outline::resolve` (`src/outline/mod.rs`) starts at the root and walks children by segment, so the empty selector selects the root. `split_segments` splits on `/` outside brackets.\n- **Named segments.** `Segment::base` writes `kind[name]`, using `encode_name` on each name part. The `/` that joins the two parts of a trait-impl name sits inside the brackets. That is a separate requirement's convention, not a violation here.\n- **Anonymous segments.** `Builder::finish` builds `kind@hash` from the first `HASH_DIGITS` (12) hex digits of the node's identity hash. `plain_text` does the same for `line` nodes, whose identity hash is the line hash.\n- **Disambiguation.** `disambiguate` groups siblings by identical base segment and appends `#N`, the one-based source-order position, to every member of a group with more than one. It skips `line` nodes. `Outline::resolve` returns the first child whose segment matches, so a `line` selector resolves whenever a line with that content exists. `ParsedSource::resolve` in `src/inputs.rs` reports an ambiguous selector, one that needs a `#N`, separately from one that matches nothing.\n- **Percent-encoding.** `encode_name` encodes `%`, `[`, `]`, `/`, `#`, `@` and any whitespace as uppercase UTF-8 byte escapes. `decode_name` reverses this. It rejects malformed escapes, unescaped delimiters, unescaped whitespace and non-UTF-8 results.\n- **No line numbers.** Selectors are built only from kind, name or hash, and ordinal. Line numbers are stored on `OutlineNode` but never enter a segment or selector.\n- **Marking.** All the selector code is marked `{impl}`: the selector types, errors and parsing in `selector.rs`, plus `disambiguate`, `finish`, `plain_text`, `root_node` and `resolve` in `mod.rs`. I found no unmarked code implementing the requirement.\n\n**Minor leniency.** `decode_name` uses `u8::from_str_radix`, which accepts a leading `+`, so `%+1` would decode. This does not break the requirement's round-trip guarantee.\n\n**Tests**\n- `names_round_trip_through_percent_encoding` checks the exact encoding of a name containing space, `/`, `[`, `]`, `#`, `@`, `%`, a tab and a non-ASCII character. It also checks round-trip decoding and rejection of bad input.\n- `parses_named_anonymous_and_ordinal_segments` checks the empty selector, two-part names, `#N`, a 12-digit hash, and a list of invalid forms.\n- `rust_selectors_follow_syntactic_ancestry` covers many node kinds, nested paths, percent-encoded names, `#1`/`#2` disambiguation, resolving the empty selector to the root, and errors for an ambiguous or missing selector.\n- `anonymous_selectors_use_identity_hashes` checks that anonymous selectors survive inserting an unrelated item and break when the item itself changes. It also checks `#N` for duplicate anonymous nodes.\n- `plain_text_lines_are_interchangeable_anonymous_nodes` checks that duplicate lines get identical selectors without `#N`, that such a selector resolves, and that the word rule applies, so `two  words` equals `two words` but differs from `twowords`.",
   "inputs": [
     {
       "requirements": "requirements.references.outline_selectors",
@@ -72,8 +72,18 @@
     },
     {
       "file": "src/outline/mod.rs",
+      "item": "fn[plain_text]",
+      "hash": "cbc6b87bc4f6a40b6820dc65c8f96e6d0c4eb8a1c43e54382032b958eb50f884"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[root_node]",
+      "hash": "53eb875e672b899cc2ccf95e5171657444a8691c0b97c7a0656f8bd9926b8d59"
+    },
+    {
+      "file": "src/outline/mod.rs",
       "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
-      "hash": "730ff51b4a17e9c916fbe7463187ba0511ab4bc94ea117741d0c7088f52c7a41"
+      "hash": "56d485a1631eacba50fdbca88128d77fa25f44a99979e74b92a556820ec6c4a5"
     },
     {
       "file": "src/outline/mod.rs",
@@ -174,51 +184,6 @@
       "file": "src/outline/tests.rs",
       "item": "fn[plain_text_lines_are_interchangeable_anonymous_nodes]",
       "hash": "903bba444617c36a46085e4c98caea488135be8d26d47516ab6f808b389a2863"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[plain_text]",
-      "hash": "cbc6b87bc4f6a40b6820dc65c8f96e6d0c4eb8a1c43e54382032b958eb50f884"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "struct[DraftComment]",
-      "hash": "7c4469e631228e8b6135b8cac249f275c222a2c3fecd92bcad39905805ac809e"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "struct[Builder]",
-      "hash": "2d81ab60f020369d10d7b79d95cf367098af2d0eb9e9accb527247ba4dab5bad"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[new]",
-      "hash": "b3291b75510c50fd47e9801df83ed5790d2a51e2054694e41424964d6451e431"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[push]",
-      "hash": "7c1eba8bddc71ddc670fd7a359cc83d6952db9815484297824f18e2dc06e08e9"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[hash]",
-      "hash": "927e095a0fab8a9cd4ec73272582934acf9d2ed13b4596208a17d6c203a4d9ae"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[assign_comments]",
-      "hash": "9c002ba5be7ea1e4ef5a8e13cd64abb4f579be8bf8cd487f591a07dbbdfa0fa7"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[root_node]",
-      "hash": "88e8dce2de62a3985d605039d0b0fd56e57f784ae5ec7e1fbb309a477be53d6a"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "struct[Draft]",
-      "hash": "fbbc10b5947d4c09592650e90cb9e3d7665e7d136fb62e9242b09ccfb34dc455"
     }
   ]
 }

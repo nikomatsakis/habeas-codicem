@@ -1,7 +1,7 @@
 {
   "requirement": "For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.",
   "determination": false,
-  "rationale": "**Verdict: not met.** The core validation logic is right, but one error obligation isn't fully met and the tests leave most of the design space uncovered. I found no FIXME acknowledging either gap.\n\n**What the code does correctly**\n- `InputSelector::resolve` (`src/inputs.rs:239-326`, `Requirements` arm) validates the glob with `definition_glob::validate`.\n- It iterates the `BTreeMap` of definitions, which is already in full-name order, and skips terms, so requirements and named examples are both matched.\n- It concatenates each match's `raw_lines`, with one blank line between declarations. Those lines include the opening and closing fences. Option lines are deliberately omitted, which `requirements.references.anchors` requires for requirements inputs.\n- It keeps each match's file and inclusive line range in `ranges` for display and reference coverage.\n- It returns an error when nothing matches: \"requirements glob … matches no requirement or example\".\n- `validate_input` (`src/evidence.rs:670-747`) and `validate_resolved_input` (`src/evidence.rs:834-882`) recompute the matches during validation. They compare the sorted `matches` list and the `text` lines against the stored values.\n- Adding, removing or renaming a match is reported as a changed match set. Changing a match's text is reported as changed text.\n- Only the declaration text is compared, not line numbers, so moving an unchanged declaration doesn't invalidate the input.\n\n**Gaps**\n1. **Errors don't always identify the selection and affected definitions.**\n   - The match-set error is `\"{label}: requirements glob matches changed; added [...], removed [...]\"`. The `label` is only `file: inputs[i]`, so the error never names the selection (the glob). It does name the added and removed definitions.\n   - The text-change error includes the selector via `{selector:?}` and a line diff. It does not name the definitions whose text changed. The diff may not contain a name line, and the error gives no list of definitions.\n   - The requirement says errors \"MUST identify the selection and affected definitions when available\". Both pieces are available at those points, so this is only partly met.\n2. **Test coverage is thin.** The two tests marked `{test}` are:\n   - `cited_example_with_a_test_and_matching_evidence_validates` (`src/evidence.rs:1795`). It has a happy-path multi-match input, which covers sorted order, the blank-line join and the fenced text. It also has one invalidation case, adding a definition, and asserts only that the message contains \"requirements glob matches changed\".\n   - `requirements_inputs_omit_option_lines` (`src/evidence.rs:2191`).\n\n   Several required behaviors have no test for a requirements input in validation:\n   - removing or renaming a matched definition;\n   - changing a matched definition's text (the \"input text changed\" assertions in `tests/definitions.rs` cover definition inputs on terms, not requirements inputs);\n   - a stored selection that now matches nothing;\n   - moving an unchanged declaration, which must not invalidate the input;\n   - the content of the error messages beyond one substring.\n\n   Other tests, such as `tests/commands.rs` `add-input` and `src/index.rs`, don't exercise these validation cases.\n\nBecause of the incomplete error identification and these untested obligations, I judge the requirement as not fully satisfied.",
+  "rationale": "**Verdict: false.** The validation logic and tests look right. The one gap is that part of the implementation lacks an `{impl}` mark for this requirement.\n\n**What is implemented and marked**\n- `src/inputs.rs` `InputSelector::resolve`, the `Requirements` arm, is marked `{impl}`.\n  - It validates the glob with `definition_glob::validate`.\n  - It iterates the `BTreeMap` of definitions, so matches come out in full-name order.\n  - It skips terms and keeps only requirements and named examples.\n  - It joins each match's `raw_lines` with one blank line between them.\n  - It records each match's `SourceRange` (file, `line_start`, `line_end`, name) in `ResolvedInput.ranges`. Display and reference coverage consume these ranges.\n  - It returns an error naming the glob when nothing matches, so a selection matching nothing is invalid.\n- `src/evidence.rs` `validate_input` parses `requirements`, `matches` and `text`, and `validate_resolved_input` recomputes the matches at validation time.\n  - It compares the recorded `matches` against the recomputed ones. A mismatch produces an error naming the glob and the added and removed names.\n  - It compares the recorded `text` against the recomputed text. A mismatch produces an error naming the selector, the still-matched definitions whose declaration changed, and a compact diff.\n- Line numbers are not part of the comparison, so moving an unchanged declaration does not invalidate the input.\n- Adding, removing, renaming or changing a matched definition changes `matches` or `text`, so it invalidates the input.\n\n**Tests**\n- `requirements_inputs_track_matched_declarations_in_full_name_order` (`src/evidence.rs`) covers:\n  - `*` crossing dots;\n  - an example sorting before a requirement by full name;\n  - moving declarations without invalidation;\n  - a changed body, with the error naming the changed definition;\n  - an added match, a removed match and a rename, each reported;\n  - a glob that matches nothing.\n- `cited_example_with_a_test_and_matching_evidence_validates` covers a requirements input inside an example's evidence, including the \"matches changed\" error.\n- `requirements_inputs_omit_option_lines` checks that the resolved text equals the declaration's `raw_lines`, which exclude `:impl:` and `:test:` option lines, as `requirements.references.anchors` specifies.\n\n**Gap: unmarked implementation**\n- The code that builds each declaration's `raw_lines` and its `line_start`/`line_end` is in `collect_definitions` (`src/evidence.rs`, around lines 350–495).\n- It produces the \"complete raw fenced declaration, including opening and closing lines\" that the text compares against. It also produces the inclusive line range that the requirement says must be retained.\n- It carries `{impl}` marks for `requirements.references.anchors` and `requirements.definitions.declaration`, but none for `requirements.ci.requirements_inputs`.\n- The requirement's obligations on the declaration text and the retained range are therefore partly implemented by code without an `{impl}` reference to it.\n- Yet `requirements_inputs_omit_option_lines` is marked `{test}` for this requirement and asserts exactly that behaviour (`raw_lines` and the `(3, 6)` line range).\n- No FIXME or issue reference in the sources acknowledges this gap.\n\nAdding `{impl}`requirements.ci.requirements_inputs`` to the `raw_lines` and line-range computation in `collect_definitions` would close it.",
   "inputs": [
     {
       "requirements": "requirements.ci.requirements_inputs",
@@ -22,12 +22,17 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_resolved_input]",
-      "hash": "b5d00259365dabd71e59c707d4e6e41000be1948fcd06fc765d9eee74b8df38c"
+      "hash": "1f2cccc74a111d9173771fbe3c693bac16b47809a612063b9fcddbd6840dd7d3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
+      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "0588470ebd00187b0af8f3ddd82ed1739c36d83a5f9cca355a2837130828c8ba"
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
     },
     {
       "file": "src/evidence.rs",
@@ -58,9 +63,19 @@
       ]
     },
     {
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "a74f7acdaf8397db1c11f9971c5da77cb33d1dc3a02b6473b0bb2139f426a9d2"
+    },
+    {
       "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "1ccc4046a314160559504cfc1042ca910c997e28ae25c5c51c9a0791a5faf6eb"
+      "item": "struct[Declaration]",
+      "hash": "5b7addc906a3fae054cc3f35d45bfbad8d504dc80e8ed3828de5a19606713d7b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[Anchor]",
+      "hash": "5a2a5470e6528b90894f59fbeeeaa1e27264f4d4950c72ecbabba671039a0585"
     },
     {
       "file": "src/evidence.rs",
@@ -69,68 +84,33 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "e7333d3e41b95312e527d78ad2e0fd83c91ca74ffb2a6a09e8084dbb2c9e8684"
+      "item": "mod[tests]",
+      "hash": "2d042f5c9229c4eb72dfd411fe4b49134aaff93733c7e46829d80523c039f785"
     },
     {
-      "file": "agent-sops/autofix-context.md",
-      "item": "section[One-PR%20autofix%20protocol]/section[Commit%20intent%20and%20source%20attribution]",
-      "hash": "936983f14357d539dfd5faf4724363aff03a796dd7bc9845d70b22ac4dc467c2"
+      "file": "src/outline/tests.rs",
+      "item": "fn[anonymous_selectors_use_identity_hashes]",
+      "hash": "3b8ce2033af0eabfb93fa3242d82e70aeb880f0507210431d1b3f6c345f46731"
     },
     {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Evidence]",
-      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
+      "file": "src/outline/tests.rs",
+      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
+      "hash": "8091c3b026c2c255fcf96b68ca25755b44dcc0ae6ab4d5ef9ba220f7be326b5b"
     },
     {
-      "file": "md/requirements/cli.md",
-      "item": "section[Command-line%20interface]",
-      "hash": "79cdf2a0a52b677d671cb92662c2eab824959f4f6a0b5e0a13803ff49c7c0d4a"
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[definitions]",
+      "hash": "65866836139f2ff410592e6c4fc6ada7bb4a9e75b97d2d530245e9c204bb2709"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[finds_uncited_functions_without_using_enclosing_or_string_references]",
+      "hash": "b707b4cf148516e3b47217e474889a688002037b2f3647cd7896c8a24414fad4"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "7d760809c28ad289c65d66f15dc07116d19c2c5f843b77cd8863c9e9659c6a22"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
-      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_input]",
-      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_rejects_function_targets_without_creating_evidence]",
+      "hash": "7fee0c4f55750c8b43a8765ae65e77c6ddc2ed4f9c13efd6464264429a60a982"
     },
     {
       "file": "tests/commands.rs",
@@ -138,24 +118,64 @@
       "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[cyclic_dependencies_are_captured_once_and_changes_require_review]",
-      "hash": "e8383a7b7d9006b90746474998c85fc30706986810369d4612e46c16c360614f"
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[outline]",
+      "hash": "5fae86b6144ef7e3dbb5f4d0776f252754a649428999e2200400e85f117d26ad"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
-      "hash": "f92f368c46a0c959eb5bae0e823c313badde42e78b1e045a5e80421a31db0f02"
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
+      "hash": "a798c0a3903164d2f2f1758c0bfddce483826b6137ee6509776efbe71c14f2a6"
     },
     {
-      "file": "tests/outcomes.rs",
-      "item": "fn[fixture]",
-      "hash": "9126c5ef449db339cb7032a660385f33f6f1ba29a49775015de69022683b8ec2"
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[insert_selector]",
+      "hash": "54d9a173878107f95099d460a21bc217892ddadd5bab92477695cfd3f3b84496"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "69a294c538429cd1e2d9f1d4274ec9f17a6b7e99c3b5d3c8329c44d6f8d96176"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_sections]",
+      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[InputLocation]/fn[resolve]",
+      "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_model_input]",
+      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
     },
     {
       "file": "md/requirements/references.md",
       "item": "section[References%20and%20Rust%20items]",
-      "hash": "c87184f61131fdbff3cf2dc9d51021eb8ea61e417eec2370bad9d53ae016e5c2"
+      "hash": "cc2725e4297da07c1f85cd92d3db863546fdde2a0cde24c8872ccf617ebf4b40"
+    },
+    {
+      "file": "md/requirements/definitions.md",
+      "item": "section[Named%20definitions]",
+      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
     }
   ]
 }

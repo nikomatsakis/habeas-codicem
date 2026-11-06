@@ -352,6 +352,7 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.ci.requirements_inputs`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,

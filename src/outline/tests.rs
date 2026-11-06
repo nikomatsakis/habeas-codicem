@@ -793,6 +793,30 @@ fn comment_runs_follow_the_same_rules_in_every_language() {
 
 // {test}`requirements.references.outline_comments`
 #[test]
+fn markdown_comments_are_html_comment_blocks_not_inline_comments() {
+    let source = "# H\nText <!-- inline --> more.\n\n<!-- block -->\n## Sub\n";
+    let outline = outline("a.md", source);
+    assert_eq!(outline.comments.len(), 1, "only the block is a comment");
+    assert_eq!(
+        comment_owner(&outline, source, "block"),
+        "section[H]/section[Sub]"
+    );
+    let inline = source.find("inline").unwrap();
+    assert!(
+        outline
+            .comments
+            .iter()
+            .all(|comment| !(comment.byte_start <= inline && inline < comment.byte_end))
+    );
+    assert_eq!(
+        outline.nodes[outline.owner_at_line(2)].selector,
+        "section[H]",
+        "an inline HTML comment is paragraph text of its section"
+    );
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
 fn a_comment_after_another_comment_on_its_line_forms_its_own_run() {
     let source = "fn a() {}\n/* first */ /* second */\nfn b() {}\n";
     let outline = outline("src/lib.rs", source);

@@ -420,6 +420,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.references.outline_comments`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
         let children = node.children(&mut cursor).collect::<Vec<_>>();
@@ -554,6 +555,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// and comment owners.
     // {impl}`requirements.references.outlines`
     // {impl}`requirements.references.outline_selectors`
+    // {impl}`requirements.references.outline_comments`
     fn finish(self, lines: &LineIndex) -> Outline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         nodes.push(root_node(
