@@ -26,6 +26,10 @@ use inputs::{AssessmentKind, AssessmentSources};
 use providers::{CompletionProvider, RigProvider};
 use usage::UsageLog;
 
+/// How long a completion request may go without a response.
+// {impl}`requirements.authoring.provider_backoff`
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 pub struct AuthoringOutcome {
     pub subject: String,
     pub backend: String,
@@ -436,7 +440,15 @@ async fn assess(
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
-        let response = provider.complete(request.clone()).await;
+        // An abandoned request is retried like any other transient failure.
+        let response =
+            match tokio::time::timeout(REQUEST_TIMEOUT, provider.complete(request.clone())).await {
+                Ok(response) => response,
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "provider request had no response within ten minutes",
+                )),
+            };
         usage.end_request(
             index,
             started.elapsed().as_millis(),
@@ -679,5 +691,39 @@ mod tests {
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(log["request_count"], 1);
         assert_eq!(log["requests"][0]["outcome"], "failed");
+    }
+
+    struct HangingProvider {
+        requests: RefCell<usize>,
+    }
+
+    impl CompletionProvider for HangingProvider {
+        // {test}`requirements.authoring.provider_backoff`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            *self.requests.borrow_mut() += 1;
+            if *self.requests.borrow() == 1 {
+                std::future::pending::<()>().await;
+            }
+            JudgmentProvider(json!(true)).complete(request).await
+        }
+    }
+
+    // {test}`requirements.authoring.provider_backoff`
+    // {test}`requirements.authoring.usage_requests`
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_requests_are_abandoned_and_retried() {
+        let (_project, _state, mut sources, mut usage) = retry_fixture();
+        let provider = HangingProvider {
+            requests: RefCell::default(),
+        };
+        let started = tokio::time::Instant::now();
+        let (judgment, _) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert_eq!(judgment.to_value(), json!(true));
+        assert!(started.elapsed() >= REQUEST_TIMEOUT);
+        assert_eq!(*provider.requests.borrow(), 2);
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["request_count"], 2);
+        assert_eq!(log["requests"][0]["outcome"], "failed");
+        assert_eq!(log["requests"][1]["outcome"], "completed");
     }
 }

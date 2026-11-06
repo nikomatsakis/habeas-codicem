@@ -33,14 +33,28 @@ impl ProviderBackoff {
         // Rig preserves HTTP status and Bedrock's exception code. Do not infer
         // throttling from "tokens" in a message: a too-large input cannot be
         // fixed by resending the same request.
-        let provider = error.get_ref()?.downcast_ref::<ProviderError>()?;
-        let report = provider.report();
-        let throttled = match report.http_status {
-            Some(429) => true,
-            Some(status) if status >= 400 => false,
-            _ => report.code.as_deref() == Some("ThrottlingException"),
+        let provider = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<ProviderError>());
+        let transient = if error.kind() == io::ErrorKind::TimedOut {
+            true
+        } else {
+            let report = provider?.report();
+            match report.http_status {
+                Some(429 | 500 | 502 | 503 | 504) => true,
+                Some(status) if status >= 400 => false,
+                _ => matches!(
+                    report.code.as_deref(),
+                    Some(
+                        "ThrottlingException"
+                            | "ServiceUnavailableException"
+                            | "InternalServerException"
+                            | "ModelNotReadyException"
+                    )
+                ),
+            }
         };
-        if !throttled {
+        if !transient {
             return None;
         }
 
@@ -49,7 +63,10 @@ impl ProviderBackoff {
         // Equal jitter keeps parallel assessments from retrying in lockstep,
         // while ensuring each retry waits at least half the current window.
         let jittered = Duration::from_millis(fastrand::u64(millis / 2..=millis));
-        Some(jittered.max(retry_after(provider, SystemTime::now()).unwrap_or_default()))
+        let minimum = provider
+            .and_then(|provider| retry_after(provider, SystemTime::now()))
+            .unwrap_or_default();
+        Some(jittered.max(minimum))
     }
 }
 
@@ -276,11 +293,18 @@ mod tests {
 
     // {test}`requirements.authoring.provider_backoff`
     #[test]
-    fn retries_typed_throttling_but_not_permanent_token_errors() {
+    fn retries_throttling_unavailability_and_timeouts_but_not_permanent_errors() {
         for (status, code) in [
             (Some(429), None),
             (Some(429), Some("ThrottlingException")),
             (None, Some("ThrottlingException")),
+            (Some(500), None),
+            (Some(502), None),
+            (Some(503), Some("ServiceUnavailableException")),
+            (Some(504), None),
+            (None, Some("ServiceUnavailableException")),
+            (None, Some("InternalServerException")),
+            (None, Some("ModelNotReadyException")),
         ] {
             assert!(
                 ProviderBackoff::default()
@@ -292,7 +316,7 @@ mod tests {
             (Some(400), Some("ValidationException")),
             (Some(403), Some("AccessDeniedException")),
             (Some(400), Some("ThrottlingException")),
-            (Some(503), Some("ServiceUnavailableException")),
+            (Some(501), None),
             (None, None),
         ] {
             assert!(
@@ -305,6 +329,11 @@ mod tests {
             ProviderBackoff::default()
                 .next_delay(&io::Error::other("Too many tokens; HTTP 429"))
                 .is_none()
+        );
+        assert!(
+            ProviderBackoff::default()
+                .next_delay(&io::Error::new(io::ErrorKind::TimedOut, "no response"))
+                .is_some()
         );
     }
 
