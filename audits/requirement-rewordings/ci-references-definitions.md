@@ -65,6 +65,27 @@ Prompted by: `evidence/requirements.references.outline_comments.json`, gap 3
 ("Untested, ambiguous same-line case ... The requirement doesn't say whether
 that counts as 'source'.").
 
+### Second rewording: which nodes are comments
+
+Old (opening):
+
+> In every supported language, comments on consecutive lines ...
+
+New:
+
+> Each documented profile defines which grammar nodes are comments; the Markdown profile's comments are HTML comment blocks, so an inline HTML comment within a paragraph is text of its section. In every supported language, comments on consecutive lines ...
+
+Reason: the Markdown profile uses the block grammar and treats only HTML comment
+blocks as comments, as `md/reference.md` documents. The requirement never said
+that each profile decides what a comment is. The reviewer therefore read "in
+every supported language" as requiring inline `<!-- -->` comments after
+paragraph text to be trailing comment runs. The new sentence states the
+intended, documented behaviour, and a new test pins it.
+
+Prompted by: the reassessed `evidence/requirements.references.outline_comments.json`,
+gap 2 ("Markdown recognises only whole `html_block` comments ... An inline
+`<!-- -->` that follows text on a line is not treated as a comment").
+
 ## requirements.references.markdown_literals
 
 Old:

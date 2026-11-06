@@ -129,7 +129,9 @@ its ancestors' selectors.
 :::
 
 :::{req} outline_comments
-In every supported language, comments on consecutive lines with no other source
+Each documented profile defines which grammar nodes are comments; the Markdown
+profile's comments are HTML comment blocks, so an inline HTML comment within a
+paragraph is text of its section. In every supported language, comments on consecutive lines with no other source
 between them MUST form one comment run. A comment that follows other source on
 the same line, including another comment, MUST form a run by itself and MUST belong to the innermost outline node
 containing that line. Any other run MUST belong to the next outline node that
