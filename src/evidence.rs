@@ -866,15 +866,40 @@ fn validate_resolved_input(
             .filter(|name| !resolved.matches.contains(name))
             .cloned()
             .collect::<Vec<_>>();
+        let glob = match selector {
+            InputSelector::Requirements { requirements } => requirements.as_str(),
+            _ => "",
+        };
         errors.push(format!(
-            "{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}"
+            "{label}: requirements glob {glob:?} matches changed; added {missing:?}, removed {removed:?}"
         ));
     }
     if text != resolved.text {
+        // For a requirements input, name the still-matched definitions whose
+        // current declaration no longer appears in the recorded text.
+        let changed = matches.map_or_else(Vec::new, |matches| {
+            matches
+                .iter()
+                .filter(|name| {
+                    definitions.get(*name).is_some_and(|definition| {
+                        resolved.matches.contains(name)
+                            && !text
+                                .windows(definition.raw_lines.len().max(1))
+                                .any(|window| window == definition.raw_lines.as_slice())
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
         let old = text.iter().map(String::as_str).collect::<Vec<_>>();
         let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();
         errors.push(format!(
-            "{label}: input text changed for {selector:?}{}",
+            "{label}: input text changed for {selector:?}{}{}",
+            if changed.is_empty() {
+                String::new()
+            } else {
+                format!("; changed definitions {changed:?}")
+            },
             compact_diff(&old, &new)
         ));
     }
@@ -1692,6 +1717,99 @@ mod tests {
         );
     }
 
+    // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.references.definition_glob_cases`
+    #[test]
+    fn requirements_inputs_track_matched_declarations_in_full_name_order() {
+        let temp = fixture();
+        let bar = ":::{req} a.bar\nBar.\n:::\n";
+        let nested = ":::{example} a.b.bar\nNested. CITE`foo.a.bar`\n:::\n".replace("CITE", "{cite}");
+        let other = ":::{req} other\nOther.\n:::\n";
+        let write = |declarations: &[&str]| {
+            fs::write(
+                temp.path().join("md/foo.md"),
+                format!("# Foo\n\n{}", declarations.join("\n")),
+            )
+            .unwrap();
+        };
+        let lines = |declaration: &str| declaration.lines().map(str::to_owned).collect::<Vec<_>>();
+        let mut text = lines(&nested);
+        text.push(String::new());
+        text.extend(lines(bar));
+        let record = |glob: &str| {
+            json!({
+                "requirement": "Other.",
+                "determination": true,
+                "rationale": "Both matches were examined.",
+                "inputs": [{
+                    "requirements": glob,
+                    "matches": ["foo.a.b.bar", "foo.a.bar"],
+                    "text": text,
+                }]
+            })
+            .to_string()
+        };
+        fs::write(temp.path().join("evidence/foo.other.json"), record("foo.*.bar")).unwrap();
+        let errors = || {
+            validate_repository(temp.path())
+                .unwrap()
+                .errors
+                .into_iter()
+                .filter(|error| error.starts_with("evidence/foo.other.json"))
+                .collect::<Vec<_>>()
+        };
+
+        // `*` crosses dots, the example sorts before the requirement by full
+        // name, and the stored text is both complete fenced declarations.
+        write(&[bar, &nested, other]);
+        assert!(errors().is_empty(), "{:?}", errors());
+        // Moving unchanged declarations does not invalidate the input.
+        write(&[other, "Some prose.\n", &nested, "More prose.\n", bar]);
+        assert!(errors().is_empty(), "{:?}", errors());
+
+        write(&[&bar.replace("Bar.", "Changed."), &nested, other]);
+        let changed = errors().join("\n");
+        assert!(
+            changed.contains(
+                "inputs[0]: input text changed for Requirements { requirements: \"foo.*.bar\" }; changed definitions [\"foo.a.bar\"]\n- Bar.\n+ Changed."
+            ),
+            "{changed}"
+        );
+
+        let added = ":::{req} z.bar\nAdded.\n:::\n";
+        write(&[bar, &nested, other, added]);
+        assert!(
+            errors().join("\n").contains(
+                "inputs[0]: requirements glob \"foo.*.bar\" matches changed; added [\"foo.z.bar\"], removed []"
+            ),
+            "{:?}",
+            errors()
+        );
+        write(&[bar, other]);
+        assert!(
+            errors().join("\n").contains(
+                "requirements glob \"foo.*.bar\" matches changed; added [], removed [\"foo.a.b.bar\"]"
+            ),
+            "{:?}",
+            errors()
+        );
+        write(&[&bar.replace("a.bar", "c.bar"), &nested, other]);
+        assert!(
+            errors().join("\n").contains(
+                "requirements glob \"foo.*.bar\" matches changed; added [\"foo.c.bar\"], removed [\"foo.a.bar\"]"
+            ),
+            "{:?}",
+            errors()
+        );
+
+        write(&[bar, &nested, other]);
+        fs::write(temp.path().join("evidence/foo.other.json"), record("foo.*.none")).unwrap();
+        assert_eq!(
+            errors(),
+            ["evidence/foo.other.json: inputs[0]: requirements glob \"foo.*.none\" matches no requirement or example"]
+        );
+    }
+
     // {test}`requirements.ci.identifiers`
     #[test]
     fn invalid_full_names_from_chapter_paths_are_reported_and_not_defined() {
@@ -1953,7 +2071,7 @@ mod tests {
         .unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
-            errors.contains("requirements glob matches changed"),
+            errors.contains("requirements glob \"rules.*\" matches changed; added [\"rules.added\"], removed []"),
             "{errors}"
         );
 

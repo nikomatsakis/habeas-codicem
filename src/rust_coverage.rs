@@ -7,7 +7,7 @@ use crate::evidence::Declaration;
 use crate::outline::{self, OutlineError};
 use crate::reference_roles;
 
-// {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.definitions.dependencies`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
     let mut position = start + 1;
     while position < bytes.len() {
@@ -20,7 +20,7 @@ fn quoted_end(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
-// {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.definitions.dependencies`
 fn char_end(source: &str, start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut position = start + 1;
@@ -46,7 +46,7 @@ fn char_end(source: &str, start: usize) -> Option<usize> {
     (bytes.get(position) == Some(&b'\'')).then_some(position + 1)
 }
 
-// {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.definitions.dependencies`
 fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut position = match bytes.get(start..) {
         Some([b'r', ..]) => start + 1,
@@ -75,7 +75,9 @@ fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     Some(bytes.len())
 }
 
-// {impl}`requirements.references.rust_item_coverage`
+/// Byte ranges of the comments in Rust source, skipping string and character
+/// literals; used to find term references in recorded Rust inputs.
+// {impl}`requirements.definitions.dependencies`
 pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
@@ -453,10 +455,33 @@ fn outer() {
             "fn ignored() {}\n",
         )
         .unwrap();
+        // Build output and repository metadata are skipped at any depth; the
+        // book, evidence, and vendored sources only at the project root.
+        for (file, source) in [
+            ("crates/sub/target/debug/build.rs", "fn ignored() {}\n"),
+            (".git/hooks/hook.rs", "fn ignored() {}\n"),
+            ("vendor/dep/lib.rs", "fn ignored() {}\n"),
+            ("book/listing.rs", "fn ignored() {}\n"),
+            ("src/vendor/own.rs", "fn own_vendor() {}\n"),
+            ("src/book/own.rs", "fn own_book() {}\n"),
+        ] {
+            let path = project.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
 
         let mut errors = Vec::new();
         validate_rust_functions(project.path(), &definitions(), &mut errors, &mut Vec::new());
-        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert_eq!(errors.len(), 5, "{errors:?}");
+        for expected in [
+            "src/vendor/own.rs:1: function own_vendor",
+            "src/book/own.rs:1: function own_book",
+        ] {
+            assert!(
+                errors.iter().any(|error| error.contains(expected)),
+                "{expected}: {errors:?}"
+            );
+        }
         assert!(errors.iter().any(|error| {
             error.contains("src/lib.rs:1: function uncited has no requirement or example citation")
         }));
