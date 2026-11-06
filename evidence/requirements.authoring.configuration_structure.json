@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n}\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock or Ollama\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
-  "determination": false,
-  "rationale": "The data model itself is not marked as implementing the requirement, so I judge this a gap. Behavior and tests look broadly sound.\n\n**What matches.** The type definitions in `src/config.rs` closely follow the specified structure:\n- `UserAuthoringConfig` (lines 94–101) has `default`, `configs` and `projects`.\n- `WorkspaceAuthoringConfig` (lines 40–46) has `default` and `configs`, with an omitted `configs` meaning empty.\n- `ProjectSelection`, `AuthoringConfig`, `BackendConfig`, `BedrockConfig`, `BedrockCredentials`, `OllamaConfig`, `OptionValue`, `BackendKind` and `ModelRef` are all present.\n- `AuthoringConfig` uses `#[serde(flatten)]` for the backend.\n- `SecretString` serializes transparently and its `Debug` output is redacted.\n- `BackendConfig::model_ref` (line 368) and `ResolvedAuthoringConfig::model_ref` (line 543) derive a `ModelRef` that keeps the exact model string and does not touch connection settings.\n\n**Gap: the structures carry no `{impl}` markers.** The only `{impl}` references to this requirement are on four functions:\n- `SecretString`'s `Debug::fmt`\n- the two `model_ref` functions\n- `OptionValue::validate`\n\nNone of the type definitions that make up the requirement have a marker. These are `UserAuthoringConfig`, `WorkspaceAuthoringConfig`, `ProjectSelection`, `AuthoringConfig`, `BackendConfig`, `BedrockConfig`, `BedrockCredentials`, `OllamaConfig`, `OptionValue`, `SecretString`, `BackendKind` and `ModelRef`. The requirement is mostly about these structures, so most of its implementation is unmarked. The `references` output confirms this. Code that implements part of a requirement without an `{impl}` reference is a gap.\n\n**Tests.** Four tests in `tests/configuration.rs` cite the requirement. Together they cover:\n- the Bedrock/Ollama tagged union with flattened TOML\n- nested options round trips\n- `model_ref` backend and model values for Ollama\n- the optional `concurrency` field\n- an empty workspace `configs` map\n- credentials and redaction\n\nCoverage is thin in places:\n- `model_ref` is asserted only for Ollama.\n- `ModelRef` is not tested for Bedrock, nor for preserving ARN or inference-profile identifiers.\n- Rejection of non-finite floats (`OptionValue::validate`) has no cited test.\n\nThese are secondary to the marking gap. No FIXME or other acknowledgement of the gap appears in the source, so the result is false rather than FIXME.",
+  "determination": true,
+  "rationale": "**Verdict: the requirement is met.** The code in `src/config.rs` matches the required structures field for field, and the tests exercise the interesting cases.\n\n**Structures (`src/config.rs`)**\n- `UserAuthoringConfig` (lines 105–115) has `default` (optional), a required `configs` map, and `projects: BTreeMap<PathBuf, ProjectSelection>`. `UserAuthoringConfig::validate` checks that each project key is canonical and absolute.\n- `WorkspaceAuthoringConfig` (lines 37–46) has `default` and `configs`. `configs` is `#[serde(default)]`, so omitting it means empty, and an empty map is not serialized.\n- `ProjectSelection { config }` (lines 117–123) matches the spec.\n- `AuthoringConfig` (lines 125–134) holds `concurrency: Option<NonZeroUsize>` and `#[serde(flatten)] backend`. `NonZeroUsize` stands in for `PositiveInteger`.\n- `BackendConfig` (lines 136–143) is a tagged union with `tag = \"backend\"`, so it is flattened in TOML.\n- `BedrockConfig` and `OllamaConfig` (lines 145–177) have exactly the specified fields. `Option<String>` is used for `endpoint`, `aws_profile` and `region`, and the `endpoint()` accessor supplies the default `http://localhost:11434` without materializing it. `ModelId` and `EnvironmentVariableName` are plain `String`s, validated in `BackendConfig::validate` as nonempty, with no `=` or NUL in the variable name.\n- `BedrockCredentials` (lines 94–103) has `access_key_id`, `secret_access_key` and an optional `session_token`.\n- `OptionValue` (lines 179–190) has String, Boolean, Integer, Float, Array and Map variants. `OptionValue::validate` rejects non-finite floats, including nested ones, which gives `FiniteFloat`.\n- `SecretString` (lines 72–91) serializes transparently and prints `<redacted>` in `Debug`, as specified.\n- `BackendKind` and `ModelRef` (lines 192–205) match the spec. `BackendConfig::model_ref` (lines 399–412) copies the exact model string and the backend kind. It leaves out profile, region and endpoint, and `ResolvedAuthoringConfig::model_ref` delegates to it.\n\n**Marking:** every type and function that implements part of the requirement carries an `{impl}` marker.\n\n**Unspecified behavior:** the extra validation in the {impl} code (exclusivity of credentials and `aws_profile`, name rules, option-key restrictions) is marked with, and specified by, other requirements: `configuration_storage` and `credentials`.\n\n**Tests (`tests/configuration.rs`)**, all carrying `{test}` markers:\n- `backend_configuration_round_trips_without_materializing_defaults` covers both backends, flattened TOML, nested options, an unmaterialized Ollama endpoint, no `concurrency` in the output, and `model_ref`.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` covers the positive-integer concurrency and rejects 0, -1, 1.5 and a string.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers a workspace file with `configs` omitted, which yields an empty map and is not serialized.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers `BedrockCredentials` including `session_token`, Ollama `api_key`, `Debug` redaction, and round-tripping.\n- `user_and_workspace_authoring_tables_round_trip_every_map` covers user `projects`, an empty `configs` table, workspace configs with options, and `ModelRef` for Bedrock with exact ARN and inference-profile IDs while profile and region stay separate.\n- `storage_rules_reject_each_invalid_field_with_its_setting` covers the `ModelId` and env-var-name constraints, non-finite floats, project-key canonicality, and acceptance of opaque model IDs such as `name:tag@sha256:abc`.\n\nI found no gaps and no FIXMEs.",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration_structure",
@@ -76,8 +76,68 @@
     },
     {
       "file": "src/config.rs",
+      "item": "struct[WorkspaceAuthoringConfig]",
+      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[SecretString]",
+      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
+    },
+    {
+      "file": "src/config.rs",
       "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
       "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockCredentials]",
+      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[UserAuthoringConfig]",
+      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ProjectSelection]",
+      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendConfig]",
+      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockConfig]",
+      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OllamaConfig]",
+      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[OptionValue]",
+      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendKind]",
+      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ModelRef]",
+      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
     },
     {
       "file": "src/config.rs",
@@ -115,9 +175,19 @@
       "hash": "83d83eed35412090e07521c2c8851864627ee5db7155321e6311b298b30462fc"
     },
     {
+      "file": "tests/configuration.rs",
+      "item": "fn[user_and_workspace_authoring_tables_round_trip_every_map]",
+      "hash": "34fae851fb0afe1cf07314e2d97f3941995a972552b06b666bf52e300391ce8a"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[storage_rules_reject_each_invalid_field_with_its_setting]",
+      "hash": "1d5ec2ad2a1a63f42fae93daef815c9f78837090da51165a6e6dc9f7b95b8e57"
+    },
+    {
       "file": "src/config.rs",
       "item": "",
-      "hash": "77c81d1779ee668ffa9a9c872d1e1049bf9c29a69fa39209bb6afcd3cd1b735a"
+      "hash": "e50667c454c6926d119a16b873db76b99171008278cb978e2682be9fd26452e9"
     }
   ]
 }

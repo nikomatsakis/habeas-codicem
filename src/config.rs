@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const CONFIG_EXAMPLES: &str = "see md/requirements/authoring.md#editing-the-file";
 
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
@@ -24,6 +25,7 @@ pub struct UserConfig {
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {}
 
+// {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {

@@ -1,7 +1,7 @@
 {
   "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for either backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Provider errors, including throttling, MUST be reported through\nthe ordinary assessment-failure path.",
-  "determination": false,
-  "rationale": "**Most of the requirement is implemented and tested, but the `{impl}` marking is incomplete, so this is false.**\n\n**What is implemented and tested**\n- **Config shape.** `AuthoringConfig.concurrency` is `Option<NonZeroUsize>` (`src/config.rs:115-121`). `UserConfig::parse` decodes it, so `0`, `-1`, `1.5` and `'2'` are rejected with errors that name the file and `concurrency`. `tests/configuration.rs::authoring_concurrency_defaults_overrides_and_invalid_values` checks this for both backends.\n- **Defaults.** `ResolvedAuthoringConfig::effective_concurrency` (`src/config.rs:548-558`) returns the configured value. Otherwise it returns `available_parallelism()` for Bedrock, falling back to 1, and 1 for Ollama. The same test checks these defaults and that a configured `7` overrides them. `backend_configuration_round_trips_without_materializing_defaults` checks that defaults are not written back out.\n- **Bounded concurrency.** `author_all_with_options` (`src/authoring/batch.rs`) runs the assessments in a `JoinSet` and only spawns while `tasks.len() < concurrency`. `main.rs` builds a `tokio::runtime::Runtime::new()`, which has a fixed worker pool. The tests in `tests/authoring_batch.rs` confirm the bound:\n  - `batch_fills_evidence_…` asserts the peak number of in-flight requests is 2 with `concurrency = 2` and that the first two overlap.\n  - `ollama_batches_are_serial_by_default` asserts a peak of 1 by default.\n- **Per-assessment state and failure path.**\n  - Each `prepare_assessment` call creates its own `UsageLog`. The tests assert one usage record per assessment (6 of 6).\n  - A provider error from the mock (HTTP 400) is reported through the ordinary failure path. This is checked in `failed_assessment_keeps_other_results_and_reports_failure` and `denied_read_preserves_in_flight_assessments…`.\n  - Throttling retry has its own requirement, `authoring.provider_backoff`, with unit tests. No batch-level test injects throttling, but the failure path is the same.\n\n**Gaps**\n1. **Unmarked implementation.** The code that carries `concurrency` into the resolved configuration, `concurrency: config.concurrency` in `resolve_authoring_with_workspace_from` (`src/config.rs:843-924`), has no `{impl}` for `requirements.authoring.concurrency`.\n   - `resolve_authoring` (`src/config.rs:807-826`), which `author_all` actually calls, has no such marker either.\n   - The only marked resolver, `resolve_authoring_from`, is a one-line delegate to `resolve_authoring_with_workspace_from`.\n2. **Unmarked workspace and field code.** Workspace configs (`habeas.toml`) share `AuthoringConfig`, so `concurrency` is also accepted and validated through `WorkspaceConfig::parse` and `validate`. Neither carries the `{impl}` marker, and the `AuthoringConfig.concurrency` field declaration itself is unmarked.\n3. **Missing workspace test.** The spec says \"each named authoring configuration\", but no test covers `concurrency` in a workspace-local configuration, including its invalid values or its precedence. The tests only use the user config.\n\nNothing in the source acknowledges these gaps with a FIXME, so the determination is false rather than FIXME.",
+  "determination": true,
+  "rationale": "I judge that the sources satisfy `requirements.authoring.concurrency`. The code carries `{impl}` marks, and the tests cover the default, override, rejection and bounding cases. I did not run the tests; this is from reading the sources.\n\n**Configuration**\n- `AuthoringConfig.concurrency` is an `Option<NonZeroUsize>` (`src/config.rs:125-134`). It is serialized only when present, and a zero or non-integer value fails deserialization.\n- `ResolvedAuthoringConfig` carries the value, and `resolve_authoring_with_workspace_from` copies it from the selected record (`src/config.rs:880-962`).\n- `effective_concurrency` (`src/config.rs:583-593`) returns the configured value. When it is omitted, Bedrock gets `available_parallelism()` falling back to 1, and Ollama gets 1.\n- The `parse` functions and `load_workspace_config` validate the field in both user and workspace files.\n\n**Batch execution**\n- `main` builds `tokio::runtime::Runtime::new()`, a multi-thread runtime with a fixed worker pool, and runs `author_all_with_options` on it (`src/main.rs`).\n- `author_all_with_options` spawns each assessment as an async task in a `JoinSet`. It starts a new task only while `tasks.len() < concurrency` (`src/authoring/batch.rs:~85`). `JoinSet::len` also counts finished tasks not yet joined, so the bound is conservative.\n- Each task calls `prepare_assessment`, which creates its own `UsageLog` and its own `configured_record` conversation (`src/authoring/mod.rs:187-265`). A provider error goes through the ordinary failure path: the usage record is finished as \"failed\", and the error is pushed into `outcome.failures`. That produces a nonzero exit status while keeping the other results.\n- Throttling is retried under the separate `provider_backoff` requirement, which has its own implementation and tests (`src/authoring/providers.rs`). Provider errors that survive that layer take the ordinary failure path.\n\n**Tests**\n- `tests/configuration.rs::authoring_concurrency_defaults_overrides_and_invalid_values` covers both backends:\n  - the default (`available_parallelism` for Bedrock, 1 for Ollama);\n  - an override of 7;\n  - round-trip serialization;\n  - rejection of `0`, `-1`, `1.5` and `'2'`, with the file path and field name in the diagnostic.\n- `workspace_configurations_accept_validate_and_override_concurrency` covers the workspace file: the override replaces the user config as a whole, the defaults apply when the field is omitted, and invalid values are rejected.\n- `tests/authoring_batch.rs` runs the real binary against a mock Ollama server. The server records peak in-flight requests and whether the first two overlapped:\n  - `batch_fills_evidence…` uses `concurrency = 2` over 6 subjects and asserts a peak of exactly 2, so the bound holds and parallelism actually occurs.\n  - `ollama_batches_are_serial_by_default` asserts a peak of 1 with no configuration.\n  - Six distinct usage records are asserted, and each prompt names its own subject.\n  - `failed_assessment_keeps_other_results_and_reports_failure` has the provider reject one subject with HTTP 400. It asserts a nonzero exit status, retention of the other results, and a \"failed\" usage record.\n  - `denied_read_preserves_in_flight_assessments_and_their_evidence` checks slot reuse and independence under concurrency 2.\n\n**Gaps**\n- I found no unmarked implementation of the requirement and no unspecified behavior that needs another definition.\n- The only things not directly tested are the Bedrock default through the batch binary (it is covered at the config level) and the worker-pool type (covered by the code and a comment). I treat both as acceptable.\n- No FIXME acknowledgements are present.",
   "inputs": [
     {
       "requirements": "requirements.authoring.concurrency",
@@ -42,8 +42,23 @@
     },
     {
       "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ResolvedAuthoringConfig]",
+      "hash": "75bdbf9fba8779579c42bb2ae80184f6652737689884a1a3336bee278ecb911c"
+    },
+    {
+      "file": "src/config.rs",
       "item": "impl[UserConfig]/fn[parse]",
       "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[parse]",
+      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
     },
     {
       "file": "src/config.rs",
@@ -52,8 +67,18 @@
     },
     {
       "file": "src/config.rs",
+      "item": "fn[load_workspace_config]",
+      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
+    },
+    {
+      "file": "src/config.rs",
       "item": "fn[resolve_authoring_from]",
       "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
     },
     {
       "file": "src/main.rs",
@@ -126,69 +151,29 @@
       "hash": "74416240e60e811474a85bfd6fa78d9c9c5b9b5f44854f8ca70b75116f9e2fb1"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "c71320b40ade275633a2dbfd32e6d949b4c537ba76927694283167816a99b491"
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
+      "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
     },
     {
-      "file": "src/config.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+      "file": "src/authoring/batch.rs",
+      "item": "use@5fce6f8b0f71",
+      "hash": "5fce6f8b0f718a3191fd06b9d137a4d7e97b067a3422b3c97e2a46142bbfd085"
     },
     {
-      "file": "src/config.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "cb7f6e696b6ceaf0f121d39f5462a13da962cdc583aac325af9d9f52b607dd3b"
     },
     {
-      "file": "src/config.rs",
-      "item": "use@0518a5702796",
-      "hash": "0518a5702796360cd3239224bdcc1a87fb592eb01a36f2a19db1f668435a6038"
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[check_disallow]",
+      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
     },
     {
-      "file": "src/config.rs",
-      "item": "use@b9fce3e500fd",
-      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[AuthoringConfig]",
-      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ResolvedAuthoringConfig]",
-      "hash": "75bdbf9fba8779579c42bb2ae80184f6652737689884a1a3336bee278ecb911c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ResolvedAuthoringConfig]/fn[model_ref]",
-      "hash": "ba39e0c3fba8e179a3f196296995e9c83d9a2e635529c978684d03d345962237"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse_with]",
-      "hash": "c78942451f3a6a9f5d1bd6b05e3d80b0884e352f10a15719b190429c78a96f60"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "enum[Behavior]",
-      "hash": "dfcc05e5d939a0164a18df57410fc6b272d00b0493a0569256aab3b151ab0d1c"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "impl[Server]",
-      "hash": "0279128a321b8bf12976c672ae76747c85d9d1eb12cbcd39376685977ae3879c"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
-      "hash": "2f783bcf3d834f9ccc927e6516b705adfa4853ea5b72df0ad38c0bb69e1d3cd1"
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "633e94e0bfaf8edbc4e4892768672ffa57410694e16bbfc774a7a1bba3079cf4"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -207,6 +192,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[retry_fixture]",
+      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
       "hash": "b6ea41e0520a27f287ef5ef9bf0c947105fd047bf9d00f8c549b193159411dae"
     },
@@ -221,14 +211,34 @@
       "hash": "035a746b5d4bc5ef6fadfdb528065812f0d554534df0d7103a5b312980813022"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff]/fn[next_delay]",
-      "hash": "0100bce4c9082904e406bf5b2bc18294d236fd76786a1911e2732914338fa159"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]",
+      "hash": "2af79a330e536398fbf1e0d2c982568cde39eaa253e84e26b029f46bc9de9922"
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[retries_typed_throttling_but_not_permanent_token_errors]",
-      "hash": "dbe81ef9dcab2d28f5821d89a9e709a09b1623c03b7a418de24c64aa2439dc09"
+      "item": "impl[ProviderBackoff]/fn[next_delay]",
+      "hash": "1d42f4000d0547f3000c5a96aaa69b3efda7f573699f53331236e82c7aed0261"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[retry_after]",
+      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_config]",
+      "hash": "c6cd3b29dc1e52be19c7808b21770c700a46510956f3800f3c6acbb4f6262fdc"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[with_retry_after]",
+      "hash": "73d4f9618ef5754c6c1b02c3f472ed1b96a5faa2cd165303208a9a7321530e89"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]",
+      "hash": "ed07247757728517ac1e9a984457337460662cb0e00517d39dac1c6c45797be5"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -236,109 +246,92 @@
       "hash": "4d430da06b420519dc4ea8bc09eabed41c82049517585923bee21bab11fc1275"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[SecretString]",
-      "hash": "a0235bf71399d6481804c2fa60803621ede1fe00b6346ef5c214490497466c6a"
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]",
+      "hash": "33d6c45dcaf0ba4afb00364d536ada490de861ad8e6affddeba0757375e7adb1"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]",
-      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
+      "hash": "37588f8c9898b87e7bf916d29d4e976c7fd477d38b5eadc671dda7e03d866e0e"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[BedrockCredentials]",
-      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+      "file": "tests/authoring_batch.rs",
+      "item": "enum[Behavior]",
+      "hash": "dfcc05e5d939a0164a18df57410fc6b272d00b0493a0569256aab3b151ab0d1c"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[to_toml]",
-      "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
+      "hash": "2f783bcf3d834f9ccc927e6516b705adfa4853ea5b72df0ad38c0bb69e1d3cd1"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[validate]",
-      "hash": "9d47228e0c5a1d9a1681eb79f95a62e082f16ff1f218268f1d1c0e8f85b2c9e1"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
+      "hash": "6875494dd66dbcbedcdbc3696c6843224f1edade4c866f9faabf3223fbd08462"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[to_toml]",
-      "hash": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_reports_false_rationales_only_when_verbose]",
+      "hash": "7921c1deb2c83dd0f1516eaca86f9b8d4b933a0d6b3c56b05db80b260f649300"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[validate]",
-      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[verbose_false_rationale_is_readable_above_terminal_progress]",
+      "hash": "e0d9ccf5ff084e1e67d97090fbdca5809cf56f51edacd9a62cd9f50e1cdd2dc2"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[dumb_terminal_keeps_plain_batch_diagnostics]",
+      "hash": "dc9ecf73c70789e9341ff68668d7578bfa0654076622487c5bafd839bb5e4149"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]",
-      "hash": "9d9a20fc5bf46f4dd4df1bd3ec079246bd73834ca09664e5b6037bd0fb73803f"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[denied_read_aborts_only_its_assessment_and_runs_queued_assessments]",
+      "hash": "89fa89a34652a79b4d81484a49d0a83603cf7175ec826411f9243341aa1a9dbd"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[ProjectConfig]",
-      "hash": "e9e434f684e79be2fd86de660957fc5b92c3e773253bf6266ca40588706112fa"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
+      "hash": "9300f6549623070b5a2e95fd53360844a1c336981a2c4c32416a0a500db17d37"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]",
-      "hash": "d147ff64ce6cb086a553865d6fe42d5fa3004a15280fde02bd2b7819809e2d89"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_stdout_is_rejected_before_authoring]",
+      "hash": "786cb76d7f97049b29578897face51fea380960f064e3ca456b69f4d1fb23210"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
+      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options_json]",
-      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]",
+      "hash": "f553bb32996996cfbdff30720bbac40f09bd8e452c5d8952d03ccde20b4286a1"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "85a75e4507fc47425ea5274b29629a298b9259bce2cfc6d7fa79904e645d111a"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]",
+      "hash": "41506cf97f5572a543fb7dd13473be71c759c79e496553ab6146925a8c2b9099"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[OptionValue]",
-      "hash": "c8e9e2a02cc67e48500beff2121d34a375effa4fe0d8540dcba8229896cb514d"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Editing%20the%20file]",
+      "hash": "d9e3662cd1722948c833eeb495512b440e9bbb4ca4e4d4175ad242e98336c0db"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]",
-      "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ResolvedAuthoringConfig]",
-      "hash": "a436e51ccb4fe213290a40ac0af45e0175a792038893d08e534cef2dd0138006"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[workspace_document]",
-      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_workspace_common]",
-      "hash": "7ece2487516745486dfc5e57d408e0ac2dabe0cbc3a56503173e60263743593b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring]",
-      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_name]",
-      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     }
   ]
 }
