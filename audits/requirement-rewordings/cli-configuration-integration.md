@@ -168,3 +168,27 @@ resolve credentials or validate unused authoring settings.
 Reason: Refinement, not weakening. `requirements.configuration.feature_sections` requires each feature to state its absent-section behaviour, which operations require the section, and how user, project, and invocation settings combine. The evidence feature only implied these in a schema comment. The added sentences state what the code already does (`#[serde(default)]`, `unwrap_or_default`) and mark this requirement as refining feature_sections for the evidence feature. Obligations are added, none removed.
 
 Prompted by: evidence/requirements.configuration.feature_sections.json: "No document or code is marked impl for `feature_sections` ... The `[evidence]` feature is a second feature section ... but it is not tied to `feature_sections` either."
+
+## `requirements.cli.add_input_item`
+
+Old text:
+
+```text
+A named node is
+declared on the line containing its name; an anonymous node is declared on the
+line where it starts.
+```
+
+New text:
+
+```text
+A named node is
+declared on the line where its name begins in the source. An anonymous node, or
+a named node whose name is not written in the source, such as an extern block
+without an ABI string, is declared on the line where its own syntax starts,
+excluding attached comments and attributes.
+```
+
+Reason: Precision. A name such as `impl[Wrapper/From<T>]` can span lines when a header wraps, so "the line containing its name" was ambiguous; the code now declares custom-named nodes (impls, extern blocks, Markdown sections, CSS rules) where the name begins, and tests it. "Where it starts" was ambiguous for an anonymous node with attached attributes, whose line range starts at the attribute; the code declares it where its own syntax starts, which is the line a user points at. An extern block named `Rust` by default has no name in the source and falls under the same start rule. No obligation is removed.
+
+Prompted by: evidence/requirements.cli.add_input_item.json: "Named nodes with custom naming are declared at the node's start, not at their name. ... Anonymous nodes use the grammar node's start, not the node's start including attached siblings ... It is arguable which line \"where it starts\" means, but the code and the requirement text are not clearly aligned."

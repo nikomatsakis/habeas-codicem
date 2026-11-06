@@ -62,8 +62,10 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::{req} add_input_item
 `habeas add-input --item <file>:<line>` MUST parse the file under {cite}`requirements.references.outlines` and add or refresh one
 outline input for every outline node declared on that line. A named node is
-declared on the line containing its name; an anonymous node is declared on the
-line where it starts. Each input MUST store the selected `file` under the path
+declared on the line where its name begins in the source. An anonymous node, or
+a named node whose name is not written in the source, such as an extern block
+without an ABI string, is declared on the line where its own syntax starts,
+excluding attached comments and attributes. Each input MUST store the selected `file` under the path
 rules in {cite}`requirements.ci.schema`, the node's selector, and its structural
 hash. The command MUST report every selected node and reject a line on which no
 node is declared.
