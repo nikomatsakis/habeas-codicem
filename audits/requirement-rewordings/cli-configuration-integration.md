@@ -192,3 +192,30 @@ excluding attached comments and attributes.
 Reason: Precision. A name such as `impl[Wrapper/From<T>]` can span lines when a header wraps, so "the line containing its name" was ambiguous; the code now declares custom-named nodes (impls, extern blocks, Markdown sections, CSS rules) where the name begins, and tests it. "Where it starts" was ambiguous for an anonymous node with attached attributes, whose line range starts at the attribute; the code declares it where its own syntax starts, which is the line a user points at. An extern block named `Rust` by default has no name in the source and falls under the same start rule. No obligation is removed.
 
 Prompted by: evidence/requirements.cli.add_input_item.json: "Named nodes with custom naming are declared at the node's start, not at their name. ... Anonymous nodes use the grammar node's start, not the node's start including attached siblings ... It is arguable which line \"where it starts\" means, but the code and the requirement text are not clearly aligned."
+
+## `requirements.integration.live_bedrock_test`
+
+Old text:
+
+```text
+`HABEAS_LIVE_CONFIG`, when set, MUST select a named authoring configuration for
+the test. Otherwise the test MUST use the project's or user's selected
+configuration when it selects Bedrock, falling back to the first named Bedrock
+configuration in name order.
+```
+
+New text:
+
+```text
+`HABEAS_LIVE_CONFIG`, when set, MUST select a named authoring configuration for
+the test. Otherwise the test MUST use the configuration that authoring would
+select for the checkout under {cite}`requirements.authoring.configuration_precedence`
+when it is a Bedrock configuration, falling back to the first Bedrock
+configuration in name order among the user and workspace configurations. The
+fixture project MUST resolve the selected name against the same workspace
+authoring configurations as the checkout.
+```
+
+Reason: Precision, resolving the ambiguity the reviewer raised in favour of the stronger reading. "The project's or user's selected configuration" did not say whether the workspace `habeas.toml` counted. The test now follows the product's precedence (user project selection, workspace default, user default), considers workspace configurations when falling back, and copies the checkout's workspace `[authoring]` table into the fixture project so `--config` resolves the same record. The new text states that behaviour; it adds obligations and removes none.
+
+Prompted by: evidence/requirements.integration.live_bedrock_test.json: "Project configuration may be ignored. The product's own precedence ... is the user's project selection, then the workspace `habeas.toml` default, then the user default. `selected_config` calls `resolve_authoring_from`, which passes no workspace configuration. ... The requirement text is ambiguous here, and neither the code nor any comment settles the question."

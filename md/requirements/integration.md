@@ -22,9 +22,12 @@ the AWS SDK cannot load credentials. Skip warnings MUST be visible under ordinar
 `cargo test` output.
 
 `HABEAS_LIVE_CONFIG`, when set, MUST select a named authoring configuration for
-the test. Otherwise the test MUST use the project's or user's selected
-configuration when it selects Bedrock, falling back to the first named Bedrock
-configuration in name order. Malformed configuration and invalid explicit
+the test. Otherwise the test MUST use the configuration that authoring would
+select for the checkout under {cite}`requirements.authoring.configuration_precedence`
+when it is a Bedrock configuration, falling back to the first Bedrock
+configuration in name order among the user and workspace configurations. The
+fixture project MUST resolve the selected name against the same workspace
+authoring configurations as the checkout. Malformed configuration and invalid explicit
 selections MUST fail the test. The selected profile, region, model, and options
 MUST come from that configuration; credential resolution MUST use the AWS SDK.
 
