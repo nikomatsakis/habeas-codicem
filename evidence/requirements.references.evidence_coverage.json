@@ -1,7 +1,7 @@
 {
   "requirement": "For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
   "determination": true,
-  "rationale": "**Judgment:** the sources satisfy `requirements.references.evidence_coverage`.\n\n**Implementation**\n\n- `collect_references_with_progress` (src/evidence.rs) scans every file in the project. It skips only `.git`, `target`, and the root `book` and `evidence` directories. It records each role's name, kind, file, and the 1-based line of the match. That covers references in source files and in Markdown requirement and example declarations. It is marked `{impl}` for `references.targets`, which is where discovery belongs.\n- `validate_references` (src/evidence.rs, lines 1024–1159) is marked `{impl}` for this requirement.\n  - It groups references by the definition they name.\n  - It reads that definition's `evidence/<name>.json` through `evidence_input_ranges`.\n  - For every non-`Cite` reference it requires an input with the same file and `line_start <= line <= line_end`. This gives coverage for `{impl}` and `{test}`, and `{cite}` is explicitly exempt.\n  - Each failure is reported as `evidence/<name>.json: no input covers {role}`name` at <file>:<line>`. That includes the role, full name, source file, and line, as required.\n- `evidence_input_ranges` (src/evidence.rs, lines 1274–1308) resolves every evidence input through `InputSelector::resolve`.\n  - Outline inputs resolve to the node's line range, including attached comments.\n  - Requirements and definition inputs resolve to the declaration ranges, which covers references inside declarations.\n  - Files are canonicalized and compared against the reference's file.\n- `InputRange` (src/evidence.rs) and `SourceRange` (src/inputs.rs) are the range carriers and are marked `{impl}`.\n- The other behaviours in `validate_references` are specified by other definitions that the same function also marks `{impl}`: anchors, the example-needs-`{test}` check, targets, and progress. Nothing unspecified is left over.\n- An unreadable or invalid evidence file yields no ranges, so its references are reported as uncovered. That is the safe failure mode.\n\n**Tests**\n\n- `source_references_are_covered_by_evidence_inputs` is the positive case. An `{impl}` and a `{cite}` in Rust and a `{test}` in Markdown are covered by an outline input, and the report has no errors.\n- `reports_unknown_references_and_uncovered_lines` covers the line boundary. Line 1 is covered and the adjacent line 2 is not. The error is exactly `no input covers {test}`foo.bar.ready` at src/notes.txt:2`, and the unknown-name reference is reported separately.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks that:\n  - with empty inputs, the uncovered `{impl}` (line 3) and `{test}` (line 5) are reported with their roles;\n  - the `{cite}` at line 1 is not reported;\n  - adding outline inputs for the two functions clears all errors.\n- `cited_example_with_a_test_and_matching_evidence_validates` covers example `{test}` references and requirements-glob inputs. Removing the inputs yields `no input covers` with `src/main.rs:1`.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` (tests/outcomes.rs) is an end-to-end check that a new uncovered `{impl}` in `other.txt:1` is reported even when the determination is FIXME.\n\n**Minor observation (not a gap)**\n\nNo test places an `{impl}` or `{test}` inside a declaration and checks coverage through a requirements input. That path uses the same range comparison as the other cases, with no special code, and the declaration ranges are resolved in `InputSelector::resolve`. I don't consider this a deficiency.\n\nNo FIXME acknowledgements are involved, and I found no unmarked implementing code.",
+  "rationale": "**Judgment: the sources satisfy `requirements.references.evidence_coverage`.** The implementation is complete and marked, and the tests cover the main cases. One minor test gap remains, described at the end.\n\n**Implementation**\n- `collect_references_with_progress` (src/evidence.rs) walks the project and skips `.git`, `target`, and the root-level `book` and `evidence` directories. It reads every text file, and `reference_roles` (src/lib.rs) extracts `{impl}`, `{cite}`, `{test}` and `{term}` references with their line numbers. Markdown files, including requirement and example declarations, are scanned like any other file. These two functions are marked as implementing `requirements.references.targets`, not this requirement, but they supply the references this requirement checks.\n- `validate_references` (marked `{impl}`) groups references by the definition they name. For each requirement or example it loads `evidence/<name>.json` through `evidence_input_ranges`, which is also marked `{impl}`.\n- It skips `{cite}` references with an explicit filter, so cites need no coverage.\n- For every other reference it checks that some input range has the same file and `line_start <= line <= line_end` (inclusive). Otherwise it pushes the error ``<evidence file>: no input covers {role}`name` at <file>:<line>``. That message gives the role, full name, source file and line, as required.\n- A missing or unreadable evidence file yields no inputs, so every `{impl}` and `{test}` reference to that definition is reported as uncovered.\n- `evidence_input_ranges` resolves each recorded input through `InputSelector::resolve` into ranges. Outline inputs give a node range. Requirements-glob and definition inputs give the declaration ranges, so references inside declarations can be covered. `InputRange` and `SourceRange` are the marked range types.\n- The extra behavior in `validate_references` (example test checks, anchors) carries its own `{impl}` markers for other definitions. I found no unmarked behavior in the `{impl}` code. Inputs that fail to resolve are skipped when building ranges and are reported by other validation.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` covers the positive case: an `{impl}` in a source file and a `{test}` in Markdown are covered, a `{cite}` is not required, and the validation report has no errors.\n- `reports_unknown_references_and_uncovered_lines` covers the boundary where an input covers line 1 but not the identical line 2. It asserts the exact \"no input covers … at src/notes.txt:2\" error.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` has empty inputs. It asserts exactly two uncovered errors, one for `{impl}` at line 3 and one for `{test}` at line 5, and none for the `{cite}` at line 1. It then checks that outline inputs for `fn[run]` and `fn[check]` clear the errors.\n- `cited_example_with_a_test_and_matching_evidence_validates` shows that empty inputs make the `{test}` at `src/main.rs:1` uncovered, and that a requirements-glob input covers declarations. `fixme_does_not_hide_stale_inputs_or_uncovered_references` (tests/outcomes.rs) shows an end-to-end uncovered `{impl}` in `other.txt:1` is still reported even when a FIXME is present.\n\n**Minor gap**\nNo test makes an `{impl}` or `{test}` reference inside a requirement or example declaration uncovered. The code has no special case for declarations; it uses the same file-and-line check as for any other file. I do not consider this a material gap.",
   "inputs": [
     {
       "requirements": "requirements.references.evidence_coverage",
@@ -123,44 +123,19 @@
       ]
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+      "file": "src/authoring/inputs.rs",
+      "item": "use@4acd7fec4c4a",
+      "hash": "4acd7fec4c4a06f684055207db032e20d650cbfd84049329791caa29f3d7944a"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[resolved_location]",
-      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring]",
-      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring_from]",
-      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "2d0d0dde93063d58590fc66a977cbfb3ec4e20128285131a1e7b7c8d0e366bdd"
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
     },
     {
       "file": "src/evidence.rs",
-      "item": "impl[Anchor]/fn[resolve]",
-      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "ed9509a1f75089d757aaed673cca2b9af204bbb5971b09a403f604a3958ef909"
+      "item": "struct[RepositoryInspection]",
+      "hash": "800607c371b41426f2bd4e9fe2d864020dc805bdc4efda5ea0627d7978eecbe5"
     },
     {
       "file": "src/evidence.rs",
@@ -179,8 +154,83 @@
     },
     {
       "file": "src/index.rs",
+      "item": "use@1e6c996ce3b5",
+      "hash": "1e6c996ce3b5a1a37b1c02d42fcad498847947b78f7955660bef7aadfca30a2c"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[RenderSources]",
+      "hash": "d324015b7b487f64a1ffa52f85208cf8c674d04f2027d5f4bf29c89ba1e89b8a"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]/fn[resolved]",
+      "hash": "a230010987fa560c72384e06bc32043fa178610d2c7e9be4a915868d2d2d56ab"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring]",
+      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_from]",
+      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "ca008e63fdef9e70314dd40b9bd0e611918e0179ee41125bb36ec027fdd019a6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[Anchor]/fn[resolve]",
+      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "use@ad7063cca1ab",
+      "hash": "ad7063cca1ab0145765581a7342a57d0686d7fdae87981aa400632495af29d33"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]/fn[group]",
+      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[InputLocation]",
+      "hash": "99ea2be1f267223b80d87d341410380c2b14855b158cb3be7bedd36ee329724f"
+    },
+    {
+      "file": "src/index.rs",
       "item": "impl[InputLocation]/fn[resolve]",
       "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_source_location]",
+      "hash": "09084dd24dc4bdde067b7ffdd63c45d571ce1f7a2bce75c3f2ef56b2c010af0e"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
     },
     {
       "file": "src/inputs.rs",
@@ -189,8 +239,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[from_input]",
-      "hash": "36656c01e7424e4090153587c050dfd41868a8f14b91f908649232e20450cb22"
+      "item": "impl[ParsedSource]/fn[node_range]",
+      "hash": "a4f2fd736f9c0783c44c18091bc3311367dcedb8dbdc6bf02f924a8b106ab29e"
     },
     {
       "file": "src/inputs.rs",
@@ -198,113 +248,14 @@
       "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
+      "file": "src/lib.rs",
+      "item": "fn[reference_roles]",
+      "hash": "46cf865541205df9442b76c33f4a0e4c6e7d52b9b9d6d9ada3335c34cb63a1ea"
+    },
+    {
       "file": "src/outline/mod.rs",
       "item": "impl[Outline]/fn[resolve]",
       "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[status_lists_nonvalid_requirements_and_all_option_in_name_order]",
-      "hash": "007e5bc1743b81fe5c0f6cc7245991c263471e21dfbc885a4c02939f8773f4c8"
-    },
-    {
-      "file": "md/getting_started.md",
-      "item": "section[Getting%20started]",
-      "hash": "1a5c8d7677163a9cd7e8e7a911d0e262e3eb50af521eac9327c7ea7e4fef3fb3"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Examples]",
-      "hash": "5012761f9563c3f27539100660275584516748817c1eb351072b8c90ffd11c4a"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Evidence]",
-      "hash": "5e0c6f55816949dfeb15ef7a14c7b94a9d44b3b57048c00beb187a1cf28c06dc"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
-      "hash": "04beca975a77e6b070e128c5ffb41fe2f45429f74f2ace3f14ff672ad6372cca"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[References]",
-      "hash": "45d28e2ba8209acf969ae23d46633809af4d3b3aa2e0312c0adbf517add48acb"
-    },
-    {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Checking%20and%20viewing]",
-      "hash": "78f6d6fac080420e55ab3ea05c9051b888a5903388ba0939139e450f1568f82c"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Look%20up%20definitions%20and%20references:%20`references`]",
-      "hash": "c56469500f8c5dc38ef1136050d09962f32e90b81c4c24dd146965d83874d1d9"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Initial%20prompt]/section[Prompt%20template]",
-      "hash": "c1e82c6f5d963a283ba43bb9d5318db3f7f78a04dd5c53b414a506033b909a00"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Configuration]",
-      "hash": "856d308bcdedee9ee04ee57d2536fa093bca063a4147e78159a6061b86cf9dec"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Configuration]/section[Editing%20the%20file]",
-      "hash": "95dc049a4f4aafa54215b2d82a288afec9cdc707372d76c22e3c5494a7068b36"
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]",
-      "hash": "ced8afd8ddd1e810a26eb8b533339395aa6d03f1f29d23fb15a69fda84e1b56b"
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "item": "section[Command-line%20interface]",
-      "hash": "968b4f78bac752b49945b38775a30c095cd007dc7e402db559dc6cb78d604cd0"
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "item": "section[Configuration]/section[Common%20data%20structures]",
-      "hash": "6baf61e178dca0549628b65169c070b7e4600bbf813bd146aacdced48ea7a00a"
-    },
-    {
-      "file": "md/requirements/examples.md",
-      "item": "section[Named%20examples]",
-      "hash": "dab32758dd4c3a6e84c6ed92b57c69bbf8c630040c3b0ee3c82f7fb040fccaee"
-    },
-    {
-      "file": "md/requirements/index/README.md",
-      "item": "section[Book%20rendering]",
-      "hash": "8e4ffc8ecb6c9c18d92c14b3c962c3ef8d4e97c41bac4cfd8e5cabf817ccaaa5"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "4e923f36ec03f20ddff16615ed24e35890c05b685815359ad20bbb6380f7eb26"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]/section[References%20as%20authoring%20inputs]",
-      "hash": "129b55e097d757c1290d72bb678ff4f026ad559804142069bb7500986fe3cc22"
-    },
-    {
-      "definition": "requirements.ci.validation_error",
-      "text": [
-        ":::{definition} validation_error",
-        ":phrase: validation error",
-        "",
-        "One message in a repository validation report, describing a single failed check.",
-        "It begins with the affected evidence file, requirement, or source location, names",
-        "the failed check, and states the specific missing, invalid, or changed value,",
-        "with the expected value when available. It is concise because agents are its",
-        "primary readers.",
-        ":::"
-      ]
     }
   ]
 }

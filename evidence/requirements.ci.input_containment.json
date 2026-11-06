@@ -1,7 +1,7 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers each obligation, it is marked with `{impl}`, and the tests cover the main boundaries and failure cases.\n\n**Implementation**\n- **Single choke point.** Every evidence input goes through `check_project_file` in `src/inputs.rs`, which calls `resolve_evidence_file` in `src/authoring/access.rs`.\n  - Outline inputs reach it through `OutlineCache::parse` and `read_project_file`.\n  - Definition and requirements inputs reach it through `check_project_file` on each declaring file in `InputSelector::resolve`. This covers the \"file resolved from its selector\" case.\n  - `validate_input`, `validate_outline_input` and `validate_resolved_input` in `src/evidence.rs` turn each failure into a labelled error.\n- **Containment and symlinks.** `resolve_evidence_file` canonicalizes the root. It resolves both the requested location (`requested_location`) and the symlink target (`resolve`). If either lies outside the root, it requires an explicit workspace allow or a discovered Cargo output directory. The Cargo exception requires both the requested path and the target to be inside that directory.\n- **Disallow.** `PathPolicy::check_disallow` runs first and is checked against the requested path, its resolved ancestors and the symlink target. Disallow therefore wins over allow and over generated-output permission, and a disallowed ancestor cannot redirect a read to an allowed target.\n- **Missing and unreadable files.** A missing file gives \"cannot open …\" from `resolve`. An unreadable one gives \"cannot read …\" from `read_project_file`. A non-file gives \"is not a project file\". Disallowed files report \"disallowed by habeas.toml rule …\".\n- **No Git or build.** Validation does not consult the Git index.\n  - `generated_roots` only runs `cargo metadata --offline --locked --no-deps` and reads existing `root-output` records. It does not run a build.\n  - It tolerates failures by returning an empty list.\n  - It is marked as an implementation of `generated_inputs`, which the requirement cites.\n- **Marking.** The functions that do this work carry `{impl}` for `requirements.ci.input_containment`: `requested_location`, `normalize`, `resolve`, `resolve_evidence_file`, `check_project_file`, `read_project_file`, `OutlineCache::parse` and `InputSelector::resolve`, plus the evidence validators. I found no unmarked containment code.\n- **Extra behaviour.** The Git-tracking and credential logic in `SourceAccess::path` applies to authoring reads, not to validation. Other requirements (`source_tools`, `read_denial`, `credentials`) cover it, so it is not extra behaviour under this requirement.\n\n**Tests**\n- `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix`: an in-root symlink is accepted. A symlink to a sibling directory with the same name prefix is rejected with \"resolves outside the repository\".\n- `unreadable_and_missing_inputs_are_reported`: missing files report \"cannot open\", and mode-000 files report \"cannot read\".\n- `definition_and_requirements_inputs_obey_containment_for_declaring_files`: a disallow rule on the declaring files of definition and requirements inputs yields \"disallowed\" errors.\n- `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`: an external path is rejected without an allow rule and accepted with one. It still gets staleness checks, and a disallow rule overrides the allow.\n- `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`: a disallowed ancestor symlink cannot reach an allowed target, including through `..`.\n- `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`: an external Cargo build output is accepted without any allow rule, is subject to freshness checks, and is rejected by disallow. The test also asserts that the target directory is never created, so no build ran.\n- Unit tests in `access.rs` (allow versus disallow with alias targets, symlink-before-`..` handling, `resolve_evidence_file` calls).\n- Command tests: `status_applies_workspace_disallow_to_existing_evidence` and `add_input_external_sources_respect_allow_and_disallow`.\n\nThere are no acknowledged gaps or FIXMEs.",
+  "rationale": "**Judgment: the requirement is met.** The implementation is complete and marked, and the tests cover the main cases. I did not run the tests; I read the code and the test bodies.\n\n**Implementation**\n\n- **Single choke point.** Every evidence input goes through `InputSelector::resolve` in `src/inputs.rs`. Outline inputs go via `OutlineCache::parse` and `read_project_file`. Definition and requirements inputs call `check_project_file` on each declaring file. All of these end in `resolve_evidence_file` in `src/authoring/access.rs`.\n- **Containment.** `resolve_evidence_file` canonicalizes the root. It resolves both the requested location (the parent is canonicalized, so symlinks in earlier components are followed) and the symlink target. It rejects any path where either one is outside the root, unless the workspace `allow` rules permit it or both fall inside a discovered Cargo build-script output directory. So the symlink-target rule and the external-path exception are both covered. `starts_with` on `Path` compares whole components, so a sibling directory with the same name prefix is rejected.\n- **Disallow.** `PathPolicy::check_disallow` runs before the allow and generated checks, so disallow wins. It checks the requested path, every resolved ancestor location, and the symlink target. An allowed alias or a disallowed ancestor therefore cannot expose a disallowed target.\n- **Reporting.**\n  - A missing file gives \"cannot open X\".\n  - An excluded file gives \"…is disallowed by habeas.toml rule…\".\n  - An unreadable file gives \"cannot read X\" from `read_project_file`.\n  - An outside path gives \"resolves outside the repository…\".\n  - A non-file gives \"is not a project file\".\n  - `validate_outline_input`, `validate_resolved_input` and `validate_input` in `src/evidence.rs` push these into the error list with the input label.\n- **Generated outputs without a build.** `generated_roots` uses `cargo metadata --offline --locked --no-deps` and inspects `root-output` records. It never runs a build or build script, and it ignores the inherited `OUT_DIR`. Failure is tolerated by returning an empty list. Inputs go through the normal outline freshness check.\n- **Marking.** All code that does this carries `{impl}` markers: `requested_location`, `normalize`, `resolve`, `resolve_evidence_file`, `project_path`, the three `validate_*` functions, `OutlineCache::parse`, `InputSelector::resolve`, `check_project_file` and `read_project_file`. I found no unmarked file reads that bypass containment. Other reads in `src` (reference scanning, chapter reading, evidence-file reading) are not evidence-input resolution.\n- **Unspecified behavior.** I found none beyond what this requirement and the cited `evidence_paths` and `generated_inputs` requirements specify.\n\n**Tests**\n\n- `tests/evidence_boundaries.rs`:\n  - `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` covers a symlink that stays inside the root and a symlink to a prefix-sharing sibling.\n  - `definition_and_requirements_inputs_obey_containment_for_declaring_files` covers definition and requirements inputs hitting a disallowed declaring file.\n  - `unreadable_and_missing_inputs_are_reported` covers the \"cannot open\" and \"cannot read\" cases. The unreadable assertion is conditional on the file really being unreadable, which accounts for privileged users.\n  - `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` covers an external input rejected without an allow rule, accepted with one, stale after a content change, and rejected again once disallowed.\n  - `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources` covers a disallowed ancestor symlinked to an allowed target.\n  - `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` covers a discovered external Cargo output directory, freshness, disallow override, and `assert!(!target.exists())` to show no build ran.\n- `src/authoring/access.rs` unit tests cover:\n  - allow overriding the defaults;\n  - disallow winning over a symlink alias;\n  - disallowed ancestors;\n  - symlinks resolving before `..` components;\n  - generated-root discovery;\n  - `OUT_DIR` being ignored and metadata failure being tolerated.\n- `tests/commands.rs` covers `status` with a disallowed existing input, and `add-input` with an external source under allow and disallow, leaving the evidence file unchanged on failure.\n- `src/authoring/tools.rs` covers the symlink-before-`..` case for the search tool.\n\nThese cover the boundaries and failure cases for this requirement. No gaps or FIXMEs are acknowledged.",
   "inputs": [
     {
       "requirements": "requirements.ci.input_containment",
@@ -255,7 +255,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]",
-      "hash": "ecac5f53614daa737173885275e4613df5e9d31bb6352e66d7a0953c05dde898"
+      "hash": "a333d5b62ee51cf26f663e644e85ce078964da3313643cf62ec1af22ad7a3069"
     },
     {
       "file": "src/authoring/access.rs",
@@ -284,8 +284,28 @@
     },
     {
       "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::fmt::Display]",
+      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::error::Error]",
+      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_os_denial]",
+      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "fn[denied]",
-      "hash": "96bb9be286a20b89dae60251120cc434952494a990987ce48a71944642250e4c"
+      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
     },
     {
       "file": "src/authoring/access.rs",
@@ -301,6 +321,111 @@
       "file": "src/authoring/access.rs",
       "item": "fn[discover_generated_roots]",
       "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]",
+      "hash": "f4523290853d623e10ee05ed1a8cd475df3c2cf9bc48cf8432bd63cf131eea3c"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[read_or_new]",
+      "hash": "9d1e50043e22fd9cc22879a0d3ede2522ff12c2e30d86343e960c5fec3208ccc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
+      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[persisted]",
+      "hash": "d0caafefaaa93e51e0657841bd7d4abb7c8ac441d6ae928209760b9378831d82"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_user_config]",
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "370090f1cfdd25d6d5eee2c18b1a54e3b68930513d570f4f305f084e07ba4a45"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "6e0d1bcbefe2f48a1562a260a5dd81fc25e54da33c79bd059f85f76df0b5db1e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "032c8c68261b55784929b1a92d8c2806a7cbbd71028ebde50790220a6f44595e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references_with_progress]",
+      "hash": "93d27acc2c376f3ff8d2049397cd679c542efd3b5a1c423ec4fe08ba9ad3eebb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load]",
+      "hash": "796c6adf330cbdc2dc13569a0f1cb8d08c4548b9651d269809ab83e78eee4169"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[validate_rust_functions]",
+      "hash": "63e62c880207bbe731b5584ab6b7611a7051a63a6f9aff6d35a89e20d24eb64f"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[project_depends_on_habeas]",
+      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[write_new_or_same]",
+      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[run]",
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[is_configured]",
+      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `references` tool with this interface:\n\n```text\nreferences({ selection: String? }) -> ReferenceIndex\n\nReferenceIndex {\n    definitions: Array<DefinitionName>,\n    sites: Array<ReferenceSite>,\n}\n\nDefinitionName { name: String, kind: \"requirement\" | \"example\" }\n\nReferenceSite {\n    name: String,\n    role: \"impl\" | \"cite\" | \"test\",\n    file: String,\n    line: Integer?,\n    item: String?,\n}\n```\n\n`selection` MUST be a {term}`requirements.references.definition_selection`.\nWithout `selection`, the tool MUST return\nthe full name and kind of every requirement and named example in full-name\norder, with empty `sites`. With `selection`, it MUST return the selected definitions\nin full-name order and one flattened `sites` array containing every valid\n`{impl}`, `{cite}`, and `{test}` reference to any match under\n{cite}`requirements.references.targets`, each naming the definition it\nreferences, ordered by name, file, and line. An anchor under\n{cite}`requirements.references.anchors` MUST be reported as a site for its\nanchored file without a line. A site in a supported language MUST give the\nselector of its smallest enclosing outline node under\n{cite}`requirements.references.outline_comments`. Sites in sources excluded by\n{cite}`requirements.authoring.source_tools` MUST be omitted without aborting.\nAn invalid selection or one matching no definition MUST return an explanatory tool\nerror.\n\nResults are listings without source text. Like directory listings, they MUST\nNOT become evidence inputs; the model requests the sources it relies on with the\n`habeas` tool.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.authoring.reference_index`. I read the code and tests but did not run the tests.\n\n**Implementation**\n\n- **Interface.**\n  - `definitions()` in `src/authoring/tools.rs` advertises a `references` tool with an optional string `selection` and `additionalProperties:false`.\n  - `dispatch` routes `\"references\"` to `references()`.\n  - The tool description documents the `{impl}`/`{cite}`/`{test}` roles, the glob, the `:impl:` anchors and a null item.\n- **Selection.**\n  - `references()` rejects unknown argument keys and non-string selections.\n  - It validates the selection with `definition_glob::validate`, so a bad selection such as `\"bad name\"` or `\"\"` returns an error.\n  - A selection that matches no requirement or example returns an explanatory error.\n- **Definitions and ordering.**\n  - Definitions come from `load_definitions`, which returns a `BTreeMap`, so they are in full-name order.\n  - Terms are excluded.\n  - `kind.noun()` supplies `\"requirement\"` or `\"example\"`.\n- **No selection.** The tool returns every requirement and example with `sites: []`.\n- **With selection.**\n  - It collects references with `collect_references`. That function is marked `requirements.references.targets`, and its discovery skips `.git` and `target` at any depth and the root `book` and `evidence` directories.\n  - It keeps only references that match the selection and name a non-term definition. Unresolvable names are dropped, not reported.\n  - It drops references in files the access policy excludes (`sources.access.file(...).is_ok()`), so excluded sources are omitted without aborting.\n  - The site `item` is the selector of the smallest enclosing node. It comes from `outline.owner_at_line`, which implements the comment-run ownership in `requirements.references.outline_comments`. It is null for files without a language profile.\n  - Anchors are added as sites with `line: null`. Their `item` is null for a whole-file anchor and the selector for a `path#selector` anchor. Excluded anchored files are skipped.\n  - Sites are sorted by (name, file, line). A line-less anchor sorts before line-numbered sites in the same file.\n- **Evidence.** Every result returns `inputs: Vec::new()`, so listings are not recorded as evidence.\n- **Marking.** The anchor and glob behaviour inside `references()` carries `{impl}` markers for `requirements.references.anchors` and `requirements.references.definition_globs`. I found no unmarked part of the requirement and no extra behaviour beyond it.\n\n**Tests**\n\n- `references_list_names_and_flattened_sites_without_recording_inputs` covers:\n  - the no-selection listing in full-name order with empty sites;\n  - an exact selection with impl, cite and test sites in the right order, with Rust `fn[...]` items and a Markdown section item;\n  - exclusion of a cite in a `disallow`ed `private/` directory;\n  - a glob selection that flattens sites across definitions and orders them by name;\n  - empty `inputs` throughout;\n  - error cases: a missing name, an invalid name, an empty selection, a non-string selection and an unknown argument.\n- `references_report_anchors_as_file_or_node_sites` covers:\n  - a file anchor with null line and item;\n  - a node anchor with the selector;\n  - omission of an anchor on an excluded file;\n  - ordering of anchor sites among cite sites.\n- `references_tool_is_advertised_with_an_optional_selection` checks the advertised schema and key phrases in the description.\n\n**Minor gaps**\n\n- No test covers a non-outline file such as plain text getting a null item.\n- No test covers ordering by line within a single file.\n\nThese are small, and the code paths are simple.",
+  "rationale": "**Implementation**\n\nAll the code that implements the requirement is marked `{impl}`. That is `fn[references]`, the `references` entry in `definitions()`, and the `references` route in `dispatch()`, all in `src/authoring/tools.rs`. The helpers it relies on are marked for the requirements they implement: `collect_references` for `requirements.references.targets`, and the anchor code for `requirements.references.anchors`.\n\n- **Interface.**\n  - `definitions()` advertises a `references` tool whose only parameter is an optional string `selection`, with `additionalProperties: false`.\n  - The result is `{definitions: [{name, kind}], sites: [{name, role, file, line, item}]}`.\n- **Selection.**\n  - A supplied `selection` must be a string, or the call errors.\n  - It is checked with `definition_glob::validate`, so an invalid or empty selection returns a tool error.\n- **No selection.**\n  - The tool lists every non-term definition with its name and `kind.noun()`, which is \"requirement\" or \"example\".\n  - `load_definitions` returns a `BTreeMap`, so the list is in full-name order.\n  - `sites` is empty.\n- **With selection.**\n  - Definitions are filtered by `definition_glob::matches`, in the same full-name order.\n  - A selection that matches nothing, such as a term-only name, returns an explanatory error.\n  - `collect_references` finds the `{impl}`, `{cite}` and `{test}` references. Discovery skips `.git` and `target` at any depth and the project-root `book` and `evidence` directories.\n  - The reference list is then restricted to the selected, non-term definitions.\n  - References in sources that `sources.access.file` rejects are silently dropped, which covers the \"omit without aborting\" rule for disallowed or untracked sources.\n- **Sites.**\n  - Each site carries its own definition name, a role label, a relative file and a line.\n  - `item` is the selector from `outline.owner_at_line` when the file's profile has a language, and null otherwise. This is the outline-comment owner rule.\n- **Anchors.**\n  - Anchors on selected definitions are added with `line: null`.\n  - `item` is the `path#selector` part, or null for a whole-file anchor.\n  - Excluded anchor targets are skipped.\n- **Ordering.** Sites are sorted by `(name, file, line)`. A null line sorts before any numbered line.\n- **No evidence inputs.** Every return path has `inputs: Vec::new()`, so results are never recorded as evidence.\n\nOne small edge: an unreadable file found during discovery makes `collect_references` push an error, and that error aborts the tool call. This only affects genuine I/O failures, not excluded sources, so I do not count it as a gap.\n\n**Tests**\n\nThe three `{test}`-marked tests in `src/authoring/tools.rs` cover the main design space.\n\n- `references_list_names_and_flattened_sites_without_recording_inputs`:\n  - the unselected listing, in name order with a mix of requirement and example kinds and empty sites;\n  - an exact selection, where the sites for cite, impl and test come back in file and line order with Rust `fn[...]` selectors and a Markdown `section@` selector;\n  - a glob selection that returns a flattened list across definitions, with each site naming its own definition;\n  - exclusion of a `disallow`ed directory's reference;\n  - errors for a missing name, an invalid name, an empty selection, a non-string selection and an unknown argument;\n  - empty `inputs` throughout.\n- `references_report_anchors_as_file_or_node_sites` covers file and node anchors on a requirement and an example, `line: null`, and omission of an anchor on a disallowed file. It also checks that sites are ordered by name.\n- `references_tool_is_advertised_with_an_optional_selection` checks the advertised schema and that the description mentions the roles, globs, anchors and null.\n\nTerms being excluded from the listing is not tested directly, but the code is straightforward.\n\nThe implementation and tests together satisfy every obligation of the requirement.",
   "inputs": [
     {
       "requirements": "requirements.authoring.reference_index",
@@ -199,7 +199,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
-      "hash": "8b2b50b389ec315e5ce7fd86d95edaaad3a09f45dcfd278686d6af779a476fc7"
+      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -236,8 +236,43 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "impl[Anchor]",
+      "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_repository]",
+      "hash": "f2052cf4a6e46c972d3d01cb902f0b784a9701ea210a47fd574690be652b4df7"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[RepositoryInspection]",
+      "hash": "800607c371b41426f2bd4e9fe2d864020dc805bdc4efda5ea0627d7978eecbe5"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[InspectionProgress]",
+      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "fn[load_definitions]",
       "hash": "24dc7fffbb047826b4573df44f1a77addba9ea3c729332e80f7d487ae92c90ff"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository]",
+      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "ed9509a1f75089d757aaed673cca2b9af204bbb5971b09a403f604a3958ef909"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
     },
     {
       "file": "src/evidence.rs",
@@ -248,11 +283,6 @@
       "file": "src/evidence.rs",
       "item": "fn[collect_references_with_progress]",
       "hash": "93d27acc2c376f3ff8d2049397cd679c542efd3b5a1c423ec4fe08ba9ad3eebb"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[owner_at_line]",
-      "hash": "d8452a18a0e4184beb2070d2cd3a61abc9735a76035d440478bca922336e0030"
     }
   ]
 }

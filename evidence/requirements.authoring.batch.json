@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement\nand named example whose evidence is missing, stale, or invalid. It MUST preserve\ncurrent records without invoking a model for them, including accepted FIXME\njudgments and current false judgments. A current false judgment is reassessed\nonly when its subject or inputs change, or when it is named explicitly with\n{cite}`requirements.authoring.invocation`.\n`--all` MUST be mutually exclusive with a subject name and `--stdout`.\nFailure to discover declarations or to read, scan, or parse project sources MUST report an error,\nnot a successful empty batch. A batch with no assessments needed MUST succeed\nwithout resolving model configuration or credentials.\n\nEach subject MUST receive an independent assessment with its own prompt, inputs,\njudgment, and usage record. The command MUST report aggregate completion and each\nauthoring error under {cite}`requirements.authoring.reporting`, and retain\nsuccessful writes when another assessment fails. It MUST return a nonzero\nexit status if any assessment fails. False judgments MUST still be written as\ncompleted assessments; they remain failures under ordinary evidence validation.\nAn access-policy denial MUST abort only the affected assessment under\n{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the\nwhole batch: queued assessments MUST NOT start, running assessments MUST be\ncancelled, and an assessment whose evidence has not been written when the\ninterruption arrives MUST NOT write it. Evidence already written MUST be\nretained, and the command MUST report the number of assessments not started as\na batch failure.\n\nThe bundled Habeas skills MUST direct the supervising agent to run this command\nto create or refresh evidence. They MUST leave judgments, rationales, and input\nsnapshots to the authoring harness; the supervising agent addresses findings by\nchanging requirements, source citations, implementation, or tests.\n{cite}`requirements.authoring.concurrency`\n{cite}`requirements.authoring.usage_storage`\n{cite}`requirements.authoring.persistence`",
   "determination": true,
-  "rationale": "**Judgment: `requirements.authoring.batch` is satisfied.** I read the supplied implementation and tests and did not run them. I found no unacknowledged gap and no FIXME.\n\n**Implementation**\n\n- **Selection.** `author_all_with_options` (src/authoring/batch.rs) inspects the repository and loads each non-term definition's evidence state with `LoadedDetailEvidence::load` (src/index.rs).\n  - Valid, FIXME and current-false states are counted as unchanged. The false case has an explicit comment saying it stays until its subject or inputs change.\n  - Missing and Invalid are queued. Invalid covers stale and malformed evidence, because any evidence error other than a bare \"determination is false\" produces `Invalid`.\n  - A stale false judgment therefore yields `Invalid` and is re-authored.\n  - Naming a subject explicitly goes through the single-subject path.\n- **Exclusivity.** `Command::Author` in src/main.rs uses an `ArgGroup` that requires exactly one of the subject or `--all`, and `--all` has `conflicts_with = \"stdout\"`.\n- **Discovery failures.** `inspect_repository_with_progress` (src/evidence.rs) collects discovery errors from the workspace config, book source, declarations, reference scan and Rust parsing. The batch returns `Err` if any exist, so it is never an empty success.\n- **No assessments needed.** The batch returns before `config::resolve_authoring` when the subject list is empty, so no model configuration or credentials are resolved.\n- **Independence.** Each subject runs as its own task through `prepare_assessment`, with its own usage record, conversation and pending record. Concurrency is capped by `tasks.len() < concurrency`.\n- **Writes and reporting.**\n  - Successful writes are retained when another assessment fails.\n  - Each error is reported through `progress.failed` and counted.\n  - `main` prints the aggregate \"N authored; M unchanged; K failed\" and returns an error, so the exit status is nonzero, when any failure exists.\n  - False judgments are written like any other completed judgment.\n- **Read denial.** A denial aborts only its own task. `cancel_on_error` stops the whole batch only for `Interrupted` errors, so queued assessments still run after a denial.\n- **Interruption.** The batch listens for ctrl-c itself, registered before any task starts.\n  - Cancellation is broadcast over a `watch` channel, and the launch loop stops starting new tasks.\n  - Running assessments are cancelled inside `prepare_assessment`, and their usage records are marked \"cancelled\".\n  - Persistence holds the `watch` borrow while writing, so a write already in progress finishes and later completions are discarded rather than written.\n  - The number of assessments not started is pushed as a \"batch\" failure.\n- **Skills.** The three bundled SKILL.md files direct the agent to run `habeas author --all` and forbid composing evidence JSON, rationales, determinations or snapshots. They are anchored to the requirement.\n- **Marking.** The helper functions are marked `{impl}`. The `BatchOutcome` struct carries only a `{cite}`, but it does not implement an obligation. I found no unmarked implementing code and no unspecified behavior beyond what the cited requirements (progress, reporting, concurrency, read_denial) cover.\n\n**Tests** (tests/authoring_batch.rs and tests/authoring_cli.rs)\n\n- **Selection and preservation.** `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` covers the following.\n  - Filling missing evidence, with `--config`, six assessments and bounded concurrency.\n  - Preserving a FIXME judgment and current records.\n  - A no-op batch succeeding with an invalid or absent config.\n  - A PTY no-op run.\n  - Re-authoring only a changed subject.\n  - `batch_preserves_current_false_judgments_and_reauthors_stale_ones` covers current-false preservation and stale-false reassessment.\n- **Failures and usage.** `failed_assessment_keeps_other_results_and_reports_failure` covers an assessment failure that retains the other writes, reports the error, exits nonzero and writes usage records.\n- **False and FIXME judgments.** `terminal_progress_distinguishes_judgments_from_authoring_errors` and `batch_reports_false_rationales_only_when_verbose` cover false and FIXME judgments being written, the aggregate counts and the nonzero exit.\n- **Read denial.** `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence` cover the denial aborting only its own assessment, queued work running, and in-flight evidence being retained.\n- **Interruption.** `interrupted_terminal_progress_keeps_unstarted_work_incomplete` covers SIGINT with concurrency 2 and 1: the batch fails, work is not started, the running assessment is cancelled without writing evidence, and the not-started message appears.\n- **Exclusivity.** `batch_stdout_is_rejected_before_authoring` and `author_rejects_unknown_subjects_and_conflicting_targets` cover `--all` conflicting with `--stdout` and with a subject (clap exit code 2).\n- **Discovery errors.** `discovery_errors_fail_before_configuration_or_inference` covers Rust parse errors and malformed declarations. `unreadable_reference_sources_fail_the_batch_before_inference` covers unreadable sources. In both, no config is resolved and no state or evidence is created.\n- **Skills.** `bundled_skills_direct_the_agent_to_the_authoring_harness` checks the skill text.\n\nOne narrow cancellation race remains: a task spawned just as the stop is signalled could miss the `changed()` notification. The post-completion check before the write still discards its evidence, so the \"MUST NOT write\" guarantee holds.",
+  "rationale": "## Judgment: `requirements.authoring.batch` is satisfied\n\nI read the supplied inputs and the `{impl}` and `{test}` reference list. I did not run the tests.\n\n### Implementation\n\n- **Selection (`src/authoring/batch.rs`, `author_all_with_options`).**\n  - Each non-term definition is loaded with `LoadedDetailEvidence`.\n  - `Valid`, `Fixme` and `DeterminationFalse` count as unchanged. They are never sent to a model, which preserves accepted FIXME records and current false judgments.\n  - `Missing` and `Invalid` are queued.\n  - A false judgment with stale inputs yields additional validation errors. `load` then classifies it as `Invalid`, so it is reauthored.\n  - A false judgment is reauthored by name through the single-subject path in `requirements.authoring.invocation`, which is outside this subject.\n- **Mutual exclusion (`src/main.rs`, `enum[Command]`).** An `ArgGroup` with `multiple(false)` makes `subject` and `--all` exclusive. `conflicts_with = \"stdout\"` on `--all` rejects `--stdout`.\n- **Discovery failures (`src/evidence.rs`, `inspect_repository_with_progress`).**\n  - Workspace config errors, declaration discovery, reference-scan errors and Rust parse errors feed `discovery_errors`.\n  - The batch returns an error if that list is non-empty. It is not an empty success.\n- **No-op batches.** When no subjects are queued, the function returns before `config::resolve_authoring`. No configuration or credentials are needed.\n- **Independent assessments.** Each assessment is its own `prepare_assessment` task with its own prompt, usage log and conversation. The batch bounds the task count by `concurrency`.\n- **Failures and exit status.** Each failure is recorded and reported through `progress.failed`. Writes happen per completion in `write_record`, which uses an atomic temp-file persist, so earlier writes are retained. `main` prints the summary and returns an error, hence a nonzero exit, if any failure exists. False judgments are written like any other completed assessment.\n- **Read denial.** A denial surfaces as an ordinary non-`Interrupted` error, which fails only that assessment. Queued work continues.\n- **Interruption.**\n  - A `ctrl_c` listener is registered in the batch itself.\n  - `stop` sets the cancellation watch, so no new tasks are launched and running tasks are cancelled in `prepare_assessment`.\n  - A completion arriving after the stop is discarded through `pending.failed(Interrupted)`, so its evidence is not written.\n  - The write is serialized against the stop signal by holding the watch borrow.\n  - Not-started assessments are reported as a `batch` failure.\n- **Usage records.** `failed` and `persisted` finish the usage record as `cancelled`, `failed` or `completed`.\n- **Skills.** All three bundled SKILL.md files direct the agent to `habeas author --all` and forbid the supervising agent from composing evidence, judgments, rationales or snapshots. They tell the agent to address findings through requirements, source citations, implementation or tests. They are anchored as `{impl}` for this requirement.\n- **Marking.** The code involved is marked `{impl}`, and the others cite it. That includes `main`, `batch.rs`, the `mod.rs` helpers, the progress reporters and the inspection functions. The evidence-state classification in `src/index.rs` is marked for the index and CI requirements. It is not unspecified behaviour of this requirement.\n\n### Tests (`tests/authoring_batch.rs`, `tests/authoring_cli.rs`)\n\nThe tests use a mock Ollama server and the real binary. They cover:\n\n- **Fill and preserve.**\n  - Missing evidence is filled across all 6 subjects.\n  - Current records, including an edited FIXME record, are untouched.\n  - A source change reauthors exactly one subject.\n  - A no-op batch succeeds with invalid or absent configuration, with no model call.\n- **False judgments.** Current false judgments are preserved, and a stale one is reauthored.\n- **Option exclusion.** `--all` with `--stdout`, or with a subject, is rejected with exit code 2 and no authoring.\n- **Discovery failures.** A Rust parse error, an unclosed fence and an unreadable reference source each fail before configuration or inference, and write nothing.\n- **Independence.** A failing assessment leaves the other writes in place, the failure is reported, the exit is nonzero, and usage records show 1 failed and 5 completed.\n- **Read denial.** A denied read aborts only its assessment, queued ones still run, and in-flight ones keep their evidence. The usage record shows the failed tool call and no write.\n- **Interruption.** A SIGINT sent through a PTY, with concurrency 1 and 2, produces:\n  - \"assessments not started\" in the output;\n  - one written record and a `cancelled` usage record with `evidence_written` false;\n  - a nonzero exit.\n- **Reporting.** Output is checked for terminal and dumb-terminal modes and for verbose and non-verbose rationales.\n- **Skills.** The skill assets are checked for `habeas author --all` and \"must not compose\".\n\nThe interruption tests are Unix-only, which is reasonable given PTY and signal use. I found no unacknowledged gaps.",
   "inputs": [
     {
       "requirements": "requirements.authoring.batch",
@@ -139,8 +139,10 @@
         "Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker",
         "thread pool. The number of assessments running at once MUST NOT exceed the",
         "selected concurrency. Each assessment MUST retain its own model conversation and",
-        "usage record. Provider errors, including throttling, MUST be reported through",
-        "the ordinary assessment-failure path.",
+        "usage record. Transient provider failures, including throttling, MUST be",
+        "retried within the affected assessment under",
+        "{cite}`requirements.authoring.provider_backoff`; every other provider error MUST",
+        "be reported through the ordinary assessment-failure path.",
         ":::"
       ]
     },
@@ -423,17 +425,22 @@
     {
       "file": "assets/skills/habeas-requirements/SKILL.md",
       "item": "",
-      "hash": "049dbf38ab6810b2da16e6d855737d20f875b564b66c2e032ee118eb1a36150d"
+      "hash": "37e0017231252058d62e0509f67148fbe6fe821a053b079788473b9562409996"
     },
     {
       "file": "assets/skills/habeas-evidence/SKILL.md",
       "item": "",
-      "hash": "e34f019af54210e0d0f96c7e16910bf0bbf7fd8b0032838e474c121cabf132d8"
+      "hash": "68bce7cfc1f49b4a899124d3df5b10bf9b78614f83d6017b1ab830b7681a25a7"
     },
     {
       "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
       "item": "",
-      "hash": "00e96633c030f6e163775a5add5c00cb9ef55f12dffc2aa74f01392e2a2e400a"
+      "hash": "e27d8539e2f530288451adb5284a599af131af29f8e1a404d03f42d757b9d018"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[encode_url_segment]",
+      "hash": "0aa2cca56cbaa936f10b3f61ca7bb937dea609765c71dbfc24f6b5f982426987"
     },
     {
       "file": "src/index.rs",
@@ -442,18 +449,43 @@
     },
     {
       "file": "src/index.rs",
+      "item": "struct[LoadedDetailEvidence]",
+      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[DetailEvidence]",
+      "hash": "2f1e313f2d698e693a9f494ca743c7b73444bf3cb0e72311362309ccf6933c52"
+    },
+    {
+      "file": "src/index.rs",
       "item": "impl[LoadedDetailEvidence]/fn[load]",
       "hash": "796c6adf330cbdc2dc13569a0f1cb8d08c4548b9651d269809ab83e78eee4169"
     },
     {
       "file": "src/index.rs",
-      "item": "impl[EvidenceState]/fn[label]",
-      "hash": "d568034062ef30c855cc79d307099362bbd5882d3fb785b928fe854bb83528d9"
+      "item": "impl[LoadedDetailEvidence]/fn[state]",
+      "hash": "971dc34522919b3ea6550bfbe568fdf012ce3c0b1ee0dfbf1b654696f69fa932"
     },
     {
       "file": "src/index.rs",
-      "item": "impl[EvidenceState]/fn[color]",
-      "hash": "6d595ca8db2468b41a0ee32b7030f5ebbf7274b084acd5e24d2fa0a5d8b4d3f7"
+      "item": "impl[LoadedDetailEvidence]/fn[errors]",
+      "hash": "2d3dadd28c93d996e49b7f65f1eb7a9743315c51e32b7eabde8ed5d8081575c4"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]",
+      "hash": "90b221c5287b4f6c842d22144ce5ebe72dee4897617fe1bdbe4248899fde36af"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[EvidenceState]",
+      "hash": "52f9687ee35767424d89917de8732f29c1d0e964aca30c4eb332934fe68b93e4"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]",
+      "hash": "6fe4eb7308da3b00ff29ff3c756c8cbf7538b13b1a25d28195d22f2cb7cc6bcd"
     }
   ]
 }

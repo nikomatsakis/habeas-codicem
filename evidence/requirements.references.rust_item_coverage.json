@@ -1,7 +1,7 @@
 {
   "requirement": "During repository validation, Habeas MUST parse every first-party Rust source file in the project: every `.rs` file except those under `.git` or `target` directories at any depth or under the project-root `book`, `evidence`, or `vendor` directories. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
-  "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers each obligation and the tests cover the main cases.\n\n**Implementation**\n- **File discovery.** `rust_files` (src/rust_coverage.rs:171) walks the project and collects every `.rs` file.\n  - It skips `.git` and `target` at any depth.\n  - It skips `book`, `evidence` and `vendor` only when the directory is the project root (`directory == root`).\n  - Read, entry and file-type failures are pushed as errors, so a partial scan is never silent.\n- **Item coverage.** `missing_function_references` (src/rust_coverage.rs:130) parses the source with the Rust outline profile.\n  - The profile maps `function_item`, `function_signature_item`, `struct_item`, `enum_item` and `union_item` to outline nodes. Function signatures cover trait methods and foreign declarations (src/outline/rust.rs `KINDS`).\n  - It assigns each comment to its owning node through the outline comment ownership, which the outline requirements define.\n  - A comment run counts only if it holds a non-term `{impl}`, `{cite}` or `{test}` role whose name is a defined requirement or example. Unknown names and term definitions do not count.\n  - The check works on parsed comment nodes, not raw text. String-literal references therefore do not count, and enclosing `mod` or `impl` comments do not count for the items inside them.\n  - It reports items as `(declaration_line, kind, name)` with kinds function, struct, enum and union.\n- **Reporting.** `validate_rust_functions` (src/rust_coverage.rs:225) emits `file:line: kind name has no requirement or example citation`.\n  - Rust parse failures and unreadable files are reported as `cannot parse Rust source` or `cannot read Rust source`, and also added to discovery errors. They are never skipped.\n  - `inspect_repository_with_progress` calls it during repository validation (src/evidence.rs:273).\n- **Examples.** The requirement that a named example references a requirement is enforced in `collect_definitions` (src/evidence.rs), which reports an error for any example lacking a `{cite}` or `{test}` to a requirement. I judge that sufficient. Rust coverage accepts citations of any defined example, and the invalid example is still reported as a validation error.\n- **Marking.** The `{impl}` markers are on the relevant functions: `inspect_repository_with_progress`, `display_name`, `missing_function_references`, `rust_files`, `validate_rust_functions` and `display_path`. I found no part of the behaviour that is implemented without an `{impl}` reference or that goes beyond the requirement.\n\n**Tests**\n- `finds_uncited_functions_without_using_enclosing_or_string_references` checks these points:\n  - enclosing `mod` and `impl` comments do not count;\n  - references in strings and raw strings do not count;\n  - unknown requirement names do not count;\n  - body comments count;\n  - a comment run followed by a blank line still attaches to the next item;\n  - a trailing comment on the previous item does not leak to the next item;\n  - an inner doc comment binds to its container, not the next item;\n  - an outer doc comment attaches to the item it precedes.\n- `checks_trait_test_helper_and_nested_functions_separately` covers trait methods, nested functions, `{test}` on a requirement, `{test}` on a named example, and an uncited test helper.\n- `locates_functions_after_unicode_text` checks line numbers after multibyte text, plus an inline block comment before a `fn` on the same line.\n- `structs_enums_and_unions_need_references_attached_or_inside` covers these cases:\n  - a comment attached to a struct;\n  - a comment before a field or variant inside the item, which counts for the item;\n  - a `{cite}` reference;\n  - missing struct, enum and union reported with kind, name and line;\n  - a nested struct inside a cited function reported separately.\n- `reports_all_files_and_parse_failures` is a filesystem test of the skip rules and error reporting.\n  - It checks skipped `target` at root and nested, skipped `.git`, and skipped root-level `book`, `evidence` and `vendor`.\n  - It checks that `src/vendor` and `src/book` are still scanned.\n  - It checks that a broken file produces a parse-failure error and is not skipped.\n- `status_preserves_repository_wide_rust_findings_in_every_form` (tests/commands.rs) and `discovery_errors_fail_before_configuration_or_inference` (tests/authoring_batch.rs) check that findings and parse errors surface through the CLI and the batch author command.\n- The one thing I did not see tested end to end is a Rust citation of an invalid example (one with no requirement reference), but that example is already reported as an error through the examples requirement.\n\nNo acknowledged gaps (FIXME) are present.",
+  "determination": false,
+  "rationale": "**Verdict:** the implementation is nearly complete and well tested, but it does not enforce one stated obligation. The requirement says a cited named example must reference a requirement. That check is missing, and no test covers it.\n\n**What is implemented correctly**\n- `rust_files` (src/rust_coverage.rs) walks the project. It skips `.git` and `target` at any depth, and `book`, `evidence` and `vendor` only when they sit directly under the root. It reports unreadable directories and entries as errors.\n- `validate_rust_functions` reads each file and reports a read failure or a parse failure as an error (\"cannot parse Rust source\"). It also feeds those into `discovery_errors`, so a file is never silently skipped.\n- `missing_function_references` parses each file with the outline `RUST_PROFILE`. Only `fn`, `struct`, `enum` and `union` nodes are checked, so methods, trait signatures, test helpers and nested functions are covered.\n  - A comment counts for its node only through the outline comment-ownership rules in `src/outline/mod.rs` (`assign_comments`, `run_owner`, `trailing_owner`). Those rules give the intended behaviour: inner doc comments bind to their container, trailing comments stay with their own line, and comments before fields, variants and attributes belong to the enclosing item.\n  - References in string literals therefore never count, because comments come from the tree-sitter grammar. A reference on an enclosing `mod` or `impl` does not count for the items inside it.\n  - Reports have the form `file:line: kind name has no requirement or example citation`, which gives file, line, kind and name.\n- `inspect_repository_with_progress` calls this check, and the call is marked `{impl}`.\n\n**Tests**\n- Tests in src/rust_coverage.rs cover most of the design space:\n  - Enclosing-block references, string-literal references, unknown names, and body references.\n  - Comments across a blank line, trailing comments, inner doc comments, outer doc comments, and trait methods.\n  - Nested functions and test helpers.\n  - Unicode text before an item.\n  - Structs, enums and unions, with references attached, in the body, before a field, or before an attribute.\n  - Directory exclusions at root and nested, and parse failures.\n- Integration tests in tests/authoring_batch.rs and tests/commands.rs check that the findings surface in the CLI.\n\n**Gap**\n- The requirement says an item needs a valid reference to a defined requirement or a named example, and that \"A named example MUST reference a requirement\" (`requirements.examples.definition`). `missing_function_references` accepts any non-term definition. It never checks that a cited example itself has a `{cite}` or `{test}` of a requirement.\n- `collect_definitions` does report that missing reference as an error on the example itself, and it still inserts the example into `definitions`. So a Rust item citing such an invalid example is treated as covered and is not reported.\n- The test fixture `definitions()` gives `requirements.case` a `{cite}` to a requirement, which suggests this condition was intended. But the implementation never reads the example's text here, and no test uses an example without a requirement citation.\n\nNo FIXME comments acknowledge this gap, so the determination is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.references.rust_item_coverage",
@@ -120,11 +120,6 @@
       "hash": "17f7b91420c26592d7105d4902e3fd638986c67295684780a75f197ce086b51f"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "use@9058a3846095",
-      "hash": "9058a3846095de731dc6e5752af986a7c3d125161e65f733b56037b392473bef"
-    },
-    {
       "file": "src/rust_coverage.rs",
       "item": "use@420a7d4fdb66",
       "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
@@ -186,18 +181,33 @@
     },
     {
       "file": "src/rust_coverage.rs",
-      "item": "mod[tests]",
-      "hash": "6ec1e7760cc9caf3aeadb4f123c95f3cd81dedefe25adea2b9eb1ce612444b38"
+      "item": "mod[tests]/fn[rust_function_coverage_reports_counted_progress_per_file]",
+      "hash": "bb79388a6bafcd20927c94bb08863e95891782b23c7af20cade7ca4f5085651b"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "",
+      "hash": "a8408ff1f11e2dd2b28d492a95cd49d0e771ac99f431d25785340eb914860bfd"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "",
+      "hash": "dd6c876b33078b84bc6211f05a1d2219a6e8502cd64a1aa4301bcce2251b8d52"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[add_input]",
+      "hash": "53748de2ef693e65783041c222841d9f4e6835784eca07c5d5df648481396d13"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[selectors_for_mode]",
+      "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
-      "hash": "5c0a6d854b289c25861e9d98f77e5f13ec5bd7583cfb574ca9c25ecd7ab82410"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "1fbc95ddcca0452625f343f6ba474e0b96c0c78f396fcb6a28f05210a6af9064"
+      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
+      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
     },
     {
       "file": "src/evidence.rs",
@@ -206,68 +216,63 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "032c8c68261b55784929b1a92d8c2806a7cbbd71028ebde50790220a6f44595e"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "fn[validate_references]",
       "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[source_references_are_covered_by_evidence_inputs]",
-      "hash": "5c13acf27bae72511a78ed897818ed1cca9f03ed4366d424fbabebabb130e4c9"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
-      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[example_errors_include_duplicates_invalid_bodies_and_missing_tests]",
-      "hash": "9f02ce33a1d46580a920cfca89d4b49954da52eb4092e9dbf1afd16cb6d8def4"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[examples_may_reference_their_requirement_with_cite_or_test]",
-      "hash": "451412f474cd9b36586be50ad390d80223ce3c473bcc8bb22a6f5d8cde9b6cd2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
-      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
-      "hash": "f82e8f406792901475f63965518987bf91583e36486e9491ae3bf7af471c127e"
-    },
-    {
       "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
-      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
+      "item": "fn[render_detail_sections]",
+      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
     },
     {
       "file": "src/lib.rs",
-      "item": "mod[tests]/fn[every_definition_gets_a_nested_detail_page_without_an_index]",
-      "hash": "3e906a14371c35629b213fac262d1e70c6934d80947d042c71707aaef299738f"
+      "item": "fn[replace_definitions]",
+      "hash": "d6f8128ea3f877ee9614d552540b6574455baf37a11dd435f271ade95650ba00"
     },
     {
       "file": "src/lib.rs",
-      "item": "mod[tests]/fn[markdown_examples_and_escaped_references_stay_literal]",
-      "hash": "d10511ce9412b9e3bc0b04e58a6363030060c729fc07f62338d9433f0c373f52"
+      "item": "fn[definition_blocks]",
+      "hash": "cec74f4655a876a65a771105c3229cec7ac9e5ddf582125fc85b1e820c16e577"
     },
     {
       "file": "src/lib.rs",
-      "item": "mod[tests]/fn[references_in_requirement_bodies_are_scanned_as_markdown]",
-      "hash": "2cb4a911d69075733e93b81b78d37661c6f3dcf79e6982c5865d8f6185921b57"
+      "item": "mod[tests]/fn[examples_are_distinct_definitions_and_tests_link_to_them]",
+      "hash": "d8dab25168a4d67c1274736db9149173fd11603ac66ea08e6ce214014b9ab48f"
     },
     {
-      "file": "src/outline/rust.rs",
-      "item": "",
-      "hash": "2d589970553a147dbf2352764e7925d6d72fed22ea6fec3e3d38aec5eea703f2"
+      "file": "src/lib.rs",
+      "item": "fn[option_line]",
+      "hash": "5e4135e7c92fcfcb4c145c36dbb27c5ce491f47e55f23346ff491303c4c207a4"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[without_options]",
+      "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[colon_fence]",
+      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[overlaps_protected]",
+      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[reference_roles]",
+      "hash": "46cf865541205df9442b76c33f4a0e4c6e7d52b9b9d6d9ada3335c34cb63a1ea"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[protected_ranges]",
+      "hash": "60056ec394f43fa5e98c7a5392c306b59e7d5501a9cf183339ef15ce2ff5f82a"
     }
   ]
 }

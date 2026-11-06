@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `list_files` tool with this interface:\n\n```text\nlist_files({ path: String = \".\" }) -> Array<DirectoryEntry>\n\nDirectoryEntry {\n    path: String,\n    kind: \"file\" | \"directory\",\n}\n```\n\nThe tool MUST list the immediate children of the requested directory, returning\nproject-relative paths where possible and absolute paths for permitted external\nfiles. Its root listing MUST also expose available generated-output directories\nand configured external allow paths. The model can list a returned\ndirectory in another call to explore further. A failed listing MUST return an\nexplanatory tool error unless access was denied, which MUST be handled under\n{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.\nListings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.\nIn a Git worktree, directories MUST have at least one eligible source\ndescendant to be listed unless explicitly allowed or discovered as generated\noutput. Explicitly requesting an excluded path MUST return an\nauthoring error under {cite}`requirements.authoring.read_denial`.",
   "determination": true,
-  "rationale": "I judge that the `list_files` requirement is implemented completely and tested across the main points in its design space.\n\n**Interface and listing behavior** (`src/authoring/tools.rs`)\n- `definitions()` registers `list_files` with an optional `path` that defaults to `\".\"`. `optional_path`, `check_keys` and `dispatch` handle the argument.\n- `list_files()` calls `read_dir` on the resolved directory and returns `{path, kind}` entries with kind `file` or `directory`.\n- Paths are project-relative where possible. `relative_path` falls back to an absolute path for permitted external files.\n- Each child goes through `SourceAccess::path`, and any child that fails the check is omitted. This covers evidence, credentials, outside symlinks, untracked files, disallowed paths and empty or untracked directories.\n- The root listing appends `extra_roots()`, which are the configured allow paths plus the discovered Cargo generated-output directories. Each is still checked with `path`.\n- `list_files` returns `inputs: Vec::new()`, so listings never become evidence inputs.\n\n**Failures and denials**\n- Failed `read_dir` calls return explanatory errors such as \"cannot list …\". Empty paths and missing paths return errors from `resolve`.\n- A denial such as a disallow rule, an evidence directory, an untracked directory or a symlink out of the project returns `PermissionDenied`. `assess()` in `src/authoring/mod.rs` aborts on that, and `recoverable_outside_request` turns only the outside-project case into an ordinary tool error. This matches `read_denial`.\n\n**Directory eligibility** (`src/authoring/access.rs`)\n- In a Git worktree, a directory is accepted only if `has_source_under` finds an eligible descendant or an extra root under it. Allowed paths and generated roots return early from `path`. This implements \"at least one eligible source descendant unless explicitly allowed or discovered as generated\".\n\n**Tests**\n- The listing is exercised by tests in `src/authoring/tools.rs`:\n  - `reading_records_only_delivered_sources_and_their_terms`: the listing result and its empty `inputs`.\n  - `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files`: an exact root listing that omits untracked files and directories, and an error when listing an untracked directory.\n  - `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked`: symlink aliases and targets.\n  - `generated_evidence_is_excluded_from_reads_search_and_discovery`: evidence and its symlink aliases are hidden, and listing them is an error.\n  - `outside_symlinks_are_excluded_from_reads_search_and_discovery`: outside symlinks are hidden.\n  - `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not`: allowed ignored directories and external paths appear at the root, and a disallowed child gives `PermissionDenied`.\n  - `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files`: Cargo generated-output directories appear at the root, and disallow removes them.\n  - `unpermitted_requests_outside_the_project_are_recoverable_tool_errors`: a recoverable error for an outside-project listing, and a `PermissionDenied` abort when a disallow rule matches.\n- `tests/authoring_cli.rs` has an end-to-end test (`explicit_untracked_reads_abort_without_another_request_or_evidence_write`) showing that an explicit `list_files` on an untracked directory aborts with no evidence written and no further model request.\n\n**Minor observations (not gaps)**\n- Entries are sorted and de-duplicated, and entries that are neither file nor directory are skipped. These details are small and unspecified, but harmless.\n- A plain \"nonexistent directory\" error message is not asserted directly. It is covered only through the `../` case and the shared `resolve` error path.\n\nThe `{impl}` markers cover the relevant code paths, and I found no unmarked behavior.",
+  "rationale": "**Judgment: `requirements.authoring.file_discovery` is satisfied.** The implementation covers each obligation and is marked completely. The tests cover the main cases and the failure paths.\n\n**Implementation**\n\n- **Tool interface.** `tools::definitions` (src/authoring/tools.rs) registers `list_files` with an optional `path` that defaults to \".\". `dispatch` routes it to `list_files`. `check_keys` and `optional_path` handle argument validation and the default. The result is an array of `{path, kind}` with kind \"file\" or \"directory\".\n- **Immediate children, path format.** `list_files` iterates `fs::read_dir` on the resolved directory. `relative_path` returns project-relative paths, and falls back to the absolute path when the entry is outside the root, which covers permitted external files.\n- **Root listing.** When the requested directory is the project root, `list_files` appends `access.extra_roots()`. Those are the configured allow paths and the discovered generated-output directories. Each is checked through `access.path`, so disallowed or nonexistent entries are skipped. The list is then sorted and de-duplicated.\n- **Exclusions.** Each child goes through `SourceAccess::path`, and children that fail the check are omitted. `path` covers these exclusions:\n  - the `evidence/` directory, including symlink aliases;\n  - the credentials file;\n  - disallowed paths;\n  - paths outside the project, and symlinks that leave it;\n  - untracked files in a Git worktree.\n- **Directory eligibility.** In a Git worktree, `path` requires a directory to have an eligible descendant, using `has_source_under`. This check is skipped for explicitly allowed paths and generated-output roots, because those return earlier in `path`.\n- **Failed listings and denials.** `list_files` wraps `read_dir` failures in \"cannot list …\" messages, and `resolve` produces \"cannot open …\" and \"path must not be empty\". These are ordinary tool errors. Policy denials are `PermissionDenied` errors wrapped as `PolicyDenial`. `assess` in src/authoring/mod.rs aborts on these, and `recoverable_outside_request` turns unpermitted outside-project requests into tool errors.\n- **Not evidence.** `list_files` returns `inputs: Vec::new()`.\n- **Marking.** The supporting helpers carry `{impl}` markers: `path`, `has_source_under`, `extra_roots`, `resolve`, `generated_evidence_path`, `project_path`, `relative_path`, `optional_path`, `check_keys`, `dispatch`, `definitions` and `assess`. Generated-root discovery (`generated_roots`) belongs to `generated_inputs`, which this requirement defers to. I found no unmarked behavior that belongs to this requirement.\n\n**Tests**\n\n- **Listing shape and defaults.** `reading_records_only_delivered_sources_and_their_terms` checks the exact listing result and that a listing adds no inputs. `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` checks the default-path root listing and omission of the untracked file and the untracked-only directory.\n- **Untracked, symlink and external-path handling.** `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` and `outside_symlinks_are_excluded_from_reads_search_and_discovery` cover symlinks. The outside-project test also checks that a listing of an outside-project symlink directory fails.\n- **Generated evidence.** `generated_evidence_is_excluded_from_reads_search_and_discovery` covers evidence and its symlink aliases being omitted from root listings and denied on explicit request.\n- **Root exposure of allow and generated paths.** `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` checks that allowed and external paths appear in the root listing and that a disallowed descendant is denied. `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` checks that a Cargo output directory appears at the root and disappears once a disallow rule is added.\n- **Failure modes.** `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` covers recoverable outside-project errors and an abort when the path is disallowed. The CLI test `explicit_untracked_reads_abort_without_another_request_or_evidence_write` (tests/authoring_cli.rs) covers an abort on an untracked directory, with no further request and no evidence written. The \"../\" case in `search_merges_context_windows_and_respects_ignore_rules` covers an error for an escaping path.\n\nNot tested directly: listing an external directory's children, and a listing of a nonexistent path. Both reuse the same simple code paths, so these are minor and not blocking.\n\nThere are no FIXME acknowledgements and no unacknowledged gaps.",
   "inputs": [
     {
       "requirements": "requirements.authoring.file_discovery",
@@ -139,7 +139,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "6e0a0e59238c31798ac3e76fa0a480691a52dfd3f961d9761ec56830b0948d9b"
+      "hash": "ef98601c16475681510bfef02215408a4462718be27f28c44e7cd7623573b6ef"
     },
     {
       "file": "src/authoring/access.rs",
@@ -179,7 +179,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
-      "hash": "8b2b50b389ec315e5ce7fd86d95edaaad3a09f45dcfd278686d6af779a476fc7"
+      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -304,12 +304,17 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]",
-      "hash": "ecac5f53614daa737173885275e4613df5e9d31bb6352e66d7a0953c05dde898"
+      "hash": "a333d5b62ee51cf26f663e644e85ce078964da3313643cf62ec1af22ad7a3069"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "fn[matches_rule]",
       "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[requested_location]",
+      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
     },
     {
       "file": "src/authoring/access.rs",
@@ -328,6 +333,36 @@
     },
     {
       "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::error::Error]",
+      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::fmt::Display]",
+      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::error::Error]",
+      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_os_denial]",
+      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "fn[tracked_sources]",
       "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
     },
@@ -335,46 +370,6 @@
       "file": "src/authoring/access.rs",
       "item": "fn[generated_roots]",
       "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[discover_generated_roots]",
-      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]",
-      "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
     }
   ]
 }
