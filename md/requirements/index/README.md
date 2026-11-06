@@ -1,7 +1,16 @@
 # Book rendering
 
 :::{req} chapter
-An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. When present, `habeas mdbook` MUST replace it with a table of all requirements defined in rendered chapters and MUST add one evidence detail subchapter per requirement.
+An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. When present, `habeas mdbook` MUST replace it with a table of all requirements defined in rendered chapters, each linking to its evidence detail page under {cite}`requirements.index.detail_pages`.
+:::
+
+:::{req} detail_pages
+`habeas mdbook` MUST generate one evidence detail page for every requirement and
+named example defined in a rendered chapter, whether or not the book contains a
+requirements index. Each page MUST be a subchapter nested under the chapter that
+defines it, in definition order, titled by the definition's full name, at a path
+derived from that chapter's path. Books configured by {cite}`requirements.cli.setup`
+fold these subchapters in the sidebar until a reader expands their chapter.
 :::
 
 :::{req} state
@@ -9,11 +18,11 @@ The requirements index MUST show each requirement's evidence state as Valid, Mis
 :::
 
 :::{req} detail_format
-Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement or example body as a Markdown block quote labeled by kind. It MUST render the recorded rationale as Markdown in a Rationale section and display the recorded FIXME strings when the determination is FIXME. Each input MUST have its own subsection identifying its selector. A file-range or Rust-item input MUST show its resolved file and inclusive line range. A requirements input MUST show its glob and each matched definition's full name, file, and inclusive line range. Each subsection MUST show the exact recorded text in a fenced code block. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.
+Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement or example body as a Markdown block quote labeled by kind. It MUST render the recorded rationale as Markdown in a Rationale section and display the recorded FIXME strings when the determination is FIXME. Inputs MUST be grouped under headings in this order: Implementation, for sources reached by an `{impl}` edge from the definition, including anchored files; Tests, for sources reached by a `{test}` edge, including tests, examples, and anchored files; Referenced definitions, for declarations the definition cites and their terminology; and Other sources, for the remaining inputs the assessment consulted. Edges MUST be determined from the current references under {cite}`requirements.references.targets` and {cite}`requirements.references.anchors`. Each group and each input MUST be a collapsible disclosure element, with groups expanded and inputs collapsed by default, so readers can move between groups and open individual sources. Each input MUST have its own subsection identifying its selector. A file-range or Rust-item input MUST show its resolved file and inclusive line range. A requirements input MUST show its selection and each matched definition's full name, file, and inclusive line range. Each subsection MUST show the exact recorded text in a fenced code block. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.
 :::
 
 :::{req} navigation
-When an index exists, each requirement definition badge MUST link to its evidence detail page. Each detail page MUST link back to the definition's anchored badge and to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
+Each requirement and example definition badge MUST link to its evidence detail page, and each rendered requirement and example MUST be followed by a "See evidence" link to that page. Each detail page MUST link back to the definition's anchored badge and, when an index exists, to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
 :::
 
 :::{req} source_links

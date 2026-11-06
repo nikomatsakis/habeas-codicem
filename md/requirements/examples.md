@@ -9,7 +9,7 @@ Every defined example MUST have an `evidence/<full-example-name>.json` file whos
 :::
 
 :::{req} index
-When a `{requirements-index}` chapter exists, it MUST list examples as well as requirements, identify each entry's kind, show each example's evidence state, and add one evidence detail subchapter per example. An example definition badge MUST link to its detail page. The detail page MUST link back to the example's anchored definition and to the index; references to the example MUST link to its definition. An example detail page MUST show validation findings when its evidence is missing or invalid.
+When a `{requirements-index}` chapter exists, it MUST list examples as well as requirements, identify each entry's kind, and show each example's evidence state. Example detail pages and their links MUST follow {cite}`requirements.index.detail_pages` and {cite}`requirements.index.navigation`; references to an example MUST link to its definition.
 :::
 
 ## Examples as authoring inputs

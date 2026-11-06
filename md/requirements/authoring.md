@@ -306,7 +306,7 @@ ReferenceSite {
     name: String,
     role: "impl" | "cite" | "test",
     file: String,
-    line: Integer,
+    line: Integer?,
     rust_item: String?,
 }
 ```
@@ -318,7 +318,9 @@ order, with empty `sites`. With `selection`, it MUST return the selected definit
 in full-name order and one flattened `sites` array containing every valid
 `{impl}`, `{cite}`, and `{test}` reference to any match under
 {cite}`requirements.references.targets`, each naming the definition it
-references, ordered by name, file, and line. A site in a Rust item MUST give the
+references, ordered by name, file, and line. An anchor under
+{cite}`requirements.references.anchors` MUST be reported as a site for its
+anchored file without a line. A site in a Rust item MUST give the
 selector of its smallest enclosing item under
 {cite}`requirements.references.rust_item_selectors`. Sites in sources excluded by
 {cite}`requirements.authoring.source_tools` MUST be omitted without aborting.

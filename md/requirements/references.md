@@ -10,6 +10,29 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
 ```
 :::
 
+:::{req} anchors
+A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`
+declaration MAY list `:test:` options, immediately after its opening fence and
+before its body, one project file path per option line. Each anchor MUST be an `{impl}` or `{test}` edge, under
+{cite}`requirements.references.targets`, from the definition to the complete
+anchored file, for files that cannot or should not carry a reference themselves.
+Paths MUST follow the path rules in {cite}`requirements.ci.schema`. Option lines
+MUST NOT form part of the definition's text for evidence comparison or for
+requirements inputs, and MUST NOT render as body text.
+
+An anchored file MUST be covered by the definition's evidence under
+{cite}`requirements.references.evidence_coverage`, by an input containing the
+complete file, so changing the file makes that evidence stale. A path that does
+not resolve to a readable, permitted file MUST be a validation error naming the
+definition and the path; authoring MUST report it before inference, because the
+definition cannot be assessed without it. Any other option line in a `{req}` or
+`{example}` declaration MUST be a validation error.
+
+Agents SHOULD NOT anchor a file when a more precise reference is available, such
+as a reference attached to the Rust item that implements or tests the
+definition. Habeas's bundled agent skills MUST give this direction.
+:::
+
 :::{req} book_badges
 In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`.
 :::
@@ -18,8 +41,8 @@ In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST ren
 For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
 :::
 
-:::{req} rust_function_coverage
-During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to its declaration or within its body. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count. Habeas MUST report every uncited function with its file, line, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+:::{req} rust_item_coverage
+During repository validation, Habeas MUST parse every first-party Rust source file in the project. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. A comment immediately preceding an item's declaration or its attributes is attached to that item. A comment within an item's body, including one before a field, variant, or attribute inside it, belongs to the smallest enclosing item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
 :::
 
 :::{req} definition_globs
@@ -91,9 +114,10 @@ contributions to the mandatory input set defined by
 the assessed subject MUST contribute; sources with only edges into the subject
 MUST NOT contribute and remain discoverable under
 {cite}`requirements.authoring.reference_index`. A `{cite}` made by the subject
-contributes the cited definition's complete fenced declaration. An `{impl}` or
-`{test}` reference to the subject contributes the source containing it: for a
-reference in a Rust item, the complete smallest enclosing item with its attached
+contributes the cited definition's complete fenced declaration. An anchor under
+{cite}`requirements.references.anchors` contributes the complete anchored file.
+An in-source `{impl}` or `{test}` reference to the subject contributes the source
+containing it: for a reference in a Rust item, the complete smallest enclosing item with its attached
 comments and attributes; for a reference in a Markdown requirement, example, or
 terminology declaration, that complete declaration; for other references, the
 complete containing source file. Literal references, evidence copies, and

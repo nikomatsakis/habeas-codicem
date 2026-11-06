@@ -5,7 +5,7 @@ Every requirement defined by a fenced `{req}` directive in a chapter under the c
 :::
 
 :::{req} orphans
-Every JSON file directly under `evidence/` MUST correspond to a declared requirement or named example. A JSON file at `evidence/rust/<rust_file>.json` MUST correspond to a first-party Rust source file containing an explicitly declared function or method. Habeas MUST report evidence JSON files in other locations under `evidence/` and Rust evidence files or entries whose source item no longer exists.
+Every JSON file directly under `evidence/` MUST correspond to a declared requirement or named example. Habeas MUST report evidence JSON files that do not, and evidence JSON files in any other location under `evidence/`.
 :::
 
 :::{req} schema
