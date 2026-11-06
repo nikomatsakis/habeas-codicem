@@ -230,6 +230,7 @@ fn reply(calls: Vec<Value>) -> Value {
 }
 
 // {test}`requirements.authoring.complete_initial_bundle`
+// {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.additional_read`
 // {test}`requirements.authoring.acknowledged_gap`
 // {test}`requirements.authoring.configuration_precedence`
@@ -241,6 +242,7 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.usage_inputs`
 // {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.mandatory_inputs`
 #[test]
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
@@ -316,7 +318,13 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     tools.sort();
     assert_eq!(
         tools,
-        ["habeas", "list_files", "ripgrep", "submit_judgment"]
+        [
+            "habeas",
+            "list_files",
+            "references",
+            "ripgrep",
+            "submit_judgment"
+        ]
     );
     let results = requests[1].body["messages"]
         .as_array()
@@ -419,6 +427,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
 }
 
 // {test}`requirements.configuration.workspace_location`
+// {test}`requirements.authoring.configuration`
 // {test}`requirements.configuration.workspace_structure`
 // {test}`requirements.authoring.configuration_precedence`
 // {test}`requirements.authoring.credentials`
@@ -480,6 +489,8 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
 }
 
 // {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.file_discovery`
+// {test}`requirements.authoring.text_search`
 // {test}`requirements.authoring.source_tools`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
@@ -532,6 +543,7 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
 }
 
 // {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.ci.fixme_with_unacknowledged_gap`
 // {test}`requirements.authoring.reporting`
@@ -800,6 +812,7 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
 }
 
 // {test}`requirements.authoring.provider`
+// {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.configuration_precedence`
 // {test}`requirements.authoring.initial_prompt`
@@ -953,7 +966,13 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         tools.sort();
         assert_eq!(
             tools,
-            ["habeas", "list_files", "ripgrep", "submit_judgment"]
+            [
+                "habeas",
+                "list_files",
+                "references",
+                "ripgrep",
+                "submit_judgment"
+            ]
         );
         let evidence: Value =
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();

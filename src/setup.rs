@@ -117,6 +117,7 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // {impl}`requirements.cli.mdbook`
     book["preprocessor"]["habeas"]["command"] = value("habeas mdbook");
     let mut renderers = Array::new();
     renderers.push("html");

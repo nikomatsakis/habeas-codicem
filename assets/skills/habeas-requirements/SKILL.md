@@ -9,25 +9,21 @@ description: Design and vet requirements and examples for user-visible behavior 
 
 When a user requests new or changed user-visible behavior in a Habeas project, first read the relevant requirements, code, and tests. Identify requirements that already express the intended behavior. For gaps, draft the smallest set of observable obligations, including important outcomes and failure cases, without committing to an implementation.
 
-Run `habeas info <glob>` to read current requirement and named example texts, evidence states, rationales, inputs, and validation findings as Markdown. A full name selects exactly; `*` matches any number of characters, including dots, when you need to inspect a group.
+Run `habeas info <selection>` to read current requirement and named example texts, evidence states, rationales, inputs, and validation findings as Markdown. A selection is a full name, which selects exactly, or a glob where `*` matches any number of characters, including dots, when you need to inspect a group.
 
 Show the user the full IDs and text of existing requirements to reuse, plus the proposed chapter location, full IDs, and exact fenced text of any additions or changes. State open product choices separately. Ask the user to agree to or revise this requirement set. User-provided exact requirement text or explicit agreement earlier in the conversation counts as approval; a general request to build the feature does not. Keep drafts out of the mdBook while review is pending, and do not write implementation or test code yet.
 
-After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior and add tests and traceability references. Run `habeas author --all` to create or refresh evidence and function attestations through the configured model. The supervising agent must not compose evidence JSON, rationales, determinations, or source snapshots itself or delegate manual evidence writing to another agent. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Missing or false evidence is expected while implementation is incomplete.
+After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior and add tests and traceability references. Run `habeas author --all` to create or refresh evidence through the configured model. The supervising agent must not compose evidence JSON, rationales, determinations, or source snapshots itself or delegate manual evidence writing to another agent. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Missing or false evidence is expected while implementation is incomplete.
 
 ## Reviewing code against requirements
 
-The authoring harness assesses whether a requirement's cited code implements it as stated and whether tests cover interesting design cases. For absent tests, it assesses whether simplicity or impracticality justifies their absence. For an example, it assesses whether test setup and assertions cover the scenario and expected outcomes. Use these criteria while implementing and fixing reported gaps; leave evidence judgments and rationales to the harness.
+The authoring harness assesses whether the code marked `{impl}` for a requirement implements every obligation completely and exactly as stated, and whether tests cover interesting design cases. It also treats as gaps any code that implements part of the requirement without `{impl}`, including code that only cites it, and any behavior in `{impl}` code that no definition implemented there specifies. When another requirement implements part of the subject, it checks only that the text carries out that part. For absent tests, it assesses whether simplicity or impracticality justifies their absence. For an example, it assesses whether test setup and assertions cover the scenario and expected outcomes. Use these criteria while implementing and fixing reported gaps; leave evidence judgments and rationales to the harness.
 
 Requirement and example judgments have three outcomes: `true`, `false`, or `{"FIXME": ["#125"]}`. The harness uses FIXME when source comments or tests explicitly acknowledge the uncovered aspects, recording their issue references or other identifying content. A documented gap does not excuse other, unacknowledged gaps. Use the `habeas-evidence` skill for the authoring workflow.
 
-Inspect every end-user-observable result and branch, including errors and input handling. Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement. When requirements interact, cite every applicable requirement at the relevant implementation point and explain how their texts jointly account for the behavior. A citation alone does not explain why a behavior, such as accepting `^C`, is specified.
+Inspect every end-user-observable result and branch, including errors and input handling. Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement. When requirements interact, mark every requirement implemented at the relevant point with `{impl}` and explain how their texts jointly account for the behavior. A reference alone does not explain why a behavior, such as accepting `^C`, is specified.
 
-Every explicit function or method in first-party Rust sources needs its own requirement or example reference in an attached Rust comment or within its body, including trait methods and test helpers. Each example cites a requirement. A reference on an enclosing module or `impl` does not cover its functions, and there is no uncited-function waiver. If no existing requirement explains an internal helper, propose a project requirement such as `internal-detail` for the user's agreement and cite it on the function. Do not use an internal-detail requirement to justify otherwise unspecified observable behavior.
-
-Every function also needs an attestation in `evidence/rust/<rust_file>.json`. `habeas author --all` creates it by asking the configured model to review the whole function and the requirement and example declarations, including ones not already cited. It judges whether the function carries **all applicable citations** and records the reviewed inputs. Fix missing citations in source, then rerun the harness; do not create attestations or change their determinations by hand.
-
-Function-attestation determinations remain boolean and judge citation completeness, not whether the requirements are satisfied.
+Every explicit function or method in first-party Rust sources needs its own requirement or example reference in an attached Rust comment or within its body, including trait methods and test helpers. A reference on an enclosing module or `impl` does not cover its functions, and there is no uncited-function waiver. If no existing requirement explains an internal helper, propose a requirement scoped to that area of internal code, such as `internal.config_parsing`, rather than one catch-all, get the user's agreement, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function. Do not use an internal-detail requirement to justify otherwise unspecified observable behavior.
 
 ## Authoring format
 
@@ -41,7 +37,7 @@ Pressing q MUST stop managed forwards.
 
 Everything between the fences is the requirement body, including headings and diagrams. Use a longer outer colon fence when the body contains a nested colon directive. Use BCP 14 terms when stating obligations.
 
-Write a concrete case as a separate `{example}` directive with the same chapter-qualified naming and fence rules. Cite at least one requirement it illustrates from the example body. A true example determination needs test references and an evidence rationale explaining how the tests cover its interesting aspects. Keep names unique across requirements and examples.
+Write a concrete case as a separate `{example}` directive with the same chapter-qualified naming and fence rules. Reference at least one requirement it illustrates from the example body: `{test}` when the example is a case the requirement's review should check, `{cite}` when the requirement is context for the example's own review, or both. A true example determination needs test references and an evidence rationale explaining how the tests cover its interesting aspects. Keep names unique across requirements and examples.
 
 Use fully qualified names for implementation, citation, and test references. Place them on the relevant source or book line:
 
@@ -51,7 +47,15 @@ Use fully qualified names for implementation, citation, and test references. Pla
 {test}`requirements.forwarding.quit`
 ```
 
-When a requirement or example changes, run `habeas author --all`, then the Cargo tests. Address reported implementation, test, or citation gaps and rerun the harness. Validation itself checks stored evidence without inference.
+Choose the role by what the source does:
+
+- `{impl}`: it implements part of the definition, making a decision, performing a check, producing an output, or handling a case the definition specifies. Calling code that implements the definition, or producing a result a caller uses to meet it, does not count. A requirement that refines another's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.
+- `{test}`: it is designed to verify behavior the definition specifies, through a test's scenario and assertions or an example's concrete case. Incidental setup does not count.
+- `{cite}`: it relies on, supports, or refers to the definition without implementing or testing it.
+
+`{impl}` and `{test}` make the source an input to the definition's assessment and must be covered by its evidence. `{cite}` makes the cited definition context for the citing requirement or example, needs no coverage, and does not count toward the cited requirement's implementation.
+
+When a requirement or example changes, run `habeas author --all`, then the Cargo tests. Address reported implementation, test, or reference gaps and rerun the harness. Validation itself checks stored evidence without inference.
 
 ## Shared vocabulary
 

@@ -107,6 +107,7 @@ fn credentials_available(config: &BedrockConfig) -> bool {
 }
 
 // {test}`requirements.integration.live_bedrock_test`
+// {test}`requirements.authoring.delivered_inputs`
 // {test}`requirements.authoring.provider`
 // {test}`requirements.authoring.source_tools`
 // {test}`requirements.authoring.submission`

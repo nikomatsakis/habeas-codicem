@@ -115,65 +115,26 @@ fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {
 
 // {test}`requirements.ci.orphans`
 #[test]
-fn nested_evidence_and_non_source_rust_sidecars_are_reported() {
+fn nested_evidence_files_are_reported() {
     let temp = fixture();
     let root = temp.path().join("project");
     assert!(validate_repository(&root).unwrap().errors.is_empty());
     let record = fs::read(root.join("evidence/rules.ready.json")).unwrap();
-    for directory in ["evidence/nested", "evidence/rust"] {
+    for directory in ["evidence/nested", "evidence/rust/src"] {
         fs::create_dir_all(root.join(directory)).unwrap();
     }
     fs::write(root.join("evidence/nested/rules.ready.json"), &record).unwrap();
-    fs::write(root.join("evidence/rust/other.json"), &record).unwrap();
+    fs::write(root.join("evidence/rust/src/lib.rs.json"), &record).unwrap();
     let errors = validate_repository(&root).unwrap().errors.join("\n");
-    assert!(
-        errors.contains("evidence/nested/rules.ready.json: no matching requirement or example"),
-        "{errors}"
-    );
-    assert!(
-        errors.contains("evidence/rust/other.json: orphaned Rust attestation file"),
-        "{errors}"
-    );
-}
-
-// {test}`requirements.ci.orphans`
-// {test}`requirements.references.rust_function_attestations`
-#[test]
-fn deleted_function_entries_are_reported_in_an_existing_sidecar() {
-    let temp = fixture();
-    let root = temp.path().join("project");
-    let source = "// IMPL`rules.ready`\npub fn present() {}\n".replace("IMPL", "{impl}");
-    fs::write(root.join("src/lib.rs"), &source).unwrap();
-    let function_input = json!({
-        "rust_file": "src/lib.rs", "rust_item": "fn[present]",
-        "text": source.lines().collect::<Vec<_>>(),
-    });
-    write_inputs(&root, vec![function_input.clone()]);
-    let entry = json!({
-        "rust_item":"fn[present]",
-        "citations":[{"role":"impl", "name":"rules.ready"}],
-        "determination":true,
-        "rationale":"The fixture's only function cites its only requirement.",
-        "inputs":[function_input, {
-            "requirements":"rules.ready", "matches":["rules.ready"],
-            "text":[":::{req} ready", "Read the data.", ":::"],
-        }],
-    });
-    let path = root.join("evidence/rust/src/lib.rs.json");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut sidecar = json!({"rust_file":"src/lib.rs", "functions":[entry.clone()]});
-    fs::write(&path, sidecar.to_string()).unwrap();
-    assert!(validate_repository(&root).unwrap().errors.is_empty());
-
-    let mut removed = entry;
-    removed["rust_item"] = json!("fn[removed]");
-    sidecar["functions"].as_array_mut().unwrap().push(removed);
-    fs::write(&path, sidecar.to_string()).unwrap();
-    let errors = validate_repository(&root).unwrap().errors.join("\n");
-    assert!(
-        errors.contains("orphaned Rust function attestation") && errors.contains("fn[removed]"),
-        "{errors}"
-    );
+    for label in [
+        "evidence/nested/rules.ready.json",
+        "evidence/rust/src/lib.rs.json",
+    ] {
+        assert!(
+            errors.contains(&format!("{label}: no matching requirement or example")),
+            "{errors}"
+        );
+    }
 }
 
 // {test}`requirements.configuration.evidence_paths`
@@ -271,6 +232,7 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
 }
 
 // {test}`requirements.configuration.workspace_location`
+// {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.configuration.workspace_structure`
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.deterministic_validation`

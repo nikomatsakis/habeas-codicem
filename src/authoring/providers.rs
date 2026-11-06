@@ -110,6 +110,7 @@ impl RigProvider {
 // {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.authoring.usage_requests`
+// {impl}`requirements.authoring.provider_backoff`
 async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
     // Keep each provider attempt visible to the usage ledger. An SDK retry
     // would otherwise be hidden inside one recorded request.

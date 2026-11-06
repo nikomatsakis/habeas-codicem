@@ -123,6 +123,7 @@ pub fn status_markdown_with_options(
 
 // {impl}`requirements.cli.info`
 // {impl}`requirements.definitions.selection`
+// {impl}`requirements.references.definition_globs`
 pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     definition_glob::validate(selector)

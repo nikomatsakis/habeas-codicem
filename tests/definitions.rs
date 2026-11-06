@@ -203,6 +203,7 @@ fn invalid_declarations_and_reference_targets_are_reported() {
 
 // {test}`requirements.definitions.phrase_rendering`
 // {test}`requirements.definitions.references`
+// {test}`requirements.definitions.declaration`
 #[test]
 fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
     let mut book = Book::new();
@@ -241,7 +242,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
 // {test}`requirements.definitions.dependencies`
 // {test}`requirements.definitions.references`
 #[test]
-fn function_attestations_capture_terms_without_counting_them_as_citations() {
+fn rust_item_inputs_capture_terms_without_counting_them_as_citations() {
     let temp = fixture();
     let root = temp.path();
     fs::write(
@@ -253,32 +254,23 @@ fn function_attestations_capture_terms_without_counting_them_as_citations() {
     .unwrap();
     add_input(
         root,
-        InputTarget::RustFunction {
-            rust_file: "src/lib.rs".into(),
-            rust_item: "fn[run]".into(),
-        },
-        InputMode::Requirements("rules.*".into()),
-    )
-    .unwrap();
-    add_input(
-        root,
-        InputTarget::RustFunction {
-            rust_file: "src/lib.rs".into(),
-            rust_item: "fn[run]".into(),
-        },
+        InputTarget::Requirement("rules.ready".into()),
         InputMode::RustItemsAtLine("src/lib.rs:3".into()),
     )
     .unwrap();
-    let path = root.join("evidence/rust/src/lib.rs.json");
-    let mut sidecar: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    let entry = &mut sidecar["functions"][0];
-    assert_eq!(
-        entry["citations"],
-        json!([{"role":"impl","name":"rules.ready"}])
+    let path = root.join("evidence/rules.ready.json");
+    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let inputs = record["inputs"].as_array().unwrap();
+    assert!(
+        inputs.iter().any(|input| input["rust_item"] == "fn[run]"),
+        "{inputs:?}"
     );
-    assert_eq!(entry["inputs"].as_array().unwrap().len(), 4);
-    entry["determination"] = json!(true);
-    fs::write(&path, sidecar.to_string()).unwrap();
+    for term in ["glossary.a", "glossary.b"] {
+        assert!(
+            inputs.iter().any(|input| input["definition"] == term),
+            "{inputs:?}"
+        );
+    }
     capture(root);
     add_input(
         root,
@@ -297,14 +289,14 @@ fn function_attestations_capture_terms_without_counting_them_as_citations() {
     )
     .unwrap();
     let errors = validate_repository(root).unwrap().errors;
-    for label in ["evidence/rules.ready.json", "evidence/rust/src/lib.rs.json"] {
-        assert!(
-            errors.iter().any(|e| e.contains(label)
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("evidence/rules.ready.json")
                 && e.contains("input text changed")
                 && e.contains("glossary.b")),
-            "{errors:?}"
-        );
-    }
+        "{errors:?}"
+    );
     fs::write(
         root.join("src/lib.rs"),
         "// TERM`glossary.a`\npub fn run() {}\n".replace("TERM", "{term}"),

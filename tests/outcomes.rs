@@ -174,6 +174,7 @@ fn fixme_requirements_accept_issue_references_and_other_content() {
 }
 
 // {test}`requirements.ci.schema`
+// {test}`requirements.ci.outcomes`
 // {test}`requirements.index.state`
 // {test}`requirements.cli.fixme_summary`
 #[test]
@@ -198,6 +199,8 @@ fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
 }
 
 // {test}`requirements.ci.inputs`
+// {test}`requirements.ci.determination`
+// {test}`requirements.references.evidence_coverage`
 // {test}`requirements.ci.fixme_stale_input`
 // {test}`requirements.index.state`
 // {test}`requirements.cli.fixme_summary`
@@ -222,7 +225,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
     assert!(status.contains("input text changed"), "{status}");
     fs::write(
         temp.path().join("other.txt"),
-        "CITE`requirements.timeout`".replace("CITE", "{cite}"),
+        "IMPL`requirements.timeout`".replace("IMPL", "{impl}"),
     )
     .unwrap();
     let report = habeas::validate_repository(temp.path()).unwrap();
@@ -230,59 +233,8 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
         report
             .errors
             .iter()
-            .any(|error| error.contains("no input covers"))
+            .any(|error| error.contains("no input covers") && error.contains("other.txt:1"))
     );
-}
-
-// {test}`requirements.references.rust_function_attestations`
-// {test}`requirements.ci.determination`
-#[test]
-fn rust_function_attestations_still_require_boolean_true() {
-    let temp = fixture();
-    fs::create_dir_all(temp.path().join("src")).unwrap();
-    fs::create_dir_all(temp.path().join("evidence/rust/src")).unwrap();
-    let source = "// IMPL`requirements.ready`\nfn sample() {}\n".replace("IMPL", "{impl}");
-    fs::write(temp.path().join("src/sample.rs"), &source).unwrap();
-    let function = json!({
-        "rust_file": "src/sample.rs",
-        "rust_item": "fn[sample]",
-        "text": source.lines().collect::<Vec<_>>()
-    });
-    let record_path = temp.path().join("evidence/requirements.ready.json");
-    let mut record: Value =
-        serde_json::from_str(&fs::read_to_string(record_path).unwrap()).unwrap();
-    record["inputs"]
-        .as_array_mut()
-        .unwrap()
-        .push(function.clone());
-    write_record(temp.path(), "ready", record);
-    let attestation_path = temp.path().join("evidence/rust/src/sample.rs.json");
-    let mut attestation = json!({
-        "rust_file": "src/sample.rs",
-        "functions": [{
-            "rust_item": "fn[sample]",
-            "citations": [{"role": "impl", "name": "requirements.ready"}],
-            "determination": {"FIXME": ["#125"]},
-            "rationale": "The function's citations were reviewed.",
-            "inputs": [function, {
-                "requirements": "requirements.ready",
-                "matches": ["requirements.ready"],
-                "text": [":::{req} ready", "The behavior MUST work.", ":::"]
-            }]
-        }]
-    });
-    fs::write(&attestation_path, attestation.to_string()).unwrap();
-    let report = habeas::validate_repository(temp.path()).unwrap();
-    assert!(
-        report
-            .errors
-            .iter()
-            .any(|error| error.contains("determination must be a boolean"))
-    );
-    attestation["functions"][0]["determination"] = json!(true);
-    fs::write(attestation_path, attestation.to_string()).unwrap();
-    let report = habeas::validate_repository(temp.path()).unwrap();
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
 
 // {test}`requirements.cli.status`

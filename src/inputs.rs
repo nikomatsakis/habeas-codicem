@@ -76,6 +76,8 @@ impl InputSelector {
 
     // {impl}`requirements.cli.add_input`
     // {impl}`requirements.definitions.inputs`
+    // {impl}`requirements.ci.schema`
+    // {impl}`requirements.cli.add_input_requirements`
     pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {
         match self {
             Self::FileRange {
@@ -112,6 +114,9 @@ impl InputSelector {
     // {impl}`requirements.ci.requirements_inputs`
     // {impl}`requirements.definitions.inputs`
     // {impl}`requirements.definitions.selection`
+    // {impl}`requirements.cli.add_input_file_range`
+    // {impl}`requirements.cli.add_input_requirements`
+    // {impl}`requirements.references.definition_globs`
     pub(crate) fn resolve(
         &self,
         root: &Path,

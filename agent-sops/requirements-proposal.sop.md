@@ -8,7 +8,8 @@ Apply the shared one-PR protocol. Start in **📝 Adjust requirements**.
    appropriate. Distinguish user requests from your proposed interpretations.
 2. Write the smallest coherent proposal using only Markdown under `md/`.
    Use stable, unique `{req}` and
-   `{example}` IDs; cite the requirements illustrated by each example. Keep
+   `{example}` IDs; reference the requirements illustrated by each example with
+   `{test}` or `{cite}`. Keep
    requirements observable and avoid prescribing a design unless requested.
    Leave changed or new definitions' evidence pending; missing or stale evidence
    is expected at this stage. Do not write placeholder judgments or snapshots.

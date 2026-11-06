@@ -1,11 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
-use crate::evidence::Declaration;
-use crate::reference_roles;
 use crate::rust_coverage::{attached_comment_indices, comments};
 
 // {impl}`requirements.references.rust_item_selectors`
@@ -13,8 +11,6 @@ use crate::rust_coverage::{attached_comment_indices, comments};
 #[derive(Clone, Debug)]
 pub(crate) struct RustItem {
     pub(crate) selector: String,
-    pub(crate) name: String,
-    pub(crate) is_function: bool,
     pub(crate) declaration_line: usize,
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
@@ -27,8 +23,6 @@ struct ItemNode {
     parent: Option<usize>,
     base: String,
     ordinal_always: bool,
-    name: String,
-    is_function: bool,
     declaration_line: usize,
     byte_start: usize,
     byte_end: usize,
@@ -48,8 +42,8 @@ impl ItemCollector<'_> {
         base: String,
         span: Span,
         declaration: Span,
-        name: String,
-        is_function: bool,
+        _name: String,
+        _is_function: bool,
         ordinal_always: bool,
     ) -> usize {
         let range = span.byte_range();
@@ -58,8 +52,6 @@ impl ItemCollector<'_> {
             parent: self.parents.last().copied(),
             base,
             ordinal_always,
-            name,
-            is_function,
             declaration_line: declaration.start().line,
             byte_start: range.start,
             byte_end: range.end,
@@ -80,6 +72,7 @@ impl ItemCollector<'_> {
 
 impl<'ast> Visit<'ast> for ItemCollector<'_> {
     // {impl}`requirements.references.rust_item_selectors`
+    // {impl}`requirements.cli.add_input_rust_item`
     fn visit_item(&mut self, item: &'ast syn::Item) {
         use syn::Item;
         let (base, declaration, name, is_function, ordinal_always) = match item {
@@ -246,6 +239,7 @@ impl<'ast> Visit<'ast> for ItemCollector<'_> {
     }
 
     // {impl}`requirements.references.rust_item_selectors`
+    // {impl}`requirements.cli.add_input_rust_item`
     fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
         use syn::ImplItem;
         let (base, declaration, name, is_function, ordinal_always) = match item {
@@ -299,6 +293,7 @@ impl<'ast> Visit<'ast> for ItemCollector<'_> {
     }
 
     // {impl}`requirements.references.rust_item_selectors`
+    // {impl}`requirements.cli.add_input_rust_item`
     fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
         use syn::TraitItem;
         let (base, declaration, name, is_function, ordinal_always) = match item {
@@ -352,6 +347,7 @@ impl<'ast> Visit<'ast> for ItemCollector<'_> {
     }
 
     // {impl}`requirements.references.rust_item_selectors`
+    // {impl}`requirements.cli.add_input_rust_item`
     fn visit_foreign_item(&mut self, item: &'ast syn::ForeignItem) {
         use syn::ForeignItem;
         let (base, declaration, name, is_function, ordinal_always) = match item {
@@ -422,6 +418,7 @@ fn escape_segment(source: &str) -> String {
 
 // {impl}`requirements.references.rust_item_selectors`
 // {impl}`requirements.ci.rust_item_inputs`
+// {impl}`requirements.cli.add_input_rust_item`
 pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let mut collector = ItemCollector {
@@ -468,8 +465,6 @@ pub(crate) fn parse_items(source: &str) -> Result<Vec<RustItem>, syn::Error> {
         let line_end = line_at(source, node.byte_end.saturating_sub(1));
         items.push(RustItem {
             selector: selectors[index].clone(),
-            name: node.name.clone(),
-            is_function: node.is_function,
             declaration_line: node.declaration_line,
             line_start,
             line_end,
@@ -498,65 +493,6 @@ pub(crate) fn item_lines(source: &str, item: &RustItem) -> Vec<String> {
         .take(item.line_end - item.line_start + 1)
         .map(str::to_owned)
         .collect()
-}
-
-// {impl}`requirements.references.rust_function_attestations`
-// {impl}`requirements.references.rust_function_coverage`
-pub(crate) type CitationSet = BTreeSet<(String, String)>;
-
-// {impl}`requirements.references.rust_function_attestations`
-// {impl}`requirements.definitions.references`
-pub(crate) fn function_citations(
-    source: &str,
-    definitions: &BTreeMap<String, Declaration>,
-) -> Result<Vec<(RustItem, CitationSet)>, syn::Error> {
-    let items = parse_items(source)?;
-    let functions = items
-        .into_iter()
-        .filter(|item| item.is_function)
-        .collect::<Vec<_>>();
-    let comments = comments(source);
-    let mut owners = vec![None; comments.len()];
-    for (function_index, function) in functions.iter().enumerate() {
-        for comment_index in attached_comment_indices(source, &comments, function.byte_start) {
-            owners[comment_index] = Some(function_index);
-        }
-    }
-    for (comment_index, comment) in comments.iter().enumerate() {
-        if source[comment.clone()].starts_with("//!") || source[comment.clone()].starts_with("/*!")
-        {
-            continue;
-        }
-        if owners[comment_index].is_none() {
-            owners[comment_index] = functions
-                .iter()
-                .enumerate()
-                .filter(|(_, function)| {
-                    function.byte_start <= comment.start && comment.end <= function.byte_end
-                })
-                .min_by_key(|(_, function)| function.byte_end - function.byte_start)
-                .map(|(index, _)| index);
-        }
-    }
-    let mut citations = vec![BTreeSet::new(); functions.len()];
-    for (comment_index, owner) in owners.iter().enumerate() {
-        let Some(function_index) = owner else {
-            continue;
-        };
-        for reference in reference_roles(&source[comments[comment_index].clone()], false) {
-            if reference.kind == crate::ReferenceKind::Term {
-                continue;
-            }
-            if definitions
-                .get(reference.name)
-                .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
-            {
-                citations[*function_index]
-                    .insert((reference.kind.label().to_owned(), reference.name.to_owned()));
-            }
-        }
-    }
-    Ok(functions.into_iter().zip(citations).collect())
 }
 
 #[cfg(test)]

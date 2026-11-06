@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST store persistent per-user activity state under\n`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,\notherwise under `$HOME/.local/state/habeas`. On Windows it MUST use\n`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that\nstate root and document their record formats and locations.\n\nState MUST persist across invocations and MUST NOT be stored in the project\nrepository, the configuration file, or a disposable cache directory. Habeas MUST\ncreate the required directories when recording state. If it cannot determine or\nwrite the state location, the operation requiring that state MUST report the\nfailure and MUST NOT claim that its history was recorded.",
   "determination": false,
-  "rationale": "**Verdict:** The implementation looks correct, but the tests leave out the requirement's failure and exclusion obligations, so I judge it false.\n\n**Implementation (matches the requirement)**\n- `state_root_from` in `src/config.rs` (~L580–595) returns `$XDG_STATE_HOME/habeas` on Unix when the value is absolute and nonempty. Otherwise it returns `$HOME/.local/state/habeas`. On Windows it returns `%LOCALAPPDATA%/habeas/state`.\n- `required_directory` returns a `NotFound` error naming the variable when no usable base can be determined.\n- The authoring code (`author_evidence_with_output` and `prepare_assessment` in `src/authoring/mod.rs`) calls `config::state_root()?` and then `create_dir_all`. It rejects a state root inside the project (`starts_with(&root)`). `UsageLog::start` uses the named subdirectory `authoring/usage`.\n- Failures to write usage are reported with \"cannot record usage at …\" messages (`persisted`, `failed`, and the `usage.finish` error mapping). The code never claims history was recorded when recording fails.\n- `md/reference.md` ~L298–304 documents the usage location.\n\n**Test coverage**\n- `tests/configuration.rs::locations_use_absolute_xdg_values_and_platform_fallbacks` covers:\n  - an absolute XDG value;\n  - an empty XDG value falling back to `HOME`;\n  - a relative XDG value falling back to `HOME`;\n  - the Windows location;\n  - an error when `LOCALAPPDATA` is missing.\n- The CLI and batch tests (`tests/authoring_cli.rs`, `tests/authoring_batch.rs`) set `XDG_STATE_HOME` and `LOCALAPPDATA` and read usage records at `<state>/habeas/authoring/usage`, or `<state>/habeas/state/authoring/usage` on Windows. This shows records are created in the right place and persist after the process exits. `ordinary_status_ignores_invalid_user_authoring_configuration` also asserts that state is not created when nothing is recorded.\n\n**Gaps**\n- There is no test of the failure obligation: \"If it cannot determine or write the state location, the operation … MUST report the failure and MUST NOT claim that its history was recorded\". The searches found no test that does any of the following:\n  - makes the state directory unwritable;\n  - leaves a Unix `HOME` unset or unusable with no valid XDG value;\n  - triggers the \"cannot record usage\" paths.\n  - The only error-path unit test is the Windows `LOCALAPPDATA` case. The Unix no-`HOME` case for `state_root_from` is untested.\n- There is no test of \"MUST NOT be stored in the project repository\". The \"authoring usage state must be outside the project repository\" guard is untested.\n- The CLI tests pass absolute temp-directory paths for the state variables. The `HOME` fallback is covered only at the unit level, not end to end.\n- I did not find documentation of the usage record format beyond what `usage_storage` itself specifies. `md/reference.md` documents only the location.\n- None of these gaps is acknowledged by a FIXME, so the determination is false rather than FIXME.",
+  "rationale": "**Verdict: the path resolution is correct and tested, but the failure and repository-exclusion obligations have no test.**\n\n**What is implemented and tested**\n- `state_root_from` in `src/config.rs` (~l.583) resolves the state root as the requirement states:\n  - On Unix, an absolute `XDG_STATE_HOME` gives `$XDG_STATE_HOME/habeas`. A missing, empty or relative value falls back to an absolute `$HOME/.local/state/habeas`.\n  - On Windows it gives `%LOCALAPPDATA%/habeas/state`.\n  - If the needed variable is missing or not absolute, `required_directory` returns a `NotFound` error saying the directory cannot be determined.\n- `tests/configuration.rs::locations_use_absolute_xdg_values_and_platform_fallbacks` covers a valid XDG value, an empty one, a relative one, the HOME fallback, the Windows path, and Windows with `LOCALAPPDATA` missing.\n- The authoring feature uses the named subdirectory `authoring/usage` (`UsageLog::start`). `reference.md` documents its location, and the CLI and batch integration tests read usage records from `<state>/authoring/usage`.\n- The `{impl}` markings on `state_root`, `state_root_from`, `absolute_directory`, `required_directory`, `ConfigPlatform::current`, `author_evidence_with_output`, `prepare_assessment`, `UsageLog::start`, `persisted` and `failed` look appropriate. A failure to resolve or write state propagates as an `io::Error`.\n- `persisted` and `failed` report \"cannot record usage … (evidence written: …)\" instead of claiming success.\n\n**Gaps**\n1. **Untested failure reporting.** I found no test where the state location is undeterminable or unwritable in the authoring flow. Nothing checks the error text, or that the operation fails without claiming history was recorded. The unit test covers only `state_root_from` returning `Err` on Windows. It does not cover the Unix case with no usable `HOME`, and it does not cover the `persisted`, `failed` and `finish` error paths.\n2. **Untested repository exclusion.** The \"authoring usage state must be outside the project repository\" check in `author_evidence_with_output` and `prepare_assessment` has no test. A search of `tests/` for that message found nothing.\n3. **Directory creation before the repository check.** The code calls `fs::create_dir_all(&state)` before checking whether the state path is inside the project root. A state path inside the repository would therefore have directories created there before the error is returned. The requirement says state MUST NOT be stored in the project repository.\n4. **Unmarked state-writing code.** `UsageLog::save` and `finish` write into the state location, but they carry only `usage_storage` markings, not `state_location`. `save` is where write failures surface.\n5. **Not directly tested.** Directory creation, persistence across invocations and the \"not in the config file or cache\" obligations are only incidentally exercised by the integration tests.\n\nThere is no FIXME acknowledging any of these gaps, so the determination is false rather than FIXME.",
   "inputs": [
     {
       "requirements": "requirements.configuration.state_location",
@@ -21,29 +21,6 @@
         "create the required directories when recording state. If it cannot determine or",
         "write the state location, the operation requiring that state MUST report the",
         "failure and MUST NOT claim that its history was recorded.",
-        ":::"
-      ]
-    },
-    {
-      "requirements": "requirements.authoring.usage_storage",
-      "matches": [
-        "requirements.authoring.usage_storage"
-      ],
-      "text": [
-        ":::{req} usage_storage",
-        "Each assessment MUST have a separate JSON usage record under",
-        "`<state-root>/authoring/usage/<run-id>.json` using",
-        "{cite}`requirements.configuration.state_location`.",
-        "It MUST identify its format version, run, project root, subject kind and full",
-        "name, start time, backend and model when known, end time when finished, outcome,",
-        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
-        "whether evidence was written. It MUST record the selected output destination in",
-        "`evidence_output` as `file` or `stdout`; a successful write to either destination",
-        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
-        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
-        "Failed, cancelled, or unfinished",
-        "runs MUST remain distinguishable from completed judgments. Records MUST persist",
-        "for later review without storing source text, prompts, responses, or rationale.",
         ":::"
       ]
     },
@@ -168,7 +145,6 @@
       "rust_item": "fn[prepare_assessment]",
       "text": [
         "// {impl}`requirements.authoring.batch`",
-        "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.configuration.state_location`",
         "// {impl}`requirements.authoring.read_denial`",
@@ -447,422 +423,147 @@
       ]
     },
     {
-      "file": "md/requirements/authoring.md",
-      "line_start": 437,
-      "line_end": 451,
-      "text": [
-        ":::",
-        "",
-        ":::{req} configuration",
-        "Authoring MUST use the `[authoring]` sections of the shared user configuration",
-        "and the selected workspace's `habeas.toml`.",
-        "{cite}`requirements.configuration.user_location`",
-        "{cite}`requirements.configuration.structure`",
-        "{cite}`requirements.configuration.feature_sections`",
-        "It MUST support named configurations, workspace defaults, and a user-local",
-        "selection for each project. Credential-source references SHOULD be used;",
-        "explicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.",
-        "{cite}`requirements.configuration.workspace_location`",
-        "{cite}`requirements.configuration.workspace_structure`",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "rust_file": "src/authoring/mod.rs",
-      "rust_item": "fn[author_evidence]",
-      "text": [
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
-        "}"
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 21,
-      "line_end": 25,
-      "text": [
-        "",
-        "Monitor summaries, outcomes, and validation diagnostics without loading generated",
-        "evidence bodies into the supervising agent's context. If a rationale needs",
-        "investigation, delegate that reading and request a concise implementation finding",
-        "rather than the evidence text."
-      ]
-    },
-    {
       "file": "md/reference.md",
-      "line_start": 160,
-      "line_end": 164,
-      "text": [
-        "Workspace files can also define `[authoring.configs.<name>]` records, which",
-        "replace same-named user records as a whole. No ancestor workspace files are",
-        "merged. Selection order is `--config`, the user's per-project selection, workspace",
-        "default, then user default.",
-        "{cite}`requirements.configuration.workspace_location`"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 221,
-      "line_end": 227,
+      "line_start": 311,
+      "line_end": 317,
       "text": [
         "",
-        "```sh",
-        "habeas author requirements.check",
-        "habeas author requirements.check --config local",
-        "habeas info requirements.check",
-        "```",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 559,
-      "line_end": 563,
-      "text": [
-        "mechanism and report rejection by Rig or the provider. These options MUST NOT",
-        "replace the selected model, the assessment prompt, or tool definitions.",
-        ":::",
-        "",
-        ":::{req} configuration_precedence"
-      ]
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "line_start": 110,
-      "line_end": 114,
-      "text": [
-        "",
-        ":::{req} input_containment",
-        "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 120,
-      "line_end": 128,
-      "text": [
-        "    File,",
-        "    Stdout,",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 172,
-      "line_end": 180,
-      "text": [
-        "        let cause = result",
-        "            .as_ref()",
-        "            .err()",
-        "            .map_or(String::new(), |cause| format!(\"{cause}; \"));",
-        "        io::Error::new(",
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
-        "                usage.path.display(),"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 292,
-      "line_end": 296,
-      "text": [
-        "        for (line_start, line_end) in windows {",
-        "            inputs.push(sources.read_selector(&InputSelector::FileRange {",
-        "                file: file.clone(),",
-        "                line_start,",
-        "                line_end,"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 304,
-      "line_end": 308,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 89,
-      "line_end": 93,
-      "text": [
-        "            SEQUENCE.fetch_add(1, Ordering::Relaxed)",
-        "        );",
-        "        let directory = state.join(\"authoring/usage\");",
-        "        fs::create_dir_all(&directory)?;",
-        "        let path = directory.join(format!(\"{run_id}.json\"));"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 377,
-      "line_end": 386,
-      "text": [
-        "    pub fn options(&self) -> &BTreeMap<String, OptionValue> {",
-        "        match self {",
-        "            Self::Bedrock(config) => &config.options,",
-        "            Self::Ollama(config) => &config.options,",
-        "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    pub fn options_json(&self) -> io::Result<serde_json::Value> {"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 253,
-      "line_end": 259,
-      "text": [
-        "    config_root: PathBuf,",
-        "    state: PathBuf,",
-        "    config: PathBuf,",
-        "    config_text: String,",
-        "}",
-        "",
-        "impl Fixture {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 204,
-      "line_end": 210,
-      "text": [
-        "    fn usage(&self) -> Value {",
-        "        let directory = if cfg!(windows) {",
-        "            self.state.join(\"habeas/state/authoring/usage\")",
-        "        } else {",
-        "            self.state.join(\"habeas/authoring/usage\")",
-        "        };",
-        "        let files = fs::read_dir(directory)"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 6,
-      "line_end": 10,
-      "text": [
-        "use habeas::config::{",
-        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,",
-        "    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,",
-        "    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,",
-        "};"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 28,
-      "line_end": 32,
-      "text": [
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        state.join(\"habeas\")"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 44,
-      "line_end": 48,
-      "text": [
-        "            home.join(\".config/habeas/config.toml\")",
-        "        );",
-        "        assert_eq!(",
-        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".local/state/habeas\")"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 58,
-      "line_end": 66,
-      "text": [
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 562,
-      "line_end": 562,
-      "text": [
-        ""
+        "The command reports the evidence destination and usage-record path. Usage",
+        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
+        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
+        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
+        "book rendering remain deterministic and do not require model configuration or",
+        "credentials. {cite}`requirements.authoring.usage_storage`"
       ]
     },
     {
       "file": "md/requirements/configuration.md",
-      "line_start": 33,
-      "line_end": 33,
+      "line_start": 45,
+      "line_end": 51,
       "text": [
-        "its current directory is inside the project, in which case it MUST start there."
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 114,
-      "line_end": 114,
-      "text": [
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 167,
-      "line_end": 167,
-      "text": [
-        "        Ok(_) => \"completed\","
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 79,
-      "line_end": 79,
-      "text": [
-        "    // {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 123,
-      "line_end": 123,
-      "text": [
-        "#[serde(tag = \"backend\", rename_all = \"lowercase\")]"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 378,
-      "line_end": 378,
-      "text": [
-        "        match self {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 383,
-      "line_end": 383,
-      "text": [
+        ":::{req} state_location",
+        "Habeas MUST store persistent per-user activity state under",
+        "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
+        "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
+        "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
+        "state root and document their record formats and locations.",
         ""
       ]
     },
     {
-      "file": "src/config.rs",
-      "line_start": 400,
-      "line_end": 400,
+      "file": "src/authoring/mod.rs",
+      "line_start": 132,
+      "line_end": 136,
       "text": [
-        "                &format!(\"{setting}.model\"),"
+        ") -> io::Result<AuthoringOutcome> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;",
+        "    if fs::canonicalize(&state)?.starts_with(&root) {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 192,
+      "line_end": 196,
+      "text": [
+        ") -> io::Result<PendingAssessment> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let state = config::state_root()?;",
+        "    fs::create_dir_all(&state)?;",
+        "    if fs::canonicalize(&state)?.starts_with(&root) {"
       ]
     },
     {
       "file": "src/config.rs",
-      "line_start": 408,
-      "line_end": 408,
+      "line_start": 577,
+      "line_end": 586,
       "text": [
-        "            return Err(invalid("
+        "",
+        "// {impl}`requirements.configuration.state_location`",
+        "pub fn state_root() -> io::Result<PathBuf> {",
+        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
+        "}",
+        "",
+        "// {impl}`requirements.configuration.state_location`",
+        "pub fn state_root_from(",
+        "    platform: ConfigPlatform,",
+        "    lookup: impl Fn(&str) -> Option<OsString>,"
       ]
     },
     {
-      "file": "tests/configuration.rs",
-      "line_start": 12,
-      "line_end": 12,
+      "file": "src/config.rs",
+      "line_start": 588,
+      "line_end": 596,
       "text": [
-        "// {test}`requirements.configuration.user_location`"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 221,
-      "line_end": 228,
-      "text": [
-        "        })",
-        "    } else {",
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
-        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
-        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{",
-        "                    \"name\":\"submit_judgment\", \"arguments\":{",
-        "                        \"determination\":determination,"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 288,
-      "line_end": 294,
-      "text": [
-        "        let mut config_text = format!(",
-        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = 'fixture-model'\\nendpoint = '{endpoint}'\\n\"",
-        "        );",
-        "        if let Some(concurrency) = concurrency {",
-        "            config_text.push_str(&format!(\"concurrency = {concurrency}\\n\"));",
+        "    match platform {",
+        "        ConfigPlatform::Windows => {",
+        "            Ok(required_directory(&lookup, \"LOCALAPPDATA\")?.join(\"habeas/state\"))",
         "        }",
-        "        let config = config_root.join(\"habeas/config.toml\");"
+        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
+        "            Some(path) => path.join(\"habeas\"),",
+        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),",
+        "        }),",
+        "    }"
       ]
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 356,
-      "line_end": 362,
+      "line_start": 317,
+      "line_end": 322,
       "text": [
-        "process = subprocess.Popen(",
-        "    [sys.argv[1], *sys.argv[3:]],",
-        "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,",
-        ")",
-        "os.close(slave)",
-        "captured = bytearray()",
-        "interrupted = False"
+        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
+        "            .env(\"APPDATA\", &self.config_root)",
+        "            .env(\"XDG_STATE_HOME\", &self.state)",
+        "            .env(\"LOCALAPPDATA\", &self.state);",
+        "        command",
+        "    }"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 401,
+      "line_end": 406,
+      "text": [
+        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
+        "            .env(\"APPDATA\", &self.config_root)",
+        "            .env(\"XDG_STATE_HOME\", &self.state)",
+        "            .env(\"LOCALAPPDATA\", &self.state)",
+        "            .env(\"TERM\", term)",
+        "            .env(\"NO_COLOR\", \"1\")"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 192,
-      "line_end": 200,
+      "line_start": 193,
+      "line_end": 199,
       "text": [
-        "        command",
         "            .current_dir(&self.project)",
         "            .env(\"XDG_CONFIG_HOME\", &self.config)",
         "            .env(\"XDG_STATE_HOME\", &self.state)",
         "            .env(\"APPDATA\", &self.config)",
         "            .env(\"LOCALAPPDATA\", &self.state)",
         "            .env(\"HOME\", self.temp.path())",
-        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);",
-        "        command"
+        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);"
       ]
     },
     {
       "file": "tests/configuration.rs",
-      "line_start": 19,
+      "line_start": 7,
+      "line_end": 11,
+      "text": [
+        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,",
+        "    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,",
+        "    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,",
+        "};",
+        ""
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 21,
       "line_end": 25,
       "text": [
-        "    let state = dir.path().join(\"state\");",
-        "    let vars = BTreeMap::from([",
         "        (\"HOME\", home.as_os_str().to_owned()),",
         "        (\"XDG_CONFIG_HOME\", config.as_os_str().to_owned()),",
         "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),",
@@ -872,9 +573,25 @@
     },
     {
       "file": "tests/configuration.rs",
-      "line_start": 49,
+      "line_start": 29,
+      "line_end": 33,
+      "text": [
+        "    );",
+        "    assert_eq!(",
+        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
+        "        state.join(\"habeas\")",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 45,
       "line_end": 55,
       "text": [
+        "        );",
+        "        assert_eq!(",
+        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
+        "            home.join(\".local/state/habeas\")",
         "        );",
         "    }",
         "    let windows = |name: &str| match name {",
@@ -885,473 +602,99 @@
       ]
     },
     {
-      "file": "tests/definitions.rs",
-      "line_start": 1,
-      "line_end": 7,
-      "text": [
-        "use std::fs;",
-        "use std::path::Path;",
-        "",
-        "use habeas::{InputMode, InputTarget, add_input, validate_repository};",
-        "use mdbook_preprocessor::book::{Book, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 61,
+      "file": "tests/configuration.rs",
+      "line_start": 59,
       "line_end": 67,
       "text": [
-        "    approve(&path);",
-        "    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();",
-        "    assert_eq!(record[\"inputs\"].as_array().unwrap().len(), 3);",
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
-        "    let before = fs::read(&path).unwrap();",
-        "    capture(root);",
-        "    assert_eq!(before, fs::read(&path).unwrap());"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 69,
-      "line_end": 75,
-      "text": [
-        "    let glossary = root.join(\"md/glossary.md\");",
-        "    let original = fs::read_to_string(&glossary).unwrap();",
-        "    fs::write(&glossary, format!(\"\\n\\n{original}\")).unwrap();",
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
-        "    for changed in [",
-        "        original.replace(\":phrase: beta\", \":phrase: new beta\"),",
-        "        original"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 77,
-      "line_end": 83,
-      "text": [
-        "            .replace(\"See {term}\", \"Read {term}\"),",
-        "    ] {",
-        "        fs::write(&glossary, changed).unwrap();",
-        "        let report = validate_repository(root).unwrap();",
-        "        assert!(",
-        "            report",
-        "                .errors"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 93,
-      "line_end": 99,
-      "text": [
-        "    assert_eq!(refreshed[\"determination\"], false);",
-        "    assert_eq!(refreshed[\"inputs\"].as_array().unwrap().len(), 3);",
-        "    approve(&path);",
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
-        "",
-        "    let mut missing = refreshed.clone();",
-        "    missing[\"inputs\"]"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 102,
-      "line_end": 108,
-      "text": [
-        "        .retain(|i| i.get(\"definition\") != Some(&json!(\"glossary.b\")));",
-        "    fs::write(&path, missing.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 113,
-      "line_end": 119,
-      "text": [
-        "    duplicate[\"inputs\"].as_array_mut().unwrap().push(input);",
-        "    fs::write(&path, duplicate.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 162,
-      "line_end": 168,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        assert!(",
-        "            validate_repository(temp.path())",
-        "                .unwrap()",
-        "                .errors",
-        "                .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 176,
-      "line_end": 189,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    assert!(",
-        "        validate_repository(temp.path())",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()",
-        "            .any(|e| e.contains(\"missing a closing colon fence\"))",
         "    );",
-        "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();",
-        "    let errors = validate_repository(temp.path()).unwrap().errors;",
-        "    assert!(",
-        "        errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 287,
-      "line_end": 293,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    approve(&root.join(\"evidence/rules.ready.json\"));",
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());",
-        "    let glossary = root.join(\"md/glossary.md\");",
-        "    fs::write(",
-        "        &glossary,"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 296,
-      "line_end": 302,
-      "text": [
-        "            .replace(\":phrase: beta\", \":phrase: changed\"),",
-        "    )",
-        "    .unwrap();",
-        "    let errors = validate_repository(root).unwrap().errors;",
-        "    for label in [\"evidence/rules.ready.json\", \"evidence/rust/src/lib.rs.json\"] {",
-        "        assert!(",
-        "            errors.iter().any(|e| e.contains(label)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 311,
-      "line_end": 317,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 334,
-      "line_end": 340,
-      "text": [
-        "    invalid[\"inputs\"][1][\"unexpected\"] = json!(true);",
-        "    fs::write(&path, invalid.to_string()).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 343,
-      "line_end": 349,
-      "text": [
-        "    fs::write(&path, original.to_string()).unwrap();",
-        "    fs::remove_file(root.join(\"md/glossary.md\")).unwrap();",
-        "    assert!(",
-        "        validate_repository(root)",
-        "            .unwrap()",
-        "            .errors",
-        "            .iter()"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 362,
-      "line_end": 368,
-      "text": [
-        "    .unwrap();",
-        "    capture(root);",
-        "    approve(&root.join(\"evidence/rules.ready.json\"));",
-        "    let report = validate_repository(root).unwrap();",
-        "    assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    let record: Value =",
-        "        serde_json::from_str(&fs::read_to_string(root.join(\"evidence/rules.ready.json\")).unwrap())"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 1,
-      "line_end": 7,
-      "text": [
-        "use std::fs;",
-        "use std::path::Path;",
-        "",
-        "use habeas::validate_repository;",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
+        "    assert_eq!(",
+        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
+        "        state.join(\"habeas/state\")",
+        "    );",
+        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
+        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
+        "}",
         ""
       ]
     },
     {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 51,
-      "line_end": 57,
-      "text": [
-        "        &root,",
-        "        vec![json!({\"file\":\"data.txt\", \"line_start\":2, \"line_end\":2, \"text\":[\"second\"]})],",
-        "    );",
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
-        "",
-        "    for (input, expected) in [",
-        "        ("
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 72,
-      "line_end": 78,
-      "text": [
-        "        ),",
-        "    ] {",
-        "        write_inputs(&root, vec![input]);",
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(expected), \"missing {expected:?}: {errors}\");",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 94,
-      "line_end": 100,
-      "text": [
-        "            json!({\"file\":\"inside.txt\", \"line_start\":1, \"line_end\":2, \"text\":[\"first\", \"second\"]}),",
-        "        ],",
-        "    );",
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
-        "",
-        "    let sibling = temp.path().join(\"project-sibling\");",
-        "    fs::create_dir(&sibling).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 105,
-      "line_end": 113,
-      "text": [
-        "        json!({\"rust_file\":\"escape.rs\", \"rust_item\":\"fn[outside]\", \"text\":[\"fn outside() {}\"]}),",
-        "    ] {",
-        "        write_inputs(&root, vec![input]);",
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
-        "        assert!(",
-        "            errors.contains(\"escape.rs resolves outside the repository\"),",
-        "            \"{errors}\"",
-        "        );",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 118,
-      "line_end": 131,
-      "text": [
-        "fn nested_evidence_and_non_source_rust_sidecars_are_reported() {",
-        "    let temp = fixture();",
-        "    let root = temp.path().join(\"project\");",
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
-        "    let record = fs::read(root.join(\"evidence/rules.ready.json\")).unwrap();",
-        "    for directory in [\"evidence/nested\", \"evidence/rust\"] {",
-        "        fs::create_dir_all(root.join(directory)).unwrap();",
-        "    }",
-        "    fs::write(root.join(\"evidence/nested/rules.ready.json\"), &record).unwrap();",
-        "    fs::write(root.join(\"evidence/rust/other.json\"), &record).unwrap();",
-        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
-        "    assert!(",
-        "        errors.contains(\"evidence/nested/rules.ready.json: no matching requirement or example\"),",
-        "        \"{errors}\""
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 163,
-      "line_end": 175,
-      "text": [
-        "    fs::create_dir_all(path.parent().unwrap()).unwrap();",
-        "    let mut sidecar = json!({\"rust_file\":\"src/lib.rs\", \"functions\":[entry.clone()]});",
-        "    fs::write(&path, sidecar.to_string()).unwrap();",
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
-        "",
-        "    let mut removed = entry;",
-        "    removed[\"rust_item\"] = json!(\"fn[removed]\");",
-        "    sidecar[\"functions\"].as_array_mut().unwrap().push(removed);",
-        "    fs::write(&path, sidecar.to_string()).unwrap();",
-        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");",
-        "    assert!(",
-        "        errors.contains(\"orphaned Rust function attestation\") && errors.contains(\"fn[removed]\"),",
-        "        \"{errors}\""
-      ]
-    },
-    {
       "file": "tests/live_bedrock.rs",
-      "line_start": 208,
-      "line_end": 215,
-      "text": [
-        "fn skip_probe(root: &Path) -> Command {",
-        "    let mut command = Command::new(std::env::current_exe().unwrap());",
-        "    command.args([\"--exact\", \"live_bedrock_authoring\"]);",
-        "    for (key, _) in std::env::vars_os() {",
-        "        if key.to_string_lossy().starts_with(\"AWS_\") {",
-        "            command.env_remove(key);",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 117,
-      "line_end": 129,
-      "text": [
-        "fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {",
-        "    let temp = fixture();",
-        "    assert!(",
-        "        habeas::validate_repository(temp.path())",
-        "            .unwrap()",
-        "            .errors",
-        "            .is_empty()",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(true));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 131,
-      "line_end": 137,
-      "text": [
-        "            .any(|error| error.contains(\"no {test} reference\"))",
-        "    );",
-        "    replace_judgment(temp.path(), \"timeout\", json!(false));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 168,
-      "line_end": 174,
-      "text": [
-        "            \"file\": \"reviewed.txt\", \"line_start\": 1, \"line_end\": 1, \"text\": [comment]",
-        "        }));",
-        "        write_record(temp.path(), \"ready\", record);",
-        "        let report = habeas::validate_repository(temp.path()).unwrap();",
-        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 179,
-      "line_end": 185,
-      "text": [
-        "#[test]",
-        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {",
-        "    let temp = fixture();",
-        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 201,
-      "line_end": 207,
-      "text": [
-        "// {test}`requirements.ci.fixme_stale_input`",
-        "// {test}`requirements.index.state`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "#[test]",
-        "fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {",
-        "    let temp = fixture();",
-        "    fs::write(temp.path().join(\"observed.txt\"), \"changed source\\n\").unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 219,
+      "line_start": 220,
       "line_end": 225,
       "text": [
-        "        .unwrap();",
-        "    assert!(row.contains(\"Invalid\"), \"{row}\");",
-        "    assert!(status.contains(\"#125\"), \"{status}\");",
-        "    assert!(status.contains(\"input text changed\"), \"{status}\");",
-        "    fs::write(",
-        "        temp.path().join(\"other.txt\"),",
-        "        \"CITE`requirements.timeout`\".replace(\"CITE\", \"{cite}\"),"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 266,
-      "line_end": 272,
-      "text": [
-        "            \"rationale\": \"The function's citations were reviewed.\",",
-        "            \"inputs\": [function, {",
-        "                \"requirements\": \"requirements.ready\",",
-        "                \"matches\": [\"requirements.ready\"],",
-        "                \"text\": [\":::{req} ready\", \"The behavior MUST work.\", \":::\"]",
-        "            }]",
-        "        }]"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 275,
-      "line_end": 281,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!(",
-        "        report",
-        "            .errors",
-        "            .iter()",
-        "            .any(|error| error.contains(\"determination must be a boolean\"))",
-        "    );"
+        "        .env(\"XDG_CONFIG_HOME\", root.join(\"config\"))",
+        "        .env(\"APPDATA\", root.join(\"config\"))",
+        "        .env(\"XDG_STATE_HOME\", root.join(\"state\"))",
+        "        .env(\"LOCALAPPDATA\", root.join(\"state\"))",
+        "        .env(\"AWS_CONFIG_FILE\", root.join(\"aws-config\"))",
+        "        .env(\"AWS_SHARED_CREDENTIALS_FILE\", root.join(\"aws-credentials\"))"
       ]
     },
     {
       "file": "src/authoring/usage.rs",
-      "line_start": 120,
+      "line_start": 60,
       "line_end": 260,
       "text": [
+        "struct TokenCounts {",
+        "    input: Option<u64>,",
+        "    output: Option<u64>,",
+        "    cached_input: Option<u64>,",
+        "    cache_creation_input: Option<u64>,",
+        "    reasoning: Option<u64>,",
+        "    complete: bool,",
+        "}",
+        "",
+        "pub(super) struct UsageLog {",
+        "    pub record: UsageRecord,",
+        "    pub path: PathBuf,",
+        "    started: Instant,",
+        "    seen: BTreeSet<String>,",
+        "    active_request: Option<(usize, Instant)>,",
+        "}",
+        "",
+        "impl UsageLog {",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    // {impl}`requirements.configuration.state_location`",
+        "    pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {",
+        "        let start_time_ms = timestamp();",
+        "        let run_id = format!(",
+        "            \"{}-{}-{}\",",
+        "            SystemTime::now()",
+        "                .duration_since(UNIX_EPOCH)",
+        "                .unwrap_or_default()",
+        "                .as_nanos(),",
+        "            std::process::id(),",
+        "            SEQUENCE.fetch_add(1, Ordering::Relaxed)",
+        "        );",
+        "        let directory = state.join(\"authoring/usage\");",
+        "        fs::create_dir_all(&directory)?;",
+        "        let path = directory.join(format!(\"{run_id}.json\"));",
+        "        OpenOptions::new()",
+        "            .write(true)",
+        "            .create_new(true)",
+        "            .open(&path)?;",
+        "        let log = Self {",
+        "            record: UsageRecord {",
+        "                version: 1,",
+        "                run_id,",
+        "                project_root: root.to_owned(),",
+        "                subject: subject.to_owned(),",
+        "                subject_kind: None,",
+        "                backend: None,",
+        "                model: None,",
+        "                start_time_ms,",
+        "                end_time_ms: None,",
+        "                elapsed_ms: 0,",
+        "                outcome: \"unfinished\".into(),",
+        "                determination: None,",
+        "                evidence_output: \"file\",",
+        "                evidence_written: false,",
+        "                inputs: Vec::new(),",
+        "                requests: Vec::new(),",
+        "                tool_calls: BTreeMap::new(),",
+        "                tool_failures: BTreeMap::new(),",
+        "                tool_skipped: BTreeMap::new(),",
+        "                request_count: 0,",
         "                tool_call_count: 0,",
         "                tokens: TokenCounts::default(),",
         "            },",
@@ -1496,3128 +839,213 @@
       ]
     },
     {
-      "file": "md/reference.md",
-      "line_start": 160,
-      "line_end": 166,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 417,
+      "line_end": 423,
       "text": [
-        "Workspace files can also define `[authoring.configs.<name>]` records, which",
-        "replace same-named user records as a whole. No ancestor workspace files are",
-        "merged. Selection order is `--config`, the user's per-project selection, workspace",
-        "default, then user default.",
-        "{cite}`requirements.configuration.workspace_location`",
-        "{cite}`requirements.configuration.evidence_paths`",
-        "{cite}`requirements.authoring.configuration_precedence`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 565,
-      "line_end": 571,
-      "text": [
-        "authoring MUST use the user's selection for the canonical project root, then the",
-        "workspace default, then the user's default. Named workspace configurations MUST",
-        "override same-named user configurations as complete records. Backend, model,",
-        "connection settings, and options MUST come from the selected record as a unit;",
-        "fields MUST NOT be merged between records. Workspace-only authoring MUST work",
-        "without a user configuration file. Missing configuration or an unknown selection",
-        "MUST identify the relevant configuration file and point to documented examples."
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 39,
-      "line_end": 45,
-      "text": [
-        "",
-        "### Persistent state",
-        "",
-        "Usage history belongs in the state directory described by the",
-        "[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/#variables).",
-        "",
-        ":::{req} state_location"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 68,
-      "line_end": 74,
-      "text": [
-        "// {test}`requirements.configuration.structure`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"user.toml\");"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 221,
-      "line_end": 225,
-      "text": [
-        "",
-        "```sh",
-        "habeas author requirements.check",
-        "habeas author requirements.check --config local",
-        "habeas info requirements.check"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 560,
-      "line_end": 564,
-      "text": [
-        "replace the selected model, the assessment prompt, or tool definitions.",
-        ":::",
-        "",
-        ":::{req} configuration_precedence",
-        "`--config <name>` MUST select a configuration for that invocation. Otherwise,"
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 31,
-      "line_end": 37,
-      "text": [
-        "`habeas.toml`. It MUST use that file alone, without merging ancestor workspace",
-        "files. A library operation given a project root MUST search from that root unless",
-        "its current directory is inside the project, in which case it MUST start there.",
-        "The directory containing the selected file defines the base for its relative",
-        "paths; it does not replace the Cargo and mdBook project root. A missing file MUST",
-        "mean absent workspace settings. Discovery MUST report unreadable candidate files",
-        "rather than silently selecting an ancestor. Loading MUST NOT create the file."
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 68,
-      "line_end": 72,
-      "text": [
-        "pub(crate) struct PendingAssessment {",
-        "    pub(crate) subject: AuthoringSubject,",
-        "    pub(crate) record: Value,",
-        "    outcome: AuthoringOutcome,",
-        "    usage: UsageLog,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 83,
-      "line_end": 87,
-      "text": [
-        "        self.usage.finish(\"completed\").map_err(|error| {",
-        "            io::Error::other(format!(",
-        "                \"cannot record usage at {} (evidence written: true): {error}\",",
-        "                self.usage.path.display()",
-        "            ))"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 115,
-      "line_end": 119,
-      "text": [
-        "    }",
-        "}",
-        "",
-        "#[derive(Clone, Copy)]",
-        "pub enum EvidenceOutput {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 127,
-      "line_end": 131,
-      "text": [
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 168,
-      "line_end": 172,
-      "text": [
-        "        Err(error) if error.kind() == io::ErrorKind::Interrupted => \"cancelled\",",
-        "        Err(_) => \"failed\",",
-        "    };",
-        "    usage.finish(outcome).map_err(|error| {",
-        "        let cause = result"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 179,
-      "line_end": 183,
-      "text": [
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
-        "                usage.path.display(),",
-        "                usage.record.evidence_written",
-        "            ),",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 77,
-      "line_end": 81,
-      "text": [
-        "impl UsageLog {",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {",
-        "        let start_time_ms = timestamp();"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 121,
-      "line_end": 125,
-      "text": [
-        "",
-        "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]",
-        "#[serde(tag = \"backend\", rename_all = \"lowercase\")]",
-        "pub enum BackendConfig {",
-        "    Bedrock(BedrockConfig),"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 391,
-      "line_end": 395,
-      "text": [
+        "        .unwrap()",
         "    }",
         "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.configuration.loading`",
-        "    // {impl}`requirements.authoring.credentials`"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 399,
-      "line_end": 403,
-      "text": [
-        "                path,",
-        "                &format!(\"{setting}.model\"),",
-        "                \"expected a nonempty model ID\",",
-        "            ));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 407,
-      "line_end": 411,
-      "text": [
-        "        {",
-        "            return Err(invalid(",
-        "                path,",
-        "                &format!(\"{setting}.api_key_env\"),",
-        "                \"expected a nonempty environment variable name without '=' or NUL\","
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 415,
-      "line_end": 419,
-      "text": [
-        "            Self::Bedrock(config) => {",
-        "                if let Some(credentials) = &config.credentials {",
-        "                    if config.aws_profile.is_some() {",
-        "                        return Err(invalid(",
-        "                            path,"
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    // {test}`requirements.authoring.batch`",
+        "    fn usage(&self) -> Vec<Value> {",
+        "        let path = self.state.join(if cfg!(windows) {"
       ]
     },
     {
       "file": "tests/authoring_batch.rs",
-      "line_start": 222,
-      "line_end": 226,
+      "line_start": 434,
+      "line_end": 440,
       "text": [
-        "    } else {",
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
-        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
-        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 193,
-      "line_end": 197,
-      "text": [
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"APPDATA\", &self.config)",
-        "            .env(\"LOCALAPPDATA\", &self.state)"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 10,
-      "line_end": 14,
-      "text": [
-        "};",
         "",
-        "// {test}`requirements.configuration.user_location`",
-        "// {test}`requirements.configuration.state_location`",
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.ci.determination`",
+        "// {test}`requirements.authoring.progress`",
         "#[test]"
       ]
     },
     {
-      "file": "tests/configuration.rs",
-      "line_start": 20,
-      "line_end": 24,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 568,
+      "line_end": 574,
       "text": [
-        "    let vars = BTreeMap::from([",
-        "        (\"HOME\", home.as_os_str().to_owned()),",
-        "        (\"XDG_CONFIG_HOME\", config.as_os_str().to_owned()),",
-        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),",
-        "    ]);"
+        "",
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.reporting`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.progress`",
+        "#[test]",
+        "fn failed_assessment_keeps_other_results_and_reports_failure() {"
       ]
     },
     {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 209,
-      "line_end": 213,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 794,
+      "line_end": 800,
       "text": [
-        "    let mut command = Command::new(std::env::current_exe().unwrap());",
-        "    command.args([\"--exact\", \"live_bedrock_authoring\"]);",
-        "    for (key, _) in std::env::vars_os() {",
-        "        if key.to_string_lossy().starts_with(\"AWS_\") {",
-        "            command.env_remove(key);"
+        "}",
+        "",
+        "// {test}`requirements.authoring.progress`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.concurrency`",
+        "#[cfg(unix)]"
       ]
     },
     {
-      "file": "src/authoring/mod.rs",
-      "line_start": 391,
-      "line_end": 393,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 827,
+      "line_end": 833,
       "text": [
-        "        AssessmentKind::RustFunction { citations, .. } => serde_json::to_string_pretty(citations)?,",
-        "    };",
-        "    Ok(template"
+        "// {test}`requirements.authoring.batch`",
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn denied_read_aborts_only_its_assessment_and_runs_queued_assessments() {",
+        "    let server = Server::start_with("
       ]
     },
     {
-      "file": "src/authoring/mod.rs",
-      "line_start": 570,
-      "line_end": 572,
+      "file": "tests/authoring_batch.rs",
+      "line_start": 903,
+      "line_end": 909,
       "text": [
-        "                    results",
-        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
-        "                }"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 395,
-      "line_end": 397,
-      "text": [
-        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
-        "        log.record.determination = Some(\"FIXME\".into());",
-        "        log.record.evidence_written = true;"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 402,
-      "line_end": 404,
-      "text": [
-        "        assert_eq!(sent[\"outcome\"], \"completed\");",
-        "        assert_eq!(sent[\"determination\"], \"FIXME\");",
-        "        assert_eq!(sent[\"evidence_written\"], true);"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 86,
-      "line_end": 88,
-      "text": [
-        "    if rows.is_empty() {",
-        "        output.push_str(if all {",
-        "            \"No definitions found.\\n\""
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 232,
-      "line_end": 234,
-      "text": [
-        "            Self::DeterminationFalse => \"Determination false\",",
-        "            Self::Fixme => \"FIXME\",",
-        "            Self::Invalid => \"Invalid\","
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 504,
-      "line_end": 506,
-      "text": [
-        "    if !detail_evidence.fixme_entries.is_empty() {",
-        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
-        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 17,
-      "line_end": 23,
-      "text": [
-        "            Value::Bool(false) => Ok(Self::False),",
-        "            Value::Object(object) if object.len() == 1 && object.contains_key(\"FIXME\") => {",
-        "                let entries = object[\"FIXME\"]",
-        "                    .as_array()",
-        "                    .filter(|entries| !entries.is_empty())",
-        "                    .ok_or(\"FIXME must be a nonempty array of nonempty strings\")?;",
-        "                let entries = entries"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 29,
-      "line_end": 31,
-      "text": [
-        "                            .map(str::to_owned)",
-        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")",
-        "                    })"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 35,
-      "line_end": 37,
-      "text": [
-        "            _ => Err(",
-        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\"",
-        "                    .to_owned(),"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 47,
-      "line_end": 49,
-      "text": [
-        "            Self::False => Value::Bool(false),",
-        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 56,
-      "line_end": 58,
-      "text": [
-        "            Self::False => \"false\",",
-        "            Self::Fixme(_) => \"FIXME\",",
-        "        }"
+        "// {test}`requirements.authoring.concurrency`",
+        "// {test}`requirements.authoring.read_denial`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.usage_requests`",
+        "#[test]",
+        "fn denied_read_preserves_in_flight_assessments_and_their_evidence() {"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 656,
-      "line_end": 668,
+      "line_start": 200,
+      "line_end": 206,
       "text": [
-        "            args.push(\"--verbose\");",
-        "        }",
-        "        let output = fixture.run(&args);",
-        "        assert!(",
-        "            output.status.success(),",
-        "            \"{}\",",
-        "            String::from_utf8_lossy(&output.stderr)",
-        "        );",
-        "        assert_eq!(server.finish().len(), 1);",
-        "        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();",
-        "        assert!(output.stdout.ends_with(b\"\\n\"));",
-        "        assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
-        "        assert_eq!(evidence[\"determination\"], determination);"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 197,
-      "line_end": 214,
-      "text": [
-        "    assert_eq!(usage[\"evidence_written\"], true);",
-        "    assert!(usage[\"request_count\"].as_u64().unwrap() >= 2);",
-        "    assert_eq!(usage[\"tool_calls\"][\"submit_judgment\"], 1);",
-        "    assert!(",
-        "        usage[\"tool_calls\"][\"habeas\"].as_u64().unwrap_or(0)",
-        "            + usage[\"tool_calls\"][\"ripgrep\"].as_u64().unwrap_or(0)",
-        "            > 0",
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.integration.live_bedrock_test`",
-        "fn skip_probe(root: &Path) -> Command {",
-        "    let mut command = Command::new(std::env::current_exe().unwrap());",
-        "    command.args([\"--exact\", \"live_bedrock_authoring\"]);",
-        "    for (key, _) in std::env::vars_os() {",
-        "        if key.to_string_lossy().starts_with(\"AWS_\") {",
-        "            command.env_remove(key);",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 70,
-      "line_end": 82,
-      "text": [
-        "    pub(crate) record: Value,",
-        "    outcome: AuthoringOutcome,",
-        "    usage: UsageLog,",
-        "}",
-        "",
-        "impl PendingAssessment {",
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {",
-        "        self.usage.record.evidence_written = true;",
-        "        self.outcome.evidence_path = Some(path);"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 87,
-      "line_end": 99,
-      "text": [
-        "            ))",
-        "        })?;",
-        "        Ok(self.outcome)",
+        "        command",
         "    }",
         "",
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    // {impl}`requirements.authoring.read_denial`",
-        "    pub(crate) fn failed(mut self, error: io::Error) -> io::Error {",
-        "        let outcome = if error.kind() == io::ErrorKind::Interrupted {",
-        "            \"cancelled\"",
-        "        } else {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 123,
-      "line_end": 135,
-      "text": [
-        "",
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.invocation`",
-        "// {impl}`requirements.authoring.usage_storage`",
-        "// {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 148,
-      "line_end": 160,
-      "text": [
-        "            \"authoring usage state must be outside the project repository\",",
-        "        ));",
-        "    }",
-        "    let mut usage = UsageLog::start(&state, &root, subject)?;",
-        "    usage.record.evidence_output = match output {",
-        "        EvidenceOutput::File => \"file\",",
-        "        EvidenceOutput::Stdout => \"stdout\",",
-        "    };",
-        "    usage.save()?;",
-        "    let result = tokio::select! {",
-        "        result = configured_assessment(&root, subject, selection, output, &mut usage) => result,",
-        "        signal = tokio::signal::ctrl_c() => {",
-        "            match signal {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 175,
-      "line_end": 187,
-      "text": [
-        "            .map_or(String::new(), |cause| format!(\"{cause}; \"));",
-        "        io::Error::new(",
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
-        "                usage.path.display(),",
-        "                usage.record.evidence_written",
-        "            ),",
-        "        )",
-        "    })?;",
-        "    result.map_err(|error| {",
-        "        io::Error::new(",
-        "            error.kind(),"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 213,
-      "line_end": 225,
-      "text": [
-        "    let result = tokio::select! {",
-        "        biased;",
-        "        _ = cancellation.changed() => {",
-        "            Err(io::Error::new(",
-        "                io::ErrorKind::Interrupted,",
-        "                cancellation.borrow().unwrap_or(\"evidence authoring cancelled\"),",
-        "            ))",
-        "        }",
-        "        result = configured_record(&root, subject, config, &mut usage) => result,",
-        "        signal = tokio::signal::ctrl_c() => {",
-        "            match signal {",
-        "                Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, \"evidence authoring cancelled\")),",
-        "                Err(error) => Err(error),"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 290,
-      "line_end": 314,
-      "text": [
-        "            }",
-        "        }",
-        "        for (line_start, line_end) in windows {",
-        "            inputs.push(sources.read_selector(&InputSelector::FileRange {",
-        "                file: file.clone(),",
-        "                line_start,",
-        "                line_end,",
-        "            })?);",
-        "        }",
-        "    }",
-        "    let definitions = sources.additional_definitions(&inputs)?;",
-        "    let result = json!({\"inputs\":inputs,\"definitions\":definitions});",
-        "    inputs.extend(definitions);",
-        "    Ok(ToolDelivery { result, inputs })",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`",
-        "fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {",
-        "    for key in args.keys() {",
-        "        if !allowed.contains(&key.as_str()) {",
-        "            return Err(io::Error::other(format!(",
-        "                \"unexpected tool argument {key:?}\"",
-        "            )));"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 74,
-      "line_end": 86,
-      "text": [
-        "    active_request: Option<(usize, Instant)>,",
-        "}",
-        "",
-        "impl UsageLog {",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {",
-        "        let start_time_ms = timestamp();",
-        "        let run_id = format!(",
-        "            \"{}-{}-{}\",",
-        "            SystemTime::now()",
-        "                .duration_since(UNIX_EPOCH)",
-        "                .unwrap_or_default()"
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    fn usage(&self) -> Value {",
+        "        let directory = if cfg!(windows) {",
+        "            self.state.join(\"habeas/state/authoring/usage\")"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 141,
-      "line_end": 157,
+      "line_start": 239,
+      "line_end": 245,
       "text": [
-        "            format!(\":::{{req}} ready\\n{REQUIREMENT}\\n:::\\n\"),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            project.join(\"md/terms.md\"),",
-        "            \":::{definition} readiness\\n:phrase: readiness\\n\\nSECRET_DEFINITION_TEXT.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();",
-        "        fs::write(",
-        "            project.join(\"extra.txt\"),",
-        "            (1..=12)",
-        "                .map(|line| {",
-        "                    if line == 6 {",
-        "                        \"SECRET_SOURCE_PAYLOAD needle\".to_owned()",
-        "                    } else {",
-        "                        format!(\"context line {line}\")"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 237,
-      "line_end": 253,
-      "text": [
-        "// {test}`requirements.authoring.configuration_storage`",
         "// {test}`requirements.authoring.initial_prompt`",
         "// {test}`requirements.ci.review_criteria`",
         "// {test}`requirements.authoring.delivered_inputs`",
         "// {test}`requirements.authoring.usage_storage`",
         "// {test}`requirements.authoring.usage_inputs`",
         "// {test}`requirements.authoring.usage_requests`",
-        "#[test]",
-        "fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {",
-        "    let server = Server::start(vec![",
-        "        reply(vec![",
-        "            call(\"list\", \"list_files\", json!({})),",
-        "            call(",
-        "                \"search\",",
-        "                \"ripgrep\",",
-        "                json!({\"path\":\"extra.txt\",\"pattern\":\"needle\"}),",
-        "            ),"
+        "#[test]"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 295,
-      "line_end": 312,
+      "line_start": 433,
+      "line_end": 439,
       "text": [
-        "        assert_eq!(request.body[\"think\"], false);",
-        "        assert_eq!(request.body[\"stream\"], false);",
-        "    }",
-        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
-        "    for text in [",
-        "        \"Bring your expert judgment\",",
-        "        REQUIREMENT,",
-        "        \"SECRET_DEFINITION_TEXT\",",
-        "        \"fn ready()\",",
-        "        \"fn ready_test()\",",
-        "        \"submit_judgment exactly once\",",
-        "    ] {",
-        "        assert!(prompt.contains(text), \"prompt missing {text}\");",
-        "    }",
-        "    assert!(!prompt.contains(\"OLD_RATIONALE_MUST_NOT_REACH_MODEL\"));",
-        "    let mut tools = requests[0].body[\"tools\"]",
-        "        .as_array()",
-        "        .unwrap()"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 417,
-      "line_end": 433,
-      "text": [
-        "    let stdout = String::from_utf8_lossy(&output.stdout);",
-        "    assert!(stdout.contains(MODEL) && stdout.contains(\"Evidence:\") && stdout.contains(\"Usage:\"));",
-        "}",
-        "",
-        "// {test}`requirements.configuration.workspace_location`",
-        "// {test}`requirements.configuration.workspace_structure`",
-        "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.credentials`",
         "// {test}`requirements.authoring.provider`",
         "// {test}`requirements.authoring.rig_configuration_mapping`",
         "// {test}`requirements.authoring.invocation`",
         "// {test}`requirements.authoring.usage_storage`",
         "#[test]",
         "fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {",
-        "    let server = Server::start(vec![reply(vec![call(",
-        "        \"submit\",",
-        "        \"submit_judgment\","
+        "    let server = Server::start(vec![reply(vec![call("
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 456,
-      "line_end": 472,
+      "line_start": 492,
+      "line_end": 498,
       "text": [
-        "        .current_dir(&nested)",
-        "        .args([\"author\", SUBJECT])",
-        "        .output()",
-        "        .unwrap();",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let requests = server.finish();",
-        "    assert_eq!(requests.len(), 1);",
-        "    assert_eq!(requests[0].body[\"model\"], \"workspace-model\");",
-        "    assert!(requests[0].headers.contains(\"WORKSPACE_LITERAL_KEY\"));",
-        "    assert!(",
-        "        !requests[0]",
-        "            .body",
-        "            .to_string()",
-        "            .contains(\"WORKSPACE_LITERAL_KEY\")",
-        "    );",
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage[\"model\"], \"workspace-model\");"
+        "// {test}`requirements.authoring.text_search`",
+        "// {test}`requirements.authoring.source_tools`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.usage_requests`",
+        "#[test]",
+        "fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 525,
-      "line_end": 541,
+      "line_start": 542,
+      "line_end": 548,
       "text": [
-        "        let usage = fixture.usage();",
-        "        assert_eq!(usage[\"outcome\"], \"failed\", \"{tool}: {usage}\");",
-        "        assert_eq!(usage[\"request_count\"], 1, \"{tool}: {usage}\");",
-        "        assert_eq!(usage[\"tool_failures\"][tool], 1, \"{tool}: {usage}\");",
-        "        assert_eq!(usage[\"evidence_written\"], false, \"{tool}: {usage}\");",
-        "        assert!(usage[\"determination\"].is_null(), \"{tool}: {usage}\");",
-        "    }",
         "}",
         "",
         "// {test}`requirements.authoring.negative_assessment`",
+        "// {test}`requirements.authoring.usage_storage`",
         "// {test}`requirements.authoring.persistence`",
         "// {test}`requirements.ci.fixme_with_unacknowledged_gap`",
-        "// {test}`requirements.authoring.reporting`",
-        "#[test]",
-        "fn false_is_a_completed_assessment() {",
-        "    let server = Server::start(vec![reply(vec![call(",
-        "        \"submit\","
+        "// {test}`requirements.authoring.reporting`"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 576,
-      "line_end": 592,
+      "line_start": 640,
+      "line_end": 646,
       "text": [
-        "    let stderr = String::from_utf8_lossy(&output.stderr);",
-        "    assert!(stderr.contains(&format!(\"{SUBJECT}: false\")), \"{stderr}\");",
-        "    assert!(",
-        "        !String::from_utf8_lossy(&output.stdout).contains(&format!(\"{SUBJECT}: false\")),",
-        "        \"{diagnostics}\"",
-        "    );",
-        "    assert!(",
-        "        !diagnostics.contains(\"without acknowledging\"),",
-        "        \"{diagnostics}\"",
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.authoring.reporting`",
         "// {test}`requirements.authoring.invocation`",
         "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.delivered_inputs`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "// {test}`requirements.authoring.reporting`",
         "#[test]",
-        "fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {"
+        "fn stdout_emits_only_evidence_json_without_changing_project_files() {"
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 607,
-      "line_end": 623,
+      "line_start": 736,
+      "line_end": 742,
       "text": [
-        "            stderr.contains(&format!(\"{SUBJECT}: false\")),",
-        "            !determination,",
-        "            \"{stderr}\"",
-        "        );",
-        "        assert_eq!(stderr.contains(rationale), !determination, \"{stderr}\");",
-        "        assert!(!stdout.contains(rationale), \"{stdout}\");",
-        "        for text in [&stdout, &stderr] {",
-        "            assert!(!text.contains(\"SECRET_REQUIREMENT_TEXT\"), \"{text}\");",
-        "            assert!(!text.contains(\"SECRET_DEFINITION_TEXT\"), \"{text}\");",
-        "            assert!(!text.contains(\"pub fn ready()\"), \"{text}\");",
-        "            assert!(!text.contains(\"— true\"), \"{text}\");",
-        "            assert!(!text.contains(&format!(\"{SUBJECT}: true\")), \"{text}\");",
-        "        }",
-        "        assert!(stdout.contains(\"Evidence:\"), \"{stdout}\");",
-        "        assert!(stdout.contains(\"Usage:\"), \"{stdout}\");",
-        "        let evidence: Value =",
-        "            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 780,
-      "line_end": 796,
-      "text": [
+        "",
+        "// {test}`requirements.authoring.submission_count`",
+        "// {test}`requirements.authoring.submission`",
+        "// {test}`requirements.authoring.usage_storage`",
         "#[test]",
-        "fn ordinary_status_ignores_invalid_user_authoring_configuration() {",
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(SUBJECT));",
-        "    assert!(!fixture.state.exists());",
-        "    assert_eq!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 442,
-      "line_end": 448,
-      "text": [
-        "                    && declaration.line_start <= reference.line",
-        "                    && reference.line <= declaration.line_end",
-        "            })",
-        "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)",
-        "    {",
-        "        return Ok(if declaration.kind == DefinitionKind::Term {",
-        "            InputSelector::Definition {"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 532,
-      "line_end": 538,
-      "text": [
-        "            role(\"cite\", \"requirements.base\"),",
-        "            role(\"term\", \"terms.unit\"),",
-        "            role(\"cite\", \"requirements.distant\"),",
-        "            role(\"cite\", \"requirements.ready\")",
-        "        );",
-        "        fs::write(root.path().join(\"md/requirements.md\"), declarations).unwrap();",
-        "        fs::write(root.path().join(\"src/lib.rs\"), format!(\"struct Thing;\\nimpl Thing {{\\n    // {}\\n    fn run(&self) {{}}\\n    fn unrelated(&self) {{}}\\n}}\\n// {}\\nfn test_ready() {{}}\\n\", role(\"impl\", \"requirements.ready\"), role(\"test\", \"requirements.ready\"))).unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 557,
-      "line_end": 563,
-      "text": [
-        "        );",
-        "        assert!(",
-        "            inputs",
-        "                .iter()",
-        "                .any(|input| input[\"rust_item\"] == \"fn[test_ready]\")",
-        "        );",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 639,
-      "line_end": 645,
-      "text": [
-        "        let root = project();",
-        "        fs::write(",
-        "            root.path().join(\"md/requirements.md\"),",
-        "            format!(",
-        "                \":::{{req}} ready\\nThe project MUST be ready.\\n:::\\n\\n:::{{req}} uncited\\nUse {}.\\n:::\\n\",",
-        "                role(\"term\", \"terms.unit\")",
-        "            ),"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 556,
-      "line_end": 562,
-      "text": [
-        "            ) {",
-        "                Ok(delivery) => {",
-        "                    usage.tool(call.function.name.as_str(), false);",
-        "                    usage.prepared(call.function.name.as_str(), &delivery.inputs);",
-        "                    pending.extend(delivery.inputs);",
-        "                    results.push(",
-        "                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 179,
-      "line_end": 185,
-      "text": [
-        "            .filter(|id| !id.is_empty())",
-        "            .ok_or_else(|| io::Error::other(\"Bedrock client tool call has no toolUseId\"))?;",
-        "        let name = call",
-        "            .get(\"name\")",
-        "            .and_then(Value::as_str)",
-        "            .ok_or_else(|| io::Error::other(\"Bedrock client tool call has no name\"))?;",
-        "        let name = ToolName::new(name).map_err(io::Error::other)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 205,
-      "line_end": 211,
-      "text": [
-        "        return Err(io::Error::new(",
-        "            io::ErrorKind::InvalidInput,",
-        "            \"Bedrock options.inferenceConfig is not a nested wrapper; put temperature, maxTokens, topP, and stopSequences directly in the options table\",",
-        "        ));",
-        "    }",
-        "    if let Some(value) = options.remove(\"temperature\") {",
-        "        request.temperature = Some("
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 282,
-      "line_end": 288,
-      "text": [
-        "            (None, Some(\"ThrottlingException\")),",
-        "        ] {",
-        "            assert!(",
-        "                ProviderBackoff::default()",
-        "                    .next_delay(&io::Error::other(provider_error(status, code)))",
-        "                    .is_some()",
-        "            );"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 324,
-      "line_end": 330,
-      "text": [
-        "        .and_then(Value::as_str)",
-        "        .ok_or_else(|| io::Error::other(format!(\"{key} must be a string\")))",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.text_search`",
-        "fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 400,
-      "line_end": 406,
-      "text": [
-        "            &sources,",
-        "            \"habeas\",",
-        "            &json!({\"rust_file\":\"src/lib.rs\",\"rust_item\":\"fn[work]\"}),",
-        "        )",
-        "        .unwrap();",
-        "        assert_eq!(read.inputs.len(), 2);",
-        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 450,
-      "line_end": 456,
-      "text": [
-        "            )",
-        "            .is_ok()",
-        "        );",
-        "        assert!(dispatch(&sources, \"habeas\", &json!({\"definition\":\"terms.value\"})).is_ok());",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.text_search`"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 362,
-      "line_end": 368,
-      "text": [
-        "",
-        "    // {test}`requirements.authoring.usage_inputs`",
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    #[test]",
-        "    fn input_metadata_counts_components_and_reads_without_persisting_source() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log ="
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 420,
-      "line_end": 426,
-      "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.usage_requests`",
-        "    #[test]",
-        "    fn token_totals_keep_subsets_separate_and_missing_counters_unknown() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log ="
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 460,
-      "line_end": 466,
-      "text": [
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.usage_requests`",
-        "    #[test]",
-        "    fn partial_failure_retains_available_totals_and_optional_measurements() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log ="
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 517,
-      "line_end": 523,
-      "text": [
-        "",
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    // {test}`requirements.authoring.usage_requests`",
-        "    #[test]",
-        "    fn cancelled_request_persists_elapsed_time_and_incomplete_totals() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log ="
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 554,
-      "line_end": 560,
-      "text": [
-        "    // {test}`requirements.authoring.usage_requests`",
-        "    // {test}`requirements.authoring.usage_inputs`",
-        "    // {test}`requirements.authoring.usage_storage`",
-        "    #[test]",
-        "    fn tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log ="
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 582,
-      "line_end": 588,
-      "text": [
-        "",
-        "    // {test}`requirements.authoring.usage_inputs`",
-        "    // {test}`requirements.authoring.usage_requests`",
-        "    #[test]",
-        "    fn failed_submission_can_be_confirmed_on_a_later_attempt() {",
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log ="
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 87,
-      "line_end": 91,
-      "text": [
-        "false records. It includes requirements, examples, and Rust function attestations,",
-        "preserving current accepted evidence, including FIXME judgments. Each assessment",
-        "gets its own conversation and usage record. Successful results are kept if",
-        "another assessment fails; the command reports failures and exits unsuccessfully.",
-        "A completed false judgment is saved and remains a validation failure."
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 161,
-      "line_end": 165,
-      "text": [
-        "replace same-named user records as a whole. No ancestor workspace files are",
-        "merged. Selection order is `--config`, the user's per-project selection, workspace",
-        "default, then user default.",
-        "{cite}`requirements.configuration.workspace_location`",
-        "{cite}`requirements.configuration.evidence_paths`"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 235,
-      "line_end": 239,
-      "text": [
-        "",
-        "All three judgments (`true`, `false`, and FIXME) produce evidence JSON. An",
-        "assessment that fails before accepting a valid judgment emits no evidence JSON.",
-        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
-        "Usage is still recorded outside the project, with `evidence_output` identifying"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 27,
-      "line_end": 31,
-      "text": [
-        "",
-        "Each subject MUST receive an independent assessment with its own prompt, inputs,",
-        "judgment, and usage record. The command MUST report aggregate completion and each",
-        "authoring error under {cite}`requirements.authoring.reporting`, and retain",
-        "successful writes when another assessment fails. It MUST return a nonzero"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 385,
-      "line_end": 389,
-      "text": [
-        "It MUST supply the complete function, its current citations, all requirement and",
-        "example declarations selected by `*`, and their required terminology as mandatory",
-        "inputs under {cite}`requirements.authoring.mandatory_inputs`. Existing attestation",
-        "input selectors MUST also contribute their current resolutions, subject to the",
-        "generated-output exclusion above. The harness MUST"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 558,
-      "line_end": 571,
-      "text": [
-        "closed Habeas list; the adapter MUST pass them through Rig's provider parameter",
-        "mechanism and report rejection by Rig or the provider. These options MUST NOT",
-        "replace the selected model, the assessment prompt, or tool definitions.",
-        ":::",
-        "",
-        ":::{req} configuration_precedence",
-        "`--config <name>` MUST select a configuration for that invocation. Otherwise,",
-        "authoring MUST use the user's selection for the canonical project root, then the",
-        "workspace default, then the user's default. Named workspace configurations MUST",
-        "override same-named user configurations as complete records. Backend, model,",
-        "connection settings, and options MUST come from the selected record as a unit;",
-        "fields MUST NOT be merged between records. Workspace-only authoring MUST work",
-        "without a user configuration file. Missing configuration or an unknown selection",
-        "MUST identify the relevant configuration file and point to documented examples."
+        "fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {",
+        "    let valid ="
       ]
     },
     {
       "file": "tests/authoring_cli.rs",
-      "line_start": 782,
-      "line_end": 819,
+      "line_start": 811,
+      "line_end": 817,
       "text": [
-        "    let fixture = Fixture::new(\"http://127.0.0.1:1\");",
-        "    fs::write(",
-        "        fixture.config.join(\"habeas/config.toml\"),",
-        "        \"this is not TOML [\",",
-        "    )",
-        "    .unwrap();",
-        "    let output = fixture.run(&[\"status\", SUBJECT, \"--all\"]);",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"{}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    assert!(String::from_utf8_lossy(&output.stdout).contains(SUBJECT));",
-        "    assert!(!fixture.state.exists());",
-        "    assert_eq!(",
-        "        fs::read_to_string(&fixture.evidence).unwrap(),",
-        "        fixture.original",
-        "    );",
         "}",
         "",
         "// {test}`requirements.authoring.provider`",
+        "// {test}`requirements.authoring.usage_storage`",
         "// {test}`requirements.authoring.rig_configuration_mapping`",
         "// {test}`requirements.authoring.configuration_precedence`",
-        "// {test}`requirements.authoring.initial_prompt`",
-        "// {test}`requirements.authoring.usage_requests`",
-        "// {test}`requirements.authoring.configuration_storage`",
-        "// {test}`requirements.authoring.source_tools`",
-        "// {test}`requirements.authoring.submission`",
-        "// {test}`requirements.authoring.delivered_inputs`",
+        "// {test}`requirements.authoring.initial_prompt`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 998,
+      "line_end": 1004,
+      "text": [
+        "}",
+        "",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
         "#[test]",
-        "fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {",
-        "    for typed in [false, true] {",
-        "        let mut read_call = json!({\"toolUseId\":\"bedrock-read\",\"name\":\"habeas\",",
-        "        \"input\":{\"file\":\"extra.txt\",\"line_start\":1,\"line_end\":2}});",
-        "        let mut submit_call = json!({\"toolUseId\":\"bedrock-submit\",\"name\":\"submit_judgment\",",
-        "        \"input\":{\"determination\":true,\"rationale\":\"The supplied sources support the subject.\"}});",
-        "        if typed {",
-        "            read_call[\"type\"] = json!(\"tool_use\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 221,
-      "line_end": 226,
-      "text": [
-        "        })",
-        "    } else {",
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
-        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
-        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 193,
-      "line_end": 199,
-      "text": [
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"APPDATA\", &self.config)",
-        "            .env(\"LOCALAPPDATA\", &self.state)",
-        "            .env(\"HOME\", self.temp.path())",
-        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 19,
-      "line_end": 23,
-      "text": [
-        "    let state = dir.path().join(\"state\");",
-        "    let vars = BTreeMap::from([",
-        "        (\"HOME\", home.as_os_str().to_owned()),",
-        "        (\"XDG_CONFIG_HOME\", config.as_os_str().to_owned()),",
-        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 34,
-      "line_end": 36,
-      "text": [
-        "    for invalid_xdg in [\"\", \"relative\"] {",
-        "        let lookup = |name: &str| {",
-        "            Some(if name == \"HOME\" {"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 51,
-      "line_end": 53,
-      "text": [
-        "    let windows = |name: &str| match name {",
-        "        \"APPDATA\" => Some(config.as_os_str().to_owned()),",
-        "        \"LOCALAPPDATA\" => Some(state.as_os_str().to_owned()),"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 208,
-      "line_end": 213,
-      "text": [
-        "fn skip_probe(root: &Path) -> Command {",
-        "    let mut command = Command::new(std::env::current_exe().unwrap());",
-        "    command.args([\"--exact\", \"live_bedrock_authoring\"]);",
-        "    for (key, _) in std::env::vars_os() {",
-        "        if key.to_string_lossy().starts_with(\"AWS_\") {",
-        "            command.env_remove(key);"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 126,
-      "line_end": 128,
-      "text": [
-        "        env = os.environ.copy()",
-        "        env[\"SYMPOSIUM_HOME\"] = str(symposium_home)",
-        "        metadata = subprocess.run("
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 104,
-      "line_end": 108,
-      "text": [
-        "    project: PathBuf,",
-        "    config: PathBuf,",
-        "    state: PathBuf,",
-        "    evidence: PathBuf,",
-        "    original: String,"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 117,
-      "line_end": 121,
-      "text": [
-        "        let project = temp.path().join(\"project\");",
-        "        let config = temp.path().join(\"config\");",
-        "        let state = temp.path().join(\"state\");",
-        "        for path in [",
-        "            project.join(\"md\"),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 173,
-      "line_end": 177,
-      "text": [
-        "            project,",
-        "            config,",
-        "            state,",
-        "            evidence,",
-        "            original,"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 596,
-      "line_end": 600,
-      "text": [
-        "            \"submit\",",
-        "            \"submit_judgment\",",
-        "            json!({\"determination\": determination, \"rationale\": rationale}),",
-        "        )])]);",
-        "        let fixture = Fixture::new(&server.endpoint);"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 227,
-      "line_end": 231,
-      "text": [
-        "",
-        "Use `--stdout` to emit the evidence JSON followed by a newline without creating",
-        "or changing evidence files or directories. The completion summary, usage-record",
-        "path, and diagnostics go to stderr, so stdout can be redirected or piped:",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 33,
-      "line_end": 37,
-      "text": [
-        "its current directory is inside the project, in which case it MUST start there.",
-        "The directory containing the selected file defines the base for its relative",
-        "paths; it does not replace the Cargo and mdBook project root. A missing file MUST",
-        "mean absent workspace settings. Discovery MUST report unreadable candidate files",
-        "rather than silently selecting an ancestor. Loading MUST NOT create the file."
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 75,
-      "line_end": 79,
-      "text": [
-        "impl PendingAssessment {",
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 124,
-      "line_end": 132,
-      "text": [
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 153,
-      "line_end": 157,
-      "text": [
-        "        EvidenceOutput::File => \"file\",",
-        "        EvidenceOutput::Stdout => \"stdout\",",
-        "    };",
-        "    usage.save()?;",
-        "    let result = tokio::select! {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 176,
-      "line_end": 184,
-      "text": [
-        "        io::Error::new(",
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
-        "                usage.path.display(),",
-        "                usage.record.evidence_written",
-        "            ),",
-        "        )",
-        "    })?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 218,
-      "line_end": 222,
-      "text": [
-        "                cancellation.borrow().unwrap_or(\"evidence authoring cancelled\"),",
-        "            ))",
-        "        }",
-        "        result = configured_record(&root, subject, config, &mut usage) => result,",
-        "        signal = tokio::signal::ctrl_c() => {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 378,
-      "line_end": 387,
-      "text": [
-        "        match self {",
-        "            Self::Bedrock(config) => &config.options,",
-        "            Self::Ollama(config) => &config.options,",
-        "        }",
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    pub fn options_json(&self) -> io::Result<serde_json::Value> {",
-        "        for value in self.options().values() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 106,
-      "line_end": 106,
-      "text": [
-        "    state: PathBuf,"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 119,
-      "line_end": 119,
-      "text": [
-        "        let state = temp.path().join(\"state\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 175,
-      "line_end": 175,
-      "text": [
-        "            state,"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 195,
-      "line_end": 195,
-      "text": [
-        "            .env(\"XDG_STATE_HOME\", &self.state)"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 197,
-      "line_end": 197,
-      "text": [
-        "            .env(\"LOCALAPPDATA\", &self.state)"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 206,
-      "line_end": 206,
-      "text": [
-        "            self.state.join(\"habeas/state/authoring/usage\")"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 208,
-      "line_end": 208,
-      "text": [
-        "            self.state.join(\"habeas/authoring/usage\")"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 598,
-      "line_end": 598,
-      "text": [
-        "            json!({\"determination\": determination, \"rationale\": rationale}),"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 219,
-      "line_end": 227,
-      "text": [
-        "            }]},",
-        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
-        "        })",
-        "    } else {",
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\",",
-        "            \"message\":{\"role\":\"assistant\", \"content\":\"\", \"tool_calls\":[{",
-        "                \"id\":\"judgment\", \"type\":\"function\", \"function\":{",
-        "                    \"name\":\"submit_judgment\", \"arguments\":{"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 191,
-      "line_end": 201,
-      "text": [
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"APPDATA\", &self.config)",
-        "            .env(\"LOCALAPPDATA\", &self.state)",
-        "            .env(\"HOME\", self.temp.path())",
-        "            .env(\"HABEAS_TEST_MODEL_KEY\", AUTH);",
-        "        command",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 17,
-      "line_end": 25,
-      "text": [
-        "    let home = dir.path().join(\"home\");",
-        "    let config = dir.path().join(\"config\");",
-        "    let state = dir.path().join(\"state\");",
-        "    let vars = BTreeMap::from([",
-        "        (\"HOME\", home.as_os_str().to_owned()),",
-        "        (\"XDG_CONFIG_HOME\", config.as_os_str().to_owned()),",
-        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),",
-        "    ]);",
-        "    let lookup = |name: &str| vars.get(name).cloned();"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 32,
-      "line_end": 38,
-      "text": [
-        "        state.join(\"habeas\")",
-        "    );",
-        "    for invalid_xdg in [\"\", \"relative\"] {",
-        "        let lookup = |name: &str| {",
-        "            Some(if name == \"HOME\" {",
-        "                home.as_os_str().to_owned()",
-        "            } else {"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 206,
-      "line_end": 214,
-      "text": [
-        "",
-        "// {test}`requirements.integration.live_bedrock_test`",
-        "fn skip_probe(root: &Path) -> Command {",
-        "    let mut command = Command::new(std::env::current_exe().unwrap());",
-        "    command.args([\"--exact\", \"live_bedrock_authoring\"]);",
-        "    for (key, _) in std::env::vars_os() {",
-        "        if key.to_string_lossy().starts_with(\"AWS_\") {",
-        "            command.env_remove(key);",
-        "        }"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 124,
-      "line_end": 130,
-      "text": [
-        "        )",
-        "",
-        "        env = os.environ.copy()",
-        "        env[\"SYMPOSIUM_HOME\"] = str(symposium_home)",
-        "        metadata = subprocess.run(",
-        "            [cargo, \"metadata\", \"--format-version\", \"1\", \"--all-features\"],",
-        "            cwd=project,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 125,
-      "line_end": 127,
-      "text": [
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 177,
-      "line_end": 179,
-      "text": [
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\","
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 379,
-      "line_end": 382,
-      "text": [
-        "            Self::Bedrock(config) => &config.options,",
-        "            Self::Ollama(config) => &config.options,",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 384,
-      "line_end": 386,
-      "text": [
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
-        "    pub fn options_json(&self) -> io::Result<serde_json::Value> {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 392,
-      "line_end": 394,
-      "text": [
-        "",
-        "    // {impl}`requirements.authoring.configuration_storage`",
-        "    // {impl}`requirements.configuration.loading`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 522,
-      "line_end": 526,
-      "text": [
-        "            fixture.original",
-        "        );",
-        "        assert_eq!(server.finish().len(), 1);",
-        "        let usage = fixture.usage();",
-        "        assert_eq!(usage[\"outcome\"], \"failed\", \"{tool}: {usage}\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 569,
-      "line_end": 573,
-      "text": [
-        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");",
-        "    assert_eq!(fixture.usage()[\"determination\"], \"false\");",
-        "    let diagnostics = format!(",
-        "        \"{}{}\",",
-        "        String::from_utf8_lossy(&output.stdout),"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 184,
-      "line_end": 188,
-      "text": [
-        "        }),",
-        "        \"model must inspect the fixture's source through a read tool\"",
-        "    );",
-        "    assert!(!project.join(\"evidence\").exists());",
-        "    let usage_path = stderr"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 136,
-      "line_end": 140,
-      "text": [
-        "            raise RuntimeError(f\"Consumer Cargo metadata failed:\\n{metadata.stderr}\")",
-        "        current_version = next(",
-        "            package[\"version\"]",
-        "            for package in json.loads(metadata.stdout)[\"packages\"]",
-        "            if package[\"name\"] == \"habeas\""
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 247,
-      "line_end": 251,
-      "text": [
-        "        packages = json.loads(updated_metadata.stdout)[\"packages\"]",
-        "        if not any(",
-        "            package[\"name\"] == \"habeas\" and package[\"version\"] == next_version",
-        "            for package in packages",
-        "        ):"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 167,
-      "line_end": 171,
-      "text": [
-        "",
-        "Existing Cargo build-script output directories are automatically allowed when",
-        "discoverable from the current build layout, including external build directories.",
-        "No build is run to find or recreate them. Root listings expose discovered output",
-        "directories, and workspace disallow rules still win. For an undiscovered layout,"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 241,
-      "line_end": 245,
-      "text": [
-        "whether the write succeeded.",
-        "{cite}`requirements.authoring.invocation`",
-        "{cite}`requirements.authoring.submission`",
-        "{cite}`requirements.authoring.persistence`",
-        "{cite}`requirements.authoring.usage_storage`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 395,
-      "line_end": 399,
-      "text": [
-        "prompt MUST use the following template, replacing `{{subject_name}}` with the",
-        "repository-relative Rust file and selector, `{{citations}}` with the current",
-        "citation objects as JSON, and `{{mandatory_inputs}}` with the mandatory input",
-        "array. {cite}`requirements.authoring.submission`",
-        "{cite}`requirements.authoring.delivered_inputs`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 568,
-      "line_end": 572,
-      "text": [
-        "connection settings, and options MUST come from the selected record as a unit;",
-        "fields MUST NOT be merged between records. Workspace-only authoring MUST work",
-        "without a user configuration file. Missing configuration or an unknown selection",
-        "MUST identify the relevant configuration file and point to documented examples.",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 576,
-      "line_end": 581,
-      "text": [
-        "named variable MUST supply the credential; a missing or empty value MUST produce",
-        "an error before a model request.",
-        ":::",
-        "",
-        ":::{req} credentials",
-        "Bedrock configurations MAY supply `credentials` containing nonempty"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 74,
-      "line_end": 80,
-      "text": [
-        "",
-        "impl PendingAssessment {",
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 123,
-      "line_end": 133,
-      "text": [
-        "",
-        "// {impl}`requirements.authoring.invocation`",
-        "pub async fn author_evidence(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.invocation`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 152,
-      "line_end": 158,
-      "text": [
-        "    usage.record.evidence_output = match output {",
-        "        EvidenceOutput::File => \"file\",",
-        "        EvidenceOutput::Stdout => \"stdout\",",
-        "    };",
-        "    usage.save()?;",
-        "    let result = tokio::select! {",
-        "        result = configured_assessment(&root, subject, selection, output, &mut usage) => result,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 175,
-      "line_end": 185,
-      "text": [
-        "            .map_or(String::new(), |cause| format!(\"{cause}; \"));",
-        "        io::Error::new(",
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
-        "                usage.path.display(),",
-        "                usage.record.evidence_written",
-        "            ),",
-        "        )",
-        "    })?;",
-        "    result.map_err(|error| {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 217,
-      "line_end": 223,
-      "text": [
-        "                io::ErrorKind::Interrupted,",
-        "                cancellation.borrow().unwrap_or(\"evidence authoring cancelled\"),",
-        "            ))",
-        "        }",
-        "        result = configured_record(&root, subject, config, &mut usage) => result,",
-        "        signal = tokio::signal::ctrl_c() => {",
-        "            match signal {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 377,
-      "line_end": 383,
-      "text": [
-        "    pub fn options(&self) -> &BTreeMap<String, OptionValue> {",
-        "        match self {",
-        "            Self::Bedrock(config) => &config.options,",
-        "            Self::Ollama(config) => &config.options,",
-        "        }",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 268,
-      "line_end": 274,
-      "text": [
-        "```toml",
-        "[authoring.configs.cloud]",
-        "backend = \"bedrock\"",
-        "model = \"MODEL_ID\"",
-        "concurrency = 4",
-        "```",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 725,
-      "line_end": 729,
-      "text": [
-        "concurrency = 4",
-        "```",
-        "",
-        "Here `MODEL_ID` is your available model identifier and four is an illustrative",
-        "choice, not the default. Bedrock defaults to the available logical CPU count;"
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 45,
-      "line_end": 52,
-      "text": [
-        ":::{req} state_location",
-        "Habeas MUST store persistent per-user activity state under",
-        "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
-        "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
-        "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
-        "state root and document their record formats and locations.",
-        "",
-        "State MUST persist across invocations and MUST NOT be stored in the project"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 139,
-      "line_end": 143,
-      "text": [
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 200,
-      "line_end": 204,
-      "text": [
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,",
-        "    mut cancellation: watch::Receiver<Option<&'static str>>,",
-        ") -> io::Result<PendingAssessment> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 587,
-      "line_end": 591,
-      "text": [
-        "            Ok(required_directory(&lookup, \"LOCALAPPDATA\")?.join(\"habeas/state\"))",
-        "        }",
-        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
-        "            Some(path) => path.join(\"habeas\"),",
-        "            None => required_directory(&lookup, \"HOME\")?.join(\".local/state/habeas\"),"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 286,
-      "line_end": 290,
-      "text": [
-        "        fs::write(project.join(\"md/requirements.md\"), \":::{req} alpha\\nalpha MUST return one.\\n:::\\n\\n:::{req} beta\\nbeta MUST return two.\\n:::\\n\\n:::{example} alpha_case\\nCalling alpha returns one. CITE`requirements.alpha`\\n:::\\n\".replace(\"CITE\", \"{cite}\")).unwrap();",
-        "        fs::write(project.join(\"src/lib.rs\"), \"// IMPL`requirements.alpha`\\npub fn alpha() -> u8 { 1 }\\n\\n// IMPL`requirements.beta`\\npub fn beta() -> u8 { 2 }\\n\\n// TEST`requirements.alpha_case`\\n#[test]\\nfn alpha_case() { assert_eq!(alpha(), 1); }\\n\".replace(\"IMPL\", \"{impl}\").replace(\"TEST\", \"{test}\")).unwrap();",
-        "        let mut config_text = format!(",
-        "            \"version = 1\\n[authoring]\\ndefault = 'mock'\\n[authoring.configs.mock]\\nbackend = 'ollama'\\nmodel = 'fixture-model'\\nendpoint = '{endpoint}'\\n\"",
-        "        );"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 315,
-      "line_end": 321,
-      "text": [
-        "    fn command(&self) -> Command {",
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 21,
-      "line_end": 25,
-      "text": [
-        "        (\"HOME\", home.as_os_str().to_owned()),",
-        "        (\"XDG_CONFIG_HOME\", config.as_os_str().to_owned()),",
-        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),",
-        "    ]);",
-        "    let lookup = |name: &str| vars.get(name).cloned();"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 219,
-      "line_end": 223,
-      "text": [
-        "        .env(\"XDG_CONFIG_HOME\", root.join(\"config\"))",
-        "        .env(\"APPDATA\", root.join(\"config\"))",
-        "        .env(\"XDG_STATE_HOME\", root.join(\"state\"))",
-        "        .env(\"LOCALAPPDATA\", root.join(\"state\"))",
-        "        .env(\"AWS_CONFIG_FILE\", root.join(\"aws-config\"))"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 77,
-      "line_end": 79,
-      "text": [
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 102,
-      "line_end": 104,
-      "text": [
-        "        match self.usage.finish(outcome) {",
-        "            Ok(()) => io::Error::new(",
-        "                error.kind(),"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 136,
-      "line_end": 138,
-      "text": [
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 171,
-      "line_end": 173,
-      "text": [
-        "    usage.finish(outcome).map_err(|error| {",
-        "        let cause = result",
-        "            .as_ref()"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 197,
-      "line_end": 199,
-      "text": [
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub(crate) async fn prepare_assessment(",
-        "    root: &Path,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 248,
-      "line_end": 250,
-      "text": [
-        "            })",
-        "        }",
-        "        Err(error) => {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 575,
-      "line_end": 578,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root() -> io::Result<PathBuf> {",
-        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 580,
-      "line_end": 582,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root_from(",
-        "    platform: ConfigPlatform,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 76,
-      "line_end": 80,
-      "text": [
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 135,
-      "line_end": 143,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 170,
-      "line_end": 174,
-      "text": [
-        "    };",
-        "    usage.finish(outcome).map_err(|error| {",
-        "        let cause = result",
-        "            .as_ref()",
-        "            .err()"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 196,
-      "line_end": 204,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub(crate) async fn prepare_assessment(",
-        "    root: &Path,",
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,",
-        "    mut cancellation: watch::Receiver<Option<&'static str>>,",
-        ") -> io::Result<PendingAssessment> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 247,
-      "line_end": 251,
-      "text": [
-        "                usage,",
-        "            })",
-        "        }",
-        "        Err(error) => {",
-        "            let outcome = if error.kind() == io::ErrorKind::Interrupted {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 574,
-      "line_end": 583,
-      "text": [
-        "",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root() -> io::Result<PathBuf> {",
-        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root_from(",
-        "    platform: ConfigPlatform,",
-        "    lookup: impl Fn(&str) -> Option<OsString>,"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 611,
-      "line_end": 615,
-      "text": [
-        "        io::Error::new(",
-        "            io::ErrorKind::NotFound,",
-        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
-        "        )",
-        "    })"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 7,
-      "line_end": 11,
-      "text": [
-        "    BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,",
-        "    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,",
-        "    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,",
-        "};",
-        ""
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 29,
-      "line_end": 33,
-      "text": [
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "        state.join(\"habeas\")",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 45,
-      "line_end": 49,
-      "text": [
-        "        );",
-        "        assert_eq!(",
-        "            state_root_from(ConfigPlatform::Unix, lookup).unwrap(),",
-        "            home.join(\".local/state/habeas\")",
-        "        );"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 59,
-      "line_end": 67,
-      "text": [
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 288,
-      "line_end": 288,
-      "text": [
-        "        let mut config_text = format!("
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 23,
-      "line_end": 23,
-      "text": [
-        "        (\"XDG_STATE_HOME\", state.as_os_str().to_owned()),"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 72,
-      "line_end": 72,
-      "text": [
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 221,
-      "line_end": 221,
-      "text": [
-        "        .env(\"XDG_STATE_HOME\", root.join(\"state\"))"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 72,
-      "line_end": 72,
-      "text": [
-        "    usage: UsageLog,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 87,
-      "line_end": 87,
-      "text": [
-        "            ))"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 128,
-      "line_end": 128,
-      "text": [
-        "    selection: Option<&str>,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 137,
-      "line_end": 137,
-      "text": [
-        "pub async fn author_evidence_with_output("
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 189,
-      "line_end": 189,
-      "text": [
-        "        )"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 198,
-      "line_end": 198,
-      "text": [
-        "pub(crate) async fn prepare_assessment("
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 199,
-      "line_end": 199,
-      "text": [
-        "    // {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 575,
-      "line_end": 577,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root() -> io::Result<PathBuf> {",
-        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 580,
-      "line_end": 581,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root_from("
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 597,
-      "line_end": 597,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 605,
-      "line_end": 605,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`"
-      ]
-    },
-    {
-      "file": "assets/skills/habeas-evidence/SKILL.md",
-      "line_start": 27,
-      "line_end": 31,
-      "text": [
-        "In a Git worktree, stage new source files with `git add` before authoring.",
-        "Unstaged edits to tracked files are readable. The default exclusions are",
-        "untracked files, generated `evidence/` content, and paths outside the project;",
-        "existing Cargo build-script output directories are allowed when discoverable.",
-        "The nearest enclosing `habeas.toml` can set `[evidence]` `allow` and `disallow`"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 102,
-      "line_end": 106,
-      "text": [
-        "",
-        "Completed `true` assessments do not print individual completion lines. Each",
-        "`false` judgment prints its subject and outcome on stderr so it can be followed",
-        "up. FIXME notices, authoring errors, and the aggregate summary remain visible.",
-        "Add `-v` or `--verbose` to include each false judgment's stored rationale,"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 208,
-      "line_end": 212,
-      "text": [
-        "`credentials` or Ollama `api_key` values are supported but not recommended in",
-        "workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).",
-        "{cite}`requirements.authoring.configuration_precedence`",
-        "{cite}`requirements.authoring.credentials`",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 52,
-      "line_end": 56,
-      "text": [
-        "State MUST persist across invocations and MUST NOT be stored in the project",
-        "repository, the configuration file, or a disposable cache directory. Habeas MUST",
-        "create the required directories when recording state. If it cannot determine or",
-        "write the state location, the operation requiring that state MUST report the",
-        "failure and MUST NOT claim that its history was recorded."
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 136,
-      "line_end": 140,
-      "text": [
-        "        if !lexical_request.starts_with(root) || !target.starts_with(root) {",
-        "            return Err(denied(format!(",
-        "                \"{} resolves outside the project; add an explicit habeas.toml allow rule before retrying\",",
-        "                relative.display()",
-        "            )));"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 101,
-      "line_end": 105,
-      "text": [
-        "        };",
-        "        match self.usage.finish(outcome) {",
-        "            Ok(()) => io::Error::new(",
-        "                error.kind(),",
-        "                format!(\"{error}; usage: {}\", self.usage.path.display()),"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 28,
-      "line_end": 32,
-      "text": [
-        "        json!({",
-        "            \"name\": \"habeas\",",
-        "            \"description\": \"Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\\\"file\\\":\\\"src/lib.rs\\\",\\\"line_start\\\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\\\"rust_file\\\":\\\"src/lib.rs\\\",\\\"rust_item\\\":\\\"impl[Thing]/fn[run]\\\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\\\"requirements\\\":\\\"requirements.cli.*\\\"}. Definition reads use the full terminology name, e.g. {\\\"definition\\\":\\\"glossary.command\\\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.\",",
-        "            \"parameters\": {\"type\":\"object\", \"properties\": {",
-        "                \"file\":{\"type\":\"string\"},"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 30,
-      "line_end": 34,
-      "text": [
-        "pub fn validate() {",
-        "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd",
-        "        .ancestors()"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 292,
-      "line_end": 293,
-      "text": [
-        "            config_text.push_str(&format!(\"concurrency = {concurrency}\\n\"));",
-        "        }"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 53,
-      "line_end": 53,
-      "text": [
-        "        \"LOCALAPPDATA\" => Some(state.as_os_str().to_owned()),"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 221,
-      "line_end": 222,
-      "text": [
-        "        .env(\"XDG_STATE_HOME\", root.join(\"state\"))",
-        "        .env(\"LOCALAPPDATA\", root.join(\"state\"))"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 357,
-      "line_end": 357,
-      "text": [
-        "    [sys.argv[1], *sys.argv[3:]],"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 425,
-      "line_end": 425,
-      "text": [
-        "        self.evidence(\"rust/src/lib.rs\")[\"functions\"]"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 192,
-      "line_end": 192,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 428,
-      "line_end": 428,
-      "text": [
-        "fn status_preserves_repository_wide_rust_findings_in_every_form() {"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 738,
-      "line_end": 738,
-      "text": [
-        "            error.contains(\"function attestation target must be inside the repository\"),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 4,
-      "line_end": 4,
-      "text": [
-        "use habeas::{InputMode, InputTarget, add_input, validate_repository};"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 64,
-      "line_end": 64,
-      "text": [
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 72,
-      "line_end": 72,
-      "text": [
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 80,
-      "line_end": 80,
-      "text": [
-        "        let report = validate_repository(root).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 96,
-      "line_end": 96,
-      "text": [
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 105,
-      "line_end": 105,
-      "text": [
-        "        validate_repository(root)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 116,
-      "line_end": 116,
-      "text": [
-        "        validate_repository(root)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 165,
-      "line_end": 165,
-      "text": [
-        "            validate_repository(temp.path())"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 179,
-      "line_end": 179,
-      "text": [
-        "        validate_repository(temp.path())"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 186,
-      "line_end": 186,
-      "text": [
-        "    let errors = validate_repository(temp.path()).unwrap().errors;"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 290,
-      "line_end": 290,
-      "text": [
-        "    assert!(validate_repository(root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 299,
-      "line_end": 299,
-      "text": [
-        "    let errors = validate_repository(root).unwrap().errors;"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 314,
-      "line_end": 314,
-      "text": [
-        "        validate_repository(root)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 337,
-      "line_end": 337,
-      "text": [
-        "        validate_repository(root)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 346,
-      "line_end": 346,
-      "text": [
-        "        validate_repository(root)"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 365,
-      "line_end": 365,
-      "text": [
-        "    let report = validate_repository(root).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 4,
-      "line_end": 4,
-      "text": [
-        "use habeas::validate_repository;"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 54,
-      "line_end": 54,
-      "text": [
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 75,
-      "line_end": 75,
-      "text": [
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 97,
-      "line_end": 97,
-      "text": [
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 108,
-      "line_end": 108,
-      "text": [
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 110,
-      "line_end": 110,
-      "text": [
-        "            errors.contains(\"escape.rs resolves outside the repository\"),"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 121,
-      "line_end": 121,
-      "text": [
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 128,
-      "line_end": 128,
-      "text": [
-        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 166,
-      "line_end": 166,
-      "text": [
-        "    assert!(validate_repository(&root).unwrap().errors.is_empty());"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 172,
-      "line_end": 172,
-      "text": [
-        "    let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 200,
-      "line_end": 200,
-      "text": [
-        "            validate_repository(&root)"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 204,
-      "line_end": 204,
-      "text": [
-        "                .contains(\"outside the repository\")"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 207,
-      "line_end": 207,
-      "text": [
-        "        let report = validate_repository(&root).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 211,
-      "line_end": 211,
-      "text": [
-        "            validate_repository(&root)"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 224,
-      "line_end": 224,
-      "text": [
-        "            validate_repository(&root)"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 262,
-      "line_end": 262,
-      "text": [
-        "            let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 287,
-      "line_end": 287,
-      "text": [
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 295,
-      "line_end": 295,
-      "text": [
-        "    let report = validate_repository(&root).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 347,
-      "line_end": 347,
-      "text": [
-        "        let report = validate_repository(&root).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 350,
-      "line_end": 350,
-      "text": [
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "line_start": 358,
-      "line_end": 358,
-      "text": [
-        "        let errors = validate_repository(&root).unwrap().errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 120,
-      "line_end": 120,
-      "text": [
-        "        habeas::validate_repository(temp.path())"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 126,
-      "line_end": 126,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 134,
-      "line_end": 134,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 171,
-      "line_end": 171,
-      "text": [
-        "        let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 183,
-      "line_end": 183,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 208,
-      "line_end": 208,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 228,
-      "line_end": 228,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 275,
-      "line_end": 275,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 284,
-      "line_end": 284,
-      "text": [
-        "    let report = habeas::validate_repository(temp.path()).unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 75,
-      "line_end": 81,
-      "text": [
-        "impl PendingAssessment {",
-        "    // {impl}`requirements.authoring.batch`",
-        "    // {impl}`requirements.authoring.persistence`",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {",
-        "        self.usage.record.evidence_written = true;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 138,
-      "line_end": 144,
-      "text": [
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 169,
-      "line_end": 175,
-      "text": [
-        "        Err(_) => \"failed\",",
-        "    };",
-        "    usage.finish(outcome).map_err(|error| {",
-        "        let cause = result",
-        "            .as_ref()",
-        "            .err()",
-        "            .map_or(String::new(), |cause| format!(\"{cause}; \"));"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 199,
-      "line_end": 205,
-      "text": [
-        "    root: &Path,",
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,",
-        "    mut cancellation: watch::Receiver<Option<&'static str>>,",
-        ") -> io::Result<PendingAssessment> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 246,
-      "line_end": 252,
-      "text": [
-        "                outcome,",
-        "                usage,",
-        "            })",
-        "        }",
-        "        Err(error) => {",
-        "            let outcome = if error.kind() == io::ErrorKind::Interrupted {",
-        "                \"cancelled\""
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 610,
-      "line_end": 616,
-      "text": [
-        "    absolute_directory(lookup, name).ok_or_else(|| {",
-        "        io::Error::new(",
-        "            io::ErrorKind::NotFound,",
-        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
-        "        )",
-        "    })",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 12,
-      "line_end": 14,
-      "text": [
-        "// {test}`requirements.configuration.user_location`",
-        "// {test}`requirements.configuration.state_location`",
-        "#[test]"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 276,
-      "line_end": 282,
-      "text": [
-        "fixed worker thread pool and limits simultaneous assessments to this value.",
-        "Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work",
-        "on records that still need attention. {cite}`requirements.authoring.concurrency`",
-        "",
-        "For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and",
-        "`stopSequences` directly in that options table. Habeas maps them to Converse's",
-        "`inferenceConfig`; other keys become model-specific `additionalModelRequestFields`."
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 290,
-      "line_end": 294,
-      "text": [
-        "stopSequences = [\"END\"]",
-        "```",
-        "",
-        "These values are illustrative choices, not Habeas defaults. Omit any setting to",
-        "leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 492,
-      "line_end": 496,
-      "text": [
-        "    access_key_id: SecretString,",
-        "    secret_access_key: SecretString,",
-        "    session_token: Optional<SecretString>,",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 537,
-      "line_end": 541,
-      "text": [
-        "`concurrency` in its configuration table. When omitted, the maximum number of",
-        "simultaneous assessments MUST default to the number of available logical CPUs",
-        "for Bedrock, falling back to one when that count is unavailable, and to one for",
-        "Ollama. A configured value MUST override the default for either backend; zero",
-        "MUST be rejected as invalid configuration."
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 745,
-      "line_end": 751,
-      "text": [
-        "",
-        "```toml",
-        "version = 1",
-        "",
-        "[authoring]",
-        "default = \"cloud\"",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 754,
-      "line_end": 758,
-      "text": [
-        "model = \"MODEL_ID\"",
-        "region = \"AWS_REGION\"",
-        "",
-        "[authoring.configs.cloud.credentials]",
-        "access_key_id = \"AWS_ACCESS_KEY_ID\""
-      ]
-    },
-    {
-      "file": "md/requirements/configuration.md",
-      "line_start": 43,
-      "line_end": 52,
-      "text": [
-        "[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/#variables).",
-        "",
-        ":::{req} state_location",
-        "Habeas MUST store persistent per-user activity state under",
-        "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
-        "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
-        "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
-        "state root and document their record formats and locations.",
-        "",
-        "State MUST persist across invocations and MUST NOT be stored in the project"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 135,
-      "line_end": 141,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,",
-        "    subject: &str,",
-        "    selection: Option<&str>,",
-        "    output: EvidenceOutput,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 196,
-      "line_end": 202,
-      "text": [
-        "// {impl}`requirements.configuration.state_location`",
-        "// {impl}`requirements.authoring.read_denial`",
-        "pub(crate) async fn prepare_assessment(",
-        "    root: &Path,",
-        "    subject: &AuthoringSubject,",
-        "    config: &ResolvedAuthoringConfig,",
-        "    mut cancellation: watch::Receiver<Option<&'static str>>,"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 573,
-      "line_end": 584,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root() -> io::Result<PathBuf> {",
-        "    state_root_from(ConfigPlatform::current(), |name| std::env::var_os(name))",
-        "}",
-        "",
-        "// {impl}`requirements.configuration.state_location`",
-        "pub fn state_root_from(",
-        "    platform: ConfigPlatform,",
-        "    lookup: impl Fn(&str) -> Option<OsString>,",
-        ") -> io::Result<PathBuf> {"
+        "fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {",
+        "    let fixture = Fixture::new(\"http://unconfigured\");"
       ]
     },
     {
@@ -4681,23 +1109,161 @@
       ]
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 772,
-      "line_end": 778,
+      "file": "tests/live_bedrock.rs",
+      "line_start": 112,
+      "line_end": 118,
       "text": [
-        "            assert_eq!(usage[\"request_count\"], 1);",
-        "            assert!(usage[\"determination\"].is_null());",
+        "// {test}`requirements.authoring.source_tools`",
+        "// {test}`requirements.authoring.submission`",
+        "// {test}`requirements.authoring.persistence`",
+        "// {test}`requirements.authoring.usage_storage`",
+        "#[test]",
+        "fn live_bedrock_authoring() {",
+        "    if std::env::var_os(\"CI\").is_some() {"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 244,
+      "line_end": 284,
+      "text": [
+        "        self.record.tool_call_count += 1;",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {",
+        "        if let Some((index, started)) = self.active_request.take() {",
+        "            let request = &mut self.record.requests[index];",
+        "            request.elapsed_ms = started.elapsed().as_millis();",
+        "            if outcome == \"cancelled\" {",
+        "                request.outcome = \"cancelled\".into();",
+        "            }",
         "        }",
+        "        self.record.tokens = TokenCounts::sum(&self.record.requests);",
+        "        self.record.outcome = outcome.to_owned();",
+        "        self.record.end_time_ms = Some(timestamp());",
+        "        self.record.elapsed_ms = self.started.elapsed().as_millis();",
+        "        self.save()",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(super) fn save(&self) -> io::Result<()> {",
+        "        let mut file = OpenOptions::new()",
+        "            .write(true)",
+        "            .truncate(true)",
+        "            .open(&self.path)?;",
+        "        serde_json::to_writer_pretty(&mut file, &self.record)?;",
+        "        file.write_all(b\"\\n\")",
         "    }",
         "}",
         "",
-        "// {test}`requirements.authoring.deterministic_validation`"
+        "impl TokenCounts {",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    fn from_usage(usage: &Usage) -> Self {",
+        "        Self {",
+        "            input: usage.input_tokens,",
+        "            output: usage.output_tokens,",
+        "            cached_input: usage.cached_input_tokens,",
+        "            cache_creation_input: usage.cache_creation_input_tokens,",
+        "            reasoning: usage.reasoning_tokens,",
+        "            complete: usage.input_tokens.is_some() && usage.output_tokens.is_some(),",
+        "        }"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 325,
+      "line_end": 365,
+      "text": [
+        "                total += value;",
+        "            }",
+        "        }",
+        "        (",
+        "            (measured > 0).then_some(total),",
+        "            measured == 0 || measured == requests.len(),",
+        "        )",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.usage_requests`",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "fn tool_name(name: &str) -> &str {",
+        "    match name {",
+        "        \"habeas\" | \"ripgrep\" | \"list_files\" | \"references\" | \"submit_judgment\" => name,",
+        "        _ => \"unknown\",",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.usage_storage`",
+        "fn timestamp() -> u128 {",
+        "    SystemTime::now()",
+        "        .duration_since(UNIX_EPOCH)",
+        "        .unwrap_or_default()",
+        "        .as_millis()",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    use super::*;",
+        "    use serde_json::json;",
+        "    use std::time::Duration;",
+        "",
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    fn persisted(log: &UsageLog) -> Value {",
+        "        serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.usage_inputs`",
+        "    // {test}`requirements.authoring.usage_storage`",
+        "    #[test]"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 799,
+      "line_end": 805,
+      "text": [
+        ":::{req} usage_storage",
+        "Each assessment MUST have a separate JSON usage record under",
+        "`<state-root>/authoring/usage/<run-id>.json` using",
+        "{cite}`requirements.configuration.state_location`.",
+        "It MUST identify its format version, run, project root, subject kind and full",
+        "name, start time, backend and model when known, end time when finished, outcome,",
+        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and"
+      ]
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "line_start": 42,
+      "line_end": 48,
+      "text": [
+        "Usage history belongs in the state directory described by the",
+        "[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/#variables).",
+        "",
+        ":::{req} state_location",
+        "Habeas MUST store persistent per-user activity state under",
+        "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
+        "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 868,
+      "line_end": 874,
+      "text": [
+        "            \"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS\",",
+        "            \"AWS_BEARER_TOKEN_BEDROCK\",",
+        "        ] {",
+        "            command.env_remove(key);",
+        "        }",
+        "        let output = command",
+        "            .env(\"AWS_CONFIG_FILE\", aws_config)"
       ]
     },
     {
       "file": "tests/live_bedrock.rs",
-      "line_start": 210,
-      "line_end": 221,
+      "line_start": 211,
+      "line_end": 222,
       "text": [
         "    command.args([\"--exact\", \"live_bedrock_authoring\"]);",
         "    for (key, _) in std::env::vars_os() {",
@@ -4711,612 +1277,6 @@
         "        .env(\"XDG_CONFIG_HOME\", root.join(\"config\"))",
         "        .env(\"APPDATA\", root.join(\"config\"))",
         "        .env(\"XDG_STATE_HOME\", root.join(\"state\"))"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 78,
-      "line_end": 80,
-      "text": [
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(crate) fn persisted(mut self, path: PathBuf) -> io::Result<AuthoringOutcome> {"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 103,
-      "line_end": 105,
-      "text": [
-        "            Ok(()) => io::Error::new(",
-        "                error.kind(),",
-        "                format!(\"{error}; usage: {}\", self.usage.path.display()),"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 137,
-      "line_end": 139,
-      "text": [
-        "pub async fn author_evidence_with_output(",
-        "    root: &Path,",
-        "    subject: &str,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 141,
-      "line_end": 143,
-      "text": [
-        "    output: EvidenceOutput,",
-        ") -> io::Result<AuthoringOutcome> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 172,
-      "line_end": 174,
-      "text": [
-        "        let cause = result",
-        "            .as_ref()",
-        "            .err()"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 198,
-      "line_end": 200,
-      "text": [
-        "pub(crate) async fn prepare_assessment(",
-        "    root: &Path,",
-        "    subject: &AuthoringSubject,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 202,
-      "line_end": 204,
-      "text": [
-        "    mut cancellation: watch::Receiver<Option<&'static str>>,",
-        ") -> io::Result<PendingAssessment> {",
-        "    let root = fs::canonicalize(root)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 249,
-      "line_end": 251,
-      "text": [
-        "        }",
-        "        Err(error) => {",
-        "            let outcome = if error.kind() == io::ErrorKind::Interrupted {"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 588,
-      "line_end": 590,
-      "text": [
-        "        }",
-        "        ConfigPlatform::Unix => Ok(match absolute_directory(&lookup, \"XDG_STATE_HOME\") {",
-        "            Some(path) => path.join(\"habeas\"),"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 473,
-      "line_end": 478,
-      "text": [
-        "        let access = SourceAccess::load(&root).unwrap();",
-        "        assert!(access.file(&root, Path::new(\"./inside.txt\")).is_ok());",
-        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());",
-        "        assert!(access.file(&root, Path::new(\"outside.txt\")).is_err());",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 504,
-      "line_end": 508,
-      "text": [
-        "        assert!(access.tracked.is_none());",
-        "        assert!(access.file(&root, Path::new(\"source.txt\")).is_ok());",
-        "        assert!(access.file(&root, Path::new(\"../outside.txt\")).is_err());",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 553,
-      "line_end": 557,
-      "text": [
-        "            .unwrap_err();",
-        "        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);",
-        "        assert!(resolve_evidence_file(&root, \"generated/private/secret.txt\").is_err());",
-        "        #[cfg(unix)]",
-        "        {"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 714,
-      "line_end": 718,
-      "text": [
-        "                io::ErrorKind::PermissionDenied",
-        "            );",
-        "            assert!(resolve_evidence_file(root.path(), denied).is_err());",
-        "        }",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 628,
-      "line_end": 632,
-      "text": [
-        "                .contains(\"missing.txt\")",
-        "        );",
-        "        assert!(AssessmentSources::prepare(root.path(), \"missing\").is_err());",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 710,
-      "line_end": 714,
-      "text": [
-        "        );",
-        "        assert!(",
-        "            AssessmentSources::prepare_function(root.path(), \"src/lib.rs\", \"fn[missing]\").is_err()",
-        "        );",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 495,
-      "line_end": 499,
-      "text": [
-        "            Some(&response.stop()),",
-        "            response.finish_reason().as_ref(),",
-        "        ) {",
-        "            return Err(io::Error::other(error));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 240,
-      "line_end": 244,
-      "text": [
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.configuration_storage`",
-        "fn option_type(name: &str, expected: &str) -> io::Error {"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 340,
-      "line_end": 344,
-      "text": [
-        "            Some(Duration::from_secs(90))",
-        "        );",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.credentials`"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 138,
-      "line_end": 142,
-      "text": [
-        "            .access",
-        "            .path(&sources.root, Path::new(&relative))",
-        "            .is_err()",
-        "        {",
-        "            continue;"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 159,
-      "line_end": 163,
-      "text": [
-        "    if directory == sources.root {",
-        "        for extra in sources.access.extra_roots() {",
-        "            if sources.access.path(&sources.root, extra).is_err() {",
-        "                continue;",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 258,
-      "line_end": 262,
-      "text": [
-        "            .as_str()",
-        "            .ok_or_else(|| io::Error::other(\"ripgrep found a non-UTF-8 path\"))?;",
-        "        if sources.access.file(&sources.root, Path::new(file)).is_err() {",
-        "            continue;",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 423,
-      "line_end": 427,
-      "text": [
-        "                &json!({\"file\":\"src/lib.rs\",\"line_start\":0})",
-        "            )",
-        "            .is_err()",
-        "        );",
-        "        // The provider-facing schema leaves selector fields optional; the"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 439,
-      "line_end": 443,
-      "text": [
-        "        ] {",
-        "            assert!(",
-        "                dispatch(&sources, \"habeas\", &arguments).is_err(),",
-        "                \"unexpectedly accepted {arguments}\"",
-        "            );"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 492,
-      "line_end": 496,
-      "text": [
-        "        let absent = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"NEEDLE\"})).unwrap();",
-        "        assert_eq!(absent.result, json!({\"inputs\":[],\"definitions\":[]}));",
-        "        assert!(dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"[\"})).is_err());",
-        "        assert!(",
-        "            dispatch("
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 499,
-      "line_end": 505,
-      "text": [
-        "                &json!({\"pattern\":\"needle\",\"context\":-1})",
-        "            )",
-        "            .is_err()",
-        "        );",
-        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"../\"})).is_err());",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 658,
-      "line_end": 662,
-      "text": [
-        "                json!({\"rust_file\":path, \"rust_item\":\"fn[outside_needle]\"}),",
-        "            ] {",
-        "                assert!(dispatch(&sources, \"habeas\", &arguments).is_err());",
-        "            }",
-        "            assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 666,
-      "line_end": 673,
-      "text": [
-        "                    &json!({\"path\":path, \"pattern\":\"needle\"})",
-        "                )",
-        "                .is_err()",
-        "            );",
-        "        }",
-        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"outside\"})).is_err());",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 727,
-      "line_end": 731,
-      "text": [
-        "            assert!(error.to_string().contains(\"git add\"), \"{error}\");",
-        "        }",
-        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"untracked-dir\"})).is_err());",
-        "        assert!(",
-        "            dispatch("
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 734,
-      "line_end": 738,
-      "text": [
-        "                &json!({\"path\":\"untracked.rs\", \"pattern\":\"needle\"})",
-        "            )",
-        "            .is_err()",
-        "        );",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 789,
-      "line_end": 793,
-      "text": [
-        "                    &json!({\"path\":alias, \"pattern\":\"needle\"})",
-        "                )",
-        "                .is_err()",
-        "            );",
-        "        }"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 298,
-      "line_end": 304,
-      "text": [
-        "",
-        "The command reports the evidence destination and usage-record path. Usage",
-        "metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to",
-        "`$HOME/.local/state/habeas/authoring/usage`; Windows uses",
-        "`%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and",
-        "book rendering remain deterministic and do not require model configuration or",
-        "credentials. {cite}`requirements.authoring.usage_storage`"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 798,
-      "line_end": 802,
-      "text": [
-        ":::{req} usage_storage",
-        "Each assessment MUST have a separate JSON usage record under",
-        "`<state-root>/authoring/usage/<run-id>.json` using",
-        "{cite}`requirements.configuration.state_location`.",
-        "It MUST identify its format version, run, project root, subject kind and full"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 146,
-      "line_end": 150,
-      "text": [
-        "    if fs::canonicalize(&state)?.starts_with(&root) {",
-        "        return Err(io::Error::other(",
-        "            \"authoring usage state must be outside the project repository\",",
-        "        ));",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 207,
-      "line_end": 211,
-      "text": [
-        "    if fs::canonicalize(&state)?.starts_with(&root) {",
-        "        return Err(io::Error::other(",
-        "            \"authoring usage state must be outside the project repository\",",
-        "        ));",
-        "    }"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 319,
-      "line_end": 323,
-      "text": [
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state);",
-        "        command"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 403,
-      "line_end": 407,
-      "text": [
-        "            .env(\"XDG_CONFIG_HOME\", &self.config_root)",
-        "            .env(\"APPDATA\", &self.config_root)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state)",
-        "            .env(\"TERM\", term)"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 436,
-      "line_end": 442,
-      "text": [
-        "    fn usage(&self) -> Vec<Value> {",
-        "        let path = self.state.join(if cfg!(windows) {",
-        "            \"habeas/state/authoring/usage\"",
-        "        } else {",
-        "            \"habeas/authoring/usage\"",
-        "        });",
-        "        fs::read_dir(path)"
-      ]
-    },
-    {
-      "file": "tests/configuration.rs",
-      "line_start": 58,
-      "line_end": 75,
-      "text": [
-        "        config.join(\"habeas/config.toml\")",
-        "    );",
-        "    assert_eq!(",
-        "        state_root_from(ConfigPlatform::Windows, windows).unwrap(),",
-        "        state.join(\"habeas/state\")",
-        "    );",
-        "    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());",
-        "    assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());",
-        "}",
-        "",
-        "// {test}`requirements.configuration.structure`",
-        "// {test}`requirements.configuration.loading`",
-        "// {test}`requirements.configuration.serialization`",
-        "#[test]",
-        "fn absent_and_minimal_configuration_are_distinct_and_read_only() {",
-        "    let dir = tempfile::tempdir().unwrap();",
-        "    let path = dir.path().join(\"user.toml\");",
-        "    assert!(load_user_config(&path).unwrap().is_none());"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 143,
-      "line_end": 145,
-      "text": [
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;",
-        "    fs::create_dir_all(&state)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 204,
-      "line_end": 206,
-      "text": [
-        "    let root = fs::canonicalize(root)?;",
-        "    let state = config::state_root()?;",
-        "    fs::create_dir_all(&state)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 108,
-      "line_end": 112,
-      "text": [
-        "                error.kind(),",
-        "                format!(",
-        "                    \"{error}; cannot record failed usage at {}: {usage_error}\",",
-        "                    self.usage.path.display()",
-        "                ),"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 177,
-      "line_end": 181,
-      "text": [
-        "            result.as_ref().err().map_or(error.kind(), io::Error::kind),",
-        "            format!(",
-        "                \"{cause}cannot record usage at {} (evidence written: {}): {error}\",",
-        "                usage.path.display(),",
-        "                usage.record.evidence_written"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 258,
-      "line_end": 262,
-      "text": [
-        "                    error.kind(),",
-        "                    format!(",
-        "                        \"{error}; cannot record usage at {}: {usage_error}\",",
-        "                        usage.path.display()",
-        "                    ),"
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 88,
-      "line_end": 90,
-      "text": [
-        "preserving current accepted evidence, including FIXME judgments. Each assessment",
-        "gets its own conversation and usage record. Successful results are kept if",
-        "another assessment fails; the command reports failures and exits unsuccessfully."
-      ]
-    },
-    {
-      "file": "md/reference.md",
-      "line_start": 313,
-      "line_end": 315,
-      "text": [
-        "authoring errors fail the test. Local runs with credentials make billable model",
-        "requests and retain their usage records in the usual user state directory.",
-        ""
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 28,
-      "line_end": 30,
-      "text": [
-        "Each subject MUST receive an independent assessment with its own prompt, inputs,",
-        "judgment, and usage record. The command MUST report aggregate completion and each",
-        "authoring error under {cite}`requirements.authoring.reporting`, and retain"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 545,
-      "line_end": 547,
-      "text": [
-        "selected concurrency. Each assessment MUST retain its own model conversation and",
-        "usage record. Provider errors, including throttling, MUST be reported through",
-        "the ordinary assessment-failure path."
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 590,
-      "line_end": 592,
-      "text": [
-        "environment MUST NOT be serialized back. Debug output, configuration diagnostics,",
-        "usage records, and initial prompts MUST NOT include credential values. TOML",
-        "diagnostics MUST NOT echo credential-containing source lines. An active workspace"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 798,
-      "line_end": 800,
-      "text": [
-        ":::{req} usage_storage",
-        "Each assessment MUST have a separate JSON usage record under",
-        "`<state-root>/authoring/usage/<run-id>.json` using"
-      ]
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "line_start": 806,
-      "line_end": 809,
-      "text": [
-        "`evidence_output` as `file` or `stdout`; a successful write to either destination",
-        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
-        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
-        "Failed, cancelled, or unfinished"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 321,
-      "line_end": 322,
-      "text": [
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state);"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 405,
-      "line_end": 406,
-      "text": [
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"LOCALAPPDATA\", &self.state)"
       ]
     }
   ]

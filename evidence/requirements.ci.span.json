@@ -1,7 +1,7 @@
 {
   "requirement": "A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.",
-  "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation matches each clause of `requirements.ci.span`, and the tests cover the main cases. A few edge cases have no dedicated test.\n\n**Implementation**\n- `definition_blocks` in `src/lib.rs` finds opening fences with `colon_fence`. That helper accepts at most 3 leading spaces and requires at least 3 colons.\n- It then requires the text after the colons to start with `{req}`, `{example}` or `{definition}`. After that it requires whitespace and a valid name, so `{req} <name>` follows the fence immediately.\n- The closing fence is the first later line that meets three conditions:\n  - it is a colon fence,\n  - it has at least as many colons as the opening fence,\n  - nothing follows the colons except whitespace.\n\n  Lines inside Markdown code blocks (found with pulldown-cmark offsets) are skipped. A `:::` line inside a code block therefore cannot end the requirement early.\n- The body is `body_start..body_end`, which is everything between the fence lines. This includes headings, setext headings, code blocks, blank lines and nested shorter directives. A closing line with trailing text is not accepted as a closer, so text after the closing fence is never part of the body.\n- In `collect_definitions` in `src/evidence.rs` (marked `{impl}` for `requirements.ci.span`), the body is taken as `content[block.body_start..block.body_end].trim()`. This excludes leading and trailing whitespace.\n- An unclosed fence is reported as an error. The evidence text check (`requirements.ci.requirement_text`) compares the evidence string with this trimmed body.\n\n**Tests**\n- `colon_requirement_span_includes_markdown_and_excludes_following_text` (`src/evidence.rs`) uses a body containing:\n  - a code block holding `:::`,\n  - an ATX heading,\n  - a setext heading,\n  - blank lines.\n\n  A following paragraph and a second requirement must be excluded. The evidence text contains no surrounding newlines, so the whitespace trimming is exercised implicitly.\n- `reports_a_missing_closing_colon_fence` (`src/evidence.rs`) checks that an unclosed block is reported.\n- `a_longer_colon_fence_contains_a_shorter_nested_directive` (`src/lib.rs`) uses a four-colon opening with a nested three-colon directive. It asserts the exact body range, that the block is closed, and that the following text is outside the block.\n\n**Minor gaps**\nThere is no dedicated test for a closing fence that has trailing text, or for a closing fence with too few colons. The code handles both correctly. These do not block a true determination, and there are no FIXME markers.",
+  "determination": false,
+  "rationale": "The span rules are implemented and tested, but the implementation also accepts indented fences, which no requirement specifies and no test covers.\n\n**What is implemented and tested**\n- `definition_blocks` and `colon_fence` in `src/lib.rs` are marked `{impl}`.\n  - They require an opening fence of at least three colons followed immediately by `{req}`, then whitespace and a valid name. `::: {req}`-style or no-space variants are not matched.\n  - The closer must be a colon-only line with at least as many colons as the opener, and it must sit outside a code block. Text after the closer is therefore excluded.\n  - The body is the raw text between the fence lines, taken as `body_start..body_end`. It keeps headings, examples and blank lines, including `:::` and headings inside code fences.\n  - Colon lines shorter than the opener stay in the body.\n- `collect_definitions` in `src/evidence.rs` takes `content[body_start..body_end].trim()`. That is the \"leading and trailing whitespace excluded\" rule, and it carries a `{impl}` marker.\n- Tests carry `{test}` markers for these cases:\n  - `colon_requirement_span_includes_markdown_and_excludes_following_text` covers a body with a code-fenced `:::`, ATX and setext headings, and text after the closer.\n  - `a_longer_colon_fence_contains_a_shorter_nested_directive` covers a longer opener with a nested shorter directive.\n  - `reports_a_missing_closing_colon_fence` covers the unclosed case.\n  - `validates_full_names_requirement_text_and_input_lines` is also marked `{test}`.\n\n**Gap**\n- `colon_fence` accepts up to three leading spaces before the opening fence and before the closing fence (`line.trim_start_matches(' ')`, rejected only above 3).\n  - The span requirement says nothing about indentation. `requirements.ci.fence_lengths`, `identifiers` and `definition_errors` don't either, and a search for \"indent\" found no requirement text that does.\n  - So this is behavior in the `{impl}` code that no requirement specifies. A `   :::{req} x` line defines a requirement.\n  - No test exercises or documents that behavior.\n- The closer also tolerates trailing whitespace (`suffix.trim().is_empty()`). This is likewise unspecified, though it is minor.\n\nThere are no `FIXME` comments acknowledging the indentation gap, so the result is false rather than FIXME. Either the requirement should state the indentation allowance and have a test, or the implementation should drop it.",
   "inputs": [
     {
       "requirements": "requirements.ci.span",
@@ -112,14 +112,14 @@
         "            && !reference_roles(&definition.text, true)",
         "                .into_iter()",
         "                .any(|reference| {",
-        "                    reference.kind == ReferenceKind::Cite",
+        "                    matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)",
         "                        && definitions",
         "                            .get(reference.name)",
         "                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)",
         "                })",
         "        {",
         "            errors.push(format!(",
-        "                \"{}: example {name} must cite at least one requirement\",",
+        "                \"{}: example {name} must reference at least one requirement with {{cite}} or {{test}}\",",
         "                definition.source",
         "            ));",
         "        }",
@@ -127,6 +127,49 @@
         "",
         "    definitions",
         "}"
+      ]
+    },
+    {
+      "rust_file": "src/evidence.rs",
+      "rust_item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
+      "text": [
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.inputs`",
+        "    // {test}`requirements.ci.identifiers`",
+        "    // {test}`requirements.ci.span`",
+        "    #[test]",
+        "    fn validates_full_names_requirement_text_and_input_lines() {",
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/reqs/foo/bar.md\"),",
+        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/foo.bar.ready.json\"),",
+        "            json!({",
+        "                \"requirement\": \"The check MUST pass.\\n\\n```text\\n{req}`example`\\n```\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The inspected file has the expected lines.\",",
+        "                \"inputs\": [{",
+        "                    \"file\": \"src/main.rs\",",
+        "                    \"line_start\": 1,",
+        "                    \"line_end\": 2,",
+        "                    \"text\": [\"// first line\", \"// second line\"]",
+        "                }]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert_eq!(report.requirements, 1);",
+        "        assert_eq!(report.evidence_files, 1);",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
       ]
     },
     {
@@ -214,6 +257,7 @@
         "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
         "    let code_ranges = Parser::new(content)",
         "        .into_offset_iter()",
@@ -291,6 +335,7 @@
       "rust_item": "fn[colon_fence]",
       "text": [
         "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
         "    let trimmed = line.trim_start_matches(' ');",
         "    if line.len() - trimmed.len() > 3 {",
@@ -306,6 +351,7 @@
       "rust_item": "mod[tests]/fn[a_longer_colon_fence_contains_a_shorter_nested_directive]",
       "text": [
         "    // {test}`requirements.ci.span`",
+        "    // {test}`requirements.ci.fence_lengths`",
         "    #[test]",
         "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
         "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
@@ -322,420 +368,109 @@
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1558,
-      "line_end": 1621,
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 24,
+      "line_end": 29,
       "text": [
-        "                    \"file\": \"src/main.rs\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 2,",
-        "                    \"text\": [\"// first line\", \"// second line\"]",
-        "                }]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "",
-        "        for invalid in [false, true] {",
-        "            if invalid {",
-        "                fs::write(root.join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "                fs::write(root.join(\"src/broken.rs\"), \"fn {\").unwrap();",
-        "                fs::write(root.join(\"src/lib.rs\"), \"fn retained() {}\\n\").unwrap();",
-        "                fs::write(root.join(\"src/binary.dat\"), [0xff]).unwrap();",
-        "                fs::create_dir_all(root.join(\"evidence/rust/src\")).unwrap();",
-        "                fs::write(root.join(\"evidence/rust/src/ghost.rs.json\"), \"{}\").unwrap();",
-        "            }",
-        "            let expected = super::inspect_repository(root).unwrap();",
-        "            let mut updates = Vec::new();",
-        "            let inspected =",
-        "                super::inspect_repository_with_progress(root, |update| updates.push(update))",
-        "                    .unwrap();",
-        "            assert_eq!(inspected.report.requirements, expected.report.requirements);",
-        "            assert_eq!(inspected.report.examples, expected.report.examples);",
-        "            assert_eq!(",
-        "                inspected.report.evidence_files,",
-        "                expected.report.evidence_files",
-        "            );",
-        "            assert_eq!(inspected.report.errors, expected.report.errors);",
-        "            assert_eq!(inspected.rust_functions, expected.rust_functions);",
-        "            assert_eq!(inspected.discovery_errors, expected.discovery_errors);",
-        "            assert_eq!(",
-        "                inspected.definitions.keys().collect::<Vec<_>>(),",
-        "                expected.definitions.keys().collect::<Vec<_>>()",
-        "            );",
-        "            assert_eq!(inspected.report.requirements, 1);",
-        "            assert_eq!(inspected.report.examples, 0);",
-        "            if invalid {",
-        "                let errors = inspected.report.errors.join(\"\\n\");",
-        "                for error in [",
-        "                    \"invalid JSON\",",
-        "                    \"cannot parse Rust source\",",
-        "                    \"orphaned Rust attestation file\",",
-        "                ] {",
-        "                    assert!(errors.contains(error), \"missing {error:?}: {errors}\");",
-        "                }",
-        "                assert_eq!(",
-        "                    inspected.rust_functions,",
-        "                    [(\"src/lib.rs\".into(), \"fn[retained]\".into(), false)]",
-        "                );",
-        "            } else {",
-        "                assert!(inspected.report.errors.is_empty());",
-        "            }",
-        "            assert!(updates.iter().any(|update| update.total.is_none()));",
-        "            assert!(updates.iter().all(|update| {",
-        "                update",
-        "                    .total",
-        "                    .map_or(update.completed == 0, |total| update.completed <= total)",
-        "            }));",
-        "            let expected_counts = [",
-        "                (\"evidence files\", if invalid { 2 } else { 1 }),",
-        "                (\"reference source files\", if invalid { 6 } else { 3 }),"
+        "| `src/lib.rs:282` `chapter_href` | `requirements.index.navigation` |",
+        "| `src/lib.rs:316` `full_requirement_name` | `requirements.ci.identifiers` |",
+        "| `src/lib.rs:327` `requirement_blocks` | `requirements.ci.span`, `requirements.ci.identifiers`, `requirements.references.markdown_literals` |",
+        "| `src/lib.rs:392` `colon_fence` | `requirements.ci.span` |",
+        "| `src/lib.rs:402` `overlaps_protected` | `requirements.references.markdown_literals` |",
+        "| `src/lib.rs:411` `reference_roles` | `requirements.references.targets`, `requirements.ci.identifiers`, `requirements.references.markdown_literals` |"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 245,
-      "line_end": 329,
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 35,
+      "line_end": 39,
       "text": [
-        "",
-        "// {impl}`requirements.index.navigation`",
-        "// {impl}`requirements.references.book_badges`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`",
-        "// {impl}`requirements.definitions.references`",
-        "fn replace_definitions(",
-        "    content: &str,",
-        "    namespace: &str,",
-        "    current_path: Option<&Path>,",
-        "    index: Option<&index::IndexPlan>,",
-        ") -> String {",
-        "    let mut result = String::with_capacity(content.len());",
-        "    let mut cursor = 0;",
-        "",
-        "    for block in definition_blocks(content)",
-        "        .into_iter()",
-        "        .filter(|block| block.closed)",
-        "    {",
-        "        if block.start < cursor {",
-        "            continue;",
-        "        }",
-        "        result.push_str(&content[cursor..block.start]);",
-        "        let full_name = full_requirement_name(namespace, &block.name);",
-        "        // {impl}`requirements.references.safe_badges`",
-        "        let escaped_name = escape_html(&full_name);",
-        "        if block.kind == DefinitionKind::Term {",
-        "            if let Ok((phrase, body)) =",
-        "                terms::declaration(&content[block.body_start..block.body_end])",
-        "            {",
-        "                result.push_str(&format!(",
-        "                    \"<strong id=\\\"{}\\\">{}</strong>\\n\\n\",",
-        "                    escape_html(&block.kind.anchor(&full_name)),",
-        "                    terms::escaped_phrase(phrase)",
-        "                ));",
-        "                result.push_str(body);",
-        "                result.push('\\n');",
-        "            } else {",
-        "                result.push_str(&content[block.start..block.end]);",
-        "            }",
-        "            cursor = block.end;",
-        "            continue;",
-        "        }",
-        "        let badge = shield_badge(",
-        "            block.kind.badge(),",
-        "            &full_name,",
-        "            if block.kind == DefinitionKind::Example {",
-        "                \"5b62a8\"",
-        "            } else {",
-        "                \"006ba8\"",
-        "            },",
-        "        );",
-        "        let detail_href = current_path",
-        "            .zip(index)",
-        "            .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))",
-        "            .map(|(current, path)| escape_html(&chapter_href(current, path, None)));",
-        "        let tag = if detail_href.is_some() { \"a\" } else { \"span\" };",
-        "        result.push('<');",
-        "        result.push_str(tag);",
-        "        result.push_str(\" class=\\\"habeas-req-badge\\\" id=\\\"habeas-\");",
-        "        result.push_str(block.kind.badge());",
-        "        result.push('-');",
-        "        result.push_str(&escaped_name);",
-        "        result.push('\"');",
-        "        if let Some(href) = detail_href {",
-        "            result.push_str(\" href=\\\"\");",
-        "            result.push_str(&href);",
-        "            result.push('\"');",
-        "        }",
-        "        result.push('>');",
-        "        result.push_str(&badge);",
-        "        result.push_str(\"</\");",
-        "        result.push_str(tag);",
-        "        result.push_str(\">\\n\\n\");",
-        "        result.push_str(&replace_definitions(",
-        "            &content[block.body_start..block.body_end],",
-        "            namespace,",
-        "            current_path,",
-        "            index,",
-        "        ));",
-        "        result.push('\\n');",
-        "        cursor = block.end;",
-        "    }",
-        "",
-        "    result.push_str(&content[cursor..]);"
+        "| `src/evidence.rs:28` `validate_repository` | `requirements.integration.report_api`, `requirements.ci.coverage`, `requirements.ci.orphans`, `requirements.references.targets`, `requirements.references.evidence_coverage` |",
+        "| `src/evidence.rs:85` `book_source_dir` | `requirements.ci.book_source` |",
+        "| `src/evidence.rs:116` `collect_requirements` | `requirements.ci.definition_errors`, `requirements.ci.identifiers`, `requirements.ci.span` |",
+        "| `src/evidence.rs:180` `files_with_extension` | `requirements.ci.coverage` |",
+        "| `src/evidence.rs:234` `validate_evidence_file` | `requirements.ci.schema`, `requirements.ci.requirement_text`, `requirements.ci.determination` |"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 464,
-      "line_end": 548,
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 83,
+      "line_end": 89,
       "text": [
-        "",
-        "// {impl}`requirements.ci.span`",
-        "// {impl}`requirements.ci.identifiers`",
-        "// {impl}`requirements.references.markdown_literals`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`",
-        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
-        "    let code_ranges = Parser::new(content)",
-        "        .into_offset_iter()",
-        "        .filter_map(|(event, range)| {",
-        "            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)",
-        "        })",
-        "        .collect::<Vec<_>>();",
-        "    let mut lines = Vec::new();",
-        "    let mut position = 0;",
-        "    for segment in content.split_inclusive('\\n') {",
-        "        let end = position + segment.len();",
-        "        lines.push((",
-        "            position,",
-        "            end,",
-        "            segment.trim_end_matches('\\n').trim_end_matches('\\r'),",
-        "        ));",
-        "        position = end;",
-        "    }",
-        "",
-        "    let mut blocks = Vec::new();",
-        "    let mut index = 0;",
-        "    while index < lines.len() {",
-        "        let (start, body_start, line) = lines[index];",
-        "        let Some((suffix, fence_length)) = colon_fence(line) else {",
-        "            index += 1;",
-        "            continue;",
-        "        };",
-        "        let (kind, rest) = if let Some(rest) = suffix.strip_prefix(\"{req}\") {",
-        "            (DefinitionKind::Requirement, rest)",
-        "        } else if let Some(rest) = suffix.strip_prefix(\"{example}\") {",
-        "            (DefinitionKind::Example, rest)",
-        "        } else if let Some(rest) = suffix.strip_prefix(\"{definition}\") {",
-        "            (DefinitionKind::Term, rest)",
-        "        } else {",
-        "            index += 1;",
-        "            continue;",
-        "        };",
-        "        if overlaps_protected(start, body_start, &code_ranges)",
-        "            || !rest.chars().next().is_some_and(char::is_whitespace)",
-        "            || !valid_name(rest.trim())",
-        "        {",
-        "            index += 1;",
-        "            continue;",
-        "        }",
-        "        let name = rest.trim();",
-        "",
-        "        let close_index = (index + 1..lines.len()).find(|&candidate| {",
-        "            !overlaps_protected(lines[candidate].0, lines[candidate].1, &code_ranges)",
-        "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {",
-        "                    count >= fence_length && suffix.trim().is_empty()",
-        "                })",
-        "        });",
-        "        let (end, body_end, closed) = if let Some(close_index) = close_index {",
-        "            (lines[close_index].1, lines[close_index].0, true)",
-        "        } else {",
-        "            (content.len(), content.len(), false)",
-        "        };",
-        "        blocks.push(DefinitionBlock {",
-        "            start,",
-        "            end,",
-        "            body_start,",
-        "            body_end,",
-        "            name: name.to_owned(),",
-        "            kind,",
-        "            closed,",
-        "        });",
-        "        index += 1;",
-        "    }",
-        "    blocks",
-        "}",
-        "",
-        "// {impl}`requirements.ci.span`",
-        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
-        "    let trimmed = line.trim_start_matches(' ');",
-        "    if line.len() - trimmed.len() > 3 {",
-        "        return None;",
-        "    }",
-        "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
-        "    (length >= 3).then_some((&trimmed[length..], length))"
+        "| `src/evidence.rs:868` `source_references_are_covered_by_evidence_inputs` | `requirements.references.evidence_coverage` |",
+        "| `src/evidence.rs:914` `reports_unknown_references_and_uncovered_lines` | `requirements.references.targets` |",
+        "| `src/evidence.rs:959` `colon_requirement_span_includes_markdown_and_excludes_following_text` | `requirements.ci.span` |",
+        "| `src/evidence.rs:992` `reports_a_missing_closing_colon_fence` | `requirements.ci.span`, `requirements.ci.definition_errors` |",
+        "| `src/evidence.rs:1024` `validates_four_or_more_colon_fences_and_longer_closers` | `requirements.ci.fence_lengths` |",
+        "| `src/index.rs:552` `marker_accepts_long_fences_and_ignores_examples` | `requirements.index.chapter` |",
+        "| `src/index.rs:575` `index_shows_evidence_states_and_links_generated_chapters` | `requirements.index.chapter`, `requirements.index.state`, `requirements.index.navigation`, `requirements.index.source_links` |"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 852,
-      "line_end": 865,
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 103,
+      "line_end": 107,
       "text": [
-        "",
-        "    // {test}`requirements.ci.span`",
-        "    #[test]",
-        "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
-        "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
-        "        let blocks = definition_blocks(content);",
-        "        assert_eq!(blocks.len(), 1);",
-        "        assert!(blocks[0].closed);",
-        "        assert_eq!(blocks[0].kind, DefinitionKind::Requirement);",
-        "        assert_eq!(",
-        "            &content[blocks[0].body_start..blocks[0].body_end],",
-        "            \"Intro.\\n\\n:::{note}\\nNested.\\n:::\\n\"",
-        "        );",
-        "        assert!(content[blocks[0].end..].contains(\"Outside.\"));"
+        "| `src/lib.rs:665` `colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal` | `requirements.references.book_badges` |",
+        "| `src/lib.rs:679` `references_in_requirement_bodies_are_scanned_as_markdown` | `requirements.references.targets` |",
+        "| `src/lib.rs:690` `a_longer_colon_fence_contains_a_shorter_nested_directive` | `requirements.ci.span` |",
+        "| `tests/cli.rs:5` `renderer_support_and_invalid_commands` | `requirements.cli.invocation` |",
+        "| `tests/habeas.rs:3` `habeas` | `requirements.integration.self_test` |"
+      ]
+    },
+    {
+      "file": "audits/initial-requirements-coverage.md",
+      "line_start": 128,
+      "line_end": 132,
+      "text": [
+        "| `src/lib.rs:165` | definition badge with or without a detail link | `requirements.index.navigation`, `requirements.references.book_badges` |",
+        "| `src/lib.rs:213` | known reference badge or literal unknown role | `requirements.references.book_badges` |",
+        "| `src/lib.rs:326` | requirement fence inside literal Markdown | `requirements.ci.span`, `requirements.references.markdown_literals` |",
+        "| `src/lib.rs:410` | reference role inside literal Markdown | `requirements.references.markdown_literals` |",
+        "| `src/index.rs:145` | index directive cardinality and shape | `requirements.index.chapter` |"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 261,
-      "line_end": 265,
-      "text": [
-        "    {",
-        "        errors.push(\"book.toml: book.src must be a directory inside the repository\".to_owned());",
-        "        return root.join(\"md\");",
-        "    }",
-        "    root.join(relative)"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 422,
-      "line_end": 426,
-      "text": [
-        "                stack.push(path);",
-        "            } else if kind.is_file() && path.extension().is_some_and(|value| value == extension) {",
-        "                files.push(path);",
-        "            }",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 454,
-      "line_end": 458,
-      "text": [
-        "            return;",
-        "        }",
-        "    };",
-        "    let Some(object) = value.as_object() else {",
-        "        errors.push(format!(\"{label}: expected a JSON object\"));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 463,
-      "line_end": 468,
-      "text": [
-        "        .unwrap_or_else(|| {",
-        "            if object.contains_key(\"example\") {",
-        "                DefinitionKind::Example",
-        "            } else {",
-        "                DefinitionKind::Requirement",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1310,
-      "line_end": 1314,
-      "text": [
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        ") -> BTreeSet<String> {",
-        "    let mut valid = BTreeSet::new();",
-        "    let initial_errors = errors.len();"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 316,
-      "line_end": 321,
+      "line_start": 303,
+      "line_end": 307,
       "text": [
         "                ));",
         "            }",
         "            // {impl}`requirements.ci.span`",
         "            let text = content[block.body_start..block.body_end].trim().to_owned();",
-        "            if text.is_empty() {",
-        "                errors.push(format!("
+        "            if text.is_empty() {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 478,
-      "line_end": 482,
+      "line_start": 1367,
+      "line_end": 1371,
       "text": [
-        "    // {impl}`requirements.ci.requirement_text`",
-        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
-        "        if text.trim().is_empty() {",
-        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
-        "        }"
+        "    // {test}`requirements.ci.inputs`",
+        "    // {test}`requirements.ci.identifiers`",
+        "    // {test}`requirements.ci.span`",
+        "    #[test]",
+        "    fn validates_full_names_requirement_text_and_input_lines() {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 510,
-      "line_end": 514,
-      "text": [
-        "    let rationale = string_field(object, \"rationale\", &label, errors);",
-        "    if let Some(rationale) = rationale",
-        "        && rationale.trim().is_empty()",
-        "    {",
-        "        errors.push(format!(\"{label}: rationale must not be empty\"));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 519,
-      "line_end": 524,
-      "text": [
-        "            \"{label}: determination is false{}\",",
-        "            rationale",
-        "                .filter(|text| !text.trim().is_empty())",
-        "                .map_or(String::new(), |text| format!(\": {}\", text.trim()))",
-        "        ));",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1443,
-      "line_end": 1447,
-      "text": [
-        "        let determination = boolean_field(entry, \"determination\", &entry_label, errors);",
-        "        let rationale = string_field(entry, \"rationale\", &entry_label, errors);",
-        "        if rationale.is_some_and(|value| value.trim().is_empty()) {",
-        "            errors.push(format!(\"{entry_label}: rationale must not be empty\"));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1927,
-      "line_end": 1931,
+      "line_start": 1579,
+      "line_end": 1584,
       "text": [
         "    }",
         "",
         "    // {test}`requirements.ci.span`",
         "    // {test}`requirements.ci.fence_lengths`",
-        "    #[test]"
+        "    #[test]",
+        "    fn colon_requirement_span_includes_markdown_and_excludes_following_text() {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1960,
-      "line_end": 1964,
+      "line_start": 1612,
+      "line_end": 1616,
       "text": [
         "    }",
         "",
@@ -746,162 +481,983 @@
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 478,
-      "line_end": 490,
+      "line_start": 1645,
+      "line_end": 1649,
       "text": [
-        "    // {impl}`requirements.ci.requirement_text`",
-        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
-        "        if text.trim().is_empty() {",
-        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
-        "        }",
-        "        if let Some(expected) = expected",
-        "            && text != expected.text",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{label}: {text_field} text changed at {}{}\",",
-        "                expected.source,",
-        "                compact_diff(",
-        "                    &text.split('\\n').collect::<Vec<_>>(),"
+        "    }",
+        "",
+        "    // {test}`requirements.ci.fence_lengths`",
+        "    #[test]",
+        "    fn validates_four_or_more_colon_fences_and_longer_closers() {"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 744,
-      "line_end": 756,
+      "file": "src/lib.rs",
+      "line_start": 468,
+      "line_end": 477,
       "text": [
-        "            .cloned()",
-        "            .collect::<Vec<_>>();",
-        "        errors.push(format!(",
-        "            \"{label}: requirements glob matches changed; added {missing:?}, removed {removed:?}\"",
-        "        ));",
-        "    }",
-        "    if text != resolved.text {",
-        "        let old = text.iter().map(String::as_str).collect::<Vec<_>>();",
-        "        let new = resolved.text.iter().map(String::as_str).collect::<Vec<_>>();",
-        "        errors.push(format!(",
-        "            \"{label}: input text changed for {selector:?}{}\",",
-        "            compact_diff(&old, &new)",
-        "        ));"
+        "}",
+        "",
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.identifiers`",
+        "// {impl}`requirements.references.markdown_literals`",
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.ci.fence_lengths`",
+        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
+        "    let code_ranges = Parser::new(content)"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 436,
-      "line_end": 500,
+      "file": "src/lib.rs",
+      "line_start": 545,
+      "line_end": 550,
       "text": [
-        "    root: &Path,",
-        "    path: &Path,",
-        "    expected: Option<&Declaration>,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let label = display_path(root, path);",
-        "    let content = match fs::read_to_string(path) {",
-        "        Ok(content) => content,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot read evidence: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let value: Value = match serde_json::from_str(&content) {",
-        "        Ok(value) => value,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: invalid JSON: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let Some(object) = value.as_object() else {",
-        "        errors.push(format!(\"{label}: expected a JSON object\"));",
-        "        return;",
-        "    };",
-        "    let kind = expected",
-        "        .map(|definition| definition.kind)",
-        "        .unwrap_or_else(|| {",
-        "            if object.contains_key(\"example\") {",
-        "                DefinitionKind::Example",
-        "            } else {",
-        "                DefinitionKind::Requirement",
-        "            }",
-        "        });",
-        "    let text_field = kind.noun();",
-        "    check_keys(",
-        "        object,",
-        "        &[text_field, \"determination\", \"rationale\", \"inputs\"],",
-        "        &label,",
-        "        errors,",
-        "    );",
+        "}",
         "",
-        "    // {impl}`requirements.ci.requirement_text`",
-        "    if let Some(text) = string_field(object, text_field, &label, errors) {",
-        "        if text.trim().is_empty() {",
-        "            errors.push(format!(\"{label}: {text_field} must not be empty\"));",
-        "        }",
-        "        if let Some(expected) = expected",
-        "            && text != expected.text",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{label}: {text_field} text changed at {}{}\",",
-        "                expected.source,",
-        "                compact_diff(",
-        "                    &text.split('\\n').collect::<Vec<_>>(),",
-        "                    &expected.text.split('\\n').collect::<Vec<_>>()",
-        "                )",
-        "            ));",
-        "        }",
-        "    }",
-        "",
-        "    let determination = match object.get(\"determination\") {",
-        "        Some(value) => match Judgment::from_value(value) {",
-        "            Ok(judgment) => Some(judgment),",
-        "            Err(error) => {"
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.fence_lengths`",
+        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
+        "    let trimmed = line.trim_start_matches(' ');"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 829,
-      "line_end": 869,
+      "file": "src/lib.rs",
+      "line_start": 863,
+      "line_end": 868,
       "text": [
-        "        }",
         "    }",
-        "    diff",
+        "",
+        "    // {test}`requirements.ci.span`",
+        "    // {test}`requirements.ci.fence_lengths`",
+        "    #[test]",
+        "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 544,
+      "line_end": 574,
+      "text": [
+        "    blocks",
         "}",
         "",
-        "// {impl}`requirements.ci.schema`",
-        "fn check_keys(",
-        "    object: &Map<String, Value>,",
-        "    expected: &[&str],",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    for key in object.keys() {",
-        "        if !expected.contains(&key.as_str()) {",
-        "            errors.push(format!(\"{label}: unexpected field {key:?}\"));",
-        "        }",
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.fence_lengths`",
+        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
+        "    let trimmed = line.trim_start_matches(' ');",
+        "    if line.len() - trimmed.len() > 3 {",
+        "        return None;",
         "    }",
+        "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
+        "    (length >= 3).then_some((&trimmed[length..], length))",
         "}",
         "",
-        "// {impl}`requirements.ci.schema`",
-        "fn string_field<'a>(",
-        "    object: &'a Map<String, Value>,",
-        "    key: &str,",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") -> Option<&'a str> {",
-        "    match object.get(key) {",
-        "        Some(Value::String(value)) => Some(value),",
-        "        Some(_) => {",
-        "            errors.push(format!(\"{label}: {key} must be a string\"));",
-        "            None",
-        "        }",
-        "        None => {",
-        "            errors.push(format!(\"{label}: missing field {key:?}\"));",
-        "            None",
-        "        }",
-        "    }",
+        "// {impl}`requirements.references.markdown_literals`",
+        "fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {",
+        "    ranges",
+        "        .iter()",
+        "        .any(|range| start < range.end && range.start < end)",
         "}",
         "",
-        "// {impl}`requirements.ci.schema`",
-        "fn boolean_field("
+        "// {impl}`requirements.references.targets`",
+        "// {impl}`requirements.ci.identifiers`",
+        "// {impl}`requirements.references.markdown_literals`",
+        "// {impl}`requirements.definitions.references`",
+        "// {impl}`requirements.definitions.declaration`",
+        "pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {",
+        "    let protected = if markdown {",
+        "        let mut ranges = protected_ranges(content);",
+        "        for block in definition_blocks(content)",
+        "            .into_iter()"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 645,
+      "line_end": 675,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.references.markdown_literals`",
+        "// {impl}`requirements.references.targets`",
+        "fn is_escaped(content: &str, position: usize) -> bool {",
+        "    content[..position]",
+        "        .bytes()",
+        "        .rev()",
+        "        .take_while(|byte| *byte == b'\\\\')",
+        "        .count()",
+        "        % 2",
+        "        == 1",
+        "}",
+        "",
+        "// {impl}`requirements.ci.identifiers`",
+        "fn valid_name(name: &str) -> bool {",
+        "    !name.is_empty()",
+        "        && name.split('.').all(|part| {",
+        "            !part.is_empty()",
+        "                && part",
+        "                    .bytes()",
+        "                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))",
+        "        })",
+        "}",
+        "",
+        "// {impl}`requirements.references.safe_badges`",
+        "fn escape_html(value: &str) -> String {",
+        "    let mut escaped = String::with_capacity(value.len());",
+        "    for character in value.chars() {",
+        "        match character {",
+        "            '&' => escaped.push_str(\"&amp;\"),"
+      ]
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "line_start": 110,
+      "line_end": 134,
+      "text": [
+        "",
+        "```text",
+        "evidence/requirements.ci.inputs.json: requirement text changed (md/requirements.md:43)",
+        "- Habeas SHOULD check input lines.",
+        "+ Habeas MUST check input lines.",
+        "```",
+        ":::",
+        "",
+        ":::{req} span",
+        "A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.",
+        ":::",
+        "",
+        ":::{req} fence_lengths",
+        "A `{req}` opening fence MAY contain four or more colons. Habeas MUST accept opening fences of any length of at least three colons. A colon-only line with fewer colons than the opener MUST remain inside the requirement body, allowing a nested colon directive. A closing fence outside a fenced code example with at least as many colons as the opener MUST end the body.",
+        ":::",
+        "",
+        ":::{req} book_source",
+        "Validation MUST read the mdBook source directory from `[book].src` in `book.toml`, using `src` when the setting is absent. It MUST report an unreadable or malformed book configuration and reject an empty, absolute, or parent-traversing source path.",
+        ":::",
+        "",
+        ":::{req} identifiers",
+        "Requirement and reference names MUST have nonempty dot-separated segments containing only ASCII letters, digits, underscores, or hyphens. An invalid `{req}` directive or role MUST remain literal and MUST NOT define or reference a requirement. For nested chapter paths, a leading `reqs/` and a final `index` or `README` segment MUST be omitted from the requirement namespace.",
+        ":::",
+        "",
+        ":::{req} definition_errors"
+      ]
+    },
+    {
+      "file": "md/requirements/references.md",
+      "line_start": 31,
+      "line_end": 55,
+      "text": [
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::",
+        "",
+        ":::{req} rust_item_selectors",
+        "Habeas MUST identify a Rust item by the pair of its `rust_file`, following the path rules in {cite}`requirements.ci.schema`, and a `rust_item` selector derived from a `syn` parse of that file. The selector MUST describe syntactic ancestry within the file and MUST NOT resolve Rust modules across files or use line numbers as identity. Named items MUST use kind-and-name segments such as `fn[run]` and `struct[Packet]`. Impl segments MUST distinguish inherent from trait impls using their syntactic self type and optional trait path. Otherwise identical selectors MUST have deterministic source-order disambiguators. A `use` declaration MUST have a positional selector `use#N`, where N is its one-based position among sibling `use` declarations; its import target MUST NOT form part of the selector. Other items without a suitable name MUST have a kind and positional disambiguator. Selector spelling MUST be documented and reversible when names or types contain delimiter characters.",
+        ":::",
+        "",
+        "",
+        ":::{req} markdown_literals",
+        "In Markdown, escaped roles and role-looking text in inline code, fenced code, or raw HTML MUST remain literal and MUST NOT count as references. A `{req}` directive inside a fenced code example and a legacy inline `{req}` role MUST NOT define a requirement.",
+        ":::",
+        "",
+        ":::{req} safe_badges",
+        "The book preprocessor MUST escape requirement names and link targets when inserting badge HTML. It MUST encode badge label and message text in Shields.io URL path components so punctuation cannot change the badge URL structure.",
+        ":::",
+        "",
+        ":::{example} selector_nested",
+        "In `src/lib.rs`, `fn outer() { fn inner() {} }` gives the selectors `fn[outer]` and `fn[outer]/fn[inner]`. {cite}`requirements.references.rust_item_selectors`",
+        ":::",
+        "",
+        ":::{example} selector_impl_and_trait"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1.h",
+      "line_start": 279,
+      "line_end": 281,
+      "text": [
+        "// and writes it to |bp|. Returns 1 on success, or 0 on failure.",
+        "OPENSSL_EXPORT int ASN1_parse(BIO *bp, const unsigned char *pp, long len, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/asn1t.h",
+      "line_start": 477,
+      "line_end": 479,
+      "text": [
+        "typedef int ASN1_ex_print_func(BIO *out, ASN1_VALUE **pval, ",
+        "\t\t\t\t\t\tint indent, const char *fname, ",
+        "\t\t\t\t\t\tconst ASN1_PCTX *pctx);"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/bio.h",
+      "line_start": 352,
+      "line_end": 361,
+      "text": [
+        "",
+        "// BIO_indent prints min(|indent|, |max_indent|) spaces. It returns one on",
+        "// success and zero otherwise.",
+        "OPENSSL_EXPORT int BIO_indent(BIO *bio, unsigned indent, unsigned max_indent);",
+        "",
+        "// BIO_hexdump writes a hex dump of |data| to |bio|. Each line will be indented",
+        "// by |indent| spaces. It returns one on success and zero otherwise.",
+        "OPENSSL_EXPORT int BIO_hexdump(BIO *bio, const uint8_t *data, size_t len,",
+        "                               unsigned indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols.h",
+      "line_start": 283,
+      "line_end": 285,
+      "text": [
+        "#define BIO_hexdump BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_hexdump)",
+        "#define BIO_indent BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_indent)",
+        "#define BIO_int_ctrl BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_int_ctrl)"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "line_start": 287,
+      "line_end": 289,
+      "text": [
+        "#define _BIO_hexdump BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_hexdump)",
+        "#define _BIO_indent BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_indent)",
+        "#define _BIO_int_ctrl BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_int_ctrl)"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "line_start": 280,
+      "line_end": 282,
+      "text": [
+        "%xdefine _BIO_hexdump _ %+ BORINGSSL_PREFIX %+ _BIO_hexdump",
+        "%xdefine _BIO_indent _ %+ BORINGSSL_PREFIX %+ _BIO_indent",
+        "%xdefine _BIO_int_ctrl _ %+ BORINGSSL_PREFIX %+ _BIO_int_ctrl"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "line_start": 4455,
+      "line_end": 4457,
+      "text": [
+        "%xdefine BIO_hexdump BORINGSSL_PREFIX %+ _BIO_hexdump",
+        "%xdefine BIO_indent BORINGSSL_PREFIX %+ _BIO_indent",
+        "%xdefine BIO_int_ctrl BORINGSSL_PREFIX %+ _BIO_int_ctrl"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/dsa.h",
+      "line_start": 53,
+      "line_end": 55,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int DSA_print(BIO *bio, const DSA *dsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/dsa.h",
+      "line_start": 57,
+      "line_end": 59,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int DSA_print_fp(FILE *fp, const DSA *dsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "line_start": 469,
+      "line_end": 471,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_public(BIO *out, const EVP_PKEY *pkey,",
+        "                                         int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "line_start": 474,
+      "line_end": 476,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_private(BIO *out, const EVP_PKEY *pkey,",
+        "                                          int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "line_start": 479,
+      "line_end": 481,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_params(BIO *out, const EVP_PKEY *pkey,",
+        "                                         int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/pkcs7.h",
+      "line_start": 531,
+      "line_end": 533,
+      "text": [
+        "OPENSSL_EXPORT OPENSSL_DEPRECATED int PKCS7_print_ctx(BIO *bio, PKCS7 *pkcs7,",
+        "                                                      int indent,",
+        "                                                      const ASN1_PCTX *pctx);"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/rsa.h",
+      "line_start": 881,
+      "line_end": 883,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int RSA_print(BIO *bio, const RSA *rsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/rsa.h",
+      "line_start": 885,
+      "line_end": 887,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int RSA_print_fp(FILE *fp, const RSA *rsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3720,
+      "line_end": 3722,
+      "text": [
+        "// X509_FLAG_COMPAT disables all flags. It additionally causes names to be",
+        "// printed with a 16-byte indent.",
+        "#define X509_FLAG_COMPAT 0"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3908,
+      "line_end": 3910,
+      "text": [
+        "// X509_NAME_print_ex writes a human-readable representation of |nm| to |out|.",
+        "// Each line of output is indented by |indent| spaces. It returns the number of",
+        "// bytes written on success, and -1 on error. If |out| is NULL, it returns the"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3917,
+      "line_end": 3919,
+      "text": [
+        "// than the output length.",
+        "OPENSSL_EXPORT int X509_NAME_print_ex(BIO *out, const X509_NAME *nm, int indent,",
+        "                                      unsigned long flags);"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3948,
+      "line_end": 3955,
+      "text": [
+        "OPENSSL_EXPORT int X509_NAME_print_ex_fp(FILE *fp, const X509_NAME *nm,",
+        "                                         int indent, unsigned long flags);",
+        "",
+        "// X509_signature_dump writes a human-readable representation of |sig| to |bio|,",
+        "// indented with |indent| spaces. It returns one on success and zero on error.",
+        "OPENSSL_EXPORT int X509_signature_dump(BIO *bio, const ASN1_STRING *sig,",
+        "                                       int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3961,
+      "line_end": 3963,
+      "text": [
+        "// X509V3_EXT_print prints a human-readable representation of |ext| to out. It",
+        "// returns one on success and zero on error. The output is indented by |indent|",
+        "// spaces. |flag| is one of the |X509V3_EXT_*| constants and controls printing"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3971,
+      "line_end": 3973,
+      "text": [
+        "OPENSSL_EXPORT int X509V3_EXT_print(BIO *out, const X509_EXTENSION *ext,",
+        "                                    unsigned long flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3976,
+      "line_end": 3978,
+      "text": [
+        "OPENSSL_EXPORT int X509V3_EXT_print_fp(FILE *out, const X509_EXTENSION *ext,",
+        "                                       int flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3980,
+      "line_end": 3982,
+      "text": [
+        "// representation of |exts| to |out|. It returns one on success and zero on",
+        "// error. The output is indented by |indent| spaces. |flag| is one of the",
+        "// |X509V3_EXT_*| constants and controls printing of unknown extensions and"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 3985,
+      "line_end": 3987,
+      "text": [
+        "                                           const STACK_OF(X509_EXTENSION) *exts,",
+        "                                           unsigned long flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/x509.h",
+      "line_start": 4526,
+      "line_end": 4528,
+      "text": [
+        "typedef int (*X509V3_EXT_I2R)(const X509V3_EXT_METHOD *method, void *ext,",
+        "                              BIO *out, int indent);",
+        "typedef void *(*X509V3_EXT_R2I)(const X509V3_EXT_METHOD *method,"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1.h",
+      "line_start": 279,
+      "line_end": 281,
+      "text": [
+        "// and writes it to |bp|. Returns 1 on success, or 0 on failure.",
+        "OPENSSL_EXPORT int ASN1_parse(BIO *bp, const unsigned char *pp, long len, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/asn1t.h",
+      "line_start": 477,
+      "line_end": 479,
+      "text": [
+        "typedef int ASN1_ex_print_func(BIO *out, ASN1_VALUE **pval, ",
+        "\t\t\t\t\t\tint indent, const char *fname, ",
+        "\t\t\t\t\t\tconst ASN1_PCTX *pctx);"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/bio.h",
+      "line_start": 352,
+      "line_end": 361,
+      "text": [
+        "",
+        "// BIO_indent prints min(|indent|, |max_indent|) spaces. It returns one on",
+        "// success and zero otherwise.",
+        "OPENSSL_EXPORT int BIO_indent(BIO *bio, unsigned indent, unsigned max_indent);",
+        "",
+        "// BIO_hexdump writes a hex dump of |data| to |bio|. Each line will be indented",
+        "// by |indent| spaces. It returns one on success and zero otherwise.",
+        "OPENSSL_EXPORT int BIO_hexdump(BIO *bio, const uint8_t *data, size_t len,",
+        "                               unsigned indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols.h",
+      "line_start": 283,
+      "line_end": 285,
+      "text": [
+        "#define BIO_hexdump BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_hexdump)",
+        "#define BIO_indent BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_indent)",
+        "#define BIO_int_ctrl BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_int_ctrl)"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "line_start": 287,
+      "line_end": 289,
+      "text": [
+        "#define _BIO_hexdump BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_hexdump)",
+        "#define _BIO_indent BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_indent)",
+        "#define _BIO_int_ctrl BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_int_ctrl)"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "line_start": 280,
+      "line_end": 282,
+      "text": [
+        "%xdefine _BIO_hexdump _ %+ BORINGSSL_PREFIX %+ _BIO_hexdump",
+        "%xdefine _BIO_indent _ %+ BORINGSSL_PREFIX %+ _BIO_indent",
+        "%xdefine _BIO_int_ctrl _ %+ BORINGSSL_PREFIX %+ _BIO_int_ctrl"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "line_start": 4455,
+      "line_end": 4457,
+      "text": [
+        "%xdefine BIO_hexdump BORINGSSL_PREFIX %+ _BIO_hexdump",
+        "%xdefine BIO_indent BORINGSSL_PREFIX %+ _BIO_indent",
+        "%xdefine BIO_int_ctrl BORINGSSL_PREFIX %+ _BIO_int_ctrl"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/dsa.h",
+      "line_start": 53,
+      "line_end": 55,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int DSA_print(BIO *bio, const DSA *dsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/dsa.h",
+      "line_start": 57,
+      "line_end": 59,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int DSA_print_fp(FILE *fp, const DSA *dsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "line_start": 469,
+      "line_end": 471,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_public(BIO *out, const EVP_PKEY *pkey,",
+        "                                         int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "line_start": 474,
+      "line_end": 476,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_private(BIO *out, const EVP_PKEY *pkey,",
+        "                                          int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "line_start": 479,
+      "line_end": 481,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_params(BIO *out, const EVP_PKEY *pkey,",
+        "                                         int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/pkcs7.h",
+      "line_start": 531,
+      "line_end": 533,
+      "text": [
+        "OPENSSL_EXPORT OPENSSL_DEPRECATED int PKCS7_print_ctx(BIO *bio, PKCS7 *pkcs7,",
+        "                                                      int indent,",
+        "                                                      const ASN1_PCTX *pctx);"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/rsa.h",
+      "line_start": 881,
+      "line_end": 883,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int RSA_print(BIO *bio, const RSA *rsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/rsa.h",
+      "line_start": 885,
+      "line_end": 887,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int RSA_print_fp(FILE *fp, const RSA *rsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3720,
+      "line_end": 3722,
+      "text": [
+        "// X509_FLAG_COMPAT disables all flags. It additionally causes names to be",
+        "// printed with a 16-byte indent.",
+        "#define X509_FLAG_COMPAT 0"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3908,
+      "line_end": 3910,
+      "text": [
+        "// X509_NAME_print_ex writes a human-readable representation of |nm| to |out|.",
+        "// Each line of output is indented by |indent| spaces. It returns the number of",
+        "// bytes written on success, and -1 on error. If |out| is NULL, it returns the"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3917,
+      "line_end": 3919,
+      "text": [
+        "// than the output length.",
+        "OPENSSL_EXPORT int X509_NAME_print_ex(BIO *out, const X509_NAME *nm, int indent,",
+        "                                      unsigned long flags);"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3948,
+      "line_end": 3955,
+      "text": [
+        "OPENSSL_EXPORT int X509_NAME_print_ex_fp(FILE *fp, const X509_NAME *nm,",
+        "                                         int indent, unsigned long flags);",
+        "",
+        "// X509_signature_dump writes a human-readable representation of |sig| to |bio|,",
+        "// indented with |indent| spaces. It returns one on success and zero on error.",
+        "OPENSSL_EXPORT int X509_signature_dump(BIO *bio, const ASN1_STRING *sig,",
+        "                                       int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3961,
+      "line_end": 3963,
+      "text": [
+        "// X509V3_EXT_print prints a human-readable representation of |ext| to out. It",
+        "// returns one on success and zero on error. The output is indented by |indent|",
+        "// spaces. |flag| is one of the |X509V3_EXT_*| constants and controls printing"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3971,
+      "line_end": 3973,
+      "text": [
+        "OPENSSL_EXPORT int X509V3_EXT_print(BIO *out, const X509_EXTENSION *ext,",
+        "                                    unsigned long flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3976,
+      "line_end": 3978,
+      "text": [
+        "OPENSSL_EXPORT int X509V3_EXT_print_fp(FILE *out, const X509_EXTENSION *ext,",
+        "                                       int flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3980,
+      "line_end": 3982,
+      "text": [
+        "// representation of |exts| to |out|. It returns one on success and zero on",
+        "// error. The output is indented by |indent| spaces. |flag| is one of the",
+        "// |X509V3_EXT_*| constants and controls printing of unknown extensions and"
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 3985,
+      "line_end": 3987,
+      "text": [
+        "                                           const STACK_OF(X509_EXTENSION) *exts,",
+        "                                           unsigned long flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/x509.h",
+      "line_start": 4526,
+      "line_end": 4528,
+      "text": [
+        "typedef int (*X509V3_EXT_I2R)(const X509V3_EXT_METHOD *method, void *ext,",
+        "                              BIO *out, int indent);",
+        "typedef void *(*X509V3_EXT_R2I)(const X509V3_EXT_METHOD *method,"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1.h",
+      "line_start": 279,
+      "line_end": 281,
+      "text": [
+        "// and writes it to |bp|. Returns 1 on success, or 0 on failure.",
+        "OPENSSL_EXPORT int ASN1_parse(BIO *bp, const unsigned char *pp, long len, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/asn1t.h",
+      "line_start": 477,
+      "line_end": 479,
+      "text": [
+        "typedef int ASN1_ex_print_func(BIO *out, ASN1_VALUE **pval, ",
+        "\t\t\t\t\t\tint indent, const char *fname, ",
+        "\t\t\t\t\t\tconst ASN1_PCTX *pctx);"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/bio.h",
+      "line_start": 352,
+      "line_end": 361,
+      "text": [
+        "",
+        "// BIO_indent prints min(|indent|, |max_indent|) spaces. It returns one on",
+        "// success and zero otherwise.",
+        "OPENSSL_EXPORT int BIO_indent(BIO *bio, unsigned indent, unsigned max_indent);",
+        "",
+        "// BIO_hexdump writes a hex dump of |data| to |bio|. Each line will be indented",
+        "// by |indent| spaces. It returns one on success and zero otherwise.",
+        "OPENSSL_EXPORT int BIO_hexdump(BIO *bio, const uint8_t *data, size_t len,",
+        "                               unsigned indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols.h",
+      "line_start": 283,
+      "line_end": 285,
+      "text": [
+        "#define BIO_hexdump BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_hexdump)",
+        "#define BIO_indent BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_indent)",
+        "#define BIO_int_ctrl BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, BIO_int_ctrl)"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "line_start": 287,
+      "line_end": 289,
+      "text": [
+        "#define _BIO_hexdump BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_hexdump)",
+        "#define _BIO_indent BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_indent)",
+        "#define _BIO_int_ctrl BORINGSSL_ADD_PREFIX_MAC_ASM(BORINGSSL_PREFIX, BIO_int_ctrl)"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "line_start": 280,
+      "line_end": 282,
+      "text": [
+        "%xdefine _BIO_hexdump _ %+ BORINGSSL_PREFIX %+ _BIO_hexdump",
+        "%xdefine _BIO_indent _ %+ BORINGSSL_PREFIX %+ _BIO_indent",
+        "%xdefine _BIO_int_ctrl _ %+ BORINGSSL_PREFIX %+ _BIO_int_ctrl"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "line_start": 4455,
+      "line_end": 4457,
+      "text": [
+        "%xdefine BIO_hexdump BORINGSSL_PREFIX %+ _BIO_hexdump",
+        "%xdefine BIO_indent BORINGSSL_PREFIX %+ _BIO_indent",
+        "%xdefine BIO_int_ctrl BORINGSSL_PREFIX %+ _BIO_int_ctrl"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/dsa.h",
+      "line_start": 53,
+      "line_end": 55,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int DSA_print(BIO *bio, const DSA *dsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/dsa.h",
+      "line_start": 57,
+      "line_end": 59,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int DSA_print_fp(FILE *fp, const DSA *dsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "line_start": 469,
+      "line_end": 471,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_public(BIO *out, const EVP_PKEY *pkey,",
+        "                                         int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "line_start": 474,
+      "line_end": 476,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_private(BIO *out, const EVP_PKEY *pkey,",
+        "                                          int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "line_start": 479,
+      "line_end": 481,
+      "text": [
+        "OPENSSL_EXPORT int EVP_PKEY_print_params(BIO *out, const EVP_PKEY *pkey,",
+        "                                         int indent, ASN1_PCTX *pctx);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/pkcs7.h",
+      "line_start": 531,
+      "line_end": 533,
+      "text": [
+        "OPENSSL_EXPORT OPENSSL_DEPRECATED int PKCS7_print_ctx(BIO *bio, PKCS7 *pkcs7,",
+        "                                                      int indent,",
+        "                                                      const ASN1_PCTX *pctx);"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/rsa.h",
+      "line_start": 881,
+      "line_end": 883,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int RSA_print(BIO *bio, const RSA *rsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/rsa.h",
+      "line_start": 885,
+      "line_end": 887,
+      "text": [
+        "// on success or zero otherwise.",
+        "OPENSSL_EXPORT int RSA_print_fp(FILE *fp, const RSA *rsa, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3720,
+      "line_end": 3722,
+      "text": [
+        "// X509_FLAG_COMPAT disables all flags. It additionally causes names to be",
+        "// printed with a 16-byte indent.",
+        "#define X509_FLAG_COMPAT 0"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3908,
+      "line_end": 3910,
+      "text": [
+        "// X509_NAME_print_ex writes a human-readable representation of |nm| to |out|.",
+        "// Each line of output is indented by |indent| spaces. It returns the number of",
+        "// bytes written on success, and -1 on error. If |out| is NULL, it returns the"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3917,
+      "line_end": 3919,
+      "text": [
+        "// than the output length.",
+        "OPENSSL_EXPORT int X509_NAME_print_ex(BIO *out, const X509_NAME *nm, int indent,",
+        "                                      unsigned long flags);"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3948,
+      "line_end": 3955,
+      "text": [
+        "OPENSSL_EXPORT int X509_NAME_print_ex_fp(FILE *fp, const X509_NAME *nm,",
+        "                                         int indent, unsigned long flags);",
+        "",
+        "// X509_signature_dump writes a human-readable representation of |sig| to |bio|,",
+        "// indented with |indent| spaces. It returns one on success and zero on error.",
+        "OPENSSL_EXPORT int X509_signature_dump(BIO *bio, const ASN1_STRING *sig,",
+        "                                       int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3961,
+      "line_end": 3963,
+      "text": [
+        "// X509V3_EXT_print prints a human-readable representation of |ext| to out. It",
+        "// returns one on success and zero on error. The output is indented by |indent|",
+        "// spaces. |flag| is one of the |X509V3_EXT_*| constants and controls printing"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3971,
+      "line_end": 3973,
+      "text": [
+        "OPENSSL_EXPORT int X509V3_EXT_print(BIO *out, const X509_EXTENSION *ext,",
+        "                                    unsigned long flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3976,
+      "line_end": 3978,
+      "text": [
+        "OPENSSL_EXPORT int X509V3_EXT_print_fp(FILE *out, const X509_EXTENSION *ext,",
+        "                                       int flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3980,
+      "line_end": 3982,
+      "text": [
+        "// representation of |exts| to |out|. It returns one on success and zero on",
+        "// error. The output is indented by |indent| spaces. |flag| is one of the",
+        "// |X509V3_EXT_*| constants and controls printing of unknown extensions and"
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 3985,
+      "line_end": 3987,
+      "text": [
+        "                                           const STACK_OF(X509_EXTENSION) *exts,",
+        "                                           unsigned long flag, int indent);",
+        ""
+      ]
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/x509.h",
+      "line_start": 4526,
+      "line_end": 4528,
+      "text": [
+        "typedef int (*X509V3_EXT_I2R)(const X509V3_EXT_METHOD *method, void *ext,",
+        "                              BIO *out, int indent);",
+        "typedef void *(*X509V3_EXT_R2I)(const X509V3_EXT_METHOD *method,"
       ]
     }
   ]

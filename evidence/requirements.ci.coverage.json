@@ -1,7 +1,7 @@
 {
   "requirement": "Every requirement defined by a fenced `{req}` directive in a chapter under the configured mdBook source directory MUST have an evidence file named `evidence/<full-requirement-name>.json`. The full name MUST use the chapter's path-derived namespace followed by the directive name; for example, a directive named `check` in `md/requirements.md` has the full name `requirements.check`. Habeas MUST apply this rule to its own requirements in this chapter.",
   "determination": true,
-  "rationale": "**Verdict:** the coverage rule is implemented as stated and tested, with one small citation gap noted below.\n\n**Implementation**\n- `collect_definitions` in `src/evidence.rs` walks every `.md` chapter under the configured book source directory. It skips `SUMMARY.md`.\n- It finds colon-fenced `{req}`, `{example}` and `{definition}` blocks via `definition_blocks` in `src/lib.rs`. Each name is prefixed with the path-derived namespace from `chapter_namespace` (for example `reqs/foo/bar.md` gives `foo.bar`).\n- `inspect_repository_with_progress` then finds the evidence files with `files_with_extension` (tagged `requirements.ci.coverage`). That helper recursively finds `*.json` files and reports I/O errors.\n- Only a file directly under `evidence/` whose stem matches a known non-term definition counts as present. Anything else is reported as \"no matching requirement or example\".\n- The block tagged `requirements.ci.coverage` then loops over all definitions. For every `Requirement` or `Example` that is not in `present`, it pushes `evidence/{name}.json: missing for <kind> at <source>`. Terms are exempt.\n- The requirement says \"every requirement defined by a fenced `{req}` directive\". The code also requires evidence for examples, which is consistent with `requirements.examples.evidence`, so it is a superset of the rule.\n- `book_source_dir` determines the configured source directory, and errors are accumulated rather than aborting.\n- The rule applies to Habeas's own requirements because `tests/habeas.rs` calls `habeas::validate()` over this repository. Its `ci.md` and the other chapters under `md/requirements/` declare `{req}` directives that therefore need evidence files.\n\n**Tests**\n- `validates_full_names_requirement_text_and_input_lines` (cited with `{test}` for `requirements.ci.coverage`) builds `md/reqs/foo/bar.md` containing `{req} ready`. It supplies `evidence/foo.bar.ready.json` and asserts there are no errors. This checks the namespace-derived full name, including the `reqs/` prefix stripping.\n- `collects_missing_orphan_format_false_and_changed_line_errors` has requirements `two` and `empty` with no evidence file, and asserts `\"missing for requirement\"` is reported. It also covers the orphan case (`ghost.json`).\n- Another test around line 2205 removes an example's evidence file and asserts `\"missing for example\"`.\n- `src/index.rs` and `tests/commands.rs` also assert the `missing for ...` finding is surfaced by the index and CLI.\n- `chapter_path_prefixes_the_requirement_name` in `src/lib.rs` checks namespace derivation for `reqs/`, `README` and `index` paths.\n- `tests/habeas.rs::habeas` is the self-application test.\n\n**Minor gap**\n- The negative (missing evidence) tests lack an explicit `{test}` citation for `requirements.ci.coverage`. The positive test has the citation, and the negative tests do exercise the behaviour.\n- There are no FIXMEs, and the design space (naming, missing evidence, orphans, examples versus terms, self-application) is covered.",
+  "rationale": "**Verdict:** `requirements.ci.coverage` is implemented and tested. I found no gaps and no FIXMEs.\n\n**Implementation**\n- `inspect_repository_with_progress` in `src/evidence.rs` (about lines 100–213, coverage loop at 164–173) does the work.\n  - It resolves the mdBook source directory from `book.toml` via `book_source_dir`.\n  - It collects definitions with `collect_definitions`, which walks every `.md` chapter except `SUMMARY.md`.\n  - For each fenced directive from `definition_blocks`, it builds the full name as `full_requirement_name(chapter_namespace(path), block.name)`.\n  - It lists the `evidence/*.json` files with `files_with_extension` and records which definition names have a matching file.\n  - Only files directly under `evidence/` count as matches. Nested files and `evidence/rust/**/*.rs.json` do not.\n  - Every definition that is not a `{definition}` term and has no matching file produces an error: `evidence/{name}.json: missing for requirement at <file:line>`. The error carries the source location.\n  - An absent `evidence/` directory is treated as no files, so every definition is reported missing.\n- `full_requirement_name` and `chapter_namespace` in `src/lib.rs` derive the path-based namespace.\n  - The namespace is the chapter path without its extension, with a leading `reqs` segment and a trailing `index` or `README` segment dropped.\n  - A chapter at `md/requirements.md` therefore gives `requirements.check`, matching the example in the requirement text.\n  - `src/lib.rs` has a test for this: `chapter_path_prefixes_the_requirement_name`.\n- The rule is applied to Habeas's own requirements, including the `coverage` directive in `md/requirements/ci.md`.\n  - `tests/habeas.rs` runs `habeas::validate()` over the repository itself, so any missing evidence file for Habeas's own requirements would fail the test suite.\n\n**Tests**\n- `validates_full_names_requirement_text_and_input_lines` is a positive case.\n  - It puts a requirement in `md/reqs/foo/bar.md` and supplies `evidence/foo.bar.ready.json`.\n  - The report is clean, which exercises namespace derivation including the `reqs` prefix.\n- `collects_missing_orphan_format_false_and_changed_line_errors` is a negative case.\n  - It declares several requirements, only some of which have evidence files.\n  - It asserts that the report contains \"missing for requirement\".\n  - It also covers duplicate and empty definitions.\n- Further assertions in `tests/commands.rs`, around lines 388–394 and 509–515, check that the \"missing for requirement\" finding is surfaced by the CLI.\n- The progress test checks that the instrumented path, which carries the coverage check, returns the same errors as the plain one.\n\n**Residual**\n- The code also demands evidence for `{example}` definitions. That follows from other requirements and does not conflict with this one.\n- Edge cases are handled in code or tests: an absent evidence directory, nested evidence files, and Rust sidecar files.",
   "inputs": [
     {
       "requirements": "requirements.ci.coverage",
@@ -216,6 +216,8 @@
         "    // {test}`requirements.ci.coverage`",
         "    // {test}`requirements.ci.requirement_text`",
         "    // {test}`requirements.ci.inputs`",
+        "    // {test}`requirements.ci.identifiers`",
+        "    // {test}`requirements.ci.span`",
         "    #[test]",
         "    fn validates_full_names_requirement_text_and_input_lines() {",
         "        let temp = fixture();",
@@ -250,6 +252,113 @@
     },
     {
       "rust_file": "src/evidence.rs",
+      "rust_item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "text": [
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.errors`",
+        "    // {test}`requirements.ci.diagnostics`",
+        "    // {test}`requirements.ci.input_containment`",
+        "    // {test}`requirements.ci.definition_errors`",
+        "    // {test}`requirements.ci.orphans`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.determination`",
+        "    // {test}`requirements.ci.inputs`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.schema`",
+        "    #[test]",
+        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/requirements.md\"),",
+        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/requirements.one.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Old text.\",",
+        "                \"determination\": false,",
+        "                \"rationale\": \"Work remains.\",",
+        "                \"inputs\": [",
+        "                    {",
+        "                        \"file\": \"src/main.rs\",",
+        "                        \"line_start\": 1,",
+        "                        \"line_end\": 1,",
+        "                        \"text\": [\"changed line\"]",
+        "                    },",
+        "                    {",
+        "                        \"file\": \"\",",
+        "                        \"line_start\": 0,",
+        "                        \"line_end\": 2,",
+        "                        \"text\": [1]",
+        "                    }",
+        "                ]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/requirements.three.json\"),",
+        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(",
+        "            temp.path().join(\"evidence/ghost.json\"),",
+        "            json!({",
+        "                \"requirement\": \"Ghost.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"A valid but orphaned file.\",",
+        "                \"inputs\": []",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
+        "",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        let errors = report.errors.join(\"\\n\");",
+        "        for detail in [",
+        "            \"no matching requirement\",",
+        "            \"invalid JSON\",",
+        "            \"missing for requirement\",",
+        "            \"requirement text changed\",",
+        "            \"- Old text.\",",
+        "            \"+ First.\",",
+        "            \"determination is false\",",
+        "            \"input text changed\",",
+        "            \"- changed line\",",
+        "            \"+ // first line\",",
+        "            \"requirement must be a string\",",
+        "            \"missing field \\\"determination\\\"\",",
+        "            \"inputs must be an array\",",
+        "            \"file must be a nonempty path\",",
+        "            \"line_start must be a positive integer\",",
+        "            \"text[0] must be a string\",",
+        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
+        "            \"requirement requirements.empty has no text\",",
+        "        ] {",
+        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
+        "        }",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/lib.rs",
+      "rust_item": "fn[full_requirement_name]",
+      "text": [
+        "// {impl}`requirements.ci.identifiers`",
+        "// {impl}`requirements.ci.coverage`",
+        "fn full_requirement_name(namespace: &str, name: &str) -> String {",
+        "    if namespace.is_empty() {",
+        "        name.to_owned()",
+        "    } else {",
+        "        format!(\"{namespace}.{name}\")",
+        "    }",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/evidence.rs",
       "rust_item": "fn[inspect_repository]",
       "text": [
         "// {impl}`requirements.integration.report_api`",
@@ -271,6 +380,10 @@
       "line_start": 1352,
       "line_end": 1383,
       "text": [
+        "    if let Some(recorded_file) = string_field(object, \"rust_file\", &label, errors)",
+        "        && recorded_file != rust_file",
+        "    {",
+        "        errors.push(format!(",
         "            \"{label}: rust_file is {recorded_file:?}, expected {rust_file:?}\"",
         "        ));",
         "    }",
@@ -298,11 +411,7 @@
         "                \"determination\",",
         "                \"rationale\",",
         "                \"inputs\",",
-        "            ],",
-        "            &entry_label,",
-        "            errors,",
-        "        );",
-        "        let Some(selector) = string_field(entry, \"rust_item\", &entry_label, errors) else {"
+        "            ],"
       ]
     },
     {
@@ -382,6 +491,7 @@
       "line_start": 225,
       "line_end": 242,
       "text": [
+        "",
         "// {impl}`requirements.ci.identifiers`",
         "fn chapter_namespace(path: &Path) -> String {",
         "    let path = path.with_extension(\"\");",
@@ -398,8 +508,7 @@
         "    }",
         "    if parts.len() > 1 && matches!(parts.last().map(String::as_str), Some(\"index\" | \"README\")) {",
         "        parts.pop();",
-        "    }",
-        ""
+        "    }"
       ]
     },
     {
@@ -407,9 +516,15 @@
       "line_start": 467,
       "line_end": 548,
       "text": [
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.identifiers`",
         "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
         "    let code_ranges = Parser::new(content)",
         "        .into_offset_iter()",
@@ -482,13 +597,7 @@
         "}",
         "",
         "// {impl}`requirements.ci.span`",
-        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
-        "    let trimmed = line.trim_start_matches(' ');",
-        "    if line.len() - trimmed.len() > 3 {",
-        "        return None;",
-        "    }",
-        "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
-        "    (length >= 3).then_some((&trimmed[length..], length))"
+        "// {impl}`requirements.ci.fence_lengths`"
       ]
     },
     {
@@ -496,8 +605,14 @@
       "line_start": 468,
       "line_end": 548,
       "text": [
+        "}",
+        "",
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.identifiers`",
+        "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
         "    let code_ranges = Parser::new(content)",
         "        .into_offset_iter()",
@@ -570,13 +685,7 @@
         "}",
         "",
         "// {impl}`requirements.ci.span`",
-        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
-        "    let trimmed = line.trim_start_matches(' ');",
-        "    if line.len() - trimmed.len() > 3 {",
-        "        return None;",
-        "    }",
-        "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
-        "    (length >= 3).then_some((&trimmed[length..], length))"
+        "// {impl}`requirements.ci.fence_lengths`"
       ]
     },
     {
@@ -651,11 +760,11 @@
       "line_start": 1386,
       "line_end": 1390,
       "text": [
-        "        let current = expected.get(selector);",
-        "        let location = current.map_or_else(",
-        "            || format!(\"{rust_file} {selector}\"),",
-        "            |(function, _)| {",
-        "                format!("
+        "        );",
+        "        let Some(selector) = string_field(entry, \"rust_item\", &entry_label, errors) else {",
+        "            continue;",
+        "        };",
+        "        let current = expected.get(selector);"
       ]
     },
     {
@@ -663,11 +772,11 @@
       "line_start": 1480,
       "line_end": 1484,
       "text": [
-        "        }",
-        "        if self_inputs != 1 {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: expected exactly one Rust-item input selecting this function, found {self_inputs}\"",
-        "            ));"
+        "                    }",
+        "                }",
+        "                _ => {}",
+        "            }",
+        "        }"
       ]
     },
     {
@@ -675,11 +784,11 @@
       "line_start": 1870,
       "line_end": 1874,
       "text": [
-        "                        \"line_start\": 3,",
-        "                        \"line_end\": 3,",
-        "                        \"text\": [test]",
-        "                    }",
-        "                ]"
+        "            json!({",
+        "                \"requirement\": \"Ready.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The source and notes were examined.\",",
+        "                \"inputs\": ["
       ]
     },
     {
@@ -687,11 +796,11 @@
       "line_start": 1276,
       "line_end": 1280,
       "text": [
-        "        assert!(missing.content.contains(\"## Example\\n\\n> Missing case.\"));",
-        "        assert!(missing.content.contains(\"## Validation findings\"));",
-        "        assert!(missing.content.contains(\"missing for example\"));",
-        "        assert!(missing.content.contains(\"No rationale recorded.\"));",
-        "    }"
+        "            .find_map(|item| match item {",
+        "                BookItem::Chapter(chapter) if chapter.name == \"rules.missing\" => Some(chapter),",
+        "                _ => None,",
+        "            })",
+        "            .unwrap();"
       ]
     },
     {
@@ -711,11 +820,11 @@
       "line_start": 222,
       "line_end": 226,
       "text": [
+        "    );",
         "",
         "    fs::write(temp.path().join(\"habeas.toml\"), \"version = 1\\n\").unwrap();",
         "    fs::write(nested.join(\"habeas.toml\"), \"version = [\\n\").unwrap();",
-        "    let output = habeas(&nested, &[\"status\"]);",
-        "    assert!(!output.status.success(), \"{output:?}\");"
+        "    let output = habeas(&nested, &[\"status\"]);"
       ]
     },
     {
@@ -737,13 +846,13 @@
       "line_start": 155,
       "line_end": 161,
       "text": [
+        "            continue;",
         "        };",
         "        let Some(render_path) = chapter.path.as_deref() else {",
         "            continue;",
         "        };",
         "        let namespace = chapter_namespace(source_path);",
-        "        for block in definition_blocks(&chapter.content) {",
-        "            if !block.closed {"
+        "        for block in definition_blocks(&chapter.content) {"
       ]
     },
     {
@@ -751,13 +860,13 @@
       "line_start": 222,
       "line_end": 228,
       "text": [
+        "    });",
         "    Ok(())",
         "}",
         "",
         "// {impl}`requirements.ci.identifiers`",
         "fn chapter_namespace(path: &Path) -> String {",
-        "    let path = path.with_extension(\"\");",
-        "    let mut parts: Vec<_> = path"
+        "    let path = path.with_extension(\"\");"
       ]
     },
     {
@@ -765,18 +874,18 @@
       "line_start": 686,
       "line_end": 697,
       "text": [
+        "#[cfg(test)]",
+        "mod tests {",
+        "    use super::{",
+        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,",
+        "        reference_roles, replace_definitions, shield_badge,",
+        "    };",
+        "    use mdbook_preprocessor::book::{Book, Chapter};",
+        "    use std::path::Path;",
+        "",
         "    // {test}`requirements.ci.identifiers`",
         "    #[test]",
-        "    fn chapter_path_prefixes_the_requirement_name() {",
-        "        assert_eq!(",
-        "            chapter_namespace(Path::new(\"requirements.md\")),",
-        "            \"requirements\"",
-        "        );",
-        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/bar.md\")), \"foo.bar\");",
-        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/README.md\")), \"foo\");",
-        "        assert_eq!(chapter_namespace(Path::new(\"reqs/foo/index.md\")), \"foo\");",
-        "",
-        "        let rendered = replace_definitions("
+        "    fn chapter_path_prefixes_the_requirement_name() {"
       ]
     },
     {
@@ -784,6 +893,10 @@
       "line_start": 1384,
       "line_end": 1520,
       "text": [
+        "            &entry_label,",
+        "            errors,",
+        "        );",
+        "        let Some(selector) = string_field(entry, \"rust_item\", &entry_label, errors) else {",
         "            continue;",
         "        };",
         "        let current = expected.get(selector);",
@@ -916,11 +1029,7 @@
         "}",
         "",
         "#[cfg(test)]",
-        "mod tests {",
-        "    use std::fs;",
-        "",
-        "    use serde_json::json;",
-        "    use tempfile::TempDir;"
+        "mod tests {"
       ]
     },
     {
@@ -1229,7 +1338,7 @@
       "line_start": 424,
       "line_end": 424,
       "text": [
-        "rationale. That tool call is your final answer."
+        "cite it. Other functions' citations are not evidence for or against a"
       ]
     },
     {
@@ -1237,7 +1346,7 @@
       "line_start": 527,
       "line_end": 527,
       "text": [
-        "Within a present user authoring section, `configs` MUST be present but MAY be empty;"
+        "OptionValue = String | Boolean | Integer | FiniteFloat"
       ]
     },
     {
@@ -1245,7 +1354,7 @@
       "line_start": 537,
       "line_end": 537,
       "text": [
-        "`concurrency` in its configuration table. When omitted, the maximum number of"
+        ""
       ]
     },
     {
@@ -1253,7 +1362,7 @@
       "line_start": 550,
       "line_end": 550,
       "text": [
-        ":::{req} configuration_storage"
+        "workspace `configs` MAY be omitted, allowing a workspace default to select a"
       ]
     },
     {
@@ -1261,7 +1370,7 @@
       "line_start": 566,
       "line_end": 566,
       "text": [
-        "workspace default, then the user's default. Named workspace configurations MUST"
+        "thread pool. The number of assessments running at once MUST NOT exceed the"
       ]
     },
     {
@@ -1269,7 +1378,7 @@
       "line_start": 576,
       "line_end": 576,
       "text": [
-        "named variable MUST supply the credential; a missing or empty value MUST produce"
+        "name a nonempty environment variable without `=` or NUL."
       ]
     },
     {
@@ -1277,7 +1386,7 @@
       "line_start": 587,
       "line_end": 587,
       "text": [
-        "Explicit credentials MUST be passed directly to the selected provider without"
+        "authoring MUST use the user's selection for the canonical project root, then the"
       ]
     },
     {
@@ -1365,7 +1474,7 @@
       "line_start": 77,
       "line_end": 77,
       "text": [
-        ":::{req} errors"
+        ":::{definition} validation_error"
       ]
     },
     {
@@ -1373,7 +1482,7 @@
       "line_start": 81,
       "line_end": 81,
       "text": [
-        ":::{req} diagnostics"
+        "It begins with the affected evidence file, requirement, or source location, names"
       ]
     },
     {
@@ -1381,7 +1490,7 @@
       "line_start": 91,
       "line_end": 91,
       "text": [
-        ":::{req} span"
+        "states which conditions that check reports."
       ]
     },
     {
@@ -1389,7 +1498,7 @@
       "line_start": 95,
       "line_end": 95,
       "text": [
-        ":::{req} fence_lengths"
+        "When stored requirement text differs from the current chapter text, the"
       ]
     },
     {
@@ -1397,7 +1506,7 @@
       "line_start": 99,
       "line_end": 99,
       "text": [
-        ":::{req} book_source"
+        "name the file and line range and show the same kind of diff."
       ]
     },
     {
@@ -1405,7 +1514,7 @@
       "line_start": 103,
       "line_end": 103,
       "text": [
-        ":::{req} identifiers"
+        "- Habeas SHOULD check input lines."
       ]
     },
     {
@@ -1413,7 +1522,7 @@
       "line_start": 107,
       "line_end": 107,
       "text": [
-        ":::{req} definition_errors"
+        ""
       ]
     },
     {
@@ -1421,7 +1530,7 @@
       "line_start": 111,
       "line_end": 111,
       "text": [
-        ":::{req} input_containment"
+        ""
       ]
     },
     {
@@ -1429,7 +1538,7 @@
       "line_start": 117,
       "line_end": 117,
       "text": [
-        ":::{req} authoring_inputs"
+        "Validation MUST read the mdBook source directory from `[book].src` in `book.toml`, using `src` when the setting is absent. It MUST report an unreadable or malformed book configuration and reject an empty, absolute, or parent-traversing source path."
       ]
     },
     {
@@ -2036,7 +2145,7 @@
       "line_start": 596,
       "line_end": 596,
       "text": [
-        ""
+        "default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use"
       ]
     },
     {
@@ -2044,7 +2153,7 @@
       "line_start": 607,
       "line_end": 607,
       "text": [
-        "connection settings they do not represent."
+        "record combining `api_key` with `api_key_env`."
       ]
     },
     {
@@ -2052,7 +2161,7 @@
       "line_start": 621,
       "line_end": 621,
       "text": [
-        "select a configuration for a project or invocation, and edit or remove selections"
+        "placeholders and explain that workspace files may be committed or read as source"
       ]
     },
     {
@@ -2060,7 +2169,7 @@
       "line_start": 629,
       "line_end": 629,
       "text": [
-        "directory readable while excluding its private subtree:"
+        "connection settings they do not represent."
       ]
     },
     {
@@ -2068,7 +2177,7 @@
       "line_start": 639,
       "line_end": 639,
       "text": [
-        "disallow = [\"generated/private\"]"
+        ":::{req} configuration_documentation"
       ]
     },
     {
@@ -2076,7 +2185,7 @@
       "line_start": 131,
       "line_end": 131,
       "text": [
-        "### An acknowledged implementation gap"
+        ""
       ]
     },
     {
@@ -2084,7 +2193,7 @@
       "line_start": 150,
       "line_end": 150,
       "text": [
-        "### Missing tests and references outside the marker"
+        ":::{example} fixme_implementation_gap"
       ]
     },
     {
@@ -2092,7 +2201,7 @@
       "line_start": 171,
       "line_end": 171,
       "text": [
-        "### An acknowledged gap without an issue number"
+        "source explicitly records the two missing cases:"
       ]
     },
     {
@@ -2100,7 +2209,7 @@
       "line_start": 190,
       "line_end": 190,
       "text": [
-        "### An additional, unacknowledged gap"
+        ":::{example} fixme_without_issue"
       ]
     },
     {
@@ -2108,7 +2217,7 @@
       "line_start": 203,
       "line_end": 203,
       "text": [
-        "### Recorded FIXME evidence becomes stale"
+        "{cite}`requirements.ci.outcomes`"
       ]
     },
     {
@@ -2228,6 +2337,10 @@
       "line_start": 1500,
       "line_end": 1580,
       "text": [
+        "                    ));",
+        "                }",
+        "            }",
+        "        }",
         "        if valid_header && errors.len() == initial_errors {",
         "            valid.insert(selector.to_owned());",
         "        }",
@@ -2304,11 +2417,7 @@
         "                fs::write(root.join(\"src/binary.dat\"), [0xff]).unwrap();",
         "                fs::create_dir_all(root.join(\"evidence/rust/src\")).unwrap();",
         "                fs::write(root.join(\"evidence/rust/src/ghost.rs.json\"), \"{}\").unwrap();",
-        "            }",
-        "            let expected = super::inspect_repository(root).unwrap();",
-        "            let mut updates = Vec::new();",
-        "            let inspected =",
-        "                super::inspect_repository_with_progress(root, |update| updates.push(update))"
+        "            }"
       ]
     },
     {
@@ -2358,13 +2467,13 @@
       "line_start": 206,
       "line_end": 212,
       "text": [
+        "        }",
         "        let namespace = chapter",
         "            .source_path",
         "            .as_deref()",
         "            .or(chapter.path.as_deref())",
         "            .map(chapter_namespace)",
-        "            .unwrap_or_default();",
-        "        chapter.content = replace_definitions("
+        "            .unwrap_or_default();"
       ]
     },
     {
@@ -2372,13 +2481,13 @@
       "line_start": 676,
       "line_end": 682,
       "text": [
-        "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use super::{",
-        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,",
-        "        reference_roles, replace_definitions, shield_badge,",
-        "    };"
+        "            '<' => escaped.push_str(\"&lt;\"),",
+        "            '>' => escaped.push_str(\"&gt;\"),",
+        "            '\"' => escaped.push_str(\"&quot;\"),",
+        "            '\\'' => escaped.push_str(\"&#39;\"),",
+        "            _ => escaped.push(character),",
+        "        }",
+        "    }"
       ]
     },
     {
@@ -2501,6 +2610,10 @@
       "line_start": 1580,
       "line_end": 1640,
       "text": [
+        "            }",
+        "            let expected = super::inspect_repository(root).unwrap();",
+        "            let mut updates = Vec::new();",
+        "            let inspected =",
         "                super::inspect_repository_with_progress(root, |update| updates.push(update))",
         "                    .unwrap();",
         "            assert_eq!(inspected.report.requirements, expected.report.requirements);",
@@ -2557,11 +2670,7 @@
         "                    })",
         "                    .collect();",
         "                assert_eq!(completed, (0..=total).collect::<Vec<_>>(), \"{stage}\");",
-        "            }",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.progress`"
+        "            }"
       ]
     },
     {
@@ -2597,13 +2706,13 @@
       "line_start": 1760,
       "line_end": 1766,
       "text": [
-        "    // {test}`requirements.ci.input_containment`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),"
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }",
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.errors`",
+        "    // {test}`requirements.ci.diagnostics`",
+        "    // {test}`requirements.ci.input_containment`"
       ]
     },
     {
@@ -2611,13 +2720,13 @@
       "line_start": 1814,
       "line_end": 1820,
       "text": [
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\","
+        "                \"requirement\": \"Ghost.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"A valid but orphaned file.\",",
+        "                \"inputs\": []",
+        "            })",
+        "            .to_string(),",
+        "        )"
       ]
     },
     {
@@ -2625,13 +2734,13 @@
       "line_start": 2205,
       "line_end": 2211,
       "text": [
+        "        assert!(errors.contains(\"- Outdated.\"), \"{errors}\");",
         "",
-        "        fs::remove_file(&example_path).unwrap();",
-        "        let errors = validate_repository(temp.path()).unwrap().errors.join(\"\\n\");",
-        "        assert!(errors.contains(\"missing for example\"), \"{errors}\");",
-        "    }",
-        "",
-        "    // {test}`requirements.ci.definition_errors`"
+        "        let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();",
+        "        let example_text = wrong_field",
+        "            .as_object_mut()",
+        "            .unwrap()",
+        "            .remove(\"example\")"
       ]
     },
     {
@@ -2639,13 +2748,13 @@
       "line_start": 1275,
       "line_end": 1281,
       "text": [
+        "            .iter()",
+        "            .find_map(|item| match item {",
+        "                BookItem::Chapter(chapter) if chapter.name == \"rules.missing\" => Some(chapter),",
+        "                _ => None,",
+        "            })",
         "            .unwrap();",
-        "        assert!(missing.content.contains(\"## Example\\n\\n> Missing case.\"));",
-        "        assert!(missing.content.contains(\"## Validation findings\"));",
-        "        assert!(missing.content.contains(\"missing for example\"));",
-        "        assert!(missing.content.contains(\"No rationale recorded.\"));",
-        "    }",
-        "}"
+        "        assert!(missing.content.contains(\"## Example\\n\\n> Missing case.\"));"
       ]
     },
     {
@@ -2653,13 +2762,13 @@
       "line_start": 388,
       "line_end": 394,
       "text": [
+        "        );",
         "    }",
         "    assert!(!text.contains(\"| `requirements.ready`\"), \"{text}\");",
         "    assert!(!text.contains(\"| `requirements.xready`\"), \"{text}\");",
         "    assert!(text.contains(\"missing for requirement\"), \"{text}\");",
         "    assert!(text.contains(\"determination is false\"), \"{text}\");",
-        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");",
-        "    assert!(text.contains(\"input text changed\"), \"{text}\");"
+        "    assert!(text.contains(\"requirement text changed\"), \"{text}\");"
       ]
     },
     {
@@ -2667,13 +2776,13 @@
       "line_start": 509,
       "line_end": 515,
       "text": [
+        "    let missing = habeas(temp.path(), &[\"info\", \"requirements.absent\"]);",
         "    assert!(missing.status.success(), \"{:?}\", missing);",
         "    let missing = String::from_utf8(missing.stdout).unwrap();",
         "    assert!(missing.contains(\"## Validation findings\"), \"{missing}\");",
         "    assert!(missing.contains(\"missing for requirement\"), \"{missing}\");",
         "    assert!(missing.contains(\"No rationale recorded.\"), \"{missing}\");",
-        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");",
-        ""
+        "    assert!(missing.contains(\"No inputs recorded.\"), \"{missing}\");"
       ]
     },
     {
@@ -2705,11 +2814,11 @@
       "line_start": 1721,
       "line_end": 1725,
       "text": [
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.book_source`",
-        "    // {test}`requirements.ci.coverage`",
-        "    // {test}`requirements.ci.requirement_text`",
-        "    // {test}`requirements.ci.inputs`"
+        "            );",
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.integration.report_api`"
       ]
     },
     {
@@ -2717,6 +2826,12 @@
       "line_start": 1750,
       "line_end": 1830,
       "text": [
+        "                    \"text\": [\"// first line\", \"// second line\"]",
+        "                }]",
+        "            })",
+        "            .to_string(),",
+        "        )",
+        "        .unwrap();",
         "",
         "        let report = validate_repository(temp.path()).unwrap();",
         "        assert_eq!(report.requirements, 1);",
@@ -2729,6 +2844,12 @@
         "    // {test}`requirements.ci.diagnostics`",
         "    // {test}`requirements.ci.input_containment`",
         "    // {test}`requirements.ci.definition_errors`",
+        "    // {test}`requirements.ci.orphans`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.determination`",
+        "    // {test}`requirements.ci.inputs`",
+        "    // {test}`requirements.ci.requirement_text`",
+        "    // {test}`requirements.ci.schema`",
         "    #[test]",
         "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
         "        let temp = fixture();",
@@ -2785,19 +2906,7 @@
         "            \"no matching requirement\",",
         "            \"invalid JSON\",",
         "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\",",
-        "            \"requirement must be a string\",",
-        "            \"missing field \\\"determination\\\"\",",
-        "            \"inputs must be an array\",",
-        "            \"file must be a nonempty path\",",
-        "            \"line_start must be a positive integer\",",
-        "            \"text[0] must be a string\","
+        "            \"requirement text changed\","
       ]
     }
   ]

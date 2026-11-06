@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -8,16 +8,12 @@ use serde_json::{Value, json};
 use crate::DefinitionKind;
 use crate::evidence::{Declaration, inspect_repository};
 use crate::inputs::{InputSelector, read_project_file};
-use crate::rust_items::{function_citations, parse_items};
+use crate::rust_items::parse_items;
 
 // {impl}`requirements.cli.add_input`
 pub enum InputTarget {
     Requirement(String),
     Example(String),
-    RustFunction {
-        rust_file: String,
-        rust_item: String,
-    },
 }
 
 // {impl}`requirements.cli.add_input`
@@ -59,10 +55,6 @@ pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Resul
         InputTarget::Example(name) => {
             add_definition_inputs(&root, definitions, &name, DefinitionKind::Example, inputs)
         }
-        InputTarget::RustFunction {
-            rust_file,
-            rust_item,
-        } => add_function_inputs(&root, definitions, &rust_file, &rust_item, inputs),
     }
 }
 
@@ -180,84 +172,10 @@ fn add_definition_inputs(
 }
 
 // {impl}`requirements.cli.add_input`
-// {impl}`requirements.references.rust_function_attestations`
-// {impl}`requirements.cli.function_attestation_guidance`
 // {impl}`requirements.definitions.capture`
-fn add_function_inputs(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
-    rust_file: &str,
-    rust_item: &str,
-    inputs: Vec<(InputSelector, Value, Vec<String>)>,
-) -> io::Result<String> {
-    let (path, source) = read_project_file(root, rust_file).map_err(invalid_input)?;
-    let rust_file = path
-        .strip_prefix(root)
-        .map_err(|_| {
-            invalid_input(format!(
-                "{rust_file}: function attestation target must be inside the repository"
-            ))
-        })?
-        .to_str()
-        .ok_or_else(|| invalid_input("Rust file path must be UTF-8"))?;
-    let functions = function_citations(&source, definitions).map_err(|error| {
-        invalid_input(format!("{rust_file}: cannot parse Rust source: {error}"))
-    })?;
-    let Some((_, citations)) = functions
-        .into_iter()
-        .find(|(item, _)| item.selector == rust_item)
-    else {
-        return Err(invalid_input(format!(
-            "{rust_file}: no function matches Rust item {rust_item:?}"
-        )));
-    };
-    let path = root.join("evidence/rust").join(format!("{rust_file}.json"));
-    let mut sidecar = read_or_new(&path, json!({"rust_file": rust_file, "functions": []}))?;
-    let Some(entries) = sidecar.get_mut("functions").and_then(Value::as_array_mut) else {
-        return Err(invalid_input(format!(
-            "{}: functions must be an array",
-            path.display()
-        )));
-    };
-    let existing_index = entries
-        .iter()
-        .position(|entry| entry.get("rust_item").and_then(Value::as_str) == Some(rust_item));
-    let new_entry = existing_index.is_none();
-    let index = existing_index.unwrap_or_else(|| {
-        entries.push(json!({
-            "rust_item": rust_item,
-            "citations": citation_values(&citations),
-            "determination": false,
-            "rationale": "Review pending: inspect this function and every applicable requirement or example; confirm that its citations are complete and its behavior follows their combined texts.",
-            "inputs": [],
-        }));
-        entries.len() - 1
-    });
-    let (output, changed) = update_inputs(&mut entries[index], inputs, root, definitions, None)?;
-    if changed || new_entry {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(
-            &path,
-            format!("{}\n", serde_json::to_string_pretty(&sidecar)?),
-        )?;
-    }
-    Ok(format!(
-        "evidence/rust/{rust_file}.json {rust_item}:\n{output}\nThis attestation remains pending. Run `habeas author --all` to have the configured model review this function's citation completeness: it identifies applicable requirements and examples, checks that every applicable citation is present, and explains how the cited texts account for the function's behavior. The supervising agent must not write the attestation by hand."
-    ))
-}
-
-// {impl}`requirements.cli.add_input`
-fn citation_values(citations: &BTreeSet<(String, String)>) -> Vec<Value> {
-    citations
-        .iter()
-        .map(|(role, name)| json!({ "role": role, "name": name }))
-        .collect()
-}
-
-// {impl}`requirements.cli.add_input`
-// {impl}`requirements.definitions.capture`
+// {impl}`requirements.cli.add_input_requirements`
+// {impl}`requirements.definitions.dependencies`
+// {impl}`requirements.cli.add_input_file_range`
 fn update_inputs(
     record: &mut Value,
     inputs: Vec<(InputSelector, Value, Vec<String>)>,

@@ -76,6 +76,7 @@ fn session_start(project: &Path, cwd: &Path) -> Value {
 // {test}`requirements.cli.setup`
 // {test}`requirements.cli.setup_css`
 // {test}`requirements.cli.setup_local_path`
+// {test}`requirements.cli.mdbook`
 #[test]
 fn setup_is_repeatable() {
     let temp = fixture();

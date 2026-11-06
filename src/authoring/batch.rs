@@ -2,7 +2,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -36,6 +35,7 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.authoring.reporting`
+// {impl}`requirements.ci.authoring_inputs`
 pub async fn author_all_with_options(
     root: &Path,
     selection: Option<&str>,
@@ -49,45 +49,28 @@ pub async fn author_all_with_options(
     }
     let mut subjects = Vec::new();
     let mut unchanged = 0;
-    let total = inspection.definitions.len() + inspection.rust_functions.len();
-    let mut checked = 0;
+    let total = inspection.definitions.len();
     progress.inspect(InspectionProgress {
         stage: "selecting assessments",
-        completed: checked,
+        completed: 0,
         total: Some(total),
     });
-    for (name, definition) in &inspection.definitions {
+    for (checked, (name, definition)) in inspection.definitions.iter().enumerate() {
         if definition.kind != DefinitionKind::Term {
             let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);
+            // A current false judgment stays until its subject or inputs change.
             if matches!(
                 evidence.state(),
-                EvidenceState::Valid | EvidenceState::Fixme
+                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
             ) {
                 unchanged += 1;
             } else {
                 subjects.push(AuthoringSubject::Definition(name.clone()));
             }
         }
-        checked += 1;
         progress.inspect(InspectionProgress {
             stage: "selecting assessments",
-            completed: checked,
-            total: Some(total),
-        });
-    }
-    for (rust_file, rust_item, valid) in inspection.rust_functions {
-        if valid {
-            unchanged += 1;
-        } else {
-            subjects.push(AuthoringSubject::RustFunction {
-                rust_file,
-                rust_item,
-            });
-        }
-        checked += 1;
-        progress.inspect(InspectionProgress {
-            stage: "selecting assessments",
-            completed: checked,
+            completed: checked + 1,
             total: Some(total),
         });
     }
@@ -147,8 +130,6 @@ pub async fn author_all_with_options(
             if let Some(reason) = *stop_reason {
                 return Err(pending.failed(io::Error::new(io::ErrorKind::Interrupted, reason)));
             }
-            // This collector is the sole writer: functions in the same source
-            // file can finish concurrently without replacing each other's entries.
             match write_record(&root, &pending) {
                 Ok(path) => pending.persisted(path),
                 Err(error) => Err(pending.failed(error)),
@@ -179,6 +160,7 @@ pub async fn author_all_with_options(
 }
 
 // {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.read_denial`
 fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Error) {
     if error.kind() != io::ErrorKind::Interrupted {
         return;
@@ -194,43 +176,11 @@ fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Err
 }
 
 // {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.authoring.persistence`
 fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {
-    let (path, record) = match &pending.subject {
-        AuthoringSubject::Definition(name) => (
-            root.join("evidence").join(format!("{name}.json")),
-            pending.record.clone(),
-        ),
-        AuthoringSubject::RustFunction {
-            rust_file,
-            rust_item,
-        } => {
-            let path = root.join("evidence/rust").join(format!("{rust_file}.json"));
-            let mut entries = match fs::read_to_string(&path) {
-                Ok(text) => {
-                    let mut record: Value = serde_json::from_str(&text)?;
-                    record
-                        .get_mut("functions")
-                        .and_then(Value::as_array_mut)
-                        .ok_or_else(|| {
-                            io::Error::other(format!(
-                                "{}: functions must be an array",
-                                path.display()
-                            ))
-                        })?
-                        .clone()
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-                Err(error) => return Err(error),
-            };
-            entries
-                .retain(|entry| entry.get("rust_item").and_then(Value::as_str) != Some(rust_item));
-            entries.push(pending.record.clone());
-            entries.sort_by(|a, b| a["rust_item"].as_str().cmp(&b["rust_item"].as_str()));
-            (path, json!({"rust_file":rust_file,"functions":entries}))
-        }
-    };
+    let AuthoringSubject::Definition(name) = &pending.subject;
+    let path = root.join("evidence").join(format!("{name}.json"));
+    let record = pending.record.clone();
     let parent = path.parent().expect("evidence parent");
     fs::create_dir_all(parent)?;
     // Other assessments may read the existing selectors while this one finishes.

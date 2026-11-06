@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas setup` MUST find an ancestor containing both `Cargo.toml` and `book.toml`, require a nonempty relative mdBook source path without parent components and a `SUMMARY.md` at that path, and report an error when these prerequisites are absent or invalid.",
-  "determination": true,
-  "rationale": "**Verdict:** the code implements the requirement, and the tests cover its main cases. There are two small gaps in the tests, described below.\n\n**Implementation**\n- `find_project_root` (src/setup.rs:57-64) walks `cwd.ancestors()`. It picks the first directory where both `Cargo.toml` and `book.toml` are files.\n- `project_root` (src/setup.rs:66-71) turns a missing root into the error \"cannot find a project with Cargo.toml and book.toml\". `setup::run` calls it (src/setup.rs:94).\n- `book_source` returns `src` by default. It errors if `book` is not a table or `book.src` is not a string.\n- `run` rejects an empty source. It also rejects any component that is not `Normal` or `CurDir`, which excludes `..`, absolute paths and Windows prefixes. It then requires `SUMMARY.md` in the source directory, with the error \"cannot find mdBook SUMMARY.md in …\".\n- All checks run before any file is written, so a failed setup changes nothing.\n\n**Tests**\n- `setup_rejects_invalid_book_configuration` (tests/setup.rs:143-191) checks that setup fails with the expected stderr message for each of these:\n  - `book` is not a table\n  - `src` is not a string\n  - `src` is empty\n  - `src` is absolute\n  - `src` contains `..`\n  - `SUMMARY.md` is missing\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` (tests/setup.rs:120-141) covers an empty `book.toml` and a `[book]` table without `src`. Both default to `src`, and setup succeeds.\n- Root discovery from a nested directory is exercised through `find_project_root` by the hook test (tests/setup.rs:204-213).\n- tests/commands.rs:575-582 checks that running outside a project fails with \"cannot find a project with Cargo.toml and book.toml\". That test uses `status`, but it goes through the same `project_root` function that `setup` uses.\n\n**Minor gaps (not acknowledged in source)**\n- No test runs `habeas setup` itself outside a project or in a directory that has only one of the two files. The shared `project_root` function is covered through `status`.\n- No test checks that a nearer directory with only one of the two files is skipped in favour of a higher ancestor with both.\n\nBoth behaviours are trivially visible in the one-line `find` predicate, so I judge them minor.",
+  "determination": false,
+  "rationale": "The core implementation matches the requirement. Part of it is only cited rather than marked `{impl}`, and two parts of the requirement have no test marked for it.\n\n**What is implemented correctly**\n- `find_project_root` (src/setup.rs:56) walks `cwd.ancestors()` for a directory holding both `Cargo.toml` and `book.toml`.\n- `project_root` (src/setup.rs:66) reports \"cannot find a project with Cargo.toml and book.toml\" when none is found.\n- `book_source` (src/setup.rs:35) defaults to `src` only when the `book` table or `book.src` is absent. It errors when `book` is not a table or `book.src` is not a string.\n- `run` (src/setup.rs:97-110) rejects an empty source. It also rejects any path component other than `Normal` or `CurDir`, which excludes absolute, parent and prefix components. It then requires `SUMMARY.md` in the source directory.\n- The extra behaviour in `run` (CSS, dev-dependency, test file) is covered by other requirements: `setup_css`, `setup_local_path` and `setup`.\n\n**Gaps**\n1. **Partial implementation with only `{cite}`.** `is_configured` (src/setup.rs:~177-205) re-implements the same checks: `book_source`, the empty-source test, the component whitelist and the `SUMMARY.md` check. It is marked only `{cite}` for `requirements.cli.setup_project`. Per the criteria, code that implements part of the requirement without `{impl}` is a gap.\n2. **Missing test for ancestor discovery and the missing-project error.** The only tests marked `{test}` for this requirement are in tests/setup.rs: `setup_uses_src_when_book_table_or_source_setting_is_absent` and `setup_rejects_invalid_book_configuration`. Neither runs `habeas setup` from a subdirectory. Neither runs it with `Cargo.toml` or `book.toml` missing from every ancestor to check the \"cannot find a project\" error. A test of that error exists at tests/commands.rs:~574, but it has no `{test}` link to `setup_project`. The session-start test at tests/setup.rs:~205 covers a nested directory, but it belongs to the hook requirement.\n3. **Untested invalid-path variants.** The test covers an empty source, `/outside` and `../outside`. The remaining accepted forms (`./x`, nested paths) and the case where only one of the two files exists are not covered.\n\nThese gaps are not acknowledged by any FIXME, so the determination is false.",
   "inputs": [
     {
       "requirements": "requirements.cli.setup_project",
@@ -148,87 +148,6 @@
       ]
     },
     {
-      "rust_file": "src/setup.rs",
-      "rust_item": "fn[is_configured]",
-      "text": [
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "// {cite}`requirements.cli.setup`",
-        "// {cite}`requirements.cli.setup_project`",
-        "// {cite}`requirements.cli.setup_css`",
-        "pub(crate) fn is_configured(root: &Path) -> bool {",
-        "    let manifest = match fs::read_to_string(root.join(\"Cargo.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "    {",
-        "        Some(manifest) => manifest,",
-        "        None => return false,",
-        "    };",
-        "    if !has_habeas_dev_dependency(&manifest) {",
-        "        return false;",
-        "    }",
-        "",
-        "    let book = match fs::read_to_string(root.join(\"book.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "    {",
-        "        Some(book) => book,",
-        "        None => return false,",
-        "    };",
-        "    let Ok(source) = book_source(&book) else {",
-        "        return false;",
-        "    };",
-        "    let source_path = Path::new(source);",
-        "    if source.is_empty()",
-        "        || !source_path",
-        "            .components()",
-        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
-        "        || !root.join(source_path).join(\"SUMMARY.md\").is_file()",
-        "    {",
-        "        return false;",
-        "    }",
-        "",
-        "    let preprocessor = book",
-        "        .get(\"preprocessor\")",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"habeas\"))",
-        "        .and_then(Item::as_table_like);",
-        "    let Some(preprocessor) = preprocessor else {",
-        "        return false;",
-        "    };",
-        "    if preprocessor.get(\"command\").and_then(Item::as_str) != Some(\"habeas mdbook\")",
-        "        || !preprocessor",
-        "            .get(\"renderers\")",
-        "            .and_then(Item::as_array)",
-        "            .is_some_and(|renderers| {",
-        "                renderers.len() == 1 && renderers.get(0).and_then(|r| r.as_str()) == Some(\"html\")",
-        "            })",
-        "    {",
-        "        return false;",
-        "    }",
-        "",
-        "    let css_relative = css_relative(source_path);",
-        "    let css_list = book",
-        "        .get(\"output\")",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"html\"))",
-        "        .and_then(Item::as_table_like)",
-        "        .and_then(|table| table.get(\"additional-css\"))",
-        "        .and_then(Item::as_array);",
-        "    if !css_list.is_some_and(|css| {",
-        "        css.iter()",
-        "            .any(|entry| entry.as_str() == Some(css_relative.as_str()))",
-        "    }) {",
-        "        return false;",
-        "    }",
-        "",
-        "    fs::read_to_string(root.join(source_path).join(\"habeas.css\"))",
-        "        .is_ok_and(|content| content == BADGE_CSS)",
-        "        && fs::read_to_string(root.join(\"tests/habeas.rs\"))",
-        "            .is_ok_and(|content| content == TEST_SOURCE)",
-        "}"
-      ]
-    },
-    {
       "rust_file": "tests/setup.rs",
       "rust_item": "fn[setup_uses_src_when_book_table_or_source_setting_is_absent]",
       "text": [
@@ -312,192 +231,272 @@
       ]
     },
     {
-      "file": "src/setup.rs",
-      "line_start": 45,
-      "line_end": 58,
+      "file": "src/authoring/usage.rs",
+      "line_start": 16,
+      "line_end": 20,
       "text": [
-        "    }",
-        "}",
-        "",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {",
-        "    fs::read_to_string(root.join(\"Cargo.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "        .is_some_and(|manifest| has_habeas_dev_dependency(&manifest))",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup_project`",
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {"
+        "    version: u32,",
+        "    run_id: String,",
+        "    project_root: PathBuf,",
+        "    subject: String,",
+        "    pub subject_kind: Option<String>,"
       ]
     },
     {
-      "file": "src/setup.rs",
-      "line_start": 84,
-      "line_end": 98,
+      "file": "src/authoring/usage.rs",
+      "line_start": 100,
+      "line_end": 104,
       "text": [
-        "        if let Some(parent) = path.parent() {",
-        "            fs::create_dir_all(parent)?;",
-        "        }",
-        "        fs::write(path, content)?;",
-        "    }",
-        "    Ok(())",
-        "}",
-        "",
-        "// {impl}`requirements.cli.setup`",
-        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
-        "    let root = project_root()?;",
-        "    let book_path = root.join(\"book.toml\");",
-        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_project`",
-        "    let source = book_source(&book)?.to_owned();"
+        "                version: 1,",
+        "                run_id,",
+        "                project_root: root.to_owned(),",
+        "                subject: subject.to_owned(),",
+        "                subject_kind: None,"
       ]
     },
     {
-      "file": "tests/setup.rs",
-      "line_start": 120,
-      "line_end": 164,
+      "file": "src/config.rs",
+      "line_start": 184,
+      "line_end": 188,
       "text": [
-        "// {test}`requirements.cli.setup_project`",
-        "// {test}`requirements.integration.symposium_setup_hook`",
-        "// {test}`requirements.cli.setup`",
-        "#[test]",
-        "fn setup_uses_src_when_book_table_or_source_setting_is_absent() {",
-        "    for configuration in [\"\", \"[book]\\ntitle = 'Example'\\n\"] {",
-        "        let temp = fixture();",
-        "        let project = temp.path();",
-        "        fs::write(project.join(\"book.toml\"), configuration).unwrap();",
-        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "        assert!(project.join(\"src/habeas.css\").is_file());",
-        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
-        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))",
-        "            .unwrap()",
-        "            .parse()",
-        "            .unwrap();",
-        "        book[\"book\"][\"src\"] = toml_edit::value(7);",
-        "        fs::write(project.join(\"book.toml\"), book.to_string()).unwrap();",
-        "        assert!(session_start(project, project)[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.cli.setup_project`",
-        "// {test}`requirements.cli.setup_css`",
-        "#[test]",
-        "fn setup_rejects_invalid_book_configuration() {",
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    let binary = env!(\"CARGO_BIN_EXE_habeas\");",
-        "",
-        "    for (book, expected) in [",
-        "        (\"book = 'wrong'\\n\", \"book must be a table\"),",
-        "        (\"[book]\\nsrc = 7\\n\", \"book.src must be a string\"),",
-        "        (\"[book]\\nsrc = ''\\n\", \"book.src must be a directory\"),",
-        "        (\"[book]\\nsrc = '/outside'\\n\", \"book.src must be a directory\"),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"../outside\\\"\\n\",",
-        "            \"book.src must be a directory\",",
-        "        ),",
-        "        (",
-        "            \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = \\\"wrong\\\"\\n\",",
-        "            \"output.html.additional-css must be an array\",",
-        "        ),",
-        "    ] {"
+        "pub struct ResolvedAuthoringConfig {",
+        "    pub config_path: PathBuf,",
+        "    pub project_root: PathBuf,",
+        "    pub name: String,",
+        "    pub concurrency: Option<NonZeroUsize>,"
       ]
     },
     {
-      "file": "md/requirements/configuration.md",
-      "line_start": 29,
-      "line_end": 45,
+      "file": "src/config.rs",
+      "line_start": 848,
+      "line_end": 852,
       "text": [
-        ":::{req} workspace_location",
-        "Habeas MUST search from its invocation directory upward for the nearest enclosing",
-        "`habeas.toml`. It MUST use that file alone, without merging ancestor workspace",
-        "files. A library operation given a project root MUST search from that root unless",
-        "its current directory is inside the project, in which case it MUST start there.",
-        "The directory containing the selected file defines the base for its relative",
-        "paths; it does not replace the Cargo and mdBook project root. A missing file MUST",
-        "mean absent workspace settings. Discovery MUST report unreadable candidate files",
-        "rather than silently selecting an ancestor. Loading MUST NOT create the file.",
-        ":::",
-        "",
-        "### Persistent state",
-        "",
-        "Usage history belongs in the state directory described by the",
-        "[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/#variables).",
-        "",
-        ":::{req} state_location"
+        "    explicit: Option<&str>,",
+        ") -> io::Result<ResolvedAuthoringConfig> {",
+        "    let project_root = fs::canonicalize(root).map_err(|error| {",
+        "        io::Error::new(",
+        "            error.kind(),"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 874,
+      "line_end": 878,
+      "text": [
+        "            authoring?",
+        "                .projects",
+        "                .get(&project_root)",
+        "                .map(|selection| selection.config.as_str())",
+        "        })"
+      ]
+    },
+    {
+      "file": "src/config.rs",
+      "line_start": 911,
+      "line_end": 915,
+      "text": [
+        "    Ok(ResolvedAuthoringConfig {",
+        "        config_path: source_path.to_owned(),",
+        "        project_root,",
+        "        name: selected.to_owned(),",
+        "        concurrency: config.concurrency,"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1385,
-      "line_end": 1401,
+      "line_start": 53,
+      "line_end": 62,
       "text": [
-        "        };",
-        "        let current = expected.get(selector);",
-        "        let location = current.map_or_else(",
-        "            || format!(\"{rust_file} {selector}\"),",
-        "            |(function, _)| {",
-        "                format!(",
-        "                    \"{rust_file}:{} {selector} ({})\",",
-        "                    function.declaration_line, function.name",
-        "                )",
-        "            },",
-        "        );",
-        "        let entry_label = format!(\"{entry_label} ({location}; {purpose})\");",
-        "        if !present.insert(selector.to_owned()) {",
-        "            valid.remove(selector);",
-        "            errors.push(format!(",
-        "                \"{entry_label}: duplicate Rust function attestation\"",
-        "            ));"
+        "",
+        "// {impl}`requirements.authoring.mandatory_inputs`",
+        "// {impl}`requirements.ci.book_source`",
+        "// {impl}`requirements.ci.definition_errors`",
+        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
+        "    let root = fs::canonicalize(root)?;",
+        "    let mut errors = Vec::new();",
+        "    let md_root = book_source_dir(&root, &mut errors);",
+        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
+        "    if errors.is_empty() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 107,
+      "line_end": 111,
+      "text": [
+        "        errors.push(error.to_string());",
+        "    }",
+        "    let md_root = book_source_dir(&root, &mut errors);",
+        "    let definitions = collect_definitions(&root, &md_root, &mut errors);",
+        "    let mut discovery_errors = errors.clone();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 200,
+      "line_end": 207,
+      "text": [
+        "}",
+        "",
+        "// {impl}`requirements.ci.book_source`",
+        "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.ci.diagnostics`",
+        "fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {",
+        "    let path = root.join(\"book.toml\");",
+        "    let source = match fs::read_to_string(&path) {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1308,
+      "line_end": 1314,
+      "text": [
+        "    }",
+        "",
+        "    // {test}`requirements.ci.book_source`",
+        "    #[test]",
+        "    fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {",
+        "        let temp = TempDir::new().unwrap();",
+        "        let root = temp.path();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1323,
+      "line_end": 1327,
+      "text": [
+        "            let mut errors = Vec::new();",
+        "            assert_eq!(",
+        "                super::book_source_dir(root, &mut errors),",
+        "                root.join(expected)",
+        "            );"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1330,
+      "line_end": 1334,
+      "text": [
+        "        fs::remove_file(&path).unwrap();",
+        "        let mut errors = Vec::new();",
+        "        super::book_source_dir(root, &mut errors);",
+        "        assert!(",
+        "            errors"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1353,
+      "line_end": 1357,
+      "text": [
+        "            fs::write(&path, configuration).unwrap();",
+        "            let mut errors = Vec::new();",
+        "            super::book_source_dir(root, &mut errors);",
+        "            assert!(",
+        "                errors.iter().any(|error| error.contains(expected)),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1362,
+      "line_end": 1366,
+      "text": [
+        "",
+        "    // {test}`requirements.integration.report_api`",
+        "    // {test}`requirements.ci.book_source`",
+        "    // {test}`requirements.ci.coverage`",
+        "    // {test}`requirements.ci.requirement_text`"
       ]
     },
     {
       "file": "src/hook.rs",
-      "line_start": 19,
-      "line_end": 35,
+      "line_start": 25,
+      "line_end": 29,
       "text": [
-        "    let Some(event) = input.get(\"SessionStart\") else {",
-        "        return json!({\"SessionStart\": {}});",
-        "    };",
-        "    let cwd = event",
-        "        .get(\"cwd\")",
-        "        .and_then(Value::as_str)",
         "        .map(PathBuf::from)",
         "        .unwrap_or_else(|| fallback_cwd.to_path_buf());",
         "    let Some(root) = setup::find_project_root(&cwd) else {",
         "        return json!({\"SessionStart\": {}});",
-        "    };",
-        "    if !setup::project_depends_on_habeas(&root) {",
-        "        return json!({\"SessionStart\": {}});",
-        "    }",
-        "    if setup::is_configured(&root) {",
-        "        return json!({\"SessionStart\": {}});",
-        "    }"
+        "    };"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 128,
+      "line_end": 132,
+      "text": [
+        "            verbose,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout().lock().write_all(",
+        "                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 137,
+      "line_end": 141,
+      "text": [
+        "        // {impl}`requirements.cli.info`",
+        "        Command::Info { selection } => {",
+        "            let root = setup::project_root()?;",
+        "            io::stdout()",
+        "                .lock()"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 154,
+      "line_end": 158,
+      "text": [
+        "            verbose,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            // Tokio's fixed worker pool is shared by all async assessments.",
+        "            let runtime = tokio::runtime::Runtime::new()?;"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 227,
+      "line_end": 231,
+      "text": [
+        "            requirements,",
+        "        } => {",
+        "            let root = setup::project_root()?;",
+        "            let target = if let Some(name) = for_requirement {",
+        "                habeas::InputTarget::Requirement(name)"
       ]
     },
     {
       "file": "src/setup.rs",
-      "line_start": 50,
-      "line_end": 78,
+      "line_start": 35,
+      "line_end": 39,
       "text": [
-        "    fs::read_to_string(root.join(\"Cargo.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "        .is_some_and(|manifest| has_habeas_dev_dependency(&manifest))",
-        "}",
-        "",
+        "// {impl}`requirements.cli.setup_project`",
+        "// {impl}`requirements.integration.symposium_setup_hook`",
+        "fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {",
+        "    let table = book",
+        "        .get(\"book\")"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 56,
+      "line_end": 60,
+      "text": [
         "// {impl}`requirements.cli.setup_project`",
         "// {impl}`requirements.integration.symposium_setup_hook`",
         "pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {",
         "    cwd.ancestors()",
-        "        .find(|directory| {",
-        "            directory.join(\"Cargo.toml\").is_file() && directory.join(\"book.toml\").is_file()",
-        "        })",
-        "        .map(Path::to_path_buf)",
-        "}",
+        "        .find(|directory| {"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 65,
+      "line_end": 72,
+      "text": [
         "",
         "// {impl}`requirements.cli.setup_project`",
         "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {",
@@ -505,27 +504,208 @@
         "    find_project_root(&cwd)",
         "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
         "}",
-        "",
+        ""
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 92,
+      "line_end": 100,
+      "text": [
         "// {impl}`requirements.cli.setup`",
-        "pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {",
-        "    if path.exists() {",
-        "        if fs::read_to_string(path)? != content {",
-        "            return Err(format!(",
-        "                \"{} already exists with different content; review it before running setup again\","
+        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
+        "    let root = project_root()?;",
+        "    let book_path = root.join(\"book.toml\");",
+        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
+        "    // {impl}`requirements.cli.setup_project`",
+        "    let source = book_source(&book)?.to_owned();",
+        "    let source_path = Path::new(&source);",
+        "    if source.is_empty()"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 196,
+      "line_end": 200,
+      "text": [
+        "        None => return false,",
+        "    };",
+        "    let Ok(source) = book_source(&book) else {",
+        "        return false;",
+        "    };"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 10,
+      "line_end": 12,
+      "text": [
+        "// {test}`requirements.integration.symposium_setup_hook`",
+        "fn fixture() -> TempDir {",
+        "    let temp = TempDir::new().unwrap();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 19,
+      "line_end": 21,
+      "text": [
+        "    .unwrap();",
+        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
+        "    fs::write("
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 79,
+      "line_end": 81,
+      "text": [
+        "#[test]",
+        "fn setup_is_repeatable() {",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 99,
+      "line_end": 101,
+      "text": [
+        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
+        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
+        "    );"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 107,
+      "line_end": 109,
+      "text": [
+        "#[test]",
+        "fn setup_preserves_existing_agent_skills() {",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 123,
+      "line_end": 125,
+      "text": [
+        "#[test]",
+        "fn setup_uses_src_when_book_table_or_source_setting_is_absent() {",
+        "    for configuration in [\"\", \"[book]\\ntitle = 'Example'\\n\"] {"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 145,
+      "line_end": 147,
+      "text": [
+        "#[test]",
+        "fn setup_rejects_invalid_book_configuration() {",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "tests/setup.rs",
+      "line_start": 194,
+      "line_end": 196,
+      "text": [
+        "#[test]",
+        "fn session_start_advises_only_when_setup_is_incomplete() {",
+        "    let temp = fixture();"
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 165,
+      "line_end": 215,
+      "text": [
+        "        }",
+        "    }",
+        "",
+        "    write_new_or_same(&css_path, BADGE_CSS)?;",
+        "    write_new_or_same(&test_path, TEST_SOURCE)?;",
+        "    fs::write(&book_path, book.to_string())?;",
+        "    println!(\"Habeas configured in {}\", root.display());",
+        "    Ok(())",
+        "}",
+        "",
+        "// {impl}`requirements.integration.symposium_setup_hook`",
+        "// {cite}`requirements.cli.setup`",
+        "// {cite}`requirements.cli.setup_project`",
+        "// {cite}`requirements.cli.setup_css`",
+        "pub(crate) fn is_configured(root: &Path) -> bool {",
+        "    let manifest = match fs::read_to_string(root.join(\"Cargo.toml\"))",
+        "        .ok()",
+        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
+        "    {",
+        "        Some(manifest) => manifest,",
+        "        None => return false,",
+        "    };",
+        "    if !has_habeas_dev_dependency(&manifest) {",
+        "        return false;",
+        "    }",
+        "",
+        "    let book = match fs::read_to_string(root.join(\"book.toml\"))",
+        "        .ok()",
+        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
+        "    {",
+        "        Some(book) => book,",
+        "        None => return false,",
+        "    };",
+        "    let Ok(source) = book_source(&book) else {",
+        "        return false;",
+        "    };",
+        "    let source_path = Path::new(source);",
+        "    if source.is_empty()",
+        "        || !source_path",
+        "            .components()",
+        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
+        "        || !root.join(source_path).join(\"SUMMARY.md\").is_file()",
+        "    {",
+        "        return false;",
+        "    }",
+        "",
+        "    let preprocessor = book",
+        "        .get(\"preprocessor\")",
+        "        .and_then(Item::as_table_like)",
+        "        .and_then(|table| table.get(\"habeas\"))",
+        "        .and_then(Item::as_table_like);"
+      ]
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "line_start": 268,
+      "line_end": 274,
+      "text": [
+        "            project.join(\"src\"),",
+        "            config_root.join(\"habeas\"),",
+        "        ] {",
+        "            fs::create_dir_all(directory).unwrap();",
+        "        }",
+        "        fs::write(",
+        "            project.join(\"Cargo.toml\"),"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 123,
+      "line_end": 129,
+      "text": [
+        "            project.join(\"evidence\"),",
+        "            config.join(\"habeas\"),",
+        "        ] {",
+        "            fs::create_dir_all(path).unwrap();",
+        "        }",
+        "        fs::write(",
+        "            project.join(\"Cargo.toml\"),"
       ]
     },
     {
       "file": "tests/commands.rs",
-      "line_start": 2,
-      "line_end": 18,
+      "line_start": 9,
+      "line_end": 17,
       "text": [
-        "use std::path::Path;",
-        "use std::process::{Command, Output};",
-        "",
-        "use serde_json::json;",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.cli.status`",
         "// {test}`requirements.cli.info`",
         "fn fixture() -> TempDir {",
         "    let temp = TempDir::new().unwrap();",
@@ -534,22 +714,64 @@
         "    fs::create_dir_all(temp.path().join(\"src/nested\")).unwrap();",
         "    fs::write(",
         "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = \\\"fixture\\\"\\n\",",
-        "    )"
+        "        \"[package]\\nname = \\\"fixture\\\"\\n\","
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 574,
+      "line_end": 580,
+      "text": [
+        "    assert!(!status.status.success(), \"{status:?}\");",
+        "    assert!(",
+        "        String::from_utf8_lossy(&status.stderr)",
+        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
+        "        \"{status:?}\"",
+        "    );",
+        "}"
+      ]
+    },
+    {
+      "file": "tests/commands.rs",
+      "line_start": 781,
+      "line_end": 788,
+      "text": [
+        "#[test]",
+        "fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {",
+        "    let temp = TempDir::new().unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
+        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
+        "    fs::write(",
+        "        temp.path().join(\"Cargo.toml\"),",
+        "        \"[package]\\nname = \\\"fixture\\\"\\n\","
+      ]
+    },
+    {
+      "file": "tests/configuration.rs",
+      "line_start": 330,
+      "line_end": 343,
+      "text": [
+        "fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let project = temp.path().join(\"project\");",
+        "    let nested = project.join(\"nested/deep\");",
+        "    fs::create_dir_all(&nested).unwrap();",
+        "    let outer = temp.path().join(\"habeas.toml\");",
+        "    fs::write(&outer, \"version = 1\\n[evidence]\\nallow = ['outer']\\n\").unwrap();",
+        "    let inherited = load_workspace_config(&project).unwrap().unwrap();",
+        "    assert_eq!(inherited.path, outer);",
+        "    assert_eq!(inherited.root, temp.path().canonicalize().unwrap());",
+        "    let path = project.join(\"nested/habeas.toml\");",
+        "    let text = \"# preserved\\nversion = 1\\n[authoring]\\ndefault = 'cloud'\\n[evidence]\\ndisallow = ['private']\\n\";",
+        "    fs::write(&path, text).unwrap();",
+        "    let closest = load_workspace_config(&nested).unwrap().unwrap();"
       ]
     },
     {
       "file": "tests/definitions.rs",
-      "line_start": 3,
-      "line_end": 19,
+      "line_start": 10,
+      "line_end": 18,
       "text": [
-        "",
-        "use habeas::{InputMode, InputTarget, add_input, validate_repository};",
-        "use mdbook_preprocessor::book::{Book, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.definitions.dependencies`",
         "// {test}`requirements.definitions.declaration`",
         "fn fixture() -> TempDir {",
         "    let temp = tempfile::tempdir().unwrap();",
@@ -558,70 +780,84 @@
         "    fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
         "    fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
         "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = 'fixture'\\n\","
+        "        temp.path().join(\"Cargo.toml\"),"
       ]
     },
     {
       "file": "tests/evidence_boundaries.rs",
-      "line_start": 3,
-      "line_end": 19,
+      "line_start": 12,
+      "line_end": 18,
       "text": [
-        "",
-        "use habeas::validate_repository;",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.ci.inputs`",
-        "// {test}`requirements.ci.input_containment`",
-        "// {test}`requirements.ci.orphans`",
-        "fn fixture() -> TempDir {",
         "    let temp = tempfile::tempdir().unwrap();",
         "    let root = temp.path().join(\"project\");",
         "    for directory in [\"md\", \"src\", \"evidence\"] {",
         "        fs::create_dir_all(root.join(directory)).unwrap();",
         "    }",
         "    fs::write(root.join(\"Cargo.toml\"), \"[package]\\nname = 'fixture'\\n\").unwrap();",
-        "    fs::write(root.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "    fs::write("
+        "    fs::write(root.join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();"
       ]
     },
     {
-      "file": "tests/outcomes.rs",
-      "line_start": 3,
-      "line_end": 19,
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 121,
+      "line_end": 127,
       "text": [
-        "",
-        "use habeas::judgment::Judgment;",
-        "use mdbook_preprocessor::book::{Book, BookItem, Chapter};",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.ci.outcomes`",
-        "// {test}`requirements.examples.evidence`",
-        "fn fixture() -> TempDir {",
-        "    let temp = TempDir::new().unwrap();",
-        "    fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "    fs::create_dir(temp.path().join(\"evidence\")).unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = 'fixture'\\n\",",
+        "    assert!(validate_repository(&root).unwrap().errors.is_empty());",
+        "    let record = fs::read(root.join(\"evidence/rules.ready.json\")).unwrap();",
+        "    for directory in [\"evidence/nested\", \"evidence/rust/src\"] {",
+        "        fs::create_dir_all(root.join(directory)).unwrap();",
+        "    }",
+        "    fs::write(root.join(\"evidence/nested/rules.ready.json\"), &record).unwrap();",
+        "    fs::write(root.join(\"evidence/rust/src/lib.rs.json\"), &record).unwrap();"
+      ]
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "line_start": 292,
+      "line_end": 298,
+      "text": [
         "    )",
-        "    .unwrap();"
+        "    .unwrap();",
+        "    let out = build.join(\"debug/build/fixture-hash/out\");",
+        "    fs::create_dir_all(&out).unwrap();",
+        "    fs::write(",
+        "        out.parent().unwrap().join(\"root-output\"),",
+        "        out.to_str().unwrap(),"
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 136,
+      "line_end": 142,
+      "text": [
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let project = temp.path().join(\"project\");",
+        "    for directory in [project.join(\"md\"), project.join(\"src\")] {",
+        "        fs::create_dir_all(directory).unwrap();",
+        "    }",
+        "    fs::write(",
+        "        project.join(\"Cargo.toml\"),"
+      ]
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "line_start": 233,
+      "line_end": 239,
+      "text": [
+        "fn live_test_prerequisites_are_checked_without_inference() {",
+        "    let temp = tempfile::tempdir().unwrap();",
+        "    let root = temp.path();",
+        "    fs::create_dir_all(root.join(\"config/habeas\")).unwrap();",
+        "    let config_path = root.join(\"config/habeas/config.toml\");",
+        "    fs::write(&config_path, \"invalid TOML [\").unwrap();",
+        "    let ci = skip_probe(root).env(\"CI\", \"true\").output().unwrap();"
       ]
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 3,
-      "line_end": 19,
+      "line_start": 10,
+      "line_end": 17,
       "text": [
-        "use std::path::Path;",
-        "use std::process::{Command, Stdio};",
-        "",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.cli.setup`",
         "// {test}`requirements.integration.symposium_setup_hook`",
         "fn fixture() -> TempDir {",
         "    let temp = TempDir::new().unwrap();",
@@ -629,1079 +865,49 @@
         "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
         "    fs::write(",
         "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = \\\"sample-project\\\"\\nversion = \\\"0.1.0\\\"\\nedition = \\\"2024\\\"\\n\",",
-        "    )",
-        "    .unwrap();"
+        "        \"[package]\\nname = \\\"sample-project\\\"\\nversion = \\\"0.1.0\\\"\\nedition = \\\"2024\\\"\\n\","
       ]
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 1,
-      "line_end": 120,
+      "line_start": 110,
+      "line_end": 116,
       "text": [
-        "use std::fs;",
-        "use std::io::Write;",
-        "use std::path::Path;",
-        "use std::process::{Command, Stdio};",
-        "",
-        "use serde_json::{Value, json};",
-        "use tempfile::TempDir;",
-        "",
-        "// {test}`requirements.cli.setup`",
-        "// {test}`requirements.integration.symposium_setup_hook`",
-        "fn fixture() -> TempDir {",
-        "    let temp = TempDir::new().unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "    fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"Cargo.toml\"),",
-        "        \"[package]\\nname = \\\"sample-project\\\"\\nversion = \\\"0.1.0\\\"\\nedition = \\\"2024\\\"\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"src/main.rs\"), \"fn main() {}\\n\").unwrap();",
-        "    fs::write(",
-        "        temp.path().join(\"book.toml\"),",
-        "        \"[book]\\nsrc = \\\"md\\\"\\n\\n[output.html]\\nadditional-css = [\\\"md/custom.css\\\"]\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(temp.path().join(\"md/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "    temp",
-        "}",
-        "",
-        "// {test}`requirements.cli.setup`",
-        "fn run(project: &Path, args: &[&str]) {",
-        "    let output = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .args(args)",
-        "        .current_dir(project)",
-        "        .env(\"CARGO_NET_OFFLINE\", \"true\")",
-        "        .output()",
-        "        .unwrap();",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"habeas {:?} failed:\\n{}\",",
-        "        args,",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.integration.symposium_setup_hook`",
-        "fn session_start(project: &Path, cwd: &Path) -> Value {",
-        "    let mut child = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .args([\"hook\", \"session-start\"])",
-        "        .current_dir(project)",
-        "        .stdin(Stdio::piped())",
-        "        .stdout(Stdio::piped())",
-        "        .spawn()",
-        "        .unwrap();",
-        "    let input = json!({",
-        "        \"SessionStart\": {",
-        "            \"session_id\": \"test-session\",",
-        "            \"cwd\": cwd,",
-        "        }",
-        "    });",
-        "    child",
-        "        .stdin",
-        "        .take()",
-        "        .unwrap()",
-        "        .write_all(&serde_json::to_vec(&input).unwrap())",
-        "        .unwrap();",
-        "    let output = child.wait_with_output().unwrap();",
-        "    assert!(",
-        "        output.status.success(),",
-        "        \"hook failed: {}\",",
-        "        String::from_utf8_lossy(&output.stderr)",
-        "    );",
-        "    serde_json::from_slice(&output.stdout).unwrap()",
-        "}",
-        "",
-        "// {test}`requirements.cli.setup`",
-        "// {test}`requirements.cli.setup_css`",
-        "// {test}`requirements.cli.setup_local_path`",
-        "#[test]",
-        "fn setup_is_repeatable() {",
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    let local_crate = env!(\"CARGO_MANIFEST_DIR\");",
-        "",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "    run(project, &[\"setup\", \"--path\", local_crate]);",
-        "",
-        "    let cargo = fs::read_to_string(project.join(\"Cargo.toml\")).unwrap();",
-        "    assert!(cargo.contains(\"[dev-dependencies]\"));",
-        "    assert!(cargo.contains(\"habeas\"));",
-        "    assert!(cargo.contains(\"path = \"));",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    assert!(book.contains(\"command = \\\"habeas mdbook\\\"\"));",
-        "    assert!(book.contains(\"md/habeas.css\"));",
-        "    assert!(book.contains(\"md/custom.css\"));",
-        "    assert_eq!(book.matches(\"md/habeas.css\").count(), 1);",
-        "    assert_eq!(",
-        "        fs::read_to_string(project.join(\"tests/habeas.rs\")).unwrap(),",
-        "        \"#[test]\\nfn habeas() {\\n    habeas::validate();\\n}\\n\"",
-        "    );",
-        "    assert!(project.join(\"md/habeas.css\").is_file());",
-        "    assert!(!project.join(\".agents/skills\").exists());",
-        "}",
-        "",
-        "// {test}`requirements.cli.setup`",
-        "#[test]",
-        "fn setup_preserves_existing_agent_skills() {",
-        "    let temp = fixture();",
         "    let project = temp.path();",
         "",
         "    let skill = project.join(\".agents/skills/habeas-requirements/SKILL.md\");",
         "    fs::create_dir_all(skill.parent().unwrap()).unwrap();",
         "    fs::write(&skill, \"custom skill\\n\").unwrap();",
         "",
-        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "    assert_eq!(fs::read_to_string(skill).unwrap(), \"custom skill\\n\");",
-        "}",
-        "",
-        "// {test}`requirements.cli.setup_project`"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 45,
-      "line_end": 49,
-      "text": [
-        "",
-        "// {test}`requirements.integration.symposium_setup_hook`",
-        "fn session_start(project: &Path, cwd: &Path) -> Value {",
-        "    let mut child = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .args([\"hook\", \"session-start\"])"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 129,
-      "line_end": 133,
-      "text": [
-        "        fs::write(project.join(\"src/SUMMARY.md\"), \"# Summary\\n\").unwrap();",
-        "        run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
-        "        assert!(project.join(\"src/habeas.css\").is_file());",
-        "        assert_eq!(session_start(project, project), json!({\"SessionStart\": {}}));",
-        "        let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join(\"book.toml\"))"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 136,
-      "line_end": 140,
-      "text": [
-        "            .unwrap();",
-        "        book[\"book\"][\"src\"] = toml_edit::value(7);",
-        "        fs::write(project.join(\"book.toml\"), book.to_string()).unwrap();",
-        "        assert!(session_start(project, project)[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "    }"
+        "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);"
       ]
     },
     {
       "file": "tests/setup.rs",
       "line_start": 187,
-      "line_end": 191,
+      "line_end": 193,
       "text": [
         "        .output()",
         "        .unwrap();",
         "    assert!(!output.status.success());",
         "    assert!(String::from_utf8_lossy(&output.stderr).contains(\"cannot find mdBook SUMMARY.md\"));",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 196,
-      "line_end": 200,
-      "text": [
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    assert_eq!(",
-        "        session_start(project, project),",
-        "        json!({\"SessionStart\": {}}),"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 204,
-      "line_end": 213,
-      "text": [
-        "",
-        "    let nested = project.join(\"src/nested\");",
-        "    fs::create_dir_all(&nested).unwrap();",
-        "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
-        "",
-        "    let css = project.join(\"md/habeas.css\");",
-        "    fs::remove_file(&css).unwrap();",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    let response = session_start(project, &nested);",
-        "    let context = response[\"SessionStart\"][\"additionalContext\"]"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 224,
-      "line_end": 231,
-      "text": [
-        "        book.replace(\"habeas mdbook\", \"wrong-preprocessor\"),",
-        "    )",
-        "    .unwrap();",
-        "    let response = session_start(project, &nested);",
-        "    assert!(response[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "",
-        "    fs::remove_file(project.join(\"book.toml\")).unwrap();",
-        "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 153,
-      "line_end": 157,
-      "text": [
-        "        last_stderr = \"\"",
-        "",
-        "        def session_start():",
-        "            nonlocal last_stderr",
-        "            payload = {"
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 179,
-      "line_end": 183,
-      "text": [
-        "            return output.get(\"hookSpecificOutput\", {}).get(\"additionalContext\", \"\")",
-        "",
-        "        incomplete_context = session_start()",
-        "        if \"Habeas Codicem is not fully configured\" not in incomplete_context:",
-        "            status = subprocess.run("
-      ]
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "line_start": 197,
-      "line_end": 201,
-      "text": [
-        "            [runner, \"setup\", \"--path\", str(repo)], cwd=project, check=True",
-        "        )",
-        "        configured_context = session_start()",
-        "        if \"Habeas Codicem is not fully configured\" in configured_context:",
-        "            raise AssertionError(\"Symposium kept advising setup after it was complete\")"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 161,
-      "line_end": 163,
-      "text": [
-        "            if sources.access.path(&sources.root, extra).is_err() {",
-        "                continue;",
-        "            }"
-      ]
-    },
-    {
-      "file": "src/hook.rs",
-      "line_start": 11,
-      "line_end": 13,
-      "text": [
-        "    let input: Value = serde_json::from_reader(io::stdin()).unwrap_or(Value::Null);",
-        "    let response = session_start_response(&input, &std::env::current_dir()?);",
-        "    serde_json::to_writer(io::stdout().lock(), &response)?;"
-      ]
-    },
-    {
-      "file": "src/hook.rs",
-      "line_start": 26,
-      "line_end": 28,
-      "text": [
-        "        .unwrap_or_else(|| fallback_cwd.to_path_buf());",
-        "    let Some(root) = setup::find_project_root(&cwd) else {",
-        "        return json!({\"SessionStart\": {}});"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 30,
-      "line_end": 32,
-      "text": [
-        "pub fn validate() {",
-        "    // {impl}`requirements.integration.validate`",
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 57,
-      "line_end": 59,
-      "text": [
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {",
-        "    cwd.ancestors()"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 67,
-      "line_end": 70,
-      "text": [
-        "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {",
-        "    let cwd = std::env::current_dir()?;",
-        "    find_project_root(&cwd)",
-        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 157,
-      "line_end": 159,
-      "text": [
-        "        }",
-        "        let output = command.current_dir(&root).output()?;",
-        "        if !output.status.success() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 218,
-      "line_end": 224,
-      "text": [
-        "                }",
-        "            }]},",
-        "            \"done\":true, \"done_reason\":\"stop\", \"prompt_eval_count\":11, \"eval_count\":7",
-        "        })",
-        "    } else {",
-        "        json!({",
-        "            \"model\":\"fixture-model\", \"created_at\":\"2026-01-01T00:00:00Z\","
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 190,
-      "line_end": 196,
-      "text": [
-        "    fn command(&self) -> Command {",
-        "        let mut command = Command::new(env!(\"CARGO_BIN_EXE_habeas\"));",
-        "        command",
-        "            .current_dir(&self.project)",
-        "            .env(\"XDG_CONFIG_HOME\", &self.config)",
-        "            .env(\"XDG_STATE_HOME\", &self.state)",
-        "            .env(\"APPDATA\", &self.config)"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 107,
-      "line_end": 113,
-      "text": [
-        "// {test}`requirements.cli.fixme_summary`",
-        "// {test}`requirements.cli.info`",
-        "fn habeas(dir: &Path, args: &[&str]) -> Output {",
-        "    Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .current_dir(dir)",
-        "        .args(args)",
-        "        .output()"
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 147,
-      "line_end": 153,
-      "text": [
-        "        project.join(\"md/SUMMARY.md\"),",
-        "        \"# Summary\\n\\n- [Requirements](requirements.md)\\n\",",
-        "    )",
-        "    .unwrap();",
-        "    fs::write(",
-        "        project.join(\"md/requirements.md\"),",
-        "        format!(\":::{{req}} parity\\n{REQUIREMENT}\\n:::\\n\"),"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 31,
-      "line_end": 37,
-      "text": [
-        "fn run(project: &Path, args: &[&str]) {",
-        "    let output = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .args(args)",
-        "        .current_dir(project)",
-        "        .env(\"CARGO_NET_OFFLINE\", \"true\")",
-        "        .output()",
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 47,
-      "line_end": 53,
-      "text": [
-        "fn session_start(project: &Path, cwd: &Path) -> Value {",
-        "    let mut child = Command::new(env!(\"CARGO_BIN_EXE_habeas\"))",
-        "        .args([\"hook\", \"session-start\"])",
-        "        .current_dir(project)",
-        "        .stdin(Stdio::piped())",
-        "        .stdout(Stdio::piped())",
-        "        .spawn()"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 165,
-      "line_end": 171,
-      "text": [
-        "        fs::write(project.join(\"book.toml\"), book).unwrap();",
-        "        let output = Command::new(binary)",
-        "            .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
-        "            .current_dir(project)",
-        "            .env(\"CARGO_NET_OFFLINE\", \"true\")",
-        "            .output()",
-        "            .unwrap();"
-      ]
-    },
-    {
-      "file": "tests/setup.rs",
-      "line_start": 182,
-      "line_end": 188,
-      "text": [
-        "    fs::remove_file(project.join(\"md/SUMMARY.md\")).unwrap();",
-        "    let output = Command::new(binary)",
-        "        .args([\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")])",
-        "        .current_dir(project)",
-        "        .env(\"CARGO_NET_OFFLINE\", \"true\")",
-        "        .output()",
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 68,
-      "line_end": 72,
-      "text": [
-        "    let cwd = std::env::current_dir()?;",
-        "    find_project_root(&cwd)",
-        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
         "}",
-        ""
+        "",
+        "// {test}`requirements.integration.symposium_setup_hook`"
       ]
     },
     {
       "file": "tests/setup.rs",
-      "line_start": 192,
-      "line_end": 232,
+      "line_start": 203,
+      "line_end": 209,
       "text": [
-        "",
-        "// {test}`requirements.integration.symposium_setup_hook`",
-        "#[test]",
-        "fn session_start_advises_only_when_setup_is_incomplete() {",
-        "    let temp = fixture();",
-        "    let project = temp.path();",
-        "    assert_eq!(",
-        "        session_start(project, project),",
-        "        json!({\"SessionStart\": {}}),",
-        "        \"a project without Habeas must not receive an advisory\"",
-        "    );",
         "    run(project, &[\"setup\", \"--path\", env!(\"CARGO_MANIFEST_DIR\")]);",
         "",
         "    let nested = project.join(\"src/nested\");",
         "    fs::create_dir_all(&nested).unwrap();",
         "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
         "",
-        "    let css = project.join(\"md/habeas.css\");",
-        "    fs::remove_file(&css).unwrap();",
-        "    let book = fs::read_to_string(project.join(\"book.toml\")).unwrap();",
-        "    let response = session_start(project, &nested);",
-        "    let context = response[\"SessionStart\"][\"additionalContext\"]",
-        "        .as_str()",
-        "        .unwrap();",
-        "    assert!(context.contains(\"Habeas Codicem is not fully configured\"));",
-        "    assert!(context.contains(\"habeas setup\"));",
-        "    assert!(!css.exists(), \"the hook must not recreate the stylesheet\");",
-        "    assert_eq!(fs::read_to_string(project.join(\"book.toml\")).unwrap(), book);",
-        "",
-        "    fs::write(&css, include_str!(\"../md/habeas.css\")).unwrap();",
-        "    fs::write(",
-        "        project.join(\"book.toml\"),",
-        "        book.replace(\"habeas mdbook\", \"wrong-preprocessor\"),",
-        "    )",
-        "    .unwrap();",
-        "    let response = session_start(project, &nested);",
-        "    assert!(response[\"SessionStart\"][\"additionalContext\"].is_string());",
-        "",
-        "    fs::remove_file(project.join(\"book.toml\")).unwrap();",
-        "    assert_eq!(session_start(project, &nested), json!({\"SessionStart\": {}}));",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 340,
-      "line_end": 344,
-      "text": [
-        "        let script = r#\"",
-        "import errno",
-        "import fcntl",
-        "import os",
-        "import pty"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 356,
-      "line_end": 360,
-      "text": [
-        "process = subprocess.Popen(",
-        "    [sys.argv[1], *sys.argv[3:]],",
-        "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,",
-        ")",
-        "os.close(slave)"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 147,
-      "line_end": 151,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): one acknowledged gap.\\npub fn ready() {}\\n// {\", \"test}`requirements.ready`\\nfn ready_test() {}\\n\")).unwrap();",
-        "        fs::write(",
-        "            project.join(\"extra.txt\"),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 272,
-      "line_end": 276,
-      "text": [
-        "            \"submit_judgment\",",
-        "            json!({",
-        "            \"determination\":{\"FIXME\":[\"#125\"]},\"rationale\":\"SECRET_RATIONALE: src/lib.rs:2 documents the gap.\"}),",
-        "        )]),",
-        "    ]);"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 339,
-      "line_end": 343,
-      "text": [
-        "",
-        "    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();",
-        "    assert_eq!(evidence[\"determination\"], json!({\"FIXME\":[\"#125\"]}));",
-        "    assert_eq!(evidence[\"requirement\"], REQUIREMENT);",
-        "    let inputs = evidence[\"inputs\"].as_array().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 374,
-      "line_end": 378,
-      "text": [
-        "    let usage = fixture.usage();",
-        "    assert_eq!(usage[\"outcome\"], \"completed\");",
-        "    assert_eq!(usage[\"determination\"], \"FIXME\");",
-        "    assert_eq!(usage[\"evidence_written\"], true);",
-        "    assert_eq!(usage[\"request_count\"], 2);"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 540,
-      "line_end": 548,
-      "text": [
-        "    let server = Server::start(vec![reply(vec![call(",
-        "        \"submit\",",
-        "        \"submit_judgment\",",
-        "        json!({\"determination\":false,\"rationale\":\"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect.\"}),",
-        "    )])]);",
-        "    let fixture = Fixture::new(&server.endpoint);",
-        "    fs::write(fixture.project.join(\"md/requirements.md\"), \":::{req} ready\\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\\n:::\\n\").unwrap();",
-        "    fs::write(fixture.project.join(\"src/lib.rs\"), concat!(\"// {\", \"impl}`requirements.ready`\\n// FIXME(#125): zero-capacity insertion panics.\\npub fn push(queue: &mut [u8], value: u8) -> bool {\\n    queue[0] = value;\\n    true\\n}\\n\")).unwrap();",
-        "    let output = fixture.run(&[\"author-evidence\", SUBJECT, \"--config\", \"mock\"]);"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 554,
-      "line_end": 558,
-      "text": [
-        "    let requests = server.finish();",
-        "    let prompt = requests[0].body[\"messages\"][0][\"content\"].as_str().unwrap();",
-        "    assert!(prompt.contains(\"Choose false for other gaps or insufficient evidence\"));",
-        "    assert!(prompt.contains(\"FIXME(#125): zero-capacity insertion panics\"));",
-        "    assert!(prompt.contains(\"queue[0] = value\"));"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 565,
-      "line_end": 569,
-      "text": [
-        "            .unwrap()",
-        "            .contains(\"without acknowledging\")",
-        "    );",
-        "    assert!(evidence[\"inputs\"].to_string().contains(\"FIXME(#125)\"));",
-        "    assert_eq!(fixture.usage()[\"outcome\"], \"completed\");"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 579,
-      "line_end": 583,
-      "text": [
-        "        !String::from_utf8_lossy(&output.stdout).contains(&format!(\"{SUBJECT}: false\")),",
-        "        \"{diagnostics}\"",
-        "    );",
-        "    assert!(",
-        "        !diagnostics.contains(\"without acknowledging\"),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 661,
-      "line_end": 665,
-      "text": [
-        "            \"{}\",",
-        "            String::from_utf8_lossy(&output.stderr)",
-        "        );",
-        "        assert_eq!(server.finish().len(), 1);",
-        "        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 858,
-      "line_end": 862,
-      "text": [
-        "        ] {",
-        "            command.env_remove(key);",
-        "        }",
-        "        let output = command",
-        "            .env(\"AWS_CONFIG_FILE\", aws_config)"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 907,
-      "line_end": 911,
-      "text": [
-        "            let schema = &tool[\"toolSpec\"][\"inputSchema\"][\"json\"];",
-        "            assert_eq!(schema[\"type\"], \"object\");",
-        "            for unsupported in [\"oneOf\", \"allOf\", \"anyOf\"] {",
-        "                assert!(",
-        "                    schema.get(unsupported).is_none(),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 926,
-      "line_end": 930,
-      "text": [
-        "            \"requirements\",",
-        "            \"definition\",",
-        "        ] {",
-        "            assert_eq!(habeas_schema[\"properties\"][field][\"type\"], \"string\");",
-        "        }"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 137,
-      "line_end": 141,
-      "text": [
-        "            \"Alpha MUST work.\",",
-        "            vec![",
-        "                \"FIXME(#00123)\",",
-        "                \"Repeated #123 and rust-lang/rust#000456.\",",
-        "                \"https://github.com/rust-lang/rust/issues/456\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 149,
-      "line_end": 153,
-      "text": [
-        "            vec![\"#123\", \"#45\", \"Rust-Lang/rust#456\", \"An unrelated note\"],",
-        "        ),",
-        "        (\"example\", \"case\", &example, vec![\"FIXME(#45)\"]),",
-        "        (",
-        "            \"req\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 182,
-      "line_end": 186,
-      "text": [
-        "            json!({",
-        "                subject_key: text,",
-        "                \"determination\": {\"FIXME\": references},",
-        "                \"rationale\": \"The fixture records acknowledged implementation gaps.\",",
-        "                \"inputs\": [input]"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 296,
-      "line_end": 300,
-      "text": [
-        "        assert!(",
-        "            all.lines().any(",
-        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")",
-        "            ),",
-        "            \"{all}\""
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 321,
-      "line_end": 325,
-      "text": [
-        "        \"requirement\",",
-        "        \"example\",",
-        "        \"FIXME(#00123)\",",
-        "        \"Repeated #123 and rust-lang/rust#000456.\",",
-        "        \"https://github.com/rust-lang/rust/issues/456\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 578,
-      "line_end": 582,
-      "text": [
-        "    assert!(",
-        "        String::from_utf8_lossy(&status.stderr)",
-        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
-        "        \"{status:?}\"",
-        "    );"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 33,
-      "line_end": 37,
-      "text": [
-        "    )",
-        "    .unwrap();",
-        "    let source = \"// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).\";",
-        "    fs::write(temp.path().join(\"observed.txt\"), format!(\"{source}\\n\")).unwrap();",
-        "    let source_input = json!({"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 57,
-      "line_end": 61,
-      "text": [
-        "        json!({",
-        "            \"example\": example,",
-        "            \"determination\": { \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] },",
-        "            \"rationale\": \"The recorded comments acknowledge the missing timeout tests.\",",
-        "            \"inputs\": [source_input]"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 89,
-      "line_end": 94,
-      "text": [
-        "        json!(true),",
-        "        json!(false),",
-        "        json!({ \"FIXME\": [\"#125\", \"rust-lang/rust#123\"] }),",
-        "        json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
-        "    ] {",
-        "        assert_eq!(Judgment::from_value(&value).unwrap().to_value(), value);"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 96,
-      "line_end": 108,
-      "text": [
-        "    for invalid in [",
-        "        Value::Null,",
-        "        json!(\"FIXME\"),",
-        "        json!([\"#125\"]),",
-        "        json!({}),",
-        "        json!({ \"FIXME\": [] }),",
-        "        json!({ \"FIXME\": [\"\"] }),",
-        "        json!({ \"FIXME\": [\"   \"] }),",
-        "        json!({ \"FIXME\": [\"#125\", 125] }),",
-        "        json!({ \"FIXME\": \"#125\" }),",
-        "        json!({ \"FIXME\": [\"#125\"], \"extra\": true }),",
-        "        json!({ \"fixme\": [\"#125\"] }),",
-        "    ] {"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 149,
-      "line_end": 158,
-      "text": [
-        "    for (comment, judgment) in [",
-        "        (",
-        "            \"// FIXME(#125): capacity-zero insertion does not return Full yet.\",",
-        "            json!({ \"FIXME\": [\"#125\"] }),",
-        "        ),",
-        "        (",
-        "            \"// FIXME: cancellation races are not tested on Windows.\",",
-        "            json!({ \"FIXME\": [\"cancellation races are not tested on Windows\"] }),",
-        "        ),",
-        "    ] {"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 180,
-      "line_end": 184,
-      "text": [
-        "fn malformed_fixme_is_invalid_and_reports_the_required_shape() {",
-        "    let temp = fixture();",
-        "    replace_judgment(temp.path(), \"timeout\", json!({ \"FIXME\": [] }));",
-        "    let report = habeas::validate_repository(temp.path()).unwrap();",
-        "    assert!("
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 263,
-      "line_end": 267,
-      "text": [
-        "            \"rust_item\": \"fn[sample]\",",
-        "            \"citations\": [{\"role\": \"impl\", \"name\": \"requirements.ready\"}],",
-        "            \"determination\": {\"FIXME\": [\"#125\"]},",
-        "            \"rationale\": \"The function's citations were reviewed.\",",
-        "            \"inputs\": [function, {"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 298,
-      "line_end": 302,
-      "text": [
-        "        let status = habeas::status_markdown(temp.path(), all).unwrap();",
-        "        assert_eq!(status.contains(\"requirements.timeout\"), all, \"{status}\");",
-        "        assert!(status.contains(\"FIXME\"));",
-        "        assert!(status.contains(\"#125\"));",
-        "        assert!(status.contains(\"rust-lang/rust#123\"));"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 308,
-      "line_end": 312,
-      "text": [
-        "    assert!(verbose.contains(\"example\"), \"{verbose}\");",
-        "    let info = habeas::info_markdown(temp.path(), \"requirements.timeout\").unwrap();",
-        "    assert!(info.contains(\"## FIXME references\"));",
-        "    assert!(info.contains(\"rust-lang/rust#123\"));",
-        ""
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 326,
-      "line_end": 330,
-      "text": [
-        "    habeas::preprocess_book(&mut book, temp.path()).unwrap();",
-        "    let index = book.chapters().nth(1).unwrap();",
-        "    assert!(index.content.contains(\"FIXME\"));",
-        "    let detail = index",
-        "        .sub_items"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 335,
-      "line_end": 340,
-      "text": [
-        "        })",
-        "        .unwrap();",
-        "    assert!(detail.content.contains(\"evidence-FIXME\"));",
-        "    assert!(detail.content.contains(\"## FIXME references\"));",
-        "    assert!(detail.content.contains(\"rust-lang/rust#123\"));",
-        "}"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 68,
-      "line_end": 71,
-      "text": [
-        "    let cwd = std::env::current_dir()?;",
-        "    find_project_root(&cwd)",
-        "        .ok_or_else(|| \"cannot find a project with Cargo.toml and book.toml\".into())",
-        "}"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 555,
-      "line_end": 585,
-      "text": [
-        "    assert!(",
-        "        String::from_utf8_lossy(&unmatched.stderr).contains(\"no definitions match\"),",
-        "        \"{unmatched:?}\"",
-        "    );",
-        "    let status = habeas(temp.path(), &[\"status\", \"requirements.*ready\", \"--all\"]);",
-        "    assert!(status.status.success(), \"{status:?}\");",
-        "    let status = String::from_utf8(status.stdout).unwrap();",
-        "    assert!(",
-        "        status.contains(\"`requirements.ready` (requirement)\"),",
-        "        \"{status}\"",
-        "    );",
-        "    assert!(",
-        "        status.contains(\"`requirements.xready` (requirement)\"),",
-        "        \"{status}\"",
-        "    );",
-        "    assert!(!status.contains(\"| `requirements.pending`\"), \"{status}\");",
-        "    let no_status = habeas(temp.path(), &[\"status\", \"nothing.*\"]);",
-        "    assert!(!no_status.status.success());",
-        "    assert!(String::from_utf8_lossy(&no_status.stderr).contains(\"no definitions match\"));",
-        "",
-        "    let outside_project = TempDir::new().unwrap();",
-        "    let status = habeas(outside_project.path(), &[\"status\"]);",
-        "    assert!(!status.status.success(), \"{status:?}\");",
-        "    assert!(",
-        "        String::from_utf8_lossy(&status.stderr)",
-        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
-        "        \"{status:?}\"",
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.cli.status_table_alignment`"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 122,
-      "line_end": 124,
-      "text": [
-        "        Command::Setup { path } => setup::run(path.as_deref()),",
-        "        // {impl}`requirements.cli.status`",
-        "        // {impl}`requirements.cli.fixme_summary`"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 131,
-      "line_end": 133,
-      "text": [
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.cli.info`"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 146,
-      "line_end": 148,
-      "text": [
-        "            subject,",
-        "            all,",
-        "            config,"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 211,
-      "line_end": 213,
-      "text": [
-        "            Ok(())",
-        "        }",
-        "        // {impl}`requirements.integration.symposium_setup_hook`"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 66,
-      "line_end": 68,
-      "text": [
-        "// {impl}`requirements.cli.setup_project`",
-        "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {",
-        "    let cwd = std::env::current_dir()?;"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 93,
-      "line_end": 95,
-      "text": [
-        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
-        "    let root = project_root()?;",
-        "    let book_path = root.join(\"book.toml\");"
-      ]
-    },
-    {
-      "file": "src/hook.rs",
-      "line_start": 27,
-      "line_end": 27,
-      "text": [
-        "    let Some(root) = setup::find_project_root(&cwd) else {"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 126,
-      "line_end": 126,
-      "text": [
-        "            let root = setup::project_root()?;"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 135,
-      "line_end": 135,
-      "text": [
-        "            let root = setup::project_root()?;"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 152,
-      "line_end": 152,
-      "text": [
-        "            let root = setup::project_root()?;"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 226,
-      "line_end": 226,
-      "text": [
-        "            let root = setup::project_root()?;"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 58,
-      "line_end": 58,
-      "text": [
-        "pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 67,
-      "line_end": 67,
-      "text": [
-        "pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 69,
-      "line_end": 69,
-      "text": [
-        "    find_project_root(&cwd)"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 94,
-      "line_end": 94,
-      "text": [
-        "    let root = project_root()?;"
+        "    let css = project.join(\"md/habeas.css\");"
       ]
     }
   ]

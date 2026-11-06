@@ -1,7 +1,7 @@
 {
   "requirement": "When `output.html.git-repository-url` names a GitHub repository and `output.html.edit-url-template` uses that repository's `/edit/<branch>/{path}` form, each safely resolved source location displayed for an evidence input MUST link its repository-relative file and inclusive line range to `/blob/<branch>/<file>#L<start>-L<end>`. A source location MUST remain plain text when a safe URL cannot be derived. A generated detail page MUST use its evidence JSON file as the mdBook edit target when the file exists, or its requirement chapter when the evidence file is missing.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.index.source_links`. The remaining gaps are minor, and none is acknowledged in a FIXME.\n\n**Implementation (`src/index.rs`)**\n- `SourceLinks::from_config` reads `output.html.git-repository-url` and `output.html.edit-url-template`.\n  - It returns `None` unless the repository is `https://github.com/<owner>/<project>` and the owner and project names pass character checks.\n  - It also returns `None` unless the template is exactly `<repo>/edit/<non-empty branch>/{path}` for that same repository.\n  - It builds `blob_prefix = <repo>/blob/<branch>`.\n- `SourceLinks::input_url` rejects line ranges where `start == 0` or `end < start`.\n  - It rejects any path with a parent-directory (`..`), root, or prefix component, and any empty path.\n  - It percent-encodes each path segment and returns `<blob_prefix>/<file>#L<start>-L<end>`.\n- `render_source_location` wraps the location in an `<a href>` when a URL exists, and otherwise emits plain `<code>` text. It HTML-escapes both forms.\n- `render_input` handles every selector kind, including resolved Rust items, definitions and file ranges. It routes each resolved range through `render_source_location`.\n- `populate` chooses the page's `source_path` (mdBook's edit target).\n  - If `evidence/<name>.json` exists, it uses `evidence_edit_path`, a `../`-prefixed path that depends on how deep `book.src` is.\n  - Otherwise it uses the requirement's chapter path (`definition.path`).\n\n**Tests**\n- `source_links_use_configured_repository_and_branch` covers these cases:\n  - A custom branch (`release`) produces the correct `/blob/release/...#L26-L37` URL.\n  - Spaces and `#` in a path are percent-encoded.\n  - `../outside.rs` and a zero start line produce no link.\n  - `evidence_edit_path` is correct for a nested `book.src`.\n  - A rendered detail page contains the expected anchor.\n  - A template pointing at a different repository, and a `javascript:` URL, both yield `None` (plain text).\n- `index_shows_evidence_states_and_links_generated_chapters` asserts the edit target for both cases. With an evidence file, it is `../evidence/requirements.core.ready.json`. With the evidence file missing, it is `requirements/core.md`.\n\n**Minor gaps**\n- The branch name is not validated beyond being non-empty. It is HTML-escaped but not URL-encoded.\n- There is no test for a trailing-slash repository URL, or for a non-GitHub host other than `javascript:`.\n- There is no direct test of links for Rust-item or definition selectors.\n\nThese do not change the conclusion. The behavior the requirement states is implemented and tested, including the fallbacks to plain text and to the requirement chapter.",
+  "rationale": "The sources satisfy `requirements.index.source_links`. I found no gaps in the implementation, its `{impl}` marking or the tests. I did not run the tests.\n\n**Config gating (`SourceLinks::from_config`, src/index.rs).**\n- It returns a link builder only when `output.html.git-repository-url` is `https://github.com/<owner>/<project>`. Owner and project are checked for safe characters.\n- The `edit-url-template` must be exactly `<repo>/edit/<branch>/{path}` with a non-empty branch.\n- Otherwise it returns `None`, so locations stay plain text. A template pointing at a different repository and a `javascript:` URL both give `None` in the test.\n- The blob prefix is `<repo>/blob/<branch>`.\n\n**URL derivation (`input_url`, `encode_url_segment`).**\n- The link is built as `<prefix>/<file>#L<start>-L<end>`.\n- It returns `None` for a zero start, a reversed range, absolute paths, `..` components, non-UTF-8 paths and empty paths. Each path segment is percent-encoded.\n\n**Rendering (`render_input`, `render_source_location`).**\n- Each resolved range becomes an `<a href>` wrapping the `<code>file:start–end</code>` text when a URL exists.\n- Without a URL it falls back to plain `<code>` text.\n- The href and label are HTML-escaped.\n\n**Edit target.**\n- `populate` sets the detail page's `source_path` to `evidence_edit_path` (`../evidence/<name>.json`, relative to `book.src`) when the evidence file exists.\n- Otherwise it uses the requirement's chapter path.\n- The `lib.rs` `{impl}` marker covers the matching `for_each_chapter_mut` change. It stops detail pages from being treated as definition sources now that their `source_path` points at the evidence JSON.\n\n**Tests.**\n- `source_links_use_configured_repository_and_branch` covers:\n  - a custom branch;\n  - percent-encoding of a path;\n  - rejection of `../` paths and a zero start line;\n  - `evidence_edit_path` with a nested `src`;\n  - the rendered anchor in a detail page;\n  - a mismatched repository and an unsafe URL.\n- `index_shows_evidence_states_and_links_generated_chapters` checks `source_path` for an existing evidence file (`../evidence/requirements.core.ready.json`) and for a missing one (`requirements/core.md`).\n- Plain-text fallback is exercised by other detail-page tests that pass `source_links: None`.\n\n**Minor observations, not gaps.** The branch is not URL-encoded, but it comes straight from the user's own template. A repository name of `.` or `..` would pass the character check, though it still stays on github.com.",
   "inputs": [
     {
       "requirements": "requirements.index.source_links",
@@ -124,6 +124,7 @@
       "text": [
         "    // {impl}`requirements.index.state`",
         "    // {impl}`requirements.examples.index`",
+        "    // {impl}`requirements.index.chapter`",
         "    pub(crate) fn populate(",
         "        &self,",
         "        book: &mut Book,",
@@ -363,6 +364,8 @@
         "    // {test}`requirements.index.navigation`",
         "    // {test}`requirements.index.source_links`",
         "    // {test}`requirements.cli.shared_status_rendering`",
+        "    // {test}`requirements.index.detail_format`",
+        "    // {test}`requirements.index.invalid_detail`",
         "    #[test]",
         "    fn index_shows_evidence_states_and_links_generated_chapters() {",
         "        let temp = TempDir::new().unwrap();",
@@ -710,14 +713,14 @@
         "",
         "    // {impl}`requirements.index.state`",
         "    // {impl}`requirements.examples.index`",
+        "    // {impl}`requirements.index.chapter`",
         "    pub(crate) fn populate(",
         "        &self,",
         "        book: &mut Book,",
         "        root: &Path,",
         "        definitions: &BTreeMap<String, Definition>,",
         "    ) -> io::Result<()> {",
-        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
-        "        let source_links = SourceLinks::from_config(&config)?;"
+        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;"
       ]
     },
     {
@@ -725,6 +728,7 @@
       "line_start": 380,
       "line_end": 409,
       "text": [
+        "                + 1;",
         "            for (offset, (name, path, content, source_path)) in pages.iter().enumerate() {",
         "                let mut page = Chapter::new(name, content.clone(), path, parent_names.clone());",
         "                page.source_path = Some(source_path.clone());",
@@ -753,8 +757,7 @@
         "    }",
         "    path.push(\"evidence\");",
         "    path.push(format!(\"{name}.json\"));",
-        "    path",
-        "}"
+        "    path"
       ]
     },
     {
@@ -762,13 +765,13 @@
       "line_start": 772,
       "line_end": 778,
       "text": [
+        "        );",
+        "    }",
+        "",
         "    // {test}`requirements.index.chapter`",
         "    // {test}`requirements.index.state`",
         "    // {test}`requirements.index.navigation`",
-        "    // {test}`requirements.index.source_links`",
-        "    // {test}`requirements.cli.shared_status_rendering`",
-        "    #[test]",
-        "    fn index_shows_evidence_states_and_links_generated_chapters() {"
+        "    // {test}`requirements.index.source_links`"
       ]
     },
     {
@@ -776,10 +779,10 @@
       "line_start": 889,
       "line_end": 892,
       "text": [
-        "        assert_eq!(",
-        "            ready.source_path.as_deref(),",
-        "            Some(Path::new(\"../evidence/requirements.core.ready.json\"))",
-        "        );"
+        "                    Some(chapter)",
+        "                }",
+        "                _ => None,",
+        "            })"
       ]
     },
     {
@@ -787,6 +790,11 @@
       "line_start": 929,
       "line_end": 943,
       "text": [
+        "                }",
+        "                _ => None,",
+        "            })",
+        "            .unwrap();",
+        "        assert!(changed.content.contains(\"requirement text changed\"));",
         "        let absent = index",
         "            .sub_items",
         "            .iter()",
@@ -796,12 +804,7 @@
         "                }",
         "                _ => None,",
         "            })",
-        "            .unwrap();",
-        "        assert_eq!(",
-        "            absent.source_path.as_deref(),",
-        "            Some(Path::new(\"requirements/core.md\"))",
-        "        );",
-        "    }"
+        "            .unwrap();"
       ]
     },
     {
@@ -809,6 +812,11 @@
       "line_start": 1008,
       "line_end": 1028,
       "text": [
+        "        assert!(page.contains(\"````markdown\\n```rust\\n````\"));",
+        "        assert!(page.contains(\"```ini\\n[book]\\n```\"));",
+        "        assert!(!page.contains(\"Stale text.\"));",
+        "    }",
+        "",
         "    // {test}`requirements.index.source_links`",
         "    #[test]",
         "    fn source_links_use_configured_repository_and_branch() {",
@@ -824,12 +832,7 @@
         "            links.input_url(\"src/a b#c.rs\", 1, 1).as_deref(),",
         "            Some(\"https://github.com/example/project/blob/release/src/a%20b%23c.rs#L1-L1\")",
         "        );",
-        "        assert!(links.input_url(\"../outside.rs\", 1, 2).is_none());",
-        "        assert!(links.input_url(\"src/main.rs\", 0, 2).is_none());",
-        "        assert_eq!(",
-        "            evidence_edit_path(Path::new(\"docs/md\"), \"requirements.core.ready\"),",
-        "            Path::new(\"../../evidence/requirements.core.ready.json\")",
-        "        );"
+        "        assert!(links.input_url(\"../outside.rs\", 1, 2).is_none());"
       ]
     },
     {
@@ -837,6 +840,7 @@
       "line_start": 192,
       "line_end": 204,
       "text": [
+        "    }",
         "",
         "    // {impl}`requirements.index.source_links`",
         "    book.for_each_chapter_mut(|chapter| {",
@@ -848,8 +852,281 @@
         "        {",
         "            if let Some(path) = chapter.path.as_deref() {",
         "                chapter.content = replace_references(&chapter.content, path, &definitions);",
-        "            }",
-        "            return;"
+        "            }"
+      ]
+    },
+    {
+      "file": "book.toml",
+      "line_start": 1,
+      "line_end": 1,
+      "text": [
+        "[book]"
+      ]
+    },
+    {
+      "file": "book.toml",
+      "line_start": 4,
+      "line_end": 4,
+      "text": [
+        "src = \"md\""
+      ]
+    },
+    {
+      "file": "book.toml",
+      "line_start": 6,
+      "line_end": 6,
+      "text": [
+        "[preprocessor.habeas]"
+      ]
+    },
+    {
+      "file": "book.toml",
+      "line_start": 10,
+      "line_end": 10,
+      "text": [
+        "[output.html]"
+      ]
+    },
+    {
+      "file": "book.toml",
+      "line_start": 16,
+      "line_end": 16,
+      "text": [
+        "[output.html.fold]"
+      ]
+    },
+    {
+      "file": "Cargo.toml",
+      "line_start": 10,
+      "line_end": 10,
+      "text": [
+        "keywords = [\"requirements\", \"traceability\", \"evidence\", \"mdbook\"]"
+      ]
+    },
+    {
+      "file": "Cargo.toml",
+      "line_start": 47,
+      "line_end": 47,
+      "text": [
+        "httpdate = \"1.0.3\""
+      ]
+    },
+    {
+      "file": "src/commands.rs",
+      "line_start": 148,
+      "line_end": 150,
+      "text": [
+        "                definitions: &inspection.definitions,",
+        "                source_links: None,",
+        "            },"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 23,
+      "line_end": 25,
+      "text": [
+        "",
+        "// {impl}`requirements.index.source_links`",
+        "pub(crate) struct SourceLinks {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 32,
+      "line_end": 34,
+      "text": [
+        "    pub(crate) definitions: &'a BTreeMap<String, Declaration>,",
+        "    pub(crate) source_links: Option<&'a SourceLinks>,",
+        "}"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 36,
+      "line_end": 38,
+      "text": [
+        "impl SourceLinks {",
+        "    // {impl}`requirements.index.source_links`",
+        "    fn from_config(config: &Config) -> io::Result<Option<Self>> {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 78,
+      "line_end": 80,
+      "text": [
+        "",
+        "    // {impl}`requirements.index.source_links`",
+        "    fn input_url(&self, file: &str, start: u64, end: u64) -> Option<String> {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 102,
+      "line_end": 104,
+      "text": [
+        "",
+        "// {impl}`requirements.index.source_links`",
+        "fn encode_url_segment(segment: &str) -> String {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 314,
+      "line_end": 316,
+      "text": [
+        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
+        "        let source_links = SourceLinks::from_config(&config)?;",
+        "        let inspection = inspect_repository(root)?;"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 339,
+      "line_end": 344,
+      "text": [
+        "                    definitions: &inspection.definitions,",
+        "                    source_links: source_links.as_ref(),",
+        "                },",
+        "            );",
+        "            // {impl}`requirements.index.source_links`",
+        "            let source_path = if evidence_path.exists() {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 398,
+      "line_end": 400,
+      "text": [
+        "",
+        "// {impl}`requirements.index.source_links`",
+        "fn evidence_edit_path(book_src: &Path, name: &str) -> PathBuf {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 532,
+      "line_end": 534,
+      "text": [
+        "",
+        "// {impl}`requirements.index.source_links`",
+        "// {impl}`requirements.index.detail_format`"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 582,
+      "line_end": 584,
+      "text": [
+        "                for range in &ranges {",
+        "                    render_source_location(content, range, sources.source_links);",
+        "                }"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 613,
+      "line_end": 615,
+      "text": [
+        "",
+        "// {impl}`requirements.index.source_links`",
+        "// {impl}`requirements.index.detail_format`"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 618,
+      "line_end": 623,
+      "text": [
+        "    range: &SourceRange,",
+        "    source_links: Option<&SourceLinks>,",
+        ") {",
+        "    let location = format!(\"{}:{}–{}\", range.file, range.line_start, range.line_end);",
+        "    let url = source_links.and_then(|links| {",
+        "        links.input_url(&range.file, range.line_start as u64, range.line_end as u64)"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 777,
+      "line_end": 779,
+      "text": [
+        "    // {test}`requirements.index.navigation`",
+        "    // {test}`requirements.index.source_links`",
+        "    // {test}`requirements.cli.shared_status_rendering`"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 997,
+      "line_end": 999,
+      "text": [
+        "                definitions: &BTreeMap::new(),",
+        "                source_links: None,",
+        "            },"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1012,
+      "line_end": 1016,
+      "text": [
+        "",
+        "    // {test}`requirements.index.source_links`",
+        "    #[test]",
+        "    fn source_links_use_configured_repository_and_branch() {",
+        "        let config: Config = \"[output.html]\\ngit-repository-url = \\\"https://github.com/example/project\\\"\\nedit-url-template = \\\"https://github.com/example/project/edit/release/{path}\\\"\\n\""
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1063,
+      "line_end": 1065,
+      "text": [
+        "                definitions: &BTreeMap::new(),",
+        "                source_links: Some(&links),",
+        "            },"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1067,
+      "line_end": 1069,
+      "text": [
+        "        assert!(page.contains(",
+        "            \"<a href=\\\"https://github.com/example/project/blob/release/src/evidence.rs#L26-L37\\\"><code>src/evidence.rs:26–37</code></a>\"",
+        "        ));"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1169,
+      "line_end": 1171,
+      "text": [
+        "                definitions: &BTreeMap::new(),",
+        "                source_links: None,",
+        "            },"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1194,
+      "line_end": 1196,
+      "text": [
+        "                definitions: &BTreeMap::new(),",
+        "                source_links: None,",
+        "            },"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 193,
+      "line_end": 195,
+      "text": [
+        "",
+        "    // {impl}`requirements.index.source_links`",
+        "    book.for_each_chapter_mut(|chapter| {"
       ]
     }
   ]

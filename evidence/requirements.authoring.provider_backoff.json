@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports transient throttling through HTTP 429 or a Bedrock\n`ThrottlingException`, the harness MUST wait and retry the same completion\nrequest, retaining its prompt, history, tools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\nthrottled attempt, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request. There MUST be no retry-attempt limit;\ninterruption MUST cancel both the wait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements each obligation, and the tests cover the main design cases. Two small cases are untested, noted below.\n\n**Retry behaviour (`assess` in `src/authoring/mod.rs`)**\n- The loop calls `usage.begin_request()` and `usage.end_request()` around every `provider.complete(request.clone())`. Each attempt is therefore recorded, whether it succeeds or fails.\n- On error it asks `ProviderBackoff::next_delay`. If that returns a delay, it sleeps and `continue`s. The same cloned `CompletionRequest` is resent, so prompt, history and tools are kept.\n- Nothing restarts the assessment or re-dispatches tools. Tool dispatch only runs after a successful response.\n- `sources.record_inputs(&pending)` runs only after a response succeeds. Pending inputs are therefore recorded only after success.\n- A success resets `backoff` to `ProviderBackoff::default()`.\n- Nothing is reported while retrying. The function returns only on a judgment or a non-retryable error, so transient retries never surface as finished judgments or terminal errors.\n- The sleep is an ordinary `tokio::time::sleep` inside the future. When the caller cancels the future (the Ctrl-C `tokio::select!` at `mod.rs` ~L153–165 and ~L216–228), both the wait and any further retries stop.\n\n**Classification and delay (`src/authoring/providers.rs`)**\n- `next_delay` retries only HTTP 429, or a `ThrottlingException` code when no HTTP status is present. It reads Rig's typed `ProviderError`. Other 4xx/5xx statuses and untyped `io::Error` messages are not retried, so \"Too many tokens\" in a message cannot trigger a retry.\n- The window starts at 1 s and doubles up to 60 s. Each delay is drawn uniformly from window/2 to window. There is no attempt counter, so there is no limit.\n- `retry_after` parses delta-seconds and HTTP-date forms. The result is combined with the jittered delay via `max`, so `Retry-After` is a minimum even when it exceeds the window.\n- `bedrock_sdk_config` sets `RetryConfig::disabled()`, so hidden SDK retries stay off and every attempt is visible to the ledger.\n\n**Tests**\n- `retries_typed_throttling_but_not_permanent_token_errors`:\n  - Retries on 429, 429 with `ThrottlingException`, and `ThrottlingException` with no status.\n  - Does not retry on 400 `ValidationException`, 403 `AccessDeniedException`, 400 with `ThrottlingException`, 503, no status or code, or a plain \"Too many tokens; HTTP 429\" message.\n- `jittered_backoff_grows_to_a_ceiling_without_limiting_attempts`: 100 consecutive throttles stay within [window/2, window] with the window capped at 60 s, and the function never returns `None`.\n- `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay`: covers seconds, future date, past date (zero), invalid value, and `Retry-After` of 90 s winning over the 1 s window.\n- `throttled_requests_retry_unchanged_and_record_every_attempt`:\n  - Eight throttles are followed by a success, with 9 identical requests.\n  - The usage log records 9 requests: eight `failed` ones with incomplete tokens, then one `completed`.\n  - The mandatory inputs are recorded only once the request succeeds (`submitted_in_request` 0, `sent_in_request` 8).\n- `permanent_provider_failure_returns_without_waiting_or_retrying`: a 400 error returns immediately after one request with no sleep.\n- `cancelling_during_backoff_prevents_another_request`: a timeout cancels during the sleep. Advancing time by 120 s produces no further request, no inputs are recorded, and the log shows one failed request.\n\n**Minor gaps, not acknowledged in source**\n- There is no direct test that a success resets the backoff window between completions. It is a single-line reset.\n- There is no test that history is retained when a retry occurs after tool turns. The code clones the whole request, so this is straightforward.\n- The `RetryConfig::disabled()` call has no dedicated assertion.\n- A 400 status paired with `ThrottlingException` is deliberately not retried. Real Bedrock throttling arrives as 429, so this is consistent with the stated intent.\n\nNone of these is significant enough to fail the requirement.",
+  "rationale": "**Judgment: true.** The code covers each stated obligation, and the tests cover the main cases. I could not read the Rig source, so one link in the chain rests on a code comment (see the first gap).\n\n**Implementation**\n- **Retry loop and what is retained.** `assess` in `src/authoring/mod.rs` loops over `provider.complete(request.clone())`.\n  - On a retryable error it sleeps and continues with the same `request`. The prompt, tools and chat history are retained.\n  - Tool calls already made are not repeated, and the assessment is not restarted.\n- **Error classification.** `ProviderBackoff::next_delay` in `src/authoring/providers.rs` downcasts to Rig's typed `ProviderError`.\n  - It retries on HTTP 429, or on a `ThrottlingException` code when no HTTP status is present.\n  - Other 4xx/5xx statuses, absent typed errors, and plain messages such as \"Too many tokens; HTTP 429\" are not retried.\n  - Mentioning tokens in a message therefore does not trigger a retry, as required. Permanent errors return unchanged.\n- **Backoff schedule.**\n  - The window starts at 1s (`Default`) and doubles up to 60s.\n  - Each delay is drawn from `window/2..=window`.\n  - No attempt counter exists, so retries are unlimited.\n- **`Retry-After`.** `retry_after` accepts seconds or an HTTP-date and treats a past date as zero. `next_delay` takes the maximum of the jittered delay and `Retry-After`, so it is honoured as a minimum even when longer than the window.\n- **Reset after success.** `backoff` is reset to `default()` after a successful response.\n- **Usage accounting.** `begin_request` and `end_request` run on every attempt, and a failed attempt is recorded as `failed` with incomplete tokens.\n- **Pending inputs.** `sources.record_inputs(&pending)` runs only after a successful response.\n- **No terminal report during recovery.** Throttling never returns from `assess` while retries continue.\n- **Interruption.** The sleep sits inside the future that `tokio::select!` races against `ctrl_c` (`src/authoring/mod.rs`, around lines 153–165 and 216–228). Cancelling therefore drops both the sleep and any further retries.\n- **Hidden SDK retries.** `bedrock_sdk_config` uses `RetryConfig::disabled()` with a comment explaining why.\n\n**Tests**\n- **Classification.** `retries_typed_throttling_but_not_permanent_token_errors` covers 429, `ThrottlingException`, 400, 403, 503, no status or code, and a plain message that mentions tokens and 429.\n- **Schedule and bounds.** `jittered_backoff_grows_to_a_ceiling_without_limiting_attempts` runs 100 attempts and checks the doubling window, the 60s cap and the half-to-full jitter bounds.\n- **`Retry-After`.** `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers seconds, a future date, a past date and invalid input. It also checks that a 90s value overrides the 1s window in `next_delay`.\n- **Same request and accounting.** `throttled_requests_retry_unchanged_and_record_every_attempt` (paused tokio time, 8 throttled failures) checks:\n  - all nine requests are identical;\n  - the usage log has nine requests, eight failed and one completed;\n  - the inputs are recorded once, after success.\n- **Permanent failure.** `permanent_provider_failure_returns_without_waiting_or_retrying` checks that a 400 returns immediately with one request and no elapsed time.\n- **Cancellation.** `cancelling_during_backoff_prevents_another_request` checks that a cancel during the wait sends no further request and records no inputs.\n\n**Gaps**\n- **Unverified link to Rig.** `RigProvider::complete` wraps the Rig error with `map_err(io::Error::other)`. The classifier only works if the Rig error is a `ProviderError` that carries the HTTP status and code. The code comment says it does. The unit tests build that error directly and cannot confirm it, and there is no live throttling test.\n- **No test for reset.** The reset of backoff after a success has no dedicated test. It is a single assignment.\n- **No test for disabled SDK retries.** The disabled Bedrock SDK retry has no test. It is a one-line configuration.\n- **Weak timing assertion.** The `>= 500ms` assertion in the retry test is weak, but the schedule is checked precisely in the providers test.\n- **Status-and-code edge case.** A Bedrock `ThrottlingException` carrying a non-429 4xx status is not retried. The tests assert this deliberately. Real Bedrock throttling is HTTP 429, so this does not conflict with the requirement.\n\nNo FIXME is recorded for any of these.",
   "inputs": [
     {
       "requirements": "requirements.authoring.provider_backoff",
@@ -438,7 +438,7 @@
         "",
         "Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`",
         "",
-        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
+        "Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ \"role\": \"impl\", \"name\": \"requirements.some_name\" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A definition is applicable when the function's own code implements part of it, or, for a test, when the test is designed to verify it; incidental setup and sanity assertions do not count. Citations do not spread to a function because its callers, its callees, the tests that use it, or neighbouring functions cite a definition. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`",
         "",
         "## Checking and viewing",
         "",
@@ -551,6 +551,10 @@
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.read_denial`",
         "// {impl}`requirements.authoring.provider_backoff`",
+        "// {impl}`requirements.authoring.submission_count`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
@@ -873,6 +877,42 @@
     },
     {
       "rust_file": "src/authoring/providers.rs",
+      "rust_item": "fn[bedrock_sdk_config]",
+      "text": [
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.usage_requests`",
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
+        "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
+        "    // would otherwise be hidden inside one recorded request.",
+        "    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
+        "        .retry_config(aws_config::retry::RetryConfig::disabled());",
+        "    if let Some(profile) = &config.aws_profile {",
+        "        loader = loader.profile_name(profile);",
+        "    }",
+        "    if let Some(region) = &config.region {",
+        "        loader = loader.region(aws_config::Region::new(region.clone()));",
+        "    }",
+        "    if let Some(credentials) = &config.credentials {",
+        "        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(",
+        "            credentials.access_key_id.expose_secret(),",
+        "            credentials.secret_access_key.expose_secret(),",
+        "            credentials",
+        "                .session_token",
+        "                .as_ref()",
+        "                .map(|value| value.expose_secret().to_owned()),",
+        "            None,",
+        "            \"Habeas configuration\",",
+        "        ));",
+        "    }",
+        "    loader.load().await",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/authoring/providers.rs",
       "rust_item": "mod[tests]/fn[provider_error]",
       "text": [
         "    // {test}`requirements.authoring.provider_backoff`",
@@ -1028,6 +1068,7 @@
       "text": [
         "// {impl}`requirements.authoring.credentials`",
         "// {impl}`requirements.authoring.usage_requests`",
+        "// {impl}`requirements.authoring.provider_backoff`",
         "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
         "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
         "    // would otherwise be hidden inside one recorded request.",
@@ -1037,8 +1078,7 @@
         "        loader = loader.profile_name(profile);",
         "    }",
         "    if let Some(region) = &config.region {",
-        "        loader = loader.region(aws_config::Region::new(region.clone()));",
-        "    }"
+        "        loader = loader.region(aws_config::Region::new(region.clone()));"
       ]
     },
     {
@@ -1078,6 +1118,7 @@
         "// {impl}`requirements.authoring.configuration_precedence`",
         "// {impl}`requirements.authoring.credentials`",
         "// {impl}`requirements.authoring.usage_requests`",
+        "// {impl}`requirements.authoring.provider_backoff`",
         "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
         "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
         "    // would otherwise be hidden inside one recorded request.",
@@ -1089,8 +1130,7 @@
         "    if let Some(region) = &config.region {",
         "        loader = loader.region(aws_config::Region::new(region.clone()));",
         "    }",
-        "    if let Some(credentials) = &config.credentials {",
-        "        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new("
+        "    if let Some(credentials) = &config.credentials {"
       ]
     },
     {
@@ -1098,6 +1138,7 @@
       "line_start": 342,
       "line_end": 358,
       "text": [
+        "        );",
         "    }",
         "",
         "    // {test}`requirements.authoring.credentials`",
@@ -1113,8 +1154,7 @@
         "            .provide_credentials()",
         "            .await",
         "            .unwrap();",
-        "        assert_eq!(credentials.access_key_id(), \"TEST_ACCESS\");",
-        "        assert_eq!(credentials.secret_access_key(), \"test-secret\");"
+        "        assert_eq!(credentials.access_key_id(), \"TEST_ACCESS\");"
       ]
     },
     {
@@ -1164,13 +1204,13 @@
       "line_start": 655,
       "line_end": 661,
       "text": [
-        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();",
-        "        assert_eq!(log[\"request_count\"], 9);",
-        "        for attempt in 0..8 {",
-        "            assert_eq!(log[\"requests\"][attempt][\"outcome\"], \"failed\");",
-        "            assert_eq!(log[\"requests\"][attempt][\"tokens\"][\"complete\"], false);",
-        "        }",
-        "        assert_eq!(log[\"requests\"][8][\"outcome\"], \"completed\");"
+        "        assert!(started.elapsed() >= Duration::from_millis(500));",
+        "        let requests = provider.requests.borrow();",
+        "        assert_eq!(requests.len(), 9);",
+        "        assert!(requests.iter().all(|request| request == &requests[0]));",
+        "        assert_eq!(record[\"inputs\"], json!(sources.mandatory_inputs()));",
+        "",
+        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();"
       ]
     },
     {
@@ -1178,13 +1218,13 @@
       "line_start": 708,
       "line_end": 714,
       "text": [
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();",
-        "        assert_eq!(log[\"request_count\"], 1);",
-        "        assert_eq!(log[\"requests\"][0][\"outcome\"], \"failed\");",
-        "    }",
-        "",
-        "    impl CompletionProvider for JudgmentProvider {"
+        "            )",
+        "            .await",
+        "            .is_err()",
+        "        );",
+        "        tokio::time::advance(Duration::from_secs(120)).await;",
+        "        assert_eq!(provider.requests.borrow().len(), 1);",
+        "        assert!(sources.recorded_inputs().is_empty());"
       ]
     },
     {
@@ -1276,6 +1316,7 @@
       "line_start": 135,
       "line_end": 151,
       "text": [
+        "        ));",
         "    }",
         "    loader.load().await",
         "}",
@@ -1291,8 +1332,7 @@
         "            .expect(\"configuration options are a map\")",
         "            .clone();",
         "        if self.bedrock {",
-        "            apply_bedrock_options(&mut request, &mut options)?;",
-        "        }"
+        "            apply_bedrock_options(&mut request, &mut options)?;"
       ]
     },
     {
@@ -1300,6 +1340,7 @@
       "line_start": 172,
       "line_end": 197,
       "text": [
+        "            continue;",
         "        };",
         "        if call.get(\"type\").and_then(Value::as_str) != Some(\"tool_use\") {",
         "            continue;",
@@ -1324,8 +1365,7 @@
         "        *block = AssistantContent::ToolCall(recovered).with_native(opaque.item.clone());",
         "    }",
         "    Ok(())",
-        "}",
-        ""
+        "}"
       ]
     },
     {
@@ -1333,6 +1373,7 @@
       "line_start": 278,
       "line_end": 321,
       "text": [
+        "    #[test]",
         "    fn retries_typed_throttling_but_not_permanent_token_errors() {",
         "        for (status, code) in [",
         "            (Some(429), None),",
@@ -1375,8 +1416,7 @@
         "            let delay = backoff.next_delay(&error).unwrap();",
         "            assert!((window / 2..=window).contains(&delay));",
         "        }",
-        "    }",
-        ""
+        "    }"
       ]
     },
     {
@@ -1384,6 +1424,7 @@
       "line_start": 329,
       "line_end": 345,
       "text": [
+        "        for (header, expected) in [",
         "            (\"90\", Some(Duration::from_secs(90))),",
         "            (future.as_str(), Some(Duration::from_secs(90))),",
         "            (past.as_str(), Some(Duration::ZERO)),",
@@ -1399,8 +1440,525 @@
         "        );",
         "    }",
         "",
-        "    // {test}`requirements.authoring.credentials`",
-        "    // {test}`requirements.authoring.rig_configuration_mapping`"
+        "    // {test}`requirements.authoring.credentials`"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 65,
+      "line_end": 69,
+      "text": [
+        "        }) {",
+        "            return Err(denied(format!(",
+        "                \"{} is disallowed by habeas.toml rule {}; update the workspace evidence policy before retrying\",",
+        "                requested.display(),",
+        "                rule.display()"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 137,
+      "line_end": 141,
+      "text": [
+        "        if !lexical_request.starts_with(root) || !target.starts_with(root) {",
+        "            return Err(denied(format!(",
+        "                \"{} resolves outside the project; add an explicit habeas.toml allow rule before retrying\",",
+        "                relative.display()",
+        "            )));"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 146,
+      "line_end": 150,
+      "text": [
+        "                {",
+        "                    return Err(denied(format!(",
+        "                        \"{} contains no eligible sources; use git add to stage sources or update habeas.toml before retrying\",",
+        "                        relative.display()",
+        "                    )));"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 154,
+      "line_end": 158,
+      "text": [
+        "                    if !tracked.contains(path) {",
+        "                        return Err(denied(format!(",
+        "                            \"{} is not tracked by Git; use git add to stage it or add an explicit habeas.toml allow rule before retrying\",",
+        "                            path.strip_prefix(root).unwrap_or(path).display()",
+        "                        )));"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 612,
+      "line_end": 616,
+      "text": [
+        "            if self.requests.borrow().len() <= self.failures {",
+        "                return Err(io::Error::other(",
+        "                    rig_core::error::ProviderError::from_provider_body(\"Too many tokens\")",
+        "                        .with_provider_status(Some(self.status.try_into().unwrap()))",
+        "                        .with_provider_code(Some(self.code.into())),"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 622,
+      "line_end": 626,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    fn retry_fixture() -> (",
+        "        tempfile::TempDir,",
+        "        tempfile::TempDir,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 643,
+      "line_end": 648,
+      "text": [
+        "    // {test}`requirements.authoring.usage_inputs`",
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn throttled_requests_retry_unchanged_and_record_every_attempt() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 675,
+      "line_end": 680,
+      "text": [
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn permanent_provider_failure_returns_without_waiting_or_retrying() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 695,
+      "line_end": 699,
+      "text": [
+        "    #[tokio::test(start_paused = true)]",
+        "    async fn cancelling_during_backoff_prevents_another_request() {",
+        "        let (_project, _state, mut sources, mut usage) = retry_fixture();",
+        "        let provider = ThrottledProvider {",
+        "            failures: 8,"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 3,
+      "line_end": 7,
+      "text": [
+        "",
+        "use rig_core::completion::{CompletionRequest, CompletionResponse};",
+        "use rig_core::error::ProviderError;",
+        "use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};",
+        "use rig_core::{DynModel, operation::Completion};"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 34,
+      "line_end": 38,
+      "text": [
+        "        // throttling from \"tokens\" in a message: a too-large input cannot be",
+        "        // fixed by resending the same request.",
+        "        let provider = error.get_ref()?.downcast_ref::<ProviderError>()?;",
+        "        let report = provider.report();",
+        "        let throttled = match report.http_status {"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 47,
+      "line_end": 62,
+      "text": [
+        "        let millis = self.window.as_millis() as u64;",
+        "        self.window = (self.window * 2).min(Duration::from_secs(60));",
+        "        // Equal jitter keeps parallel assessments from retrying in lockstep,",
+        "        // while ensuring each retry waits at least half the current window.",
+        "        let jittered = Duration::from_millis(fastrand::u64(millis / 2..=millis));",
+        "        Some(jittered.max(retry_after(provider, SystemTime::now()).unwrap_or_default()))",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {",
+        "    let header = error",
+        "        .provider_response_headers()?",
+        "        .get(\"retry-after\")?",
+        "        .to_str()",
+        "        .ok()?"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 113,
+      "line_end": 120,
+      "text": [
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
+        "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
+        "    // would otherwise be hidden inside one recorded request.",
+        "    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
+        "        .retry_config(aws_config::retry::RetryConfig::disabled());",
+        "    if let Some(profile) = &config.aws_profile {",
+        "        loader = loader.profile_name(profile);"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 259,
+      "line_end": 264,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    fn provider_error(status: Option<u16>, code: Option<&str>) -> ProviderError {",
+        "        ProviderError::from_provider_body(\"Too many tokens\")",
+        "            .with_provider_status(status.map(|status| status.try_into().unwrap()))",
+        "            .with_provider_code(code.map(str::to_owned))"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 266,
+      "line_end": 275,
+      "text": [
+        "",
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    fn with_retry_after(error: ProviderError, value: &str) -> ProviderError {",
+        "        let mut headers = error",
+        "            .provider_response_headers()",
+        "            .cloned()",
+        "            .unwrap_or_default();",
+        "        headers.insert(\"retry-after\", value.parse().unwrap());",
+        "        error.with_response_headers(Some(headers))",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 323,
+      "line_end": 327,
+      "text": [
+        "    // {test}`requirements.authoring.provider_backoff`",
+        "    #[test]",
+        "    fn retry_after_accepts_seconds_and_dates_without_shortening_provider_delay() {",
+        "        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);",
+        "        let future = httpdate::fmt_http_date(now + Duration::from_secs(90));"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 333,
+      "line_end": 340,
+      "text": [
+        "            (\"invalid\", None),",
+        "        ] {",
+        "            let error = with_retry_after(provider_error(Some(429), None), header);",
+        "            assert_eq!(retry_after(&error, now), expected);",
+        "        }",
+        "        let error = io::Error::other(with_retry_after(provider_error(Some(429), None), \"90\"));",
+        "        assert_eq!(",
+        "            ProviderBackoff::default().next_delay(&error),"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 595,
+      "line_end": 603,
+      "text": [
+        "        log.end_request(first, 2, None).unwrap();",
+        "        assert!(persisted(&log)[\"inputs\"][0][\"sent_in_request\"].is_null());",
+        "        let retry = log.begin_request().unwrap();",
+        "        log.end_request(retry, 3, Some(&Usage::new())).unwrap();",
+        "        let value = persisted(&log);",
+        "        assert_eq!(value[\"inputs\"][0][\"submitted_in_request\"], first);",
+        "        assert_eq!(value[\"inputs\"][0][\"sent_in_request\"], retry);",
+        "        assert_eq!(value[\"request_count\"], 2);",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 60,
+      "line_end": 170,
+      "text": [
+        "        .get(\"retry-after\")?",
+        "        .to_str()",
+        "        .ok()?",
+        "        .trim();",
+        "    if let Ok(seconds) = header.parse() {",
+        "        return Some(Duration::from_secs(seconds));",
+        "    }",
+        "    httpdate::parse_http_date(header)",
+        "        .ok()",
+        "        .map(|deadline| deadline.duration_since(now).unwrap_or_default())",
+        "}",
+        "",
+        "pub(super) struct RigProvider {",
+        "    model: DynModel<Completion>,",
+        "    options: serde_json::Value,",
+        "    bedrock: bool,",
+        "}",
+        "",
+        "impl RigProvider {",
+        "    // {impl}`requirements.authoring.provider`",
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
+        "    // {impl}`requirements.authoring.configuration_precedence`",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    // {impl}`requirements.authoring.credentials`",
+        "    pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {",
+        "        let model = match config {",
+        "            BackendConfig::Bedrock(config) => {",
+        "                let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);",
+        "                rig_bedrock::client::BedrockRuntime::from(sdk)",
+        "                    .completion(&config.model)",
+        "                    .erase()",
+        "            }",
+        "            BackendConfig::Ollama(config) => {",
+        "                let mut provider = rig_core::providers::ollama::OllamaConfig::new()",
+        "                    .with_base_url(config.endpoint());",
+        "                if let Some(key) = config.api_key()? {",
+        "                    provider = provider.with_api_key(key);",
+        "                }",
+        "                provider.client().native_completion(&config.model).erase()",
+        "            }",
+        "        };",
+        "        Ok(Self {",
+        "            model,",
+        "            options: config.options_json()?,",
+        "            bedrock: matches!(config, BackendConfig::Bedrock(_)),",
+        "        })",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "// {impl}`requirements.authoring.configuration_precedence`",
+        "// {impl}`requirements.authoring.credentials`",
+        "// {impl}`requirements.authoring.usage_requests`",
+        "// {impl}`requirements.authoring.provider_backoff`",
+        "async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {",
+        "    // Keep each provider attempt visible to the usage ledger. An SDK retry",
+        "    // would otherwise be hidden inside one recorded request.",
+        "    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())",
+        "        .retry_config(aws_config::retry::RetryConfig::disabled());",
+        "    if let Some(profile) = &config.aws_profile {",
+        "        loader = loader.profile_name(profile);",
+        "    }",
+        "    if let Some(region) = &config.region {",
+        "        loader = loader.region(aws_config::Region::new(region.clone()));",
+        "    }",
+        "    if let Some(credentials) = &config.credentials {",
+        "        loader = loader.credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(",
+        "            credentials.access_key_id.expose_secret(),",
+        "            credentials.secret_access_key.expose_secret(),",
+        "            credentials",
+        "                .session_token",
+        "                .as_ref()",
+        "                .map(|value| value.expose_secret().to_owned()),",
+        "            None,",
+        "            \"Habeas configuration\",",
+        "        ));",
+        "    }",
+        "    loader.load().await",
+        "}",
+        "",
+        "impl CompletionProvider for RigProvider {",
+        "    // {impl}`requirements.authoring.provider`",
+        "    // {impl}`requirements.authoring.configuration_storage`",
+        "    // {impl}`requirements.authoring.rig_configuration_mapping`",
+        "    async fn complete(&self, mut request: CompletionRequest) -> io::Result<CompletionResponse> {",
+        "        let mut options = self",
+        "            .options",
+        "            .as_object()",
+        "            .expect(\"configuration options are a map\")",
+        "            .clone();",
+        "        if self.bedrock {",
+        "            apply_bedrock_options(&mut request, &mut options)?;",
+        "        }",
+        "        request.additional_params = (!options.is_empty()).then_some(Value::Object(options));",
+        "        let mut response = self.model.call(request).await.map_err(io::Error::other)?;",
+        "        if self.bedrock {",
+        "            normalize_bedrock_client_calls(&mut response)?;",
+        "        }",
+        "        Ok(response)",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.provider`",
+        "// {impl}`requirements.authoring.rig_configuration_mapping`",
+        "fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {",
+        "    // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.",
+        "    // Newer Claude responses explicitly identify client calls as \"tool_use\".",
+        "    for block in &mut response.choice {",
+        "        let AssistantContent::Opaque(opaque) = block else {",
+        "            continue;",
+        "        };"
+      ]
+    },
+    {
+      "file": "Cargo.toml",
+      "line_start": 51,
+      "line_end": 52,
+      "text": [
+        "rig-bedrock = \"0.44\"",
+        "rig-core = { version = \"0.44\", features = [\"reqwest\"] }"
+      ]
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "line_start": 43,
+      "line_end": 43,
+      "text": [
+        "setting overrides its default. If the provider reports throttling, lower that"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 117,
+      "line_end": 117,
+      "text": [
+        "Transient provider token/request throttling is retried automatically with"
+      ]
+    },
+    {
+      "file": "md/reference.md",
+      "line_start": 277,
+      "line_end": 277,
+      "text": [
+        "Lower it if Bedrock reports throttling, then rerun `habeas author --all` to work"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 97,
+      "line_end": 98,
+      "text": [
+        "When a provider reports transient throttling through HTTP 429 or a Bedrock",
+        "`ThrottlingException`, the harness MUST wait and retry the same completion"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 106,
+      "line_end": 106,
+      "text": [
+        "throttled attempt, up to sixty seconds. Each delay MUST be randomly selected"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 568,
+      "line_end": 568,
+      "text": [
+        "usage record. Provider errors, including throttling, MUST be reported through"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 752,
+      "line_end": 752,
+      "text": [
+        "Ollama defaults to one. Lower concurrency if the provider reports throttling;"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 645,
+      "line_end": 645,
+      "text": [
+        "    async fn throttled_requests_retry_unchanged_and_record_every_attempt() {"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 650,
+      "line_end": 650,
+      "text": [
+        "            code: \"ThrottlingException\","
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 701,
+      "line_end": 701,
+      "text": [
+        "            code: \"ThrottlingException\","
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 34,
+      "line_end": 34,
+      "text": [
+        "        // throttling from \"tokens\" in a message: a too-large input cannot be"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 38,
+      "line_end": 38,
+      "text": [
+        "        let throttled = match report.http_status {"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 41,
+      "line_end": 41,
+      "text": [
+        "            _ => report.code.as_deref() == Some(\"ThrottlingException\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 43,
+      "line_end": 43,
+      "text": [
+        "        if !throttled {"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 279,
+      "line_end": 279,
+      "text": [
+        "    fn retries_typed_throttling_but_not_permanent_token_errors() {"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 282,
+      "line_end": 283,
+      "text": [
+        "            (Some(429), Some(\"ThrottlingException\")),",
+        "            (None, Some(\"ThrottlingException\")),"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 294,
+      "line_end": 294,
+      "text": [
+        "            (Some(400), Some(\"ThrottlingException\")),"
+      ]
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "line_start": 314,
+      "line_end": 314,
+      "text": [
+        "        let error = io::Error::other(provider_error(Some(429), Some(\"ThrottlingException\")));"
       ]
     }
   ]

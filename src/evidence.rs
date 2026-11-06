@@ -40,7 +40,6 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 pub(crate) struct RepositoryInspection {
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) report: EvidenceReport,
-    pub(crate) rust_functions: Vec<(String, String, bool)>,
     pub(crate) discovery_errors: Vec<String>,
 }
 
@@ -117,15 +116,7 @@ pub(crate) fn inspect_repository_with_progress(
         Vec::new()
     };
     let mut present = BTreeSet::new();
-    let ordinary_files: Vec<_> = evidence_files
-        .iter()
-        .filter(|file| {
-            let relative = file
-                .strip_prefix(&evidence_root)
-                .expect("evidence file is inside evidence directory");
-            !(relative.starts_with("rust") && relative.to_string_lossy().ends_with(".rs.json"))
-        })
-        .collect();
+    let ordinary_files: Vec<_> = evidence_files.iter().collect();
 
     // {impl}`requirements.ci.orphans`
     for (completed, file) in ordinary_files.iter().enumerate() {
@@ -181,14 +172,11 @@ pub(crate) fn inspect_repository_with_progress(
         completed: 0,
         total: None,
     });
-    crate::rust_coverage::validate_rust_functions(&root, &definitions, &mut errors);
-    // {impl}`requirements.references.rust_function_attestations`
-    let rust_functions = validate_rust_attestations(
+    crate::rust_coverage::validate_rust_functions(
         &root,
         &definitions,
         &mut errors,
         &mut discovery_errors,
-        &mut progress,
     );
 
     let examples = definitions
@@ -207,7 +195,6 @@ pub(crate) fn inspect_repository_with_progress(
             errors,
         },
         definitions,
-        rust_functions,
         discovery_errors,
     })
 }
@@ -359,14 +346,14 @@ fn collect_definitions(
             && !reference_roles(&definition.text, true)
                 .into_iter()
                 .any(|reference| {
-                    reference.kind == ReferenceKind::Cite
+                    matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)
                         && definitions
                             .get(reference.name)
                             .is_some_and(|target| target.kind == DefinitionKind::Requirement)
                 })
         {
             errors.push(format!(
-                "{}: example {name} must cite at least one requirement",
+                "{}: example {name} must reference at least one requirement with {{cite}} or {{test}}",
                 definition.source
             ));
         }
@@ -432,6 +419,7 @@ fn files_with_extension(
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.definitions.dependencies`
+// {impl}`requirements.ci.diagnostics`
 fn validate_evidence_file(
     root: &Path,
     path: &Path,
@@ -713,6 +701,8 @@ fn text_field(
 
 // {impl}`requirements.ci.rust_item_inputs`
 // {impl}`requirements.ci.requirements_inputs`
+// {impl}`requirements.definitions.inputs`
+// {impl}`requirements.ci.diagnostics`
 fn validate_resolved_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -761,6 +751,7 @@ fn validate_resolved_input(
 // {impl}`requirements.ci.inputs`
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.ci.diagnostics`
 fn validate_input_lines(
     root: &Path,
     file: &str,
@@ -856,26 +847,6 @@ fn string_field<'a>(
         Some(Value::String(value)) => Some(value),
         Some(_) => {
             errors.push(format!("{label}: {key} must be a string"));
-            None
-        }
-        None => {
-            errors.push(format!("{label}: missing field {key:?}"));
-            None
-        }
-    }
-}
-
-// {impl}`requirements.ci.schema`
-fn boolean_field(
-    object: &Map<String, Value>,
-    key: &str,
-    label: &str,
-    errors: &mut Vec<String>,
-) -> Option<bool> {
-    match object.get(key) {
-        Some(Value::Bool(value)) => Some(*value),
-        Some(_) => {
-            errors.push(format!("{label}: {key} must be a boolean"));
             None
         }
         None => {
@@ -1018,7 +989,12 @@ fn validate_references(
             ));
         }
         let inputs = evidence_input_ranges(root, &evidence_file, definitions);
-        for reference in references {
+        // `{cite}` points from its source to the definition, so it is not part of
+        // the definition's evidence.
+        for reference in references
+            .into_iter()
+            .filter(|reference| reference.kind != ReferenceKind::Cite)
+        {
             if !inputs.iter().any(|input| {
                 input.file == reference.file
                     && input.line_start <= reference.line
@@ -1187,331 +1163,6 @@ fn evidence_input_ranges(
         .collect()
 }
 
-// {impl}`requirements.references.rust_function_attestations`
-// {impl}`requirements.ci.orphans`
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.progress`
-fn validate_rust_attestations(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
-    errors: &mut Vec<String>,
-    discovery_errors: &mut Vec<String>,
-    progress: &mut impl FnMut(InspectionProgress),
-) -> Vec<(String, String, bool)> {
-    let mut inspected = Vec::new();
-    let mut expected_files = BTreeSet::new();
-    let initial_errors = errors.len();
-    progress(InspectionProgress {
-        stage: "discovering Rust sources",
-        completed: 0,
-        total: None,
-    });
-    let files = crate::rust_coverage::rust_files(root, errors);
-    discovery_errors.extend(errors[initial_errors..].iter().cloned());
-    for (completed, file) in files.iter().enumerate() {
-        progress(InspectionProgress {
-            stage: "Rust attestation files",
-            completed,
-            total: Some(files.len()),
-        });
-        let rust_file = display_path(root, file);
-        let source = match fs::read_to_string(file) {
-            Ok(source) => source,
-            Err(error) => {
-                let error = format!("{rust_file}: cannot read Rust source: {error}");
-                discovery_errors.push(error.clone());
-                errors.push(error);
-                continue;
-            }
-        };
-        let functions = match crate::rust_items::function_citations(&source, definitions) {
-            Ok(functions) => functions,
-            Err(error) => {
-                // The citation check also includes this in the validation report.
-                discovery_errors.push(format!("{rust_file}: cannot parse Rust source: {error}"));
-                continue;
-            }
-        };
-        if functions.is_empty() {
-            continue;
-        }
-        let evidence_path = root.join("evidence/rust").join(format!("{rust_file}.json"));
-        expected_files.insert(evidence_path.clone());
-        let valid = validate_rust_attestation_file(
-            root,
-            &evidence_path,
-            &rust_file,
-            &functions,
-            definitions,
-            errors,
-        );
-        inspected.extend(functions.iter().map(|(item, _)| {
-            (
-                rust_file.clone(),
-                item.selector.clone(),
-                valid.contains(&item.selector),
-            )
-        }));
-    }
-    progress(InspectionProgress {
-        stage: "Rust attestation files",
-        completed: files.len(),
-        total: Some(files.len()),
-    });
-    let evidence_root = root.join("evidence/rust");
-    progress(InspectionProgress {
-        stage: "Rust sidecar coverage",
-        completed: 0,
-        total: None,
-    });
-    if evidence_root.is_dir() {
-        let files = files_with_extension(root, &evidence_root, "json", errors);
-        for (completed, file) in files.iter().enumerate() {
-            progress(InspectionProgress {
-                stage: "Rust sidecar coverage",
-                completed,
-                total: Some(files.len()),
-            });
-            if !expected_files.contains(file) {
-                errors.push(format!(
-                    "{}: orphaned Rust attestation file",
-                    display_path(root, file)
-                ));
-            }
-        }
-        progress(InspectionProgress {
-            stage: "Rust sidecar coverage",
-            completed: files.len(),
-            total: Some(files.len()),
-        });
-    } else {
-        progress(InspectionProgress {
-            stage: "Rust sidecar coverage",
-            completed: 0,
-            total: Some(0),
-        });
-    }
-    inspected
-}
-
-// {impl}`requirements.references.rust_function_attestations`
-// {impl}`requirements.ci.schema`
-// {impl}`requirements.ci.determination`
-// {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.ci.orphans`
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.ci.diagnostics`
-fn validate_rust_attestation_file(
-    root: &Path,
-    path: &Path,
-    rust_file: &str,
-    functions: &[(crate::rust_items::RustItem, BTreeSet<(String, String)>)],
-    definitions: &BTreeMap<String, Declaration>,
-    errors: &mut Vec<String>,
-) -> BTreeSet<String> {
-    let mut valid = BTreeSet::new();
-    let initial_errors = errors.len();
-    let label = display_path(root, path);
-    let purpose =
-        "review each function and confirm it cites every applicable requirement or named example";
-    let source = match fs::read_to_string(path) {
-        Ok(source) => source,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            for (function, _) in functions {
-                errors.push(format!(
-                    "{label}: {rust_file}:{} {}: missing Rust function attestation file; {purpose}",
-                    function.declaration_line, function.selector
-                ));
-            }
-            return valid;
-        }
-        Err(error) => {
-            errors.push(format!(
-                "{label}: cannot read Rust attestation: {error}; {purpose}"
-            ));
-            return valid;
-        }
-    };
-    let value: Value = match serde_json::from_str(&source) {
-        Ok(value) => value,
-        Err(error) => {
-            errors.push(format!("{label}: invalid JSON: {error}; {purpose}"));
-            return valid;
-        }
-    };
-    let Some(object) = value.as_object() else {
-        errors.push(format!("{label}: expected a JSON object; {purpose}"));
-        return valid;
-    };
-    check_keys(object, &["rust_file", "functions"], &label, errors);
-    if let Some(recorded_file) = string_field(object, "rust_file", &label, errors)
-        && recorded_file != rust_file
-    {
-        errors.push(format!(
-            "{label}: rust_file is {recorded_file:?}, expected {rust_file:?}"
-        ));
-    }
-    let Some(entries) = array_field(object, "functions", &label, errors) else {
-        return valid;
-    };
-    let valid_header = errors.len() == initial_errors;
-    let expected = functions
-        .iter()
-        .map(|(function, citations)| (function.selector.as_str(), (function, citations)))
-        .collect::<BTreeMap<_, _>>();
-    let mut present = BTreeSet::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let initial_errors = errors.len();
-        let entry_label = format!("{label}: functions[{index}]");
-        let Some(entry) = entry.as_object() else {
-            errors.push(format!("{entry_label}: expected a JSON object"));
-            continue;
-        };
-        check_keys(
-            entry,
-            &[
-                "rust_item",
-                "citations",
-                "determination",
-                "rationale",
-                "inputs",
-            ],
-            &entry_label,
-            errors,
-        );
-        let Some(selector) = string_field(entry, "rust_item", &entry_label, errors) else {
-            continue;
-        };
-        let current = expected.get(selector);
-        let location = current.map_or_else(
-            || format!("{rust_file} {selector}"),
-            |(function, _)| {
-                format!(
-                    "{rust_file}:{} {selector} ({})",
-                    function.declaration_line, function.name
-                )
-            },
-        );
-        let entry_label = format!("{entry_label} ({location}; {purpose})");
-        if !present.insert(selector.to_owned()) {
-            valid.remove(selector);
-            errors.push(format!(
-                "{entry_label}: duplicate Rust function attestation"
-            ));
-        }
-        if current.is_none() {
-            errors.push(format!("{entry_label}: orphaned Rust function attestation"));
-        }
-        let recorded_citations =
-            array_field(entry, "citations", &entry_label, errors).map(|values| {
-                let mut citations = BTreeSet::new();
-                for (citation_index, value) in values.iter().enumerate() {
-                    let citation_label = format!("{entry_label}: citations[{citation_index}]");
-                    let Some(value) = value.as_object() else {
-                        errors.push(format!("{citation_label}: expected a JSON object"));
-                        continue;
-                    };
-                    check_keys(value, &["role", "name"], &citation_label, errors);
-                    let role = string_field(value, "role", &citation_label, errors);
-                    let name = string_field(value, "name", &citation_label, errors);
-                    if let (Some(role), Some(name)) = (role, name) {
-                        if !matches!(role, "impl" | "cite" | "test") {
-                            errors
-                                .push(format!("{citation_label}: invalid citation role {role:?}"));
-                        }
-                        if !definitions.contains_key(name) {
-                            errors.push(format!("{citation_label}: unknown definition {name:?}"));
-                        }
-                        if !citations.insert((role.to_owned(), name.to_owned())) {
-                            errors.push(format!("{citation_label}: duplicate citation"));
-                        }
-                    }
-                }
-                citations
-            });
-        if let (Some(recorded), Some((_, current))) = (recorded_citations.as_ref(), current)
-            && recorded != *current
-        {
-            errors.push(format!(
-                "{entry_label}: citation set changed; recorded {recorded:?}, current {current:?}"
-            ));
-        }
-        if recorded_citations.as_ref().is_some_and(BTreeSet::is_empty) {
-            errors.push(format!("{entry_label}: citations must not be empty"));
-        }
-        let determination = boolean_field(entry, "determination", &entry_label, errors);
-        let rationale = string_field(entry, "rationale", &entry_label, errors);
-        if rationale.is_some_and(|value| value.trim().is_empty()) {
-            errors.push(format!("{entry_label}: rationale must not be empty"));
-        }
-        if determination == Some(false) {
-            errors.push(format!(
-                "{entry_label}: determination is false: {}",
-                rationale.unwrap_or("")
-            ));
-        }
-        let Some(inputs) = array_field(entry, "inputs", &entry_label, errors) else {
-            continue;
-        };
-        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);
-        let mut self_inputs = 0;
-        let mut definition_inputs = 0;
-        let mut matched_definitions = BTreeSet::new();
-        for (input_index, input) in inputs.iter().enumerate() {
-            let input_label = format!("{entry_label}: inputs[{input_index}]");
-            let input_selector = InputSelector::from_input(input);
-            let resolved = validate_input(root, definitions, input, &input_label, errors);
-            match input_selector {
-                Some(InputSelector::RustItem {
-                    rust_file: selected_file,
-                    rust_item,
-                }) if selected_file == rust_file && rust_item == selector => {
-                    self_inputs += 1;
-                }
-                Some(InputSelector::Requirements { .. }) => {
-                    definition_inputs += 1;
-                    if let Some(resolved) = resolved {
-                        matched_definitions.extend(resolved.matches);
-                    }
-                }
-                _ => {}
-            }
-        }
-        if self_inputs != 1 {
-            errors.push(format!(
-                "{entry_label}: expected exactly one Rust-item input selecting this function, found {self_inputs}"
-            ));
-        }
-        if definition_inputs == 0 {
-            errors.push(format!(
-                "{entry_label}: expected at least one requirements input"
-            ));
-        }
-        if let Some((_, citations)) = current {
-            for (_, name) in citations.iter() {
-                if !matched_definitions.contains(name) {
-                    errors.push(format!(
-                        "{entry_label}: requirements inputs do not cover citation {name}"
-                    ));
-                }
-            }
-        }
-        if valid_header && errors.len() == initial_errors {
-            valid.insert(selector.to_owned());
-        }
-    }
-    for (selector, (function, _)) in expected {
-        if !present.contains(selector) {
-            errors.push(format!(
-                "{label}: {rust_file}:{} {selector}: missing Rust function attestation",
-                function.declaration_line
-            ));
-        }
-    }
-    valid
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1571,8 +1222,6 @@ mod tests {
                 fs::write(root.join("src/broken.rs"), "fn {").unwrap();
                 fs::write(root.join("src/lib.rs"), "fn retained() {}\n").unwrap();
                 fs::write(root.join("src/binary.dat"), [0xff]).unwrap();
-                fs::create_dir_all(root.join("evidence/rust/src")).unwrap();
-                fs::write(root.join("evidence/rust/src/ghost.rs.json"), "{}").unwrap();
             }
             let expected = super::inspect_repository(root).unwrap();
             let mut updates = Vec::new();
@@ -1586,7 +1235,6 @@ mod tests {
                 expected.report.evidence_files
             );
             assert_eq!(inspected.report.errors, expected.report.errors);
-            assert_eq!(inspected.rust_functions, expected.rust_functions);
             assert_eq!(inspected.discovery_errors, expected.discovery_errors);
             assert_eq!(
                 inspected.definitions.keys().collect::<Vec<_>>(),
@@ -1599,14 +1247,17 @@ mod tests {
                 for error in [
                     "invalid JSON",
                     "cannot parse Rust source",
-                    "orphaned Rust attestation file",
+                    "src/lib.rs:1: function retained has no requirement or example citation",
                 ] {
                     assert!(errors.contains(error), "missing {error:?}: {errors}");
                 }
-                assert_eq!(
-                    inspected.rust_functions,
-                    [("src/lib.rs".into(), "fn[retained]".into(), false)]
+                let discovery = inspected.discovery_errors.join("\n");
+                assert!(
+                    discovery.contains("src/broken.rs")
+                        && discovery.contains("cannot parse Rust source"),
+                    "{discovery}"
                 );
+                assert!(!discovery.contains("retained"), "{discovery}");
             } else {
                 assert!(inspected.report.errors.is_empty());
             }
@@ -1620,8 +1271,6 @@ mod tests {
                 ("evidence files", if invalid { 2 } else { 1 }),
                 ("reference source files", if invalid { 6 } else { 3 }),
                 ("reference coverage", 1),
-                ("Rust attestation files", if invalid { 3 } else { 1 }),
-                ("Rust sidecar coverage", if invalid { 1 } else { 0 }),
             ];
             for (stage, total) in expected_counts {
                 let completed: Vec<_> = updates
@@ -1648,12 +1297,7 @@ mod tests {
             super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))
                 .unwrap();
         assert!(inspected.report.errors.is_empty());
-        for stage in [
-            "evidence files",
-            "reference coverage",
-            "Rust attestation files",
-            "Rust sidecar coverage",
-        ] {
+        for stage in ["evidence files", "reference coverage"] {
             assert!(
                 updates.contains(&super::InspectionProgress {
                     stage,
@@ -1723,6 +1367,8 @@ mod tests {
     // {test}`requirements.ci.coverage`
     // {test}`requirements.ci.requirement_text`
     // {test}`requirements.ci.inputs`
+    // {test}`requirements.ci.identifiers`
+    // {test}`requirements.ci.span`
     #[test]
     fn validates_full_names_requirement_text_and_input_lines() {
         let temp = fixture();
@@ -1759,6 +1405,12 @@ mod tests {
     // {test}`requirements.ci.diagnostics`
     // {test}`requirements.ci.input_containment`
     // {test}`requirements.ci.definition_errors`
+    // {test}`requirements.ci.orphans`
+    // {test}`requirements.ci.coverage`
+    // {test}`requirements.ci.determination`
+    // {test}`requirements.ci.inputs`
+    // {test}`requirements.ci.requirement_text`
+    // {test}`requirements.ci.schema`
     #[test]
     fn collects_missing_orphan_format_false_and_changed_line_errors() {
         let temp = fixture();
@@ -1836,6 +1488,7 @@ mod tests {
     }
 
     // {test}`requirements.references.evidence_coverage`
+    // {test}`requirements.references.markdown_literals`
     #[test]
     fn source_references_are_covered_by_evidence_inputs() {
         let temp = fixture();
@@ -1882,6 +1535,7 @@ mod tests {
     }
 
     // {test}`requirements.references.targets`
+    // {test}`requirements.references.evidence_coverage`
     #[test]
     fn reports_unknown_references_and_uncovered_lines() {
         let temp = fixture();
@@ -2031,9 +1685,7 @@ mod tests {
     // {test}`requirements.examples.evidence`
     // {test}`requirements.ci.schema`
     // {test}`requirements.references.evidence_coverage`
-    // {test}`requirements.references.attestation_reassessment`
     // {test}`requirements.ci.requirements_inputs`
-    // {test}`requirements.ci.rust_item_inputs`
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
@@ -2066,48 +1718,27 @@ mod tests {
                 "example": "Given ready, it succeeds. CITE`rules.ready`".replace("CITE", "{cite}"),
                 "determination": true,
                 "rationale": "checks_case sets up ready and asserts the result.",
-                "inputs": [{
-                    "file": "src/main.rs",
-                    "line_start": 1,
-                    "line_end": 3,
-                    "text": test_source.lines().collect::<Vec<_>>()
-                }]
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let rust_evidence = temp.path().join("evidence/rust/src/main.rs.json");
-        fs::create_dir_all(rust_evidence.parent().unwrap()).unwrap();
-        fs::write(
-            &rust_evidence,
-            json!({
-                "rust_file": "src/main.rs",
-                "functions": [{
-                    "rust_item": "fn[checks_case]",
-                    "citations": [{"role": "test", "name": "rules.case"}],
-                    "determination": true,
-                    "rationale": "The sole function is a test of the named case. Its test citation names every behavior it asserts; the case cites the ready requirement.",
-                    "inputs": [
-                        {
-                            "rust_file": "src/main.rs",
-                            "rust_item": "fn[checks_case]",
-                            "text": test_source.lines().collect::<Vec<_>>()
-                        },
-                        {
-                            "requirements": "rules.*",
-                            "matches": ["rules.case", "rules.ready"],
-                            "text": [
-                                chapter.lines().nth(6).unwrap(),
-                                chapter.lines().nth(7).unwrap(),
-                                chapter.lines().nth(8).unwrap(),
-                                "",
-                                chapter.lines().nth(2).unwrap(),
-                                chapter.lines().nth(3).unwrap(),
-                                chapter.lines().nth(4).unwrap()
-                            ]
-                        }
-                    ]
-                }]
+                "inputs": [
+                    {
+                        "file": "src/main.rs",
+                        "line_start": 1,
+                        "line_end": 3,
+                        "text": test_source.lines().collect::<Vec<_>>()
+                    },
+                    {
+                        "requirements": "rules.*",
+                        "matches": ["rules.case", "rules.ready"],
+                        "text": [
+                            chapter.lines().nth(6).unwrap(),
+                            chapter.lines().nth(7).unwrap(),
+                            chapter.lines().nth(8).unwrap(),
+                            "",
+                            chapter.lines().nth(2).unwrap(),
+                            chapter.lines().nth(3).unwrap(),
+                            chapter.lines().nth(4).unwrap()
+                        ]
+                    }
+                ]
             })
             .to_string(),
         )
@@ -2116,40 +1747,8 @@ mod tests {
         let report = validate_repository(temp.path()).unwrap();
         assert_eq!(report.requirements, 1);
         assert_eq!(report.examples, 1);
-        assert_eq!(report.evidence_files, 3);
+        assert_eq!(report.evidence_files, 2);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-
-        let rust_original = fs::read_to_string(&rust_evidence).unwrap();
-        let mut bad_citations: serde_json::Value = serde_json::from_str(&rust_original).unwrap();
-        bad_citations["functions"][0]["citations"] = json!([]);
-        fs::write(&rust_evidence, bad_citations.to_string()).unwrap();
-        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
-        assert!(errors.contains("citation set changed"), "{errors}");
-        assert!(errors.contains("citations must not be empty"), "{errors}");
-        let mut duplicate: serde_json::Value = serde_json::from_str(&rust_original).unwrap();
-        let copy = duplicate["functions"][0].clone();
-        duplicate["functions"].as_array_mut().unwrap().push(copy);
-        fs::write(&rust_evidence, duplicate.to_string()).unwrap();
-        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
-        assert!(
-            errors.contains("duplicate Rust function attestation"),
-            "{errors}"
-        );
-        fs::remove_file(&rust_evidence).unwrap();
-        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
-        assert!(
-            errors.contains("missing Rust function attestation file"),
-            "{errors}"
-        );
-        fs::write(&rust_evidence, rust_original).unwrap();
-        let orphan = temp.path().join("evidence/rust/src/removed.rs.json");
-        fs::write(&orphan, "{}").unwrap();
-        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
-        assert!(
-            errors.contains("orphaned Rust attestation file"),
-            "{errors}"
-        );
-        fs::remove_file(orphan).unwrap();
 
         let old = fs::read_to_string(&example_path).unwrap();
         let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();
@@ -2166,7 +1765,7 @@ mod tests {
         .unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
-            errors.contains("input text changed for RustItem"),
+            errors.contains("input text changed at src/main.rs:1-3"),
             "{errors}"
         );
         fs::write(temp.path().join("src/main.rs"), &test_source).unwrap();
@@ -2208,6 +1807,70 @@ mod tests {
         assert!(errors.contains("missing for example"), "{errors}");
     }
 
+    // {test}`requirements.references.evidence_coverage`
+    // {test}`requirements.references.targets`
+    #[test]
+    fn uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/rules.md"),
+            ":::{req} ready\nReady.\n:::\n",
+        )
+        .unwrap();
+        let source = "// CITE`rules.ready`\nfn helper() {}\n// IMPL`rules.ready`\nfn run() {}\n// TEST`rules.ready`\nfn check() {}\n"
+            .replace("CITE", "{cite}")
+            .replace("IMPL", "{impl}")
+            .replace("TEST", "{test}");
+        fs::write(temp.path().join("src/main.rs"), &source).unwrap();
+        let lines = source.lines().collect::<Vec<_>>();
+        let record = |inputs: serde_json::Value| {
+            json!({
+                "requirement": "Ready.",
+                "determination": true,
+                "rationale": "The implementation and test were examined.",
+                "inputs": inputs
+            })
+            .to_string()
+        };
+        let path = temp.path().join("evidence/rules.ready.json");
+        fs::write(&path, record(json!([]))).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors;
+        let uncovered: Vec<_> = errors
+            .iter()
+            .filter(|error| error.contains("no input covers"))
+            .collect();
+        assert_eq!(uncovered.len(), 2, "{errors:#?}");
+        assert!(
+            uncovered
+                .iter()
+                .any(|error| error.contains("impl") && error.contains("src/main.rs:3")),
+            "{errors:#?}"
+        );
+        assert!(
+            uncovered
+                .iter()
+                .any(|error| error.contains("test") && error.contains("src/main.rs:5")),
+            "{errors:#?}"
+        );
+        assert!(
+            !errors.iter().any(|error| error.contains("src/main.rs:1")),
+            "{errors:#?}"
+        );
+
+        fs::write(
+            &path,
+            record(json!([{
+                "file": "src/main.rs",
+                "line_start": 3,
+                "line_end": 6,
+                "text": lines[2..6]
+            }])),
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
     // {test}`requirements.ci.definition_errors`
     // {test}`requirements.examples.definition`
     // {test}`requirements.examples.evidence`
@@ -2234,11 +1897,36 @@ mod tests {
             "duplicate example rules.repeated; first declared at md/rules.md:1",
             "duplicate example rules.case; first declared at md/rules.md:13",
             "example rules.empty has no text",
-            "example rules.empty must cite at least one requirement",
+            "example rules.empty must reference at least one requirement with {cite} or {test}",
             "example rules.unclosed is missing a closing colon fence",
             "example rules.case has a true determination but no {test} reference",
         ] {
             assert!(errors.contains(detail), "missing {detail:?} in:\n{errors}");
         }
+    }
+
+    // {test}`requirements.examples.definition`
+    #[test]
+    fn examples_may_reference_their_requirement_with_cite_or_test() {
+        let temp = fixture();
+        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. TEST`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. CITE`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. CITE`rules.tested`\n:::\n"
+            .replace("CITE", "{cite}")
+            .replace("TEST", "{test}");
+        fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
+        assert!(
+            !errors.contains("example rules.tested must reference"),
+            "{errors}"
+        );
+        assert!(
+            !errors.contains("example rules.cited must reference"),
+            "{errors}"
+        );
+        assert!(
+            errors.contains(
+                "example rules.nested must reference at least one requirement with {cite} or {test}"
+            ),
+            "{errors}"
+        );
     }
 }

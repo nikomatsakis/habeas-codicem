@@ -73,6 +73,7 @@ impl PathPolicy {
     }
 
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.authoring.source_tools`
     fn contains_credentials(&self, requested: &Path, target: &Path) -> bool {
         self.credential_file.as_ref().is_some_and(|path| {
             requested == path
@@ -570,6 +571,7 @@ pub(super) mod tests {
     // {test}`requirements.authoring.credentials`
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.source_tools`
     #[test]
     fn workspace_credentials_are_excluded_unless_explicitly_allowed() {
         let root = tempfile::tempdir().unwrap();

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::sync::Mutex;
 
 use serde_json::{Map, Value, json};
 
@@ -27,7 +27,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. Requirements globs match complete requirement/example names; * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as one evidence input. Supply exactly one request form: file + line_start (optional line_end), rust_file + rust_item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy; line numbers are one-based and inclusive; omitted line_end reads through EOF. Example: {\"file\":\"src/lib.rs\",\"line_start\":1}. Rust selectors name complete syntactic items, with / separating enclosing items, kind[name] segments, and #N for duplicate siblings (one-based), e.g. {\"rust_file\":\"src/lib.rs\",\"rust_item\":\"impl[Thing]/fn[run]\"}. Trait impls use impl[Thing/Trait], and positional imports use use#1. Delimiters %, [, ], /, # and whitespace inside names or impl types use percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads abort the assessment and report to the operator. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -45,6 +45,10 @@ pub(crate) fn definitions() -> Vec<Value> {
         json!({
             "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
+        }),
+        json!({
+            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
+            "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
     ]
 }
@@ -64,6 +68,7 @@ pub(crate) fn dispatch(
         "habeas" => read(sources, arguments),
         "list_files" => list_files(sources, arguments),
         "ripgrep" => search(sources, arguments),
+        "references" => references(sources, arguments),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
 }
@@ -184,11 +189,105 @@ fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     })
 }
 
+// {impl}`requirements.authoring.reference_index`
+// {impl}`requirements.references.definition_globs`
+fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+    check_keys(args, &["selection"])?;
+    let selection = if args.contains_key("selection") {
+        let selection = string(args, "selection")?;
+        crate::definition_glob::validate(selection).map_err(io::Error::other)?;
+        Some(selection)
+    } else {
+        None
+    };
+    let definitions = crate::evidence::load_definitions(&sources.root)?;
+    let selected: Vec<_> = definitions
+        .iter()
+        .filter(|(name, definition)| {
+            definition.kind != crate::DefinitionKind::Term
+                && selection
+                    .is_none_or(|selection| crate::definition_glob::matches(selection, name))
+        })
+        .map(|(name, definition)| json!({"name": name, "kind": definition.kind.noun()}))
+        .collect();
+    let Some(selection) = selection else {
+        return Ok(ToolDelivery {
+            result: json!({"definitions": selected, "sites": []}),
+            inputs: Vec::new(),
+        });
+    };
+    if selected.is_empty() {
+        return Err(io::Error::other(format!(
+            "selection {selection:?} matches no requirement or named example"
+        )));
+    }
+    let mut errors = Vec::new();
+    let mut found = crate::evidence::collect_references(&sources.root, &mut errors);
+    if !errors.is_empty() {
+        return Err(io::Error::other(errors.join("\n")));
+    }
+    found.retain(|reference| {
+        reference.kind != crate::ReferenceKind::Term
+            && crate::definition_glob::matches(selection, &reference.name)
+            && definitions
+                .get(&reference.name)
+                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term)
+            // Discovery omits excluded sources rather than aborting.
+            && sources.access.file(&sources.root, &reference.file).is_ok()
+    });
+    let mut items: BTreeMap<PathBuf, Vec<crate::rust_items::RustItem>> = BTreeMap::new();
+    let mut sites = Vec::new();
+    for reference in &found {
+        let file = relative_path(&sources.root, &reference.file)?;
+        let rust_item = if reference
+            .file
+            .extension()
+            .is_some_and(|extension| extension == "rs")
+        {
+            let parsed = items.entry(reference.file.clone()).or_insert_with(|| {
+                fs::read_to_string(&reference.file)
+                    .ok()
+                    .and_then(|source| crate::rust_items::parse_items(&source).ok())
+                    .unwrap_or_default()
+            });
+            parsed
+                .iter()
+                .filter(|item| item.line_start <= reference.line && reference.line <= item.line_end)
+                .min_by_key(|item| item.line_end - item.line_start)
+                .map(|item| item.selector.clone())
+        } else {
+            None
+        };
+        sites.push((
+            reference.name.clone(),
+            file,
+            reference.line,
+            json!({
+                "name": reference.name,
+                "role": reference.kind.label(),
+                "file": relative_path(&sources.root, &reference.file)?,
+                "line": reference.line,
+                "rust_item": rust_item,
+            }),
+        ));
+    }
+    sites.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
+    Ok(ToolDelivery {
+        result: json!({
+            "definitions": selected,
+            "sites": sites.into_iter().map(|site| site.3).collect::<Vec<_>>(),
+        }),
+        inputs: Vec::new(),
+    })
+}
+
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.definitions.authoring_inputs`
+// {impl}`requirements.authoring.delivered_inputs`
 fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
     check_keys(args, &["pattern", "path", "context"])?;
     let pattern = string(args, "pattern")?;
@@ -217,61 +316,82 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
     }
     searches.sort();
     searches.dedup();
-    let mut outputs = Vec::new();
+    let matcher = grep_regex::RegexMatcherBuilder::new()
+        .case_insensitive(false)
+        .build(pattern)
+        .map_err(|error| io::Error::other(format!("invalid ripgrep pattern: {error}")))?;
+    let matches = Mutex::new(BTreeMap::<String, Vec<usize>>::new());
+    let failure = Mutex::new(None::<io::Error>);
     for (path, include_ignored) in searches {
-        let mut command = Command::new("rg");
-        command.current_dir(&sources.root).args([
-            "--json",
-            "--no-config",
-            "--case-sensitive",
-            "--color=never",
-        ]);
-        if include_ignored {
-            command.args(["--no-ignore", "--hidden"]);
-        }
-        let output = command
-            .arg("--")
-            .arg(pattern)
-            .arg(path)
-            .output()
-            .map_err(|error| io::Error::other(format!("cannot run ripgrep: {error}")))?;
-        if !output.status.success() && output.status.code() != Some(1) {
-            return Err(io::Error::other(format!(
-                "ripgrep failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        outputs.push(output.stdout);
+        let mut walker = ignore::WalkBuilder::new(&path);
+        walker
+            .hidden(!include_ignored)
+            .ignore(!include_ignored)
+            .git_ignore(!include_ignored)
+            .git_global(!include_ignored)
+            .git_exclude(!include_ignored)
+            .parents(!include_ignored)
+            .add_custom_ignore_filename(".rgignore");
+        walker.build_parallel().run(|| {
+            let matcher = &matcher;
+            let matches = &matches;
+            let failure = &failure;
+            let mut searcher = grep_searcher::SearcherBuilder::new()
+                .line_number(true)
+                .binary_detection(grep_searcher::BinaryDetection::quit(0))
+                .build();
+            Box::new(move |entry| {
+                let Ok(entry) = entry else {
+                    return ignore::WalkState::Continue;
+                };
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    return ignore::WalkState::Continue;
+                }
+                // Apply source-access policy while walking: denied files are
+                // never opened.
+                if sources.access.file(&sources.root, entry.path()).is_err() {
+                    return ignore::WalkState::Continue;
+                }
+                let mut lines = Vec::new();
+                let searched = searcher.search_path(
+                    matcher,
+                    entry.path(),
+                    grep_searcher::sinks::Lossy(|number, _| {
+                        lines.push(number as usize);
+                        Ok(true)
+                    }),
+                );
+                if searched.is_err() || lines.is_empty() {
+                    return ignore::WalkState::Continue;
+                }
+                match relative_path(&sources.root, entry.path()) {
+                    Ok(file) => matches
+                        .lock()
+                        .expect("search results lock")
+                        .entry(file)
+                        .or_default()
+                        .extend(lines),
+                    Err(error) => {
+                        *failure.lock().expect("search failure lock") = Some(error);
+                        return ignore::WalkState::Quit;
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
     }
-    let mut matches: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for line in outputs
-        .iter()
-        .flat_map(|output| output.split(|byte| *byte == b'\n'))
-        .filter(|line| !line.is_empty())
-    {
-        let event: Value = serde_json::from_slice(line)
-            .map_err(|error| io::Error::other(format!("invalid ripgrep output: {error}")))?;
-        if event["type"] != "match" {
-            continue;
-        }
-        let file = event["data"]["path"]["text"]
-            .as_str()
-            .ok_or_else(|| io::Error::other("ripgrep found a non-UTF-8 path"))?;
-        if sources.access.file(&sources.root, Path::new(file)).is_err() {
-            continue;
-        }
-        let number = event["data"]["line_number"]
-            .as_u64()
-            .and_then(|number| usize::try_from(number).ok())
-            .ok_or_else(|| io::Error::other("ripgrep returned an invalid line number"))?;
-        let file = relative_path(&sources.root, &sources.root.join(file))?;
-        matches.entry(file).or_default().push(number);
+    if let Some(error) = failure.into_inner().expect("search failure lock") {
+        return Err(error);
     }
+    // Parallel walks finish in any order; the map and per-file sort make results
+    // independent of scheduling.
+    let matches = matches.into_inner().expect("search results lock");
     let mut inputs = Vec::new();
     for (file, mut lines) in matches {
         let (_, source) = read_project_file(&sources.root, &file).map_err(io::Error::other)?;
         let count = source.lines().count();
         lines.sort_unstable();
+        lines.dedup();
         let mut windows: Vec<(usize, usize)> = Vec::new();
         for line in lines {
             if line == 0 || line > count {
@@ -455,6 +575,7 @@ mod tests {
 
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.additional_read`
+    // {test}`requirements.authoring.file_discovery`
     #[test]
     fn search_merges_context_windows_and_respects_ignore_rules() {
         let root = project();
@@ -506,6 +627,7 @@ mod tests {
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     fn generated_evidence_is_excluded_from_reads_search_and_discovery() {
         let root = project();
@@ -674,6 +796,7 @@ mod tests {
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     fn git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files() {
         let root = project();
@@ -740,6 +863,7 @@ mod tests {
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
     #[test]
     fn git_symlink_reads_require_both_the_alias_and_target_to_be_tracked() {
@@ -1010,5 +1134,142 @@ mod tests {
         assert_eq!(result.inputs.len(), 1);
         assert_eq!(result.inputs[0]["file"], "actual/needle.txt");
         assert_eq!(result.inputs[0]["text"], json!(["actual needle"]));
+    }
+
+    // {test}`requirements.authoring.reference_index`
+    #[test]
+    fn references_list_names_and_flattened_sites_without_recording_inputs() {
+        let root = project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\nThe project MUST be ready.\n:::\n\n:::{{req}} other\nOther MUST hold.\n:::\n\n:::{{example}} case\nA ready case. {}\n:::\n",
+                role("cite", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn work() {{\n    // {}\n}}\n\n// {}\nfn check() {{}}\n",
+                role("impl", "requirements.ready"),
+                role("cite", "requirements.other"),
+                role("test", "requirements.ready"),
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("private")).unwrap();
+        fs::write(
+            root.path().join("private/notes.md"),
+            format!("{}\n", role("cite", "requirements.ready")),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n\n[evidence]\ndisallow = [\"private\"]\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+
+        let all = dispatch(&sources, "references", &json!({})).unwrap();
+        assert_eq!(
+            all.result,
+            json!({"definitions": [
+                {"name": "requirements.case", "kind": "example"},
+                {"name": "requirements.other", "kind": "requirement"},
+                {"name": "requirements.ready", "kind": "requirement"},
+            ], "sites": []})
+        );
+        assert!(all.inputs.is_empty());
+
+        let ready = dispatch(
+            &sources,
+            "references",
+            &json!({"selection": "requirements.ready"}),
+        )
+        .unwrap();
+        assert_eq!(
+            ready.result,
+            json!({"definitions": [{"name": "requirements.ready", "kind": "requirement"}], "sites": [
+                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 10, "rust_item": null},
+                {"name": "requirements.ready", "role": "impl", "file": "src/lib.rs", "line": 1, "rust_item": "fn[work]"},
+                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "line": 6, "rust_item": "fn[check]"},
+            ]})
+        );
+        assert!(ready.inputs.is_empty());
+
+        let flattened = dispatch(
+            &sources,
+            "references",
+            &json!({"selection": "requirements.*"}),
+        )
+        .unwrap();
+        let sites = flattened.result["sites"].as_array().unwrap();
+        assert_eq!(flattened.result["definitions"].as_array().unwrap().len(), 3);
+        assert_eq!(sites.len(), 4);
+        assert_eq!(sites[0]["name"], "requirements.other");
+        assert_eq!(sites[0]["rust_item"], "fn[work]");
+        assert!(flattened.inputs.is_empty());
+
+        for selection in ["requirements.missing", "bad name", ""] {
+            assert!(
+                dispatch(&sources, "references", &json!({"selection": selection})).is_err(),
+                "accepted {selection:?}"
+            );
+        }
+        assert!(dispatch(&sources, "references", &json!({"selection": 1})).is_err());
+        assert!(
+            dispatch(
+                &sources,
+                "references",
+                &json!({"name": "requirements.ready"})
+            )
+            .is_err()
+        );
+    }
+
+    // {test}`requirements.authoring.text_search`
+    #[test]
+    fn parallel_search_orders_results_by_path_and_line() {
+        let root = project();
+        for index in (0..40).rev() {
+            fs::write(
+                root.path().join(format!("src/file{index:02}.rs")),
+                "// needle\nfn a() {}\n// needle\n",
+            )
+            .unwrap();
+        }
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let first = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern": "needle", "path": "src", "context": 0}),
+        )
+        .unwrap();
+        let files: Vec<_> = first.result["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| {
+                (
+                    input["file"].as_str().unwrap().to_owned(),
+                    input["line_start"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted);
+        assert_eq!(files.len(), 80);
+        for _ in 0..5 {
+            let again = dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"pattern": "needle", "path": "src", "context": 0}),
+            )
+            .unwrap();
+            assert_eq!(again.result, first.result);
+        }
+        assert!(dispatch(&sources, "ripgrep", &json!({"pattern": "("})).is_err());
     }
 }

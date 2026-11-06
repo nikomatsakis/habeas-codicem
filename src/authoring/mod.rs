@@ -44,24 +44,14 @@ pub struct AuthoringOptions {
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
-    RustFunction {
-        rust_file: String,
-        rust_item: String,
-    },
 }
 
 impl AuthoringSubject {
     // {impl}`requirements.authoring.batch`
-    // {impl}`requirements.authoring.function_attestations`
     // {impl}`requirements.authoring.usage_storage`
     pub(crate) fn label(&self) -> String {
-        match self {
-            Self::Definition(name) => name.clone(),
-            Self::RustFunction {
-                rust_file,
-                rust_item,
-            } => format!("{rust_file}:{rust_item}"),
-        }
+        let Self::Definition(name) = self;
+        name.clone()
     }
 }
 
@@ -191,10 +181,10 @@ pub async fn author_evidence_with_output(
 }
 
 // {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.concurrency`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
@@ -322,7 +312,6 @@ async fn configured_assessment(
 }
 
 // {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.authoring.usage_storage`
@@ -343,13 +332,8 @@ async fn configured_record(
     };
     usage.record.backend = Some(backend.into());
     usage.record.model = Some(model.model.clone());
-    let mut sources = match subject {
-        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),
-        AuthoringSubject::RustFunction {
-            rust_file,
-            rust_item,
-        } => AssessmentSources::prepare_function(root, rust_file, rust_item),
-    }?;
+    let AuthoringSubject::Definition(name) = subject;
+    let mut sources = AssessmentSources::prepare(root, name)?;
     usage.record.subject_kind = Some(sources.subject_kind.noun().into());
     usage.prepared("mandatory", sources.mandatory_inputs());
     usage.save()?;
@@ -366,34 +350,22 @@ async fn configured_record(
 }
 
 // {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.ci.review_criteria`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.examples.evidence`
+// {impl}`requirements.authoring.mandatory_inputs`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
     // Keep the approved template as the sole source of these instructions.
     let chapter = include_str!("../../md/requirements/authoring.md");
-    let opening = match &sources.subject_kind {
-        AssessmentKind::Definition(_) => {
-            "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example."
-        }
-        AssessmentKind::RustFunction { .. } => {
-            "Bring your expert judgment to the task of assessing a Rust function's citation completeness."
-        }
-    };
+    let opening = "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.";
     let start = chapter.find(opening).expect("approved prompt template");
     let template = chapter[start..]
         .split("\n```")
         .next()
         .expect("prompt closing fence");
-    let citations = match &sources.subject_kind {
-        AssessmentKind::Definition(_) => String::new(),
-        AssessmentKind::RustFunction { citations, .. } => serde_json::to_string_pretty(citations)?,
-    };
     Ok(template
         .replace("{{subject_kind}}", sources.subject_kind.noun())
         .replace("{{subject_name}}", &sources.subject_name)
-        .replace("{{citations}}", &citations)
         .replace(
             "{{mandatory_inputs}}",
             &serde_json::to_string_pretty(sources.mandatory_inputs())?,
@@ -401,8 +373,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
 }
 
 // {impl}`requirements.authoring.submission`
-// {impl}`requirements.authoring.function_attestations`
-fn submission(arguments: &Value, function: bool) -> io::Result<(Judgment, String)> {
+fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     let object = arguments
         .as_object()
         .ok_or_else(|| io::Error::other("submit_judgment expects an object"))?;
@@ -412,11 +383,6 @@ fn submission(arguments: &Value, function: bool) -> io::Result<(Judgment, String
     {
         return Err(io::Error::other(
             "submit_judgment requires exactly determination and rationale",
-        ));
-    }
-    if function && !object["determination"].is_boolean() {
-        return Err(io::Error::other(
-            "Rust function attestation determination must be boolean",
         ));
     }
     let judgment = Judgment::from_value(&object["determination"]).map_err(io::Error::other)?;
@@ -429,14 +395,10 @@ fn submission(arguments: &Value, function: bool) -> io::Result<(Judgment, String
 
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.function_attestations`
-fn tool_definitions(function: bool) -> io::Result<Vec<ToolDefinition>> {
+// {impl}`requirements.ci.outcomes`
+fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
-    let determination = if function {
-        json!({"type": "boolean"})
-    } else {
-        json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]})
-    };
+    let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
     definitions.push(json!({"name": "submit_judgment", "description": "Submit your final judgment exactly once. No other message supplies the result.",
         "parameters": {"type":"object", "additionalProperties": false, "required":["determination","rationale"], "properties": {
             "determination": determination,
@@ -453,19 +415,22 @@ fn tool_definitions(function: bool) -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.authoring.persistence`
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.usage_requests`
-// {impl}`requirements.authoring.function_attestations`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.provider_backoff`
+// {impl}`requirements.authoring.submission_count`
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.authoring.file_discovery`
+// {impl}`requirements.authoring.text_search`
+// {impl}`requirements.ci.authoring_inputs`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
 ) -> io::Result<(Judgment, Value)> {
     let mut request = CompletionRequest::new(initial_prompt(sources)?);
-    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });
-    request.tools = tool_definitions(function)?;
+    request.tools = tool_definitions()?;
     let mut pending = sources.mandatory_inputs().to_vec();
     let mut backoff = providers::ProviderBackoff::default();
     loop {
@@ -516,25 +481,14 @@ async fn assess(
                     "submit_judgment must be invoked exactly once; multiple submissions received",
                 ));
             }
-            let result = submission(
-                &Value::Object(submissions[0].function.arguments.clone()),
-                function,
-            );
+            let result = submission(&Value::Object(submissions[0].function.arguments.clone()));
             usage.tool("submit_judgment", result.is_err());
             let (judgment, rationale) = result?;
             usage.record.determination = Some(judgment.kind().into());
             usage.save()?;
-            let evidence = match &sources.subject_kind {
-                AssessmentKind::Definition(kind) => json!({kind.noun(): sources.subject_text,
-                    "determination": judgment.to_value(), "rationale": rationale, "inputs": sources.recorded_inputs()}),
-                AssessmentKind::RustFunction {
-                    rust_item,
-                    citations,
-                } => json!({
-                    "rust_item": rust_item, "citations": citations,
-                    "determination": judgment.to_value(), "rationale": rationale, "inputs": sources.recorded_inputs()
-                }),
-            };
+            let AssessmentKind::Definition(kind) = &sources.subject_kind;
+            let evidence = json!({kind.noun(): sources.subject_text,
+                "determination": judgment.to_value(), "rationale": rationale, "inputs": sources.recorded_inputs()});
             return Ok((judgment, evidence));
         }
         if calls.is_empty() {
@@ -589,6 +543,24 @@ mod tests {
 
     struct JudgmentProvider(Value);
 
+    impl CompletionProvider for JudgmentProvider {
+        // {test}`requirements.authoring.submission`
+        async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
+            Ok(CompletionResponse::new(
+                vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                    "judgment",
+                    ToolFunction::new(
+                        ToolName::new("submit_judgment").unwrap(),
+                        json!({"determination": self.0, "rationale": "The supplied source implements the requirement."}),
+                    ),
+                ))],
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            ).with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
     struct ThrottledProvider {
         failures: usize,
         status: u16,
@@ -622,9 +594,7 @@ mod tests {
         UsageLog,
     ) {
         let project = inputs::tests::project();
-        fs::write(project.path().join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
-        let sources =
-            AssessmentSources::prepare_function(project.path(), "src/lib.rs", "fn[ready]").unwrap();
+        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let state = tempfile::tempdir().unwrap();
         let mut usage =
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
@@ -709,84 +679,5 @@ mod tests {
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(log["request_count"], 1);
         assert_eq!(log["requests"][0]["outcome"], "failed");
-    }
-
-    impl CompletionProvider for JudgmentProvider {
-        // {test}`requirements.authoring.function_attestations`
-        // {test}`requirements.authoring.submission`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let submit = request
-                .tools
-                .iter()
-                .find(|tool| tool.name == "submit_judgment")
-                .unwrap();
-            assert_eq!(
-                submit.parameters["properties"]["determination"],
-                json!({"type": "boolean"})
-            );
-            Ok(CompletionResponse::new(
-                vec![AssistantContent::ToolCall(ToolCall::from_wire(
-                    "judgment",
-                    ToolFunction::new(
-                        ToolName::new("submit_judgment").unwrap(),
-                        json!({"determination": self.0, "rationale": "The supplied source accounts for this citation set."}),
-                    ),
-                ))],
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            ).with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {test}`requirements.authoring.function_attestations`
-    // {test}`requirements.authoring.submission`
-    // {test}`requirements.authoring.delivered_inputs`
-    // {test}`requirements.authoring.usage_storage`
-    // {test}`requirements.authoring.mandatory_inputs`
-    #[tokio::test]
-    async fn function_judgments_use_boolean_schema_and_harness_owned_inputs() {
-        let project = inputs::tests::project();
-        fs::write(
-            project.path().join("src/lib.rs"),
-            format!(
-                "// {}\npub fn ready() {{}}\n",
-                inputs::tests::role("impl", "requirements.ready")
-            ),
-        )
-        .unwrap();
-        let state = tempfile::tempdir().unwrap();
-        for value in [json!(true), json!(false), json!({"FIXME": ["#125"]})] {
-            let mut sources =
-                AssessmentSources::prepare_function(project.path(), "src/lib.rs", "fn[ready]")
-                    .unwrap();
-            let prompt = initial_prompt(&sources).unwrap();
-            assert!(prompt.starts_with("Bring your expert judgment to the task of assessing a Rust function's citation completeness."));
-            assert!(prompt.contains("src/lib.rs:fn[ready]"));
-            assert!(prompt.contains("requirements.ready"));
-            assert!(!prompt.contains("{{"));
-            let mut usage =
-                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-            usage.prepared("mandatory", sources.mandatory_inputs());
-            let result = assess(&JudgmentProvider(value.clone()), &mut sources, &mut usage).await;
-            assert!(!project.path().join("evidence").exists());
-            assert!(!usage.record.evidence_written);
-            if value.is_boolean() {
-                let (judgment, record) = result.unwrap();
-                assert_eq!(judgment.to_value(), value);
-                assert_eq!(record["determination"], value);
-                assert_eq!(record["rust_item"], "fn[ready]");
-                assert_eq!(
-                    record["citations"],
-                    json!([{"role": "impl", "name": "requirements.ready"}])
-                );
-                assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
-                assert!(record.get("requirement").is_none());
-                assert_eq!(usage.record.determination.as_deref(), Some(judgment.kind()));
-            } else {
-                assert!(result.unwrap_err().to_string().contains("must be boolean"));
-                assert!(usage.record.determination.is_none());
-            }
-        }
     }
 }

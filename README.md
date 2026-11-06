@@ -1,6 +1,6 @@
 # Habeas Codicem
 
-Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, cited lines, `{impl}`, `{cite}`, and `{test}` references, and uncited Rust functions.
+Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, recorded lines, `{impl}`, `{cite}`, and `{test}` references, and unreferenced Rust functions.
 
 ## Install
 
@@ -26,9 +26,9 @@ To configure the project before starting an agent session, or if the hook is una
 
 `habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
 
-Add a `{test}` citation to an appropriate project requirement or named example for the generated test, and cite the rest of your Rust functions before expecting validation to pass.
+Add a `{test}` reference to an appropriate project requirement or named example on the generated test, and give the rest of your Rust functions references before expecting validation to pass. Mark code with `{impl}` where it implements part of a definition, tests with `{test}` where they are designed to verify one, and use `{cite}` only for related code that does neither; see [References](md/reference.md#references).
 
-Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement evidence, example evidence, and Rust function attestations. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current accepted records are preserved. Run `cargo test --workspace` afterward to validate the saved evidence without inference.
+Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement and example evidence. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current records are preserved, including false judgments whose subject and inputs are unchanged. Run `cargo test --workspace` afterward to validate the saved evidence without inference.
 
 Bedrock authoring defaults to the available logical CPU count in simultaneous
 assessments; Ollama defaults to one. Set a positive `concurrency` in the named
@@ -42,18 +42,18 @@ During local development, `habeas setup --path /path/to/habeas-codicem` uses a l
 
 Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command.
 
-Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or input lines. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use an exact full name or a regular expression:
+Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or input lines. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use a definition selection: an exact full name, or a glob where `*` matches any characters including dots:
 
 ```sh
 habeas info requirements.ci.inputs
-habeas info '^requirements\.cli\.'
+habeas info 'requirements.cli.*'
 ```
 
 The bundled agent skills describe `habeas info` as a way to look up requirements while working.
 
 For a requirements index, add a chapter to `SUMMARY.md` containing `:::{requirements-index}` on one line and `:::` on the next. The preprocessor lists evidence states there and adds a detail subchapter for each requirement and example.
 
-A requirement states general behavior. An example uses its own directive to show a concrete case and cites the requirement it illustrates. In `md/requirements.md`:
+A requirement states general behavior. An example uses its own directive to show a concrete case and references the requirement it illustrates with `{cite}` or `{test}`. In `md/requirements.md`:
 
 ```text
 :::{req} forwarding.quit

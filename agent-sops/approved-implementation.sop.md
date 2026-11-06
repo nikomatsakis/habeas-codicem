@@ -7,11 +7,13 @@ Apply the shared one-PR protocol. Start in **🛠 Author code**.
    tests, evidence, discussion history, and commits. Use `cargo habeas info` in
    this repository or `habeas info` where installed. Identify obligations already
    satisfied and the changes needed for the selected owner feedback.
-2. Implement the approved behavior and test its concrete examples. Add `{impl}`
-   and `{test}` references, then run `cargo habeas author --all` (or installed
-   `habeas author --all`) to assess evidence and function attestations. Leave
+2. Implement the approved behavior and test its concrete examples. Mark code that
+   implements part of a requirement with `{impl}` and tests that verify it with
+   `{test}`, using `{cite}` only for related code that does neither. Then run
+   `cargo habeas author --all` (or installed `habeas author --all`) to assess
+   evidence. Leave
    evidence JSON, judgments, rationales, and input snapshots to that harness.
-   Address reported gaps in source, citations, or tests and rerun authoring.
+   Address reported gaps in source, references, or tests and rerun authoring.
    Report unavailable model configuration or provider access as a blocker.
    Do not edit `md/`
    while authoring code. If an obligation needs revision, follow the shared

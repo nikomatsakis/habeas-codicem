@@ -190,6 +190,7 @@ impl UsageLog {
     }
 
     // {impl}`requirements.authoring.usage_requests`
+    // {impl}`requirements.authoring.usage_inputs`
     pub(super) fn end_request(
         &mut self,
         index: usize,
@@ -245,6 +246,7 @@ impl UsageLog {
     }
 
     // {impl}`requirements.authoring.usage_storage`
+    // {impl}`requirements.authoring.usage_requests`
     pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {
         if let Some((index, started)) = self.active_request.take() {
             let request = &mut self.record.requests[index];
@@ -336,7 +338,7 @@ impl TokenCounts {
 // {impl}`requirements.authoring.usage_storage`
 fn tool_name(name: &str) -> &str {
     match name {
-        "habeas" | "ripgrep" | "list_files" | "submit_judgment" => name,
+        "habeas" | "ripgrep" | "list_files" | "references" | "submit_judgment" => name,
         _ => "unknown",
     }
 }

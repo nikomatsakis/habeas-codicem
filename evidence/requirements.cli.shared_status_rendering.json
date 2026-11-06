@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas status` and the mdBook requirements index MUST generate their Definition/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different definitions and supply different kind-labeled name cells so mdBook can link to detail pages.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** Both outputs go through one renderer, and tests cover the main points. I did not run the tests.\n\n**Implementation**\n- `render_evidence_table` in `src/markdown.rs` is the only function that builds the Definition/Evidence table. It computes each column's width as the widest cell, with \"Definition\" and \"Evidence\" as minimums. It left-pads every row, including the header and the `---` separator row, so the `|` delimiters line up.\n- `habeas status` calls it from `status_markdown_with_options` in `src/commands.rs` (line 96). Those rows are `` `name` (kind) `` cells plus `evidence.state().label()`.\n- The mdBook index calls it from `IndexPlan::populate` in `src/index.rs` (line 352). Those rows are `` [`name`](href) (kind) `` cells plus `evidence.state().label()`.\n- Both callers take the label from the same `EvidenceState::label()` (`src/index.rs`, around line 228). The state labels are therefore identical in both outputs.\n- The callers choose which definitions to show and what the name cell looks like. `status` filters by glob, `--all` and `--verbose`. The index uses linked cells for every definition with a detail page. This matches the \"MAY select different definitions and supply different kind-labeled name cells\" clause.\n- The code carries `{impl}` annotations for this requirement at each of these sites.\n\n**Tests**\n- `index_shows_evidence_states_and_links_generated_chapters` in `src/index.rs` carries `{test}` for `shared_status_rendering`. It checks the index table's state labels (Valid, Determination false, Invalid, Missing), the linked name cells, and that every table line has `|` in the same positions. It exercises the renderer through the mdBook caller.\n- `status_tables_align_each_column_to_its_widest_cell` in `tests/commands.rs` covers the `habeas status` output, both plain and `--all`. It checks aligned delimiters, padding, widths equal to the widest cell, and the separator row. It is tagged `status_table_alignment` rather than `shared_status_rendering`.\n- `tests/commands.rs` also checks `status` output rows, including FIXME labels and the kind-labeled name cells.\n\n**Gaps**\n- No single test compares the two outputs directly. Since there is one shared function and one label source, a direct comparison would add little.\n- I found no FIXME markers acknowledging gaps for this requirement.",
+  "rationale": "**Verdict: the requirement is met.**\n\n**Implementation**\n- `render_evidence_table` in `src/markdown.rs` (marked `{impl}`) is the single renderer. It takes `(name cell, &str evidence label)` rows. It computes each column width as the widest cell, with the header names \"Definition\" and \"Evidence\" as the minimum. It then left-aligns and pads the header, separator and data rows to those widths.\n- `status_markdown_with_options` in `src/commands.rs` (`{impl}` at the function and at the call site) calls it. It builds name cells as `` `name` (kind) `` and uses `EvidenceState::label()` for the evidence cell. It also selects definitions by glob and by `--all`, `--verbose` and FIXME handling.\n- `IndexPlan::populate` in `src/index.rs` (`{impl}` at the call site) calls the same function. It builds name cells as `` [`name`](href) (kind) `` so mdBook can link to detail pages. It uses the same `EvidenceState::label()`, and it takes every definition that has a detail page.\n- The two callers therefore share the renderer, the width calculation, the alignment and the state labels. They differ only in which definitions they select and in their name cells, which the requirement allows.\n- All the code that implements the requirement carries a reference to it. I found no unmarked partial implementation. The renderer also carries `status_table_alignment`, which specifies the same alignment behaviour.\n\n**Tests**\n- `index_shows_evidence_states_and_links_generated_chapters` in `src/index.rs` carries a `{test}` reference to this requirement.\n  - It checks the linked name cells in the index.\n  - It checks the evidence labels Valid, Determination false, Invalid and Missing.\n  - It checks that every table row has `|` delimiters at identical positions, which confirms that column widths are computed and the columns aligned.\n- `tests/commands.rs` has `status_tables_align_each_column_to_its_widest_cell`, which cites `status_table_alignment` rather than this requirement. It exercises the same renderer from the status side.\n- No test cites `shared_status_rendering` on the status side. That is a minor weakness. The requirement is structural, and a single shared function guarantees it, so I judge the coverage adequate.",
   "inputs": [
     {
       "requirements": "requirements.cli.shared_status_rendering",
@@ -124,6 +124,7 @@
       "text": [
         "    // {impl}`requirements.index.state`",
         "    // {impl}`requirements.examples.index`",
+        "    // {impl}`requirements.index.chapter`",
         "    pub(crate) fn populate(",
         "        &self,",
         "        book: &mut Book,",
@@ -224,6 +225,8 @@
         "    // {test}`requirements.index.navigation`",
         "    // {test}`requirements.index.source_links`",
         "    // {test}`requirements.cli.shared_status_rendering`",
+        "    // {test}`requirements.index.detail_format`",
+        "    // {test}`requirements.index.invalid_detail`",
         "    #[test]",
         "    fn index_shows_evidence_states_and_links_generated_chapters() {",
         "        let temp = TempDir::new().unwrap();",
@@ -428,862 +431,177 @@
       ]
     },
     {
-      "file": "src/index.rs",
-      "line_start": 772,
-      "line_end": 778,
+      "file": "src/authoring/mod.rs",
+      "line_start": 49,
+      "line_end": 55,
       "text": [
-        "    // {test}`requirements.index.chapter`",
-        "    // {test}`requirements.index.state`",
-        "    // {test}`requirements.index.navigation`",
-        "    // {test}`requirements.index.source_links`",
-        "    // {test}`requirements.cli.shared_status_rendering`",
-        "    #[test]",
-        "    fn index_shows_evidence_states_and_links_generated_chapters() {"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 842,
-      "line_end": 878,
-      "text": [
-        "        let index = book.chapters().nth(1).unwrap();",
-        "        assert!(!index.content.contains(\"{requirements-index}\"));",
-        "        for (name, state) in [",
-        "            (\"ready\", \"Valid\"),",
-        "            (\"pending\", \"Determination false\"),",
-        "            (\"changed\", \"Invalid\"),",
-        "            (\"absent\", \"Missing\"),",
-        "            (\"uncovered\", \"Invalid\"),",
-        "        ] {",
-        "            let link = format!(",
-        "                \"| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html)\"",
-        "            );",
-        "            let row = index",
-        "                .content",
-        "                .lines()",
-        "                .find(|line| line.starts_with(&link))",
-        "                .unwrap_or_else(|| panic!(\"missing {link} in:\\n{}\", index.content));",
-        "            assert_eq!(row.split('|').nth(2).unwrap().trim(), state);",
-        "        }",
-        "        let table = index",
-        "            .content",
-        "            .lines()",
-        "            .skip_while(|line| !line.starts_with(\"| \"))",
-        "            .take_while(|line| line.starts_with(\"| \"))",
-        "            .collect::<Vec<_>>();",
-        "        let pipes = table[0]",
-        "            .match_indices('|')",
-        "            .map(|(position, _)| position)",
-        "            .collect::<Vec<_>>();",
-        "        assert_eq!(pipes.len(), 3);",
-        "        assert!(table.iter().all(|line| {",
-        "            line.match_indices('|')",
-        "                .map(|(position, _)| position)",
-        "                .collect::<Vec<_>>()",
-        "                == pipes",
-        "        }));",
-        "        assert_eq!(index.sub_items.len(), 5);"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 286,
-      "line_end": 331,
-      "text": [
-        "        \"{text}\"",
-        "    );",
-        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
-        "        assert!(!text.contains(&format!(\"rules.{name}\")), \"{text}\");",
-        "    }",
-        "",
-        "    let output = habeas(temp.path(), &[\"status\", \"--all\"]);",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let all = String::from_utf8(output.stdout).unwrap();",
-        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
-        "        assert!(",
-        "            all.lines().any(",
-        "                |line| line.starts_with(&format!(\"| `rules.{name}`\")) && line.contains(\"FIXME\")",
-        "            ),",
-        "            \"{all}\"",
-        "        );",
-        "    }",
-        "    for summary in summaries {",
-        "        assert!(all.contains(summary), \"{all}\");",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.fixme_summary`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {",
-        "    let temp = fixme_fixture();",
-        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\"]);",
-        "    assert!(output.status.success(), \"{output:?}\");",
-        "    let text = String::from_utf8(output.stdout).unwrap();",
-        "    for name in [\"alpha\", \"beta\", \"case\", \"unlinked\"] {",
-        "        assert!(text.contains(&format!(\"rules.{name}\")), \"{text}\");",
-        "    }",
-        "    for detail in [",
-        "        \"requirement\",",
-        "        \"example\",",
-        "        \"FIXME(#00123)\",",
-        "        \"Repeated #123 and rust-lang/rust#000456.\",",
-        "        \"https://github.com/rust-lang/rust/issues/456\",",
-        "        \"Unlinked extra detail\",",
-        "        \"An unrelated note\",",
-        "        \"&lt;script&gt;alert(1)&lt;/script&gt;\",",
-        "    ] {",
-        "        assert!(text.contains(detail), \"{text}\");",
+        "impl AuthoringSubject {",
+        "    // {impl}`requirements.authoring.batch`",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(crate) fn label(&self) -> String {",
+        "        let Self::Definition(name) = self;",
+        "        name.clone()",
         "    }"
       ]
     },
     {
-      "rust_file": "src/commands.rs",
-      "rust_item": "fn[status_markdown_filtered]",
-      "text": [
-        "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "// {impl}`requirements.definitions.selection`",
-        "pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {",
-        "    status_markdown_with_options(root, all, glob, false)",
-        "}"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 42,
-      "line_end": 50,
-      "text": [
-        ":::",
-        "",
-        ":::{req} status_table_alignment",
-        "When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Definition and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.",
-        ":::",
-        "",
-        ":::{req} shared_status_rendering",
-        "`habeas status` and the mdBook requirements index MUST generate their Definition/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different definitions and supply different kind-labeled name cells so mdBook can link to detail pages.",
-        ":::"
-      ]
-    },
-    {
       "file": "src/commands.rs",
-      "line_start": 8,
-      "line_end": 12,
+      "line_start": 7,
+      "line_end": 13,
       "text": [
+        "use crate::evidence::inspect_repository;",
         "use crate::fixme::FixmeSummary;",
         "use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};",
         "use crate::markdown::render_evidence_table;",
         "",
-        "// {impl}`requirements.cli.status`"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 25,
-      "line_end": 29,
-      "text": [
         "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`"
+        "// {impl}`requirements.cli.fixme_summary`"
       ]
     },
     {
       "file": "src/commands.rs",
-      "line_start": 92,
-      "line_end": 97,
+      "line_start": 93,
+      "line_end": 99,
       "text": [
-        "            \"All matching definitions have valid evidence.\\n\"",
         "        });",
         "    } else {",
         "        // {impl}`requirements.cli.shared_status_rendering`",
         "        output.push_str(&render_evidence_table(&rows));",
-        "    }"
+        "    }",
+        "",
+        "    let other_findings = inspection"
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 11,
-      "line_end": 15,
+      "line_start": 10,
+      "line_end": 16,
       "text": [
+        "",
         "use crate::evidence::{Declaration, inspect_repository};",
         "use crate::inputs::{InputSelector, SourceRange};",
         "use crate::markdown::render_evidence_table;",
         "use crate::{",
-        "    Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,"
+        "    Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,",
+        "    escape_html, overlaps_protected, protected_ranges, shield_badge,"
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 349,
-      "line_end": 354,
-      "text": [
-        "        }",
-        "",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        let rows = render_evidence_table(&rows);",
-        "",
-        "        // {impl}`requirements.index.navigation`"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 774,
-      "line_end": 778,
-      "text": [
-        "    // {test}`requirements.index.navigation`",
-        "    // {test}`requirements.index.source_links`",
-        "    // {test}`requirements.cli.shared_status_rendering`",
-        "    #[test]",
-        "    fn index_shows_evidence_states_and_links_generated_chapters() {"
-      ]
-    },
-    {
-      "file": "src/markdown.rs",
-      "line_start": 1,
-      "line_end": 5,
-      "text": [
-        "// {impl}`requirements.cli.status_table_alignment`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {",
-        "    let definition_width = rows",
-        "        .iter()"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 471,
-      "line_end": 475,
-      "text": [
-        "    assert!(!exact.contains(\"# `requirements.xready`\"), \"{exact}\");",
-        "    assert!(",
-        "        exact.contains(\"## Requirement\\n\\n> Ready MUST work.\"),",
-        "        \"{exact}\"",
-        "    );"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 41,
-      "line_end": 51,
-      "text": [
-        "determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
-        ":::",
-        "",
-        ":::{req} status_table_alignment",
-        "When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Definition and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.",
-        ":::",
-        "",
-        ":::{req} shared_status_rendering",
-        "`habeas status` and the mdBook requirements index MUST generate their Definition/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different definitions and supply different kind-labeled name cells so mdBook can link to detail pages.",
-        ":::",
-        ""
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 24,
-      "line_end": 30,
+      "line_start": 225,
+      "line_end": 231,
       "text": [
         "",
-        "// {impl}`requirements.cli.status`",
-        "// {impl}`requirements.cli.fixme_summary`",
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "// {impl}`requirements.definitions.selection`",
-        "// {impl}`requirements.references.definition_globs`",
-        "pub fn status_markdown_with_options("
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 91,
-      "line_end": 97,
-      "text": [
-        "        } else {",
-        "            \"All matching definitions have valid evidence.\\n\"",
-        "        });",
-        "    } else {",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        output.push_str(&render_evidence_table(&rows));",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 348,
-      "line_end": 354,
-      "text": [
-        "            pages.push((name.clone(), detail_path.clone(), content, source_path));",
-        "        }",
-        "",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        let rows = render_evidence_table(&rows);",
-        "",
-        "        // {impl}`requirements.index.navigation`"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 773,
-      "line_end": 779,
-      "text": [
-        "    // {test}`requirements.index.state`",
-        "    // {test}`requirements.index.navigation`",
-        "    // {test}`requirements.index.source_links`",
-        "    // {test}`requirements.cli.shared_status_rendering`",
-        "    #[test]",
-        "    fn index_shows_evidence_states_and_links_generated_chapters() {",
-        "        let temp = TempDir::new().unwrap();"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 517,
-      "line_end": 523,
-      "text": [
-        "    assert!(malformed.status.success(), \"{:?}\", malformed);",
-        "    let malformed = String::from_utf8(malformed.stdout).unwrap();",
-        "    assert!(",
-        "        malformed.contains(\"## Unreadable evidence record\"),",
-        "        \"{malformed}\"",
-        "    );",
-        "    assert!(malformed.contains(\"```json\\n{broken\\n```\"), \"{malformed}\");"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 518,
-      "line_end": 570,
-      "text": [
-        "    let malformed = String::from_utf8(malformed.stdout).unwrap();",
-        "    assert!(",
-        "        malformed.contains(\"## Unreadable evidence record\"),",
-        "        \"{malformed}\"",
-        "    );",
-        "    assert!(malformed.contains(\"```json\\n{broken\\n```\"), \"{malformed}\");",
-        "}",
-        "",
-        "// {test}`requirements.cli.status`",
-        "// {test}`requirements.cli.info`",
-        "// {test}`requirements.references.definition_globs`",
-        "#[test]",
-        "fn commands_report_invalid_arguments_and_unmatched_selectors() {",
-        "    let temp = fixture();",
-        "    for args in [",
-        "        [\"status\", \"--wrong\"].as_slice(),",
-        "        [\"status\", \"--all\", \"extra\", \"more\"].as_slice(),",
-        "        [\"info\"].as_slice(),",
-        "        [\"info\", \"ready\", \"extra\"].as_slice(),",
-        "    ] {",
-        "        let output = habeas(temp.path(), args);",
-        "        assert!(!output.status.success(), \"{args:?}: {output:?}\");",
-        "        assert!(",
-        "            String::from_utf8_lossy(&output.stderr).contains(\"Usage: habeas\"),",
-        "            \"{args:?}: {output:?}\"",
-        "        );",
-        "    }",
-        "    for command in [\"info\", \"status\"] {",
-        "        let invalid = habeas(temp.path(), &[command, \"[\"]);",
-        "        assert!(!invalid.status.success());",
-        "        assert!(",
-        "            String::from_utf8_lossy(&invalid.stderr).contains(\"invalid definition glob\"),",
-        "            \"{command}: {invalid:?}\"",
-        "        );",
-        "    }",
-        "    let unmatched = habeas(temp.path(), &[\"info\", \"nothing.*\"]);",
-        "    assert!(!unmatched.status.success());",
-        "    assert!(",
-        "        String::from_utf8_lossy(&unmatched.stderr).contains(\"no definitions match\"),",
-        "        \"{unmatched:?}\"",
-        "    );",
-        "    let status = habeas(temp.path(), &[\"status\", \"requirements.*ready\", \"--all\"]);",
-        "    assert!(status.status.success(), \"{status:?}\");",
-        "    let status = String::from_utf8(status.stdout).unwrap();",
-        "    assert!(",
-        "        status.contains(\"`requirements.ready` (requirement)\"),",
-        "        \"{status}\"",
-        "    );",
-        "    assert!(",
-        "        status.contains(\"`requirements.xready` (requirement)\"),",
-        "        \"{status}\"",
-        "    );",
-        "    assert!(!status.contains(\"| `requirements.pending`\"), \"{status}\");"
-      ]
-    },
-    {
-      "file": "md/requirements/cli.md",
-      "line_start": 48,
-      "line_end": 48,
-      "text": [
-        ":::{req} shared_status_rendering"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 10,
-      "line_end": 10,
-      "text": [
-        "use crate::markdown::render_evidence_table;"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 27,
-      "line_end": 27,
-      "text": [
-        "// {impl}`requirements.cli.shared_status_rendering`"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 95,
-      "line_end": 96,
-      "text": [
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        output.push_str(&render_evidence_table(&rows));"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 13,
-      "line_end": 13,
-      "text": [
-        "use crate::markdown::render_evidence_table;"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 351,
-      "line_end": 352,
-      "text": [
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        let rows = render_evidence_table(&rows);"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 776,
-      "line_end": 776,
-      "text": [
-        "    // {test}`requirements.cli.shared_status_rendering`"
-      ]
-    },
-    {
-      "file": "src/markdown.rs",
-      "line_start": 2,
-      "line_end": 3,
-      "text": [
-        "// {impl}`requirements.cli.shared_status_rendering`",
-        "pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 582,
-      "line_end": 588,
-      "text": [
-        "    );",
-        "}",
-        "",
-        "// {test}`requirements.cli.status_table_alignment`",
-        "#[test]",
-        "fn status_tables_align_each_column_to_its_widest_cell() {",
-        "    let temp = fixture();"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 48,
-      "line_end": 52,
-      "text": [
-        "        rust_file: String,",
-        "        rust_item: String,",
-        "    },",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 94,
-      "line_end": 98,
-      "text": [
-        "    } else {",
-        "        // {impl}`requirements.cli.shared_status_rendering`",
-        "        output.push_str(&render_evidence_table(&rows));",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 226,
-      "line_end": 230,
-      "text": [
         "impl EvidenceState {",
         "    // {impl}`requirements.index.state`",
         "    pub(crate) fn label(self) -> &'static str {",
         "        match self {",
-        "            Self::Valid => \"Valid\","
+        "            Self::Valid => \"Valid\",",
+        "            Self::Missing => \"Missing\","
       ]
     },
     {
       "file": "src/index.rs",
       "line_start": 350,
-      "line_end": 354,
+      "line_end": 356,
       "text": [
+        "        }",
         "",
         "        // {impl}`requirements.cli.shared_status_rendering`",
         "        let rows = render_evidence_table(&rows);",
         "",
-        "        // {impl}`requirements.index.navigation`"
+        "        // {impl}`requirements.index.navigation`",
+        "        let mut found = false;"
       ]
     },
     {
       "file": "src/lib.rs",
       "line_start": 115,
-      "line_end": 119,
+      "line_end": 121,
       "text": [
+        "impl ReferenceKind {",
         "    // {impl}`requirements.references.book_badges`",
         "    // {impl}`requirements.definitions.references`",
         "    pub(crate) fn label(self) -> &'static str {",
         "        match self {",
-        "            Self::Impl => \"impl\","
-      ]
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "line_start": 92,
-      "line_end": 92,
-      "text": [
-        "        });"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 206,
-      "line_end": 206,
-      "text": [
-        "    fs::create_dir_all(&state)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 226,
-      "line_end": 226,
-      "text": [
-        "            }"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 76,
-      "line_end": 76,
-      "text": [
-        "            evidence.state().label(),"
-      ]
-    },
-    {
-      "file": "src/commands.rs",
-      "line_start": 96,
-      "line_end": 96,
-      "text": [
-        "        output.push_str(&render_evidence_table(&rows));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 929,
-      "line_end": 929,
-      "text": [
-        ""
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 966,
-      "line_end": 966,
-      "text": [
-        "        if reference.kind == ReferenceKind::Term {"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 328,
-      "line_end": 328,
-      "text": [
-        "                evidence.state().label(),"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 352,
-      "line_end": 352,
-      "text": [
-        "        let rows = render_evidence_table(&rows);"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 469,
-      "line_end": 469,
-      "text": [
-        "        detail_evidence.state.label(),"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 366,
-      "line_end": 366,
-      "text": [
-        "            let kind = reference.kind.label();"
+        "            Self::Impl => \"impl\",",
+        "            Self::Cite => \"cite\","
       ]
     },
     {
       "file": "src/markdown.rs",
-      "line_start": 3,
+      "line_start": 1,
+      "line_end": 6,
+      "text": [
+        "// {impl}`requirements.cli.status_table_alignment`",
+        "// {impl}`requirements.cli.shared_status_rendering`",
+        "pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {",
+        "    let definition_width = rows",
+        "        .iter()",
+        "        .map(|(definition, _)| definition.len())"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 129,
+      "line_end": 138,
+      "text": [
+        "forms. Each form MUST correspond to one existing evidence-input kind:",
+        "",
+        "| Request fields | Evidence input returned | Definition |",
+        "| --- | --- | --- |",
+        "| `file: String`, `line_start: Integer`, optional `line_end: Integer` | File-range input | {cite}`requirements.ci.inputs` |",
+        "| `rust_file: String`, `rust_item: String` | Rust-item input | {cite}`requirements.ci.rust_item_inputs` |",
+        "| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |",
+        "| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |",
+        "",
+        "Rust file and selector arguments MUST use the syntax defined by"
+      ]
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "line_start": 42,
+      "line_end": 46,
+      "text": [
+        ":::",
+        "",
+        ":::{req} status_table_alignment",
+        "When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Definition and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 164,
+      "line_end": 168,
+      "text": [
+        "            }",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            definitions.entry(name).or_insert_with(|| Definition {",
+        "                path: render_path.to_path_buf(),",
+        "                text: chapter.content[block.body_start..block.body_end]"
+      ]
+    },
+    {
+      "file": "src/markdown.rs",
+      "line_start": 1,
       "line_end": 3,
       "text": [
+        "// {impl}`requirements.cli.status_table_alignment`",
+        "// {impl}`requirements.cli.shared_status_rendering`",
         "pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 555,
-      "line_end": 555,
-      "text": [
-        "                    .insert((reference.kind.label().to_owned(), reference.name.to_owned()));"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 585,
-      "line_end": 585,
-      "text": [
-        "// {test}`requirements.cli.status_table_alignment`"
       ]
     },
     {
       "file": "tests/commands.rs",
       "line_start": 580,
-      "line_end": 640,
+      "line_end": 584,
       "text": [
-        "            .contains(\"cannot find a project with Cargo.toml and book.toml\"),",
-        "        \"{status:?}\"",
-        "    );",
         "}",
         "",
         "// {test}`requirements.cli.status_table_alignment`",
         "#[test]",
-        "fn status_tables_align_each_column_to_its_widest_cell() {",
-        "    let temp = fixture();",
-        "    for args in [[\"status\"].as_slice(), [\"status\", \"--all\"].as_slice()] {",
-        "        let output = habeas(temp.path(), args);",
-        "        assert!(output.status.success(), \"{args:?}: {output:?}\");",
-        "        let text = String::from_utf8(output.stdout).unwrap();",
-        "        let table = text",
-        "            .lines()",
-        "            .skip_while(|line| !line.starts_with(\"| \"))",
-        "            .take_while(|line| line.starts_with(\"| \"))",
-        "            .collect::<Vec<_>>();",
-        "        assert!(table.len() > 2, \"{text}\");",
-        "        let pipes = table[0]",
-        "            .match_indices('|')",
-        "            .map(|(index, _)| index)",
-        "            .collect::<Vec<_>>();",
-        "        assert_eq!(pipes.len(), 3, \"{text}\");",
-        "        for line in &table {",
-        "            let actual = line",
-        "                .match_indices('|')",
-        "                .map(|(index, _)| index)",
-        "                .collect::<Vec<_>>();",
-        "            assert_eq!(actual, pipes, \"{text}\");",
-        "            for cell in line.split('|').skip(1).take(2) {",
-        "                assert!(cell.starts_with(' ') && cell.ends_with(' '), \"{text}\");",
-        "                assert!(!cell[1..].starts_with(' '), \"{text}\");",
-        "            }",
-        "        }",
-        "        for column in 0..2 {",
-        "            let content_width = table",
-        "                .iter()",
-        "                .map(|line| line.split('|').nth(column + 1).unwrap().trim().len())",
-        "                .max()",
-        "                .unwrap();",
-        "            assert_eq!(",
-        "                pipes[column + 1] - pipes[column] - 3,",
-        "                content_width,",
-        "                \"{text}\"",
-        "            );",
-        "        }",
-        "        assert_eq!(table[1].split('|').nth(1).unwrap().trim(), \"---\");",
-        "        assert_eq!(table[1].split('|').nth(2).unwrap().trim(), \"---\");",
-        "    }",
-        "}",
-        "",
-        "// {test}`requirements.cli.add_input`",
-        "// {test}`requirements.cli.add_input_file_range`",
-        "// {test}`requirements.cli.add_input_rust_item`",
-        "// {test}`requirements.configuration.evidence_paths`",
-        "// {test}`requirements.ci.schema`",
-        "#[test]",
-        "fn add_input_external_sources_respect_allow_and_disallow() {",
-        "    let temp = fixture();",
-        "    let external = TempDir::new().unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 438,
-      "line_end": 438,
-      "text": [
-        "        json!({\"oneOf\":[{\"type\":\"boolean\"},{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"FIXME\"],\"properties\":{\"FIXME\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\",\"minLength\":1}}}}]})"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 759,
-      "line_end": 759,
-      "text": [
-        "        for value in [json!(true), json!(false), json!({\"FIXME\": [\"#125\"]})] {"
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 104,
-      "line_end": 104,
-      "text": [
-        "                \"{}: FIXME (usage: {})\","
-      ]
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "line_start": 133,
-      "line_end": 133,
-      "text": [
-        "                \"{active} active · {queued} queued | true {} · false {} · FIXME {} · errors {}\","
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 396,
-      "line_end": 396,
-      "text": [
-        "        log.record.determination = Some(\"FIXME\".into());"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 403,
-      "line_end": 403,
-      "text": [
-        "        assert_eq!(sent[\"determination\"], \"FIXME\");"
-      ]
-    },
-    {
-      "file": "src/fixme.rs",
-      "line_start": 50,
-      "line_end": 50,
-      "text": [
-        "        let mut output = String::from(\"\\n## FIXME judgments\\n\\n\");"
-      ]
-    },
-    {
-      "file": "src/fixme.rs",
-      "line_start": 60,
-      "line_end": 60,
-      "text": [
-        "                \"- {} {} marked FIXME without an issue\\n\","
-      ]
-    },
-    {
-      "file": "src/fixme.rs",
-      "line_start": 75,
-      "line_end": 75,
-      "text": [
-        "                output.push_str(\"\\n### FIXME without an issue\\n\\n\");"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 233,
-      "line_end": 233,
-      "text": [
-        "            Self::Fixme => \"FIXME\","
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 505,
-      "line_end": 505,
-      "text": [
-        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 18,
-      "line_end": 19,
-      "text": [
-        "            Value::Object(object) if object.len() == 1 && object.contains_key(\"FIXME\") => {",
-        "                let entries = object[\"FIXME\"]"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 22,
-      "line_end": 22,
-      "text": [
-        "                    .ok_or(\"FIXME must be a nonempty array of nonempty strings\")?;"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 30,
-      "line_end": 30,
-      "text": [
-        "                            .ok_or(\"FIXME must be a nonempty array of nonempty strings\")"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 36,
-      "line_end": 36,
-      "text": [
-        "                \"expected true, false, or an object containing only FIXME with a nonempty array of nonempty strings\""
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 48,
-      "line_end": 48,
-      "text": [
-        "            Self::Fixme(entries) => json!({ \"FIXME\": entries }),"
-      ]
-    },
-    {
-      "file": "src/judgment.rs",
-      "line_start": 57,
-      "line_end": 57,
-      "text": [
-        "            Self::Fixme(_) => \"FIXME\","
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 31,
-      "line_end": 31,
-      "text": [
-        "        /// List the judgments and original FIXME entries within each issue group."
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 191,
-      "line_end": 191,
-      "text": [
-        "                summary.push_str(\" — FIXME\");"
+        "fn status_tables_align_each_column_to_its_widest_cell() {"
       ]
     }
   ]

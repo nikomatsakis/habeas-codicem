@@ -143,6 +143,7 @@ pub(crate) fn validate_dependencies(
 }
 
 // {impl}`requirements.definitions.references`
+// {impl}`requirements.definitions.declaration`
 pub(crate) fn escaped_phrase(phrase: &str) -> String {
     let mut output = String::new();
     for ch in phrase.chars() {

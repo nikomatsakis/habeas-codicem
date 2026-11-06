@@ -304,6 +304,7 @@ impl IndexPlan {
 
     // {impl}`requirements.index.state`
     // {impl}`requirements.examples.index`
+    // {impl}`requirements.index.chapter`
     pub(crate) fn populate(
         &self,
         book: &mut Book,
@@ -457,6 +458,8 @@ pub(crate) fn render_cli_detail_page(
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.index.invalid_detail`
 // {impl}`requirements.cli.info`
+// {impl}`requirements.index.state`
+// {impl}`requirements.examples.index`
 fn render_detail_sections(
     mut content: String,
     definition_text: &str,
@@ -774,6 +777,8 @@ mod tests {
     // {test}`requirements.index.navigation`
     // {test}`requirements.index.source_links`
     // {test}`requirements.cli.shared_status_rendering`
+    // {test}`requirements.index.detail_format`
+    // {test}`requirements.index.invalid_detail`
     #[test]
     fn index_shows_evidence_states_and_links_generated_chapters() {
         let temp = TempDir::new().unwrap();

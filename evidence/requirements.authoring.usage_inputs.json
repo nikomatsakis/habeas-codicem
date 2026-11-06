@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
-  "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The code implements each clause, and the tests cover the main cases. I did not run the tests; this is from reading the code and assertions.\n\n**Implementation**\n- **Counts and sizes by kind.** `UsageLog::prepared` (`src/authoring/usage.rs`) pushes one `InputUsage` per input. Each entry records:\n  - `kind`: `file_range`, `rust_item`, `requirements` or `definition`.\n  - `bytes`: the UTF-8 byte length of the text lines, plus the newlines between them.\n  - `lines`: the number of text lines.\n  - `origin`: `mandatory`, or the tool that requested the input (`habeas`, `ripgrep`).\n- **Matched declarations.** The `components` field is the length of the `matches` array, so a requirements input records its matched-declaration count. Other kinds record 1.\n- **Mandatory and additional inputs.** `configured_record` and `assess` in `src/authoring/mod.rs` call `usage.prepared(\"mandatory\", …)`. After each tool call, `assess` calls `usage.prepared(<tool name>, &delivery.inputs)`. Both kinds of input are therefore recorded.\n- **Unique versus repeated reads.** `unique` is set by `self.seen.insert(input.to_string())`, so the second delivery of an identical input is marked `unique: false`.\n- **Successful versus failed reads.** `UsageLog::tool(name, failed)` increments `tool_calls` and `tool_failures`. A failed read delivers no inputs, so it is never counted as a prepared input. Failures that are permission denials are also counted before the run aborts.\n- **Prepared versus sent.** Each input carries `submitted_in_request` and `sent_in_request`:\n  - `begin_request` sets `submitted_in_request`.\n  - `end_request` sets `sent_in_request` only when the response carried usage, meaning the request succeeded.\n  - A failed or throttled request therefore leaves `sent_in_request` unset, and a later retry sets it.\n- **File discovery.** `list_files` returns `inputs: Vec::new()` (`tools.rs`), so it adds no usage inputs. `assess` still calls `usage.tool(...)`, so the call counts as a tool call.\n- **No source content.** Only counts and metadata are stored, not source text.\n\n**Tests**\n- `input_metadata_counts_components_and_reads_without_persisting_source` (`usage.rs`) checks:\n  - Multi-byte byte counts and line counts.\n  - Requirements `components` of 2.\n  - `unique` true for the first read and false for the repeat.\n  - Origin recording.\n  - The submitted and sent transitions.\n  - That no source text appears in the log.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` checks that `sent_in_request` stays null after a failed request and is set after the retry.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` (`mod.rs`) runs the full `assess` loop. After 8 failed attempts, inputs have `submitted_in_request` 0 and `sent_in_request` 8.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` checks that tool calls, failures and skips are counted separately and that unknown tool names do not leak into the log.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`) is an end-to-end test that:\n  - Issues `list_files`, `ripgrep`, a repeated `habeas` read and a failing `habeas` read.\n  - Asserts `tool_call_count` 6, `tool_calls.habeas` 3 and `tool_failures.habeas` 1.\n  - Asserts a `habeas` input with `unique: false` and `sent_in_request: 1`.\n  - Asserts a mandatory `definition` input with non-zero bytes.\n  - Asserts that the evidence inputs contain no directory entry (`\".\"`) or the failed `absent.txt`.\n  - Asserts that the usage log contains no source or credential content.\n\n**Minor gaps**\n- No test builds a `rust_item`-kind input in the usage log.\n- No test asserts that the usage `inputs` list is empty after a `list_files`-only run.\n- Both behaviours are straightforward in the code, and the coverage elsewhere is sufficient.",
+  "determination": false,
+  "rationale": "**Verdict: false.** The behaviour is almost all there and well tested. One piece of the implementation carries no `{impl}` marker for this requirement.\n\n**What is implemented and tested**\n- `UsageLog::prepared` (`src/authoring/usage.rs`) records one entry per input.\n  - The entry holds its origin, its kind (`file_range`, `rust_item`, `requirements` or `definition`), its UTF-8 bytes and its line count.\n  - It also holds `components`, which is the `matches` length for requirements inputs and 1 otherwise.\n  - It sets `unique` by tracking inputs it has already seen, so repeated reads show as `unique: false`.\n- `configured_record` records the mandatory inputs with origin `mandatory`. `assess` records inputs delivered by `habeas` and `ripgrep` under the tool's name. The `ripgrep` inputs are the file-range windows the search returns.\n- `begin_request` sets `submitted_in_request` and `end_request` sets `sent_in_request`. A request that fails with no usage leaves `sent_in_request` null. This separates prepared inputs from inputs actually sent to the model.\n- `tool` and `skipped_tool` count calls and failures per tool, which separates successful from failed reads.\n- `list_files` returns `inputs: Vec::new()` (`src/authoring/tools.rs`), so directory listings are never recorded as inputs. The call still goes through `usage.tool` and is counted.\n- Tests:\n  - `input_metadata_counts_components_and_reads_without_persisting_source` checks bytes, lines, components, unique versus repeated, and the submitted and sent transitions. It also checks that no source text is stored.\n  - `failed_submission_can_be_confirmed_on_a_later_attempt` and `throttled_requests_retry_unchanged_and_record_every_attempt` cover prepared versus sent across retries.\n  - The CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks a repeated `habeas` read, a failed read, a mandatory definition with non-zero bytes, and `list_files` counted as a tool call.\n  - `src/authoring/tools.rs` separately asserts that listings carry no inputs.\n\n**Gap**\n- `UsageLog::end_request` (`src/authoring/usage.rs`, roughly lines 195–222) sets `sent_in_request`. That is the code that records whether an input was actually sent to the model, which the requirement explicitly requires. It carries only `{impl}requirements.authoring.usage_requests`.\n- It has no `{impl}requirements.authoring.usage_inputs` marker, although the neighbouring `begin_request`, `tool` and `skipped_tool` do. Code that implements part of the requirement without an `{impl}` reference counts as a gap. No FIXME acknowledges it.\n\n**Minor observations (not decisive)**\n- Counts by kind are stored per input, with no aggregate per kind. I read this as acceptable, because totals can be derived from the per-input records.\n- `components` is 1 for non-requirements inputs, and the requirement does not ask for that.\n\nAdding the missing `{impl}` marker to `end_request` would close the gap.",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -25,7 +25,6 @@
       "rust_item": "fn[configured_record]",
       "text": [
         "// {impl}`requirements.authoring.invocation`",
-        "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.configuration_precedence`",
         "// {impl}`requirements.authoring.rig_configuration_mapping`",
         "// {impl}`requirements.authoring.usage_storage`",
@@ -46,13 +45,8 @@
         "    };",
         "    usage.record.backend = Some(backend.into());",
         "    usage.record.model = Some(model.model.clone());",
-        "    let mut sources = match subject {",
-        "        AuthoringSubject::Definition(name) => AssessmentSources::prepare(root, name),",
-        "        AuthoringSubject::RustFunction {",
-        "            rust_file,",
-        "            rust_item,",
-        "        } => AssessmentSources::prepare_function(root, rust_file, rust_item),",
-        "    }?;",
+        "    let AuthoringSubject::Definition(name) = subject;",
+        "    let mut sources = AssessmentSources::prepare(root, name)?;",
         "    usage.record.subject_kind = Some(sources.subject_kind.noun().into());",
         "    usage.prepared(\"mandatory\", sources.mandatory_inputs());",
         "    usage.save()?;",
@@ -79,19 +73,21 @@
         "// {impl}`requirements.authoring.persistence`",
         "// {impl}`requirements.authoring.usage_inputs`",
         "// {impl}`requirements.authoring.usage_requests`",
-        "// {impl}`requirements.authoring.function_attestations`",
         "// {impl}`requirements.authoring.usage_storage`",
         "// {impl}`requirements.authoring.mandatory_inputs`",
         "// {impl}`requirements.authoring.read_denial`",
         "// {impl}`requirements.authoring.provider_backoff`",
+        "// {impl}`requirements.authoring.submission_count`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
         "async fn assess(",
         "    provider: &impl CompletionProvider,",
         "    sources: &mut AssessmentSources,",
         "    usage: &mut UsageLog,",
         ") -> io::Result<(Judgment, Value)> {",
         "    let mut request = CompletionRequest::new(initial_prompt(sources)?);",
-        "    let function = matches!(sources.subject_kind, AssessmentKind::RustFunction { .. });",
-        "    request.tools = tool_definitions(function)?;",
+        "    request.tools = tool_definitions()?;",
         "    let mut pending = sources.mandatory_inputs().to_vec();",
         "    let mut backoff = providers::ProviderBackoff::default();",
         "    loop {",
@@ -142,25 +138,14 @@
         "                    \"submit_judgment must be invoked exactly once; multiple submissions received\",",
         "                ));",
         "            }",
-        "            let result = submission(",
-        "                &Value::Object(submissions[0].function.arguments.clone()),",
-        "                function,",
-        "            );",
+        "            let result = submission(&Value::Object(submissions[0].function.arguments.clone()));",
         "            usage.tool(\"submit_judgment\", result.is_err());",
         "            let (judgment, rationale) = result?;",
         "            usage.record.determination = Some(judgment.kind().into());",
         "            usage.save()?;",
-        "            let evidence = match &sources.subject_kind {",
-        "                AssessmentKind::Definition(kind) => json!({kind.noun(): sources.subject_text,",
-        "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()}),",
-        "                AssessmentKind::RustFunction {",
-        "                    rust_item,",
-        "                    citations,",
-        "                } => json!({",
-        "                    \"rust_item\": rust_item, \"citations\": citations,",
-        "                    \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()",
-        "                }),",
-        "            };",
+        "            let AssessmentKind::Definition(kind) = &sources.subject_kind;",
+        "            let evidence = json!({kind.noun(): sources.subject_text,",
+        "                \"determination\": judgment.to_value(), \"rationale\": rationale, \"inputs\": sources.recorded_inputs()});",
         "            return Ok((judgment, evidence));",
         "        }",
         "        if calls.is_empty() {",
@@ -477,6 +462,7 @@
       "rust_item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
       "text": [
         "// {test}`requirements.authoring.complete_initial_bundle`",
+        "// {test}`requirements.authoring.invocation`",
         "// {test}`requirements.authoring.additional_read`",
         "// {test}`requirements.authoring.acknowledged_gap`",
         "// {test}`requirements.authoring.configuration_precedence`",
@@ -563,7 +549,13 @@
         "    tools.sort();",
         "    assert_eq!(",
         "        tools,",
-        "        [\"habeas\", \"list_files\", \"ripgrep\", \"submit_judgment\"]",
+        "        [",
+        "            \"habeas\",",
+        "            \"list_files\",",
+        "            \"references\",",
+        "            \"ripgrep\",",
+        "            \"submit_judgment\"",
+        "        ]",
         "    );",
         "    let results = requests[1].body[\"messages\"]",
         "        .as_array()",
@@ -667,420 +659,9 @@
       ]
     },
     {
-      "file": "src/authoring/mod.rs",
-      "line_start": 299,
-      "line_end": 305,
-      "text": [
-        "            Some(path)",
-        "        }",
-        "        EvidenceOutput::Stdout => {",
-        "            let mut stdout = io::stdout().lock();",
-        "            stdout.write_all(json.as_bytes())?;",
-        "            stdout.flush()?;",
-        "            None"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 488,
-      "line_end": 494,
-      "text": [
-        "            }",
-        "        };",
-        "        backoff = providers::ProviderBackoff::default();",
-        "        sources.record_inputs(&pending);",
-        "        pending.clear();",
-        "        if let Some(error) = turn_failure(",
-        "            &response.choice,"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "line_start": 569,
-      "line_end": 575,
-      "text": [
-        "                    }",
-        "                    results",
-        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
-        "                }",
-        "            }",
-        "        }",
-        "        usage.save()?;"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 46,
-      "line_end": 52,
-      "text": [
-        "    components: usize,",
-        "    unique: bool,",
-        "    submitted_in_request: Option<usize>,",
-        "    sent_in_request: Option<usize>,",
-        "}",
-        "",
-        "#[derive(Serialize)]"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 70,
-      "line_end": 83,
-      "text": [
-        "    pub record: UsageRecord,",
-        "    pub path: PathBuf,",
-        "    started: Instant,",
-        "    seen: BTreeSet<String>,",
-        "    active_request: Option<(usize, Instant)>,",
-        "}",
-        "",
-        "impl UsageLog {",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    // {impl}`requirements.configuration.state_location`",
-        "    pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {",
-        "        let start_time_ms = timestamp();",
-        "        let run_id = format!(",
-        "            \"{}-{}-{}\","
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 122,
-      "line_end": 128,
-      "text": [
-        "            },",
-        "            path,",
-        "            started: Instant::now(),",
-        "            seen: BTreeSet::new(),",
-        "            active_request: None,",
-        "        };",
-        "        log.save()?;"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 160,
-      "line_end": 168,
-      "text": [
-        "                    .get(\"matches\")",
-        "                    .and_then(Value::as_array)",
-        "                    .map_or(1, Vec::len),",
-        "                unique: self.seen.insert(input.to_string()),",
-        "                submitted_in_request: None,",
-        "                sent_in_request: None,",
-        "            });",
-        "        }",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 190,
-      "line_end": 196,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.usage_requests`",
-        "    pub(super) fn end_request(",
-        "        &mut self,",
-        "        index: usize,",
-        "        elapsed: u128,"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 199,
-      "line_end": 206,
-      "text": [
-        "        let tokens = usage.map(TokenCounts::from_usage).unwrap_or_default();",
-        "        if usage.is_some() {",
-        "            for input in &mut self.record.inputs {",
-        "                if input.sent_in_request.is_none() && input.submitted_in_request.is_some() {",
-        "                    input.sent_in_request = Some(index);",
-        "                }",
-        "            }",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 245,
-      "line_end": 251,
-      "text": [
-        "    }",
-        "",
-        "    // {impl}`requirements.authoring.usage_storage`",
-        "    pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {",
-        "        if let Some((index, started)) = self.active_request.take() {",
-        "            let request = &mut self.record.requests[index];",
-        "            request.elapsed_ms = started.elapsed().as_millis();"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 376,
-      "line_end": 383,
-      "text": [
-        "            \"matches\": [\"private.match.a\", \"private.match.b\"],",
-        "            \"text\": [\"PRIVATE_REQUIREMENT_TEXT\"]",
-        "        });",
-        "        log.prepared(\"mandatory\", &[file.clone(), requirements]);",
-        "        log.prepared(\"habeas\", &[file]);",
-        "        log.save().unwrap();",
-        "        let prepared = persisted(&log);",
-        "        assert_eq!(prepared[\"inputs\"][0][\"bytes\"], \"λ\\nDO_NOT_LOG_SOURCE\".len());"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 387,
-      "line_end": 403,
-      "text": [
-        "        assert_eq!(prepared[\"inputs\"][2][\"unique\"], false);",
-        "        assert_eq!(prepared[\"inputs\"][2][\"origin\"], \"habeas\");",
-        "        assert!(prepared[\"inputs\"][0][\"submitted_in_request\"].is_null());",
-        "        assert!(prepared[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        let index = log.begin_request().unwrap();",
-        "        let submitted = persisted(&log);",
-        "        assert_eq!(submitted[\"inputs\"][0][\"submitted_in_request\"], index);",
-        "        assert!(submitted[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        log.end_request(index, 7, Some(&Usage::new())).unwrap();",
-        "        log.record.determination = Some(\"FIXME\".into());",
-        "        log.record.evidence_written = true;",
-        "        log.finish(\"completed\").unwrap();",
-        "        let sent = persisted(&log);",
-        "        assert_eq!(sent[\"inputs\"][0][\"sent_in_request\"], index);",
-        "        assert_eq!(sent[\"requests\"][0][\"outcome\"], \"completed\");",
-        "        assert_eq!(sent[\"outcome\"], \"completed\");",
-        "        assert_eq!(sent[\"determination\"], \"FIXME\");"
-      ]
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "line_start": 587,
-      "line_end": 604,
-      "text": [
-        "        let state = tempfile::tempdir().unwrap();",
-        "        let mut log =",
-        "            UsageLog::start(state.path(), Path::new(\"/project\"), \"requirements.case\").unwrap();",
-        "        log.prepared(",
-        "            \"mandatory\",",
-        "            &[json!({\"file\": \"source\", \"text\": [\"source content\"]})],",
-        "        );",
-        "        let first = log.begin_request().unwrap();",
-        "        log.end_request(first, 2, None).unwrap();",
-        "        assert!(persisted(&log)[\"inputs\"][0][\"sent_in_request\"].is_null());",
-        "        let retry = log.begin_request().unwrap();",
-        "        log.end_request(retry, 3, Some(&Usage::new())).unwrap();",
-        "        let value = persisted(&log);",
-        "        assert_eq!(value[\"inputs\"][0][\"submitted_in_request\"], first);",
-        "        assert_eq!(value[\"inputs\"][0][\"sent_in_request\"], retry);",
-        "        assert_eq!(value[\"request_count\"], 2);",
-        "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 6,
-      "line_end": 15,
-      "text": [
-        "",
-        "use serde_json::{Map, Value, json};",
-        "",
-        "use super::inputs::AssessmentSources;",
-        "use crate::inputs::{InputSelector, read_project_file};",
-        "",
-        "pub(crate) struct ToolDelivery {",
-        "    pub(crate) result: Value,",
-        "    pub(crate) inputs: Vec<Value>,",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 35,
-      "line_end": 39,
-      "text": [
-        "                \"rust_file\":{\"type\":\"string\"},",
-        "                \"rust_item\":{\"type\":\"string\"},",
-        "                \"requirements\":{\"type\":\"string\"},",
-        "                \"definition\":{\"type\":\"string\"}",
-        "            }, \"additionalProperties\":false}"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 100,
-      "line_end": 106,
-      "text": [
-        "        }",
-        "    } else if args.contains_key(\"requirements\") {",
-        "        check_keys(args, &[\"requirements\"])?;",
-        "        InputSelector::Requirements {",
-        "            requirements: string(args, \"requirements\")?.to_owned(),",
-        "        }",
-        "    } else {"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 136,
-      "line_end": 140,
-      "text": [
-        "        let relative = relative_path(&sources.root, &entry.path())?;",
-        "        if sources",
-        "            .access",
-        "            .path(&sources.root, Path::new(&relative))",
-        "            .is_err()"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 181,
-      "line_end": 185,
-      "text": [
-        "                .collect(),",
-        "        ),",
-        "        inputs: Vec::new(),",
-        "    })",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 191,
-      "line_end": 195,
-      "text": [
-        "// {impl}`requirements.authoring.read_denial`",
-        "fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
-        "    check_keys(args, &[\"pattern\", \"path\", \"context\"])?;",
-        "    let pattern = string(args, \"pattern\")?;",
-        "    let path = optional_path(args)?;"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 212,
-      "line_end": 216,
-      "text": [
-        "            continue;",
-        "        };",
-        "        if sources.access.path(&sources.root, &candidate).is_ok() {",
-        "            searches.push((candidate, true));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 219,
-      "line_end": 226,
-      "text": [
-        "    searches.dedup();",
-        "    let mut outputs = Vec::new();",
-        "    for (path, include_ignored) in searches {",
-        "        let mut command = Command::new(\"rg\");",
-        "        command.current_dir(&sources.root).args([",
-        "            \"--json\",",
-        "            \"--no-config\",",
-        "            \"--case-sensitive\","
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 299,
-      "line_end": 309,
-      "text": [
-        "    }",
-        "    let definitions = sources.additional_definitions(&inputs)?;",
-        "    let result = json!({\"inputs\":inputs,\"definitions\":definitions});",
-        "    inputs.extend(definitions);",
-        "    Ok(ToolDelivery { result, inputs })",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.source_tools`",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`",
-        "fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 322,
-      "line_end": 326,
-      "text": [
-        "fn string<'a>(args: &'a Map<String, Value>, key: &str) -> io::Result<&'a str> {",
-        "    args.get(key)",
-        "        .and_then(Value::as_str)",
-        "        .ok_or_else(|| io::Error::other(format!(\"{key} must be a string\")))",
-        "}"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 329,
-      "line_end": 338,
-      "text": [
-        "// {impl}`requirements.authoring.text_search`",
-        "fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {",
-        "    args.get(key)",
-        "        .and_then(Value::as_u64)",
-        "        .and_then(|value| usize::try_from(value).ok())",
-        "        .ok_or_else(|| io::Error::other(format!(\"{key} must be a nonnegative integer\")))",
-        "}",
-        "",
-        "// {impl}`requirements.authoring.file_discovery`",
-        "// {impl}`requirements.authoring.text_search`"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 342,
-      "line_end": 346,
-      "text": [
-        "    } else {",
-        "        Ok(\".\")",
-        "    }",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 401,
-      "line_end": 409,
-      "text": [
-        "            \"habeas\",",
-        "            &json!({\"rust_file\":\"src/lib.rs\",\"rust_item\":\"fn[work]\"}),",
-        "        )",
-        "        .unwrap();",
-        "        assert_eq!(read.inputs.len(), 2);",
-        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        sources.record_inputs(&read.inputs);",
-        "        sources.record_inputs(&read.inputs);"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 412,
-      "line_end": 420,
-      "text": [
-        "            &sources,",
-        "            \"habeas\",",
-        "            &json!({\"file\":\"src/lib.rs\",\"line_start\":2}),",
-        "        )",
-        "        .unwrap();",
-        "        assert_eq!(eof.result[\"input\"][\"line_end\"], 2);",
-        "        assert_eq!(eof.result[\"input\"][\"text\"], json!([\"fn work() {}\"]));",
-        "        assert!(",
-        "            dispatch("
-      ]
-    },
-    {
       "file": "src/authoring/usage.rs",
       "line_start": 1,
-      "line_end": 135,
+      "line_end": 330,
       "text": [
         "use std::collections::{BTreeMap, BTreeSet};",
         "use std::fs::{self, OpenOptions};",
@@ -1216,15 +797,305 @@
         "    // {impl}`requirements.authoring.usage_inputs`",
         "    pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {",
         "        for input in inputs {",
-        "            let kind = if input.get(\"file\").is_some() {"
+        "            let kind = if input.get(\"file\").is_some() {",
+        "                \"file_range\"",
+        "            } else if input.get(\"rust_file\").is_some() {",
+        "                \"rust_item\"",
+        "            } else if input.get(\"requirements\").is_some() {",
+        "                \"requirements\"",
+        "            } else {",
+        "                \"definition\"",
+        "            };",
+        "            let text = input[\"text\"]",
+        "                .as_array()",
+        "                .map(Vec::as_slice)",
+        "                .unwrap_or_default();",
+        "            let bytes = text",
+        "                .iter()",
+        "                .filter_map(Value::as_str)",
+        "                .map(str::len)",
+        "                .sum::<usize>()",
+        "                + text.len().saturating_sub(1);",
+        "            self.record.inputs.push(InputUsage {",
+        "                origin: origin.to_owned(),",
+        "                kind,",
+        "                bytes,",
+        "                lines: text.len(),",
+        "                components: input",
+        "                    .get(\"matches\")",
+        "                    .and_then(Value::as_array)",
+        "                    .map_or(1, Vec::len),",
+        "                unique: self.seen.insert(input.to_string()),",
+        "                submitted_in_request: None,",
+        "                sent_in_request: None,",
+        "            });",
+        "        }",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_inputs`",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    pub(super) fn begin_request(&mut self) -> io::Result<usize> {",
+        "        let index = self.record.requests.len();",
+        "        for input in &mut self.record.inputs {",
+        "            if input.submitted_in_request.is_none() {",
+        "                input.submitted_in_request = Some(index);",
+        "            }",
+        "        }",
+        "        self.record.requests.push(RequestUsage {",
+        "            outcome: \"unfinished\".into(),",
+        "            elapsed_ms: 0,",
+        "            tokens: TokenCounts::default(),",
+        "        });",
+        "        self.record.request_count = self.record.requests.len();",
+        "        self.record.tokens = TokenCounts::sum(&self.record.requests);",
+        "        self.record.elapsed_ms = self.started.elapsed().as_millis();",
+        "        self.active_request = Some((index, Instant::now()));",
+        "        self.save()?;",
+        "        Ok(index)",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    pub(super) fn end_request(",
+        "        &mut self,",
+        "        index: usize,",
+        "        elapsed: u128,",
+        "        usage: Option<&Usage>,",
+        "    ) -> io::Result<()> {",
+        "        let tokens = usage.map(TokenCounts::from_usage).unwrap_or_default();",
+        "        if usage.is_some() {",
+        "            for input in &mut self.record.inputs {",
+        "                if input.sent_in_request.is_none() && input.submitted_in_request.is_some() {",
+        "                    input.sent_in_request = Some(index);",
+        "                }",
+        "            }",
+        "        }",
+        "        self.record.requests[index] = RequestUsage {",
+        "            outcome: if usage.is_some() {",
+        "                \"completed\"",
+        "            } else {",
+        "                \"failed\"",
+        "            }",
+        "            .into(),",
+        "            elapsed_ms: elapsed,",
+        "            tokens,",
+        "        };",
+        "        self.record.tokens = TokenCounts::sum(&self.record.requests);",
+        "        self.active_request = None;",
+        "        self.record.elapsed_ms = self.started.elapsed().as_millis();",
+        "        self.save()",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    // {impl}`requirements.authoring.usage_inputs`",
+        "    pub(super) fn tool(&mut self, name: &str, failed: bool) {",
+        "        let name = tool_name(name);",
+        "        *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;",
+        "        self.record.tool_call_count += 1;",
+        "        if failed {",
+        "            *self",
+        "                .record",
+        "                .tool_failures",
+        "                .entry(name.to_owned())",
+        "                .or_default() += 1;",
+        "        }",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    // {impl}`requirements.authoring.usage_inputs`",
+        "    pub(super) fn skipped_tool(&mut self, name: &str) {",
+        "        let name = tool_name(name);",
+        "        *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;",
+        "        *self.record.tool_skipped.entry(name.to_owned()).or_default() += 1;",
+        "        self.record.tool_call_count += 1;",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {",
+        "        if let Some((index, started)) = self.active_request.take() {",
+        "            let request = &mut self.record.requests[index];",
+        "            request.elapsed_ms = started.elapsed().as_millis();",
+        "            if outcome == \"cancelled\" {",
+        "                request.outcome = \"cancelled\".into();",
+        "            }",
+        "        }",
+        "        self.record.tokens = TokenCounts::sum(&self.record.requests);",
+        "        self.record.outcome = outcome.to_owned();",
+        "        self.record.end_time_ms = Some(timestamp());",
+        "        self.record.elapsed_ms = self.started.elapsed().as_millis();",
+        "        self.save()",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_storage`",
+        "    pub(super) fn save(&self) -> io::Result<()> {",
+        "        let mut file = OpenOptions::new()",
+        "            .write(true)",
+        "            .truncate(true)",
+        "            .open(&self.path)?;",
+        "        serde_json::to_writer_pretty(&mut file, &self.record)?;",
+        "        file.write_all(b\"\\n\")",
+        "    }",
+        "}",
+        "",
+        "impl TokenCounts {",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    fn from_usage(usage: &Usage) -> Self {",
+        "        Self {",
+        "            input: usage.input_tokens,",
+        "            output: usage.output_tokens,",
+        "            cached_input: usage.cached_input_tokens,",
+        "            cache_creation_input: usage.cache_creation_input_tokens,",
+        "            reasoning: usage.reasoning_tokens,",
+        "            complete: usage.input_tokens.is_some() && usage.output_tokens.is_some(),",
+        "        }",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    fn sum(requests: &[RequestUsage]) -> Self {",
+        "        if requests.is_empty() {",
+        "            return Self::default();",
+        "        }",
+        "        // Cache and reasoning counters are subsets, never added to token totals.",
+        "        // Keep measured subtotals when another request has no measurement.",
+        "        let (input, _) = Self::sum_counter(requests, |tokens| tokens.input);",
+        "        let (output, _) = Self::sum_counter(requests, |tokens| tokens.output);",
+        "        let (cached_input, cached_complete) =",
+        "            Self::sum_counter(requests, |tokens| tokens.cached_input);",
+        "        let (cache_creation_input, creation_complete) =",
+        "            Self::sum_counter(requests, |tokens| tokens.cache_creation_input);",
+        "        let (reasoning, reasoning_complete) =",
+        "            Self::sum_counter(requests, |tokens| tokens.reasoning);",
+        "        Self {",
+        "            input,",
+        "            output,",
+        "            cached_input,",
+        "            cache_creation_input,",
+        "            reasoning,",
+        "            complete: requests.iter().all(|r| r.tokens.complete)",
+        "                && cached_complete",
+        "                && creation_complete",
+        "                && reasoning_complete,",
+        "        }",
+        "    }",
+        "",
+        "    // {impl}`requirements.authoring.usage_requests`",
+        "    fn sum_counter(",
+        "        requests: &[RequestUsage],",
+        "        counter: fn(&Self) -> Option<u64>,",
+        "    ) -> (Option<u64>, bool) {",
+        "        let mut measured = 0;",
+        "        let mut total = 0;",
+        "        for request in requests {",
+        "            if let Some(value) = counter(&request.tokens) {",
+        "                measured += 1;",
+        "                total += value;",
+        "            }",
+        "        }",
+        "        (",
+        "            (measured > 0).then_some(total),",
+        "            measured == 0 || measured == requests.len(),"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 815,
+      "line_end": 815,
+      "text": [
+        ":::{req} usage_inputs"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 318,
+      "line_end": 318,
+      "text": [
+        "// {impl}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 415,
+      "line_end": 415,
+      "text": [
+        "// {impl}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "line_start": 605,
+      "line_end": 605,
+      "text": [
+        "    // {test}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 132,
+      "line_end": 132,
+      "text": [
+        "    // {impl}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 170,
+      "line_end": 170,
+      "text": [
+        "    // {impl}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 224,
+      "line_end": 224,
+      "text": [
+        "    // {impl}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 239,
+      "line_end": 239,
+      "text": [
+        "    // {impl}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 363,
+      "line_end": 363,
+      "text": [
+        "    // {test}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 555,
+      "line_end": 555,
+      "text": [
+        "    // {test}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "line_start": 583,
+      "line_end": 583,
+      "text": [
+        "    // {test}`requirements.authoring.usage_inputs`"
+      ]
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "line_start": 243,
+      "line_end": 243,
+      "text": [
+        "// {test}`requirements.authoring.usage_inputs`"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 5,
-      "line_end": 17,
+      "line_start": 6,
+      "line_end": 24,
       "text": [
-        "use std::process::Command;",
         "",
         "use serde_json::{Map, Value, json};",
         "",
@@ -1236,178 +1107,195 @@
         "    pub(crate) inputs: Vec<Value>,",
         "}",
         "",
-        "// {impl}`requirements.authoring.source_tools`"
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.authoring.generated_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.authoring.credentials`",
+        "pub(crate) fn definitions() -> Vec<Value> {"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 103,
-      "line_end": 115,
+      "line_start": 39,
+      "line_end": 45,
       "text": [
-        "        InputSelector::Requirements {",
-        "            requirements: string(args, \"requirements\")?.to_owned(),",
-        "        }",
-        "    } else {",
-        "        check_keys(args, &[\"definition\"])?;",
-        "        InputSelector::Definition {",
-        "            definition: string(args, \"definition\")?.to_owned(),",
-        "        }",
-        "    };",
+        "            }, \"additionalProperties\":false}",
+        "        }),",
+        "        json!({",
+        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
+        "        }),",
+        "        json!({"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 47,
+      "line_end": 53,
+      "text": [
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
+        "        }),",
+        "        json!({",
+        "            \"name\":\"references\", \"description\":\"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and the enclosing Rust item selector when the reference is in a Rust item. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"selection\":{\"type\":\"string\"}},\"additionalProperties\":false}",
+        "        }),",
+        "    ]"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 56,
+      "line_end": 62,
+      "text": [
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.text_search`",
+        "pub(crate) fn dispatch(",
+        "    sources: &AssessmentSources,",
+        "    name: &str,",
+        "    arguments: &Value,"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 66,
+      "line_end": 81,
+      "text": [
+        "        .ok_or_else(|| io::Error::other(\"tool arguments must be an object\"))?;",
+        "    match name {",
+        "        \"habeas\" => read(sources, arguments),",
+        "        \"list_files\" => list_files(sources, arguments),",
+        "        \"ripgrep\" => search(sources, arguments),",
+        "        \"references\" => references(sources, arguments),",
+        "        _ => Err(io::Error::other(format!(\"unknown read tool {name:?}\"))),",
+        "    }",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.definitions.authoring_inputs`",
+        "// {impl}`requirements.authoring.delivered_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
+        "fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
+        "    let selector = if args.contains_key(\"file\") {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 117,
+      "line_end": 133,
+      "text": [
         "    let input = sources.read_selector(&selector)?;",
         "    let definitions = sources.additional_definitions(std::slice::from_ref(&input))?;",
         "    let result = json!({ \"input\": input, \"definitions\": definitions });",
-        "    let mut inputs = vec![input];"
+        "    let mut inputs = vec![input];",
+        "    inputs.extend(definitions);",
+        "    Ok(ToolDelivery { result, inputs })",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.file_discovery`",
+        "// {impl}`requirements.authoring.source_tools`",
+        "// {impl}`requirements.configuration.evidence_paths`",
+        "// {impl}`requirements.authoring.generated_inputs`",
+        "// {impl}`requirements.authoring.read_denial`",
+        "fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
+        "    check_keys(args, &[\"path\"])?;",
+        "    let path = optional_path(args)?;",
+        "    let directory = project_path(sources, path)?;"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 134,
-      "line_end": 146,
+      "line_start": 185,
+      "line_end": 196,
       "text": [
-        "            io::Error::new(error.kind(), format!(\"cannot list {path}: {error}\"))",
-        "        })?;",
-        "        let relative = relative_path(&sources.root, &entry.path())?;",
-        "        if sources",
-        "            .access",
-        "            .path(&sources.root, Path::new(&relative))",
-        "            .is_err()",
-        "        {",
-        "            continue;",
-        "        }",
-        "        let metadata = fs::metadata(entry.path()).map_err(|error| {",
-        "            io::Error::new(",
-        "                error.kind(),"
+        "                .map(|(path, kind)| json!({\"path\":path,\"kind\":kind}))",
+        "                .collect(),",
+        "        ),",
+        "        inputs: Vec::new(),",
+        "    })",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.reference_index`",
+        "fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
+        "    check_keys(args, &[\"selection\"])?;",
+        "    let selection = if args.contains_key(\"selection\") {",
+        "        let selection = string(args, \"selection\")?;"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 233,
-      "line_end": 245,
+      "line_start": 212,
+      "line_end": 218,
       "text": [
-        "            .arg(\"--\")",
-        "            .arg(pattern)",
-        "            .arg(path)",
-        "            .output()",
-        "            .map_err(|error| io::Error::other(format!(\"cannot run ripgrep: {error}\")))?;",
-        "        if !output.status.success() && output.status.code() != Some(1) {",
-        "            return Err(io::Error::other(format!(",
-        "                \"ripgrep failed: {}\",",
-        "                String::from_utf8_lossy(&output.stderr).trim()",
-        "            )));",
-        "        }",
-        "        outputs.push(output.stdout);",
+        "    let Some(selection) = selection else {",
+        "        return Ok(ToolDelivery {",
+        "            result: json!({\"definitions\": selected, \"sites\": []}),",
+        "            inputs: Vec::new(),",
+        "        });",
+        "    };",
+        "    if selected.is_empty() {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 221,
+      "line_end": 227,
+      "text": [
+        "        )));",
+        "    }",
+        "    let mut errors = Vec::new();",
+        "    let mut found = crate::evidence::collect_references(&sources.root, &mut errors);",
+        "    if !errors.is_empty() {",
+        "        return Err(io::Error::other(errors.join(\"\\n\")));",
         "    }"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 186,
-      "line_end": 300,
+      "line_start": 276,
+      "line_end": 292,
       "text": [
+        "            \"definitions\": selected,",
+        "            \"sites\": sites.into_iter().map(|site| site.3).collect::<Vec<_>>(),",
+        "        }),",
+        "        inputs: Vec::new(),",
+        "    })",
+        "}",
         "",
         "// {impl}`requirements.authoring.text_search`",
         "// {impl}`requirements.authoring.source_tools`",
         "// {impl}`requirements.configuration.evidence_paths`",
         "// {impl}`requirements.authoring.generated_inputs`",
         "// {impl}`requirements.authoring.read_denial`",
+        "// {impl}`requirements.definitions.authoring_inputs`",
+        "// {impl}`requirements.authoring.delivered_inputs`",
         "fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {",
         "    check_keys(args, &[\"pattern\", \"path\", \"context\"])?;",
-        "    let pattern = string(args, \"pattern\")?;",
-        "    let path = optional_path(args)?;",
-        "    let requested = project_path(sources, path)?;",
-        "    let context = if args.contains_key(\"context\") {",
-        "        integer(args, \"context\")?",
-        "    } else {",
-        "        5",
-        "    };",
-        "    let mut searches = vec![(requested.clone(), false)];",
-        "    for extra in sources.access.extra_roots() {",
-        "        let Ok(extra) = sources.access.path(&sources.root, extra) else {",
-        "            continue;",
-        "        };",
-        "        let candidate = if requested.starts_with(&extra) {",
-        "            requested.clone()",
-        "        } else if extra.starts_with(&requested) || requested == sources.root {",
-        "            extra.clone()",
-        "        } else {",
-        "            continue;",
-        "        };",
-        "        if sources.access.path(&sources.root, &candidate).is_ok() {",
-        "            searches.push((candidate, true));",
-        "        }",
-        "    }",
-        "    searches.sort();",
-        "    searches.dedup();",
-        "    let mut outputs = Vec::new();",
-        "    for (path, include_ignored) in searches {",
-        "        let mut command = Command::new(\"rg\");",
-        "        command.current_dir(&sources.root).args([",
-        "            \"--json\",",
-        "            \"--no-config\",",
-        "            \"--case-sensitive\",",
-        "            \"--color=never\",",
-        "        ]);",
-        "        if include_ignored {",
-        "            command.args([\"--no-ignore\", \"--hidden\"]);",
-        "        }",
-        "        let output = command",
-        "            .arg(\"--\")",
-        "            .arg(pattern)",
-        "            .arg(path)",
-        "            .output()",
-        "            .map_err(|error| io::Error::other(format!(\"cannot run ripgrep: {error}\")))?;",
-        "        if !output.status.success() && output.status.code() != Some(1) {",
-        "            return Err(io::Error::other(format!(",
-        "                \"ripgrep failed: {}\",",
-        "                String::from_utf8_lossy(&output.stderr).trim()",
-        "            )));",
-        "        }",
-        "        outputs.push(output.stdout);",
-        "    }",
-        "    let mut matches: BTreeMap<String, Vec<usize>> = BTreeMap::new();",
-        "    for line in outputs",
-        "        .iter()",
-        "        .flat_map(|output| output.split(|byte| *byte == b'\\n'))",
-        "        .filter(|line| !line.is_empty())",
-        "    {",
-        "        let event: Value = serde_json::from_slice(line)",
-        "            .map_err(|error| io::Error::other(format!(\"invalid ripgrep output: {error}\")))?;",
-        "        if event[\"type\"] != \"match\" {",
-        "            continue;",
-        "        }",
-        "        let file = event[\"data\"][\"path\"][\"text\"]",
-        "            .as_str()",
-        "            .ok_or_else(|| io::Error::other(\"ripgrep found a non-UTF-8 path\"))?;",
-        "        if sources.access.file(&sources.root, Path::new(file)).is_err() {",
-        "            continue;",
-        "        }",
-        "        let number = event[\"data\"][\"line_number\"]",
-        "            .as_u64()",
-        "            .and_then(|number| usize::try_from(number).ok())",
-        "            .ok_or_else(|| io::Error::other(\"ripgrep returned an invalid line number\"))?;",
-        "        let file = relative_path(&sources.root, &sources.root.join(file))?;",
-        "        matches.entry(file).or_default().push(number);",
-        "    }",
+        "    let pattern = string(args, \"pattern\")?;"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 385,
+      "line_end": 391,
+      "text": [
+        "    // Parallel walks finish in any order; the map and per-file sort make results",
+        "    // independent of scheduling.",
+        "    let matches = matches.into_inner().expect(\"search results lock\");",
         "    let mut inputs = Vec::new();",
         "    for (file, mut lines) in matches {",
         "        let (_, source) = read_project_file(&sources.root, &file).map_err(io::Error::other)?;",
-        "        let count = source.lines().count();",
-        "        lines.sort_unstable();",
-        "        let mut windows: Vec<(usize, usize)> = Vec::new();",
-        "        for line in lines {",
-        "            if line == 0 || line > count {",
-        "                return Err(io::Error::other(format!(",
-        "                    \"{file}: ripgrep returned an out-of-range match\"",
-        "                )));",
-        "            }",
-        "            let start = line.saturating_sub(context).max(1);",
-        "            let end = line.saturating_add(context).min(count);",
-        "            if let Some(last) = windows.last_mut()",
-        "                && start <= last.1.saturating_add(1)",
-        "            {",
-        "                last.1 = last.1.max(end);",
-        "            } else {",
-        "                windows.push((start, end));",
+        "        let count = source.lines().count();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 409,
+      "line_end": 425,
+      "text": [
         "            }",
         "        }",
         "        for (line_start, line_end) in windows {",
@@ -1418,7 +1306,596 @@
         "            })?);",
         "        }",
         "    }",
-        "    let definitions = sources.additional_definitions(&inputs)?;"
+        "    let definitions = sources.additional_definitions(&inputs)?;",
+        "    let result = json!({\"inputs\":inputs,\"definitions\":definitions});",
+        "    inputs.extend(definitions);",
+        "    Ok(ToolDelivery { result, inputs })",
+        "}",
+        "",
+        "// {impl}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 491,
+      "line_end": 503,
+      "text": [
+        "mod tests {",
+        "    use super::*;",
+        "    use crate::authoring::access::tests::git;",
+        "    use crate::authoring::inputs::tests::{project, role};",
+        "",
+        "    // {test}`requirements.authoring.additional_read`",
+        "    // {test}`requirements.authoring.source_tools`",
+        "    // {test}`requirements.authoring.file_discovery`",
+        "    // {test}`requirements.authoring.delivered_inputs`",
+        "    // {test}`requirements.definitions.authoring_inputs`",
+        "    #[test]",
+        "    fn reading_records_only_delivered_sources_and_their_terms() {",
+        "        let root = project();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 512,
+      "line_end": 532,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let mut sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({\"path\":\"src\"})).unwrap();",
+        "        assert_eq!(listing.result, json!([{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]));",
+        "        assert!(listing.inputs.is_empty());",
+        "        let read = dispatch(",
+        "            &sources,",
+        "            \"habeas\",",
+        "            &json!({\"rust_file\":\"src/lib.rs\",\"rust_item\":\"fn[work]\"}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(read.inputs.len(), 2);",
+        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");",
+        "        assert!(sources.recorded_inputs().is_empty());",
+        "        sources.record_inputs(&read.inputs);",
+        "        sources.record_inputs(&read.inputs);",
+        "        assert_eq!(sources.recorded_inputs().len(), 2);",
+        "        let eof = dispatch(",
+        "            &sources,",
+        "            \"habeas\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 595,
+      "line_end": 616,
+      "text": [
+        "        git(root.path(), &[\"add\", \"--force\", \".\"]);",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"needle\"})).unwrap();",
+        "        assert_eq!(search.inputs.len(), 1);",
+        "        assert_eq!(search.inputs[0][\"file\"], \"sample.txt\");",
+        "        assert_eq!(search.inputs[0][\"line_start\"], 1);",
+        "        assert_eq!(search.inputs[0][\"line_end\"], 11);",
+        "        assert_eq!(search.inputs[0][\"text\"], json!(&lines[..11]));",
+        "        let exact = dispatch(",
+        "            &sources,",
+        "            \"ripgrep\",",
+        "            &json!({\"pattern\":\"needle\",\"path\":\"sample.txt\",\"context\":0}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(exact.inputs.len(), 2);",
+        "        assert_eq!(exact.inputs[0][\"line_start\"], 2);",
+        "        assert_eq!(exact.inputs[0][\"line_end\"], 2);",
+        "        let absent = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"NEEDLE\"})).unwrap();",
+        "        assert_eq!(absent.result, json!({\"inputs\":[],\"definitions\":[]}));",
+        "        assert!(dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"[\"})).is_err());",
+        "        assert!(",
+        "            dispatch("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 620,
+      "line_end": 626,
+      "text": [
+        "            )",
+        "            .is_err()",
+        "        );",
+        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"../\"})).is_err());",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 671,
+      "line_end": 682,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let files = search",
+        "            .inputs",
+        "            .iter()",
+        "            .map(|input| input[\"file\"].as_str().unwrap())",
+        "            .collect::<Vec<_>>();",
+        "        assert_eq!(files, vec![\"source.txt\", \"src/evidence/source.txt\"]);",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
+        "        assert!(listing.result.as_array().unwrap().iter().all(|entry| {",
+        "            ![\"evidence\", \"old-output\", \"old.json\"].contains(&entry[\"path\"].as_str().unwrap())",
+        "        }));"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 701,
+      "line_end": 707,
+      "text": [
+        "            .contains(\"generated evidence\")",
+        "        );",
+        "        assert!(",
+        "            dispatch(&sources, \"list_files\", &json!({\"path\":\"evidence\"}))",
+        "                .err()",
+        "                .unwrap()",
+        "                .to_string()"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 741,
+      "line_end": 747,
+      "text": [
+        "                );",
+        "            }",
+        "            assert!(",
+        "                dispatch(&sources, \"list_files\", &json!({\"path\":\"old-output\"}))",
+        "                    .err()",
+        "                    .unwrap()",
+        "                    .to_string()"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 766,
+      "line_end": 777,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
+        "        assert!(listing.result.as_array().unwrap().iter().all(|entry| {",
+        "            ![\"outside\", \"outside.rs\"].contains(&entry[\"path\"].as_str().unwrap())",
+        "        }));",
+        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"outside_needle\"})).unwrap();",
+        "        assert!(search.inputs.is_empty());",
+        "        for path in [\"outside/secret.rs\", \"outside.rs\"] {",
+        "            for arguments in [",
+        "                json!({\"file\":path, \"line_start\":1}),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 789,
+      "line_end": 795,
+      "text": [
+        "                .is_err()",
+        "            );",
+        "        }",
+        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"outside\"})).is_err());",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 813,
+      "line_end": 819,
+      "text": [
+        "        .unwrap();",
+        "        fs::write(root.path().join(\"untracked.rs\"), \"fn needle() {}\\n\").unwrap();",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
+        "        assert_eq!(",
+        "            listing",
+        "                .result"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 834,
+      "line_end": 840,
+      "text": [
+        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"needle\"})).unwrap();",
+        "        assert_eq!(",
+        "            search",
+        "                .inputs",
+        "                .iter()",
+        "                .map(|input| input[\"file\"].as_str().unwrap())",
+        "                .collect::<Vec<_>>(),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 848,
+      "line_end": 854,
+      "text": [
+        "            let error = dispatch(&sources, \"habeas\", &arguments).err().unwrap();",
+        "            assert!(error.to_string().contains(\"git add\"), \"{error}\");",
+        "        }",
+        "        assert!(dispatch(&sources, \"list_files\", &json!({\"path\":\"untracked-dir\"})).is_err());",
+        "        assert!(",
+        "            dispatch(",
+        "                &sources,"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 914,
+      "line_end": 920,
+      "text": [
+        "                .is_err()",
+        "            );",
+        "        }",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
+        "        let paths = listing",
+        "            .result",
+        "            .as_array()"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 957,
+      "line_end": 963,
+      "text": [
+        "            \"version = 1\\n[evidence]\\nallow = ['generated', {external_toml}]\\ndisallow = ['generated/private']\\n\"",
+        "        )).unwrap();",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
+        "        let paths = listing",
+        "            .result",
+        "            .as_array()"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 973,
+      "line_end": 986,
+      "text": [
+        "            &json!({\"pattern\":\"needle\", \"context\":0}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(search.inputs.len(), 2);",
+        "        assert!(",
+        "            search",
+        "                .inputs",
+        "                .iter()",
+        "                .any(|input| input[\"file\"] == \"generated/visible.txt\")",
+        "        );",
+        "        assert!(search.inputs.iter().any(|input| input[\"file\"] == external.path().join(\"outside.txt\").to_str().unwrap()));",
+        "        let read = dispatch(",
+        "            &sources,",
+        "            \"habeas\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 993,
+      "line_end": 999,
+      "text": [
+        "                \"habeas\",",
+        "                json!({\"file\":\"generated/private/hidden.txt\", \"line_start\":1}),",
+        "            ),",
+        "            (\"list_files\", json!({\"path\":\"generated/private\"})),",
+        "            (",
+        "                \"ripgrep\",",
+        "                json!({\"path\":\"generated/private\", \"pattern\":\"needle\"}),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1006,
+      "line_end": 1012,
+      "text": [
+        "        }",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.generated_inputs`",
+        "    // {test}`requirements.authoring.file_discovery`",
+        "    // {test}`requirements.authoring.text_search`",
+        "    // {test}`requirements.authoring.source_tools`"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1043,
+      "line_end": 1049,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let listing = dispatch(&sources, \"list_files\", &json!({})).unwrap();",
+        "        assert!(",
+        "            listing",
+        "                .result"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1053,
+      "line_end": 1059,
+      "text": [
+        "                .any(|entry| entry[\"path\"] == \"target/debug/build/fixture-hash/out\")",
+        "        );",
+        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"generated_needle\"})).unwrap();",
+        "        assert_eq!(search.inputs.len(), 1);",
+        "        let read = dispatch(&sources, \"habeas\", &json!({\"rust_file\":\"target/debug/build/fixture-hash/out/generated.rs\", \"rust_item\":\"fn[generated_needle]\"})).unwrap();",
+        "        assert_eq!(",
+        "            read.result[\"input\"][\"text\"],"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1076,
+      "line_end": 1082,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        let denied = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let listing = dispatch(&denied, \"list_files\", &json!({})).unwrap();",
+        "        assert!(",
+        "            !listing",
+        "                .result"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1088,
+      "line_end": 1094,
+      "text": [
+        "        assert!(",
+        "            dispatch(&denied, \"ripgrep\", &json!({\"pattern\":\"generated_needle\"}))",
+        "                .unwrap()",
+        "                .inputs",
+        "                .is_empty()",
+        "        );",
+        "        for (name, arguments) in ["
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1097,
+      "line_end": 1103,
+      "text": [
+        "                json!({\"file\":\"target/debug/build/fixture-hash/out/generated.rs\", \"line_start\":1}),",
+        "            ),",
+        "            (",
+        "                \"list_files\",",
+        "                json!({\"path\":\"target/debug/build/fixture-hash/out\"}),",
+        "            ),",
+        "            ("
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1130,
+      "line_end": 1143,
+      "text": [
+        "            &json!({\"path\":\"alias/../needle.txt\", \"pattern\":\"needle\", \"context\":0}),",
+        "        )",
+        "        .unwrap();",
+        "        assert_eq!(result.inputs.len(), 1);",
+        "        assert_eq!(result.inputs[0][\"file\"], \"actual/needle.txt\");",
+        "        assert_eq!(result.inputs[0][\"text\"], json!([\"actual needle\"]));",
+        "    }",
+        "",
+        "    // {test}`requirements.authoring.reference_index`",
+        "    #[test]",
+        "    fn references_list_names_and_flattened_sites_without_recording_inputs() {",
+        "        let root = project();",
+        "        fs::write(",
+        "            root.path().join(\"md/requirements.md\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1170,
+      "line_end": 1176,
+      "text": [
+        "        .unwrap();",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "",
+        "        let all = dispatch(&sources, \"references\", &json!({})).unwrap();",
+        "        assert_eq!(",
+        "            all.result,",
+        "            json!({\"definitions\": ["
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1179,
+      "line_end": 1189,
+      "text": [
+        "                {\"name\": \"requirements.ready\", \"kind\": \"requirement\"},",
+        "            ], \"sites\": []})",
+        "        );",
+        "        assert!(all.inputs.is_empty());",
+        "",
+        "        let ready = dispatch(",
+        "            &sources,",
+        "            \"references\",",
+        "            &json!({\"selection\": \"requirements.ready\"}),",
+        "        )",
+        "        .unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1195,
+      "line_end": 1205,
+      "text": [
+        "                {\"name\": \"requirements.ready\", \"role\": \"test\", \"file\": \"src/lib.rs\", \"line\": 6, \"rust_item\": \"fn[check]\"},",
+        "            ]})",
+        "        );",
+        "        assert!(ready.inputs.is_empty());",
+        "",
+        "        let flattened = dispatch(",
+        "            &sources,",
+        "            \"references\",",
+        "            &json!({\"selection\": \"requirements.*\"}),",
+        "        )",
+        "        .unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1208,
+      "line_end": 1226,
+      "text": [
+        "        assert_eq!(sites.len(), 4);",
+        "        assert_eq!(sites[0][\"name\"], \"requirements.other\");",
+        "        assert_eq!(sites[0][\"rust_item\"], \"fn[work]\");",
+        "        assert!(flattened.inputs.is_empty());",
+        "",
+        "        for selection in [\"requirements.missing\", \"bad name\", \"\"] {",
+        "            assert!(",
+        "                dispatch(&sources, \"references\", &json!({\"selection\": selection})).is_err(),",
+        "                \"accepted {selection:?}\"",
+        "            );",
+        "        }",
+        "        assert!(dispatch(&sources, \"references\", &json!({\"selection\": 1})).is_err());",
+        "        assert!(",
+        "            dispatch(",
+        "                &sources,",
+        "                \"references\",",
+        "                &json!({\"name\": \"requirements.ready\"})",
+        "            )",
+        "            .is_err()"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1245,
+      "line_end": 1251,
+      "text": [
+        "            &json!({\"pattern\": \"needle\", \"path\": \"src\", \"context\": 0}),",
+        "        )",
+        "        .unwrap();",
+        "        let files: Vec<_> = first.result[\"inputs\"]",
+        "            .as_array()",
+        "            .unwrap()",
+        "            .iter()"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 127,
+      "line_end": 131,
+      "text": [
+        ":::{req} source_tools",
+        "The harness MUST expose a `habeas` tool accepting exactly one of these request",
+        "forms. Each form MUST correspond to one existing evidence-input kind:",
+        "",
+        "| Request fields | Evidence input returned | Definition |"
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 814,
+      "line_end": 818,
+      "text": [
+        "",
+        ":::{req} usage_inputs",
+        "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8",
+        "bytes and lines, and the same information for additional inputs requested through",
+        "`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations."
+      ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "line_start": 760,
+      "line_end": 840,
+      "text": [
+        "secret_access_key = \"AWS_SECRET_ACCESS_KEY\"",
+        "session_token = \"AWS_SESSION_TOKEN\"",
+        "",
+        "[authoring.configs.local]",
+        "backend = \"ollama\"",
+        "model = \"MODEL_TAG\"",
+        "api_key = \"OLLAMA_API_KEY_VALUE\"",
+        "```",
+        "",
+        "Do not combine `credentials` with `aws_profile`, or `api_key` with `api_key_env`.",
+        "The active workspace file is excluded from model source reads when it contains",
+        "literal credentials, unless you explicitly allow it. Such an allow exposes its",
+        "contents to the model and records them as evidence inputs.",
+        "",
+        "## Recording results",
+        "",
+        ":::{req} delivered_inputs",
+        "The harness MUST record the source text it supplies to the model, including",
+        "mandatory inputs and additional reads, using the existing evidence input formats",
+        "defined by {cite}`requirements.ci.inputs`,",
+        "{cite}`requirements.ci.rust_item_inputs`,",
+        "{cite}`requirements.ci.requirements_inputs`, and",
+        "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
+        "itself so ordinary evidence validation can check them later.",
+        ":::",
+        "",
+        ":::{req} persistence",
+        "After one valid judgment, the harness MUST write the subject text, submitted",
+        "determination and rationale, and recorded inputs using the existing evidence",
+        "schema. {cite}`requirements.ci.schema`",
+        "By default, it MUST write the subject's evidence file. With `--stdout`, it MUST",
+        "emit a single evidence JSON object followed by a newline to stdout and MUST NOT",
+        "create or change evidence files or directories. All three outcomes MUST be",
+        "written to the selected destination as completed assessments; their validation",
+        "status MUST follow {cite}`requirements.ci.determination`.",
+        ":::",
+        "",
+        "### Usage history",
+        "",
+        ":::{req} usage_storage",
+        "Each assessment MUST have a separate JSON usage record under",
+        "`<state-root>/authoring/usage/<run-id>.json` using",
+        "{cite}`requirements.configuration.state_location`.",
+        "It MUST identify its format version, run, project root, subject kind and full",
+        "name, start time, backend and model when known, end time when finished, outcome,",
+        "accepted determination kind (`true`, `false`, or `FIXME`) when present, and",
+        "whether evidence was written. It MUST record the selected output destination in",
+        "`evidence_output` as `file` or `stdout`; a successful write to either destination",
+        "MUST set `evidence_written` to true. Usage recording MUST remain outside the",
+        "project in stdout mode. FIXME entry text MUST NOT be stored in usage records.",
+        "Failed, cancelled, or unfinished",
+        "runs MUST remain distinguishable from completed judgments. Records MUST persist",
+        "for later review without storing source text, prompts, responses, or rationale.",
+        ":::",
+        "",
+        ":::{req} usage_inputs",
+        "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8",
+        "bytes and lines, and the same information for additional inputs requested through",
+        "`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.",
+        "Usage MUST distinguish unique inputs from repeated reads, successful from",
+        "failed reads, and prepared inputs from those actually sent to the model.",
+        "File-discovery calls MUST count as tool calls without recording directory",
+        "listings as evidence or source inputs.",
+        ":::",
+        "",
+        ":::{req} usage_requests",
+        "Usage MUST record each provider request's outcome and available input/output",
+        "token counts, including retries, with cached or reasoning-token counts when",
+        "provided. Missing measurements MUST be recorded as unavailable, not zero.",
+        "Run totals MUST include request and tool-call counts by tool, elapsed time, and",
+        "available token usage, identifying incomplete totals without double counting",
+        "provider counters that overlap.",
+        ":::",
+        "",
+        "### CI without inference",
+        "",
+        ":::{req} deterministic_validation",
+        "Ordinary evidence validation, status inspection, and book rendering MUST continue",
+        "to check evidence using the existing rules without invoking models, contacting",
+        "providers, or requiring authoring configuration or credentials. Missing or stale",
+        "evidence MUST remain a validation failure rather than trigger authoring."
       ]
     }
   ]

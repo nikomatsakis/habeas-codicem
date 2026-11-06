@@ -1,7 +1,7 @@
 {
   "requirement": "A `{req}` opening fence MAY contain four or more colons. Habeas MUST accept opening fences of any length of at least three colons. A colon-only line with fewer colons than the opener MUST remain inside the requirement body, allowing a nested colon directive. A closing fence outside a fenced code example with at least as many colons as the opener MUST end the body.",
   "determination": true,
-  "rationale": "The requirement is implemented and tested, and I found no gaps.\n\n**Implementation**\n- `colon_fence` in `src/lib.rs` (about lines 541–548) accepts any line with at most 3 leading spaces and 3 or more colons. It returns the colon count and the rest of the line.\n- `definition_blocks` (`src/lib.rs` 467–537) records the opener's `fence_length`. It ends the body at the first later line that meets all three conditions:\n  - it is not inside a Markdown code block, so a closer inside a fenced code example is ignored;\n  - its colon count is at least `fence_length`;\n  - nothing but whitespace follows the colons.\n- A shorter colon-only line therefore stays in the body. A nested `:::{note}` also stays in the body, because it has a non-empty suffix and fewer colons.\n- `src/evidence.rs` (about line 296–319) takes the requirement text from `content[block.body_start..block.body_end]`. `src/index.rs` also uses `colon_fence` and `>= fence_length` for the index marker, so it handles long fences the same way.\n\n**Tests**\n- `validates_four_or_more_colon_fences_and_longer_closers` in `src/evidence.rs` is tagged `{test}requirements.ci.fence_lengths`.\n  - It tries the opener/closer pairs `::::`/`::::`, `::::`/`:::::` and `:::::::`/`::::::::`.\n  - Each body holds a nested `:::{note}…:::` directive and text after it.\n  - It checks that the full body is recognised as the requirement text, with no validation errors.\n- `colon_requirement_span_includes_markdown_and_excludes_following_text` in `src/evidence.rs` is also tagged with this requirement.\n  - It covers a `:::` line inside a fenced code example not ending the body.\n  - It also checks that text after the real closer is excluded.\n- `a_longer_colon_fence_contains_a_shorter_nested_directive` in `src/lib.rs` checks the exact body, the `closed` flag and the text after the block for `::::{req}` with a nested `:::` directive.\n  - It is tagged `requirements.ci.span` rather than this requirement, but it exercises the same behaviour.\n- `marker_accepts_long_fences_and_ignores_examples` in `src/index.rs` covers long fences for the index marker.\n\n**Coverage**\n- Together the tests cover:\n  - three or more colons at the opener;\n  - closers of equal and greater length;\n  - a shorter nested fence staying in the body;\n  - a closer inside a code example being ignored.\n- There is no dedicated test for a too-short closer leaving the block unclosed. The nested `:::` in the body tests already exercises that logic.",
+  "rationale": "**Verdict:** the implementation covers every obligation in `requirements.ci.fence_lengths`, and the tests cover the main cases. I found no unmarked implementation or unspecified behavior.\n\n**Implementation**\n- `colon_fence` (`src/lib.rs`, marked `{impl}`) accepts any line with at least three colons and returns the colon count. The opener therefore has no upper length limit, and any length of three or more is accepted.\n- `definition_blocks` (`src/lib.rs`, marked `{impl}`) records the opener's `fence_length` and recognizes `{req}`, `{example}` and `{definition}` after it.\n- It searches for the closer only among lines that:\n  - are not inside a Markdown code block (`overlaps_protected` against pulldown-cmark `CodeBlock` ranges);\n  - parse as a colon fence with `count >= fence_length`;\n  - have an empty suffix.\n- A colon-only line with fewer colons than the opener (for example `:::` inside a `::::` block) is never a closer, so it stays in the body. A nested `:::{note}` also has a non-empty suffix, so it stays in the body too.\n- A `:::` line inside a fenced code example is skipped as a closer. This is the \"outside a fenced code example\" clause.\n- Other consumers all go through `definition_blocks`: evidence validation (`src/evidence.rs`:283), mdbook preprocessing (`src/lib.rs`:161 and 262) and the term handling (`src/terms.rs`:88). The behavior is therefore consistent everywhere.\n- `src/index.rs` `marker_ranges` uses the same closer rule for `{requirements-index}`. That is a different directive, so it does not need this requirement's `{impl}` marker.\n\n**Tests**\n- `a_longer_colon_fence_contains_a_shorter_nested_directive` (`src/lib.rs`) covers a `::::` opener with a nested `:::{note}` and a `:::` line. It checks that the block is closed, that the body keeps the nested directive, and that the text after the closer is excluded.\n- `validates_four_or_more_colon_fences_and_longer_closers` (`src/evidence.rs`) runs end to end through `validate_repository` with these opener/closer pairs: `::::`/`::::`, `::::`/`:::::`, and `:::::::`/`::::::::`. The body contains a nested `:::{note}` block and trailing text.\n- `colon_requirement_span_includes_markdown_and_excludes_following_text` (`src/evidence.rs`) covers the ordinary three-colon opener. A `:::` line inside a fenced code example does not end the body. The body continues past headings and the text after the closer is excluded.\n\n**Gaps**\n- There is no explicit test for a closer shorter than the opener leaving the block unclosed. The logic that rejects it is the same `count >= fence_length` comparison that the nested-directive test exercises.\n- That is a minor omission and I do not treat it as a gap.",
   "inputs": [
     {
       "requirements": "requirements.ci.fence_lengths",
@@ -93,54 +93,15 @@
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1623,
-      "line_end": 1656,
+      "rust_file": "src/lib.rs",
+      "rust_item": "fn[definition_blocks]",
       "text": [
-        "                (\"Rust attestation files\", if invalid { 3 } else { 1 }),",
-        "                (\"Rust sidecar coverage\", if invalid { 1 } else { 0 }),",
-        "            ];",
-        "            for (stage, total) in expected_counts {",
-        "                let completed: Vec<_> = updates",
-        "                    .iter()",
-        "                    .filter(|update| update.stage == stage && update.total.is_some())",
-        "                    .map(|update| {",
-        "                        assert_eq!(update.total, Some(total), \"{stage}\");",
-        "                        update.completed",
-        "                    })",
-        "                    .collect();",
-        "                assert_eq!(completed, (0..=total).collect::<Vec<_>>(), \"{stage}\");",
-        "            }",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.progress`",
-        "    #[test]",
-        "    fn inspection_progress_reports_empty_phases_as_complete() {",
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir(temp.path().join(\"md\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = 'md'\\n\").unwrap();",
-        "        let mut updates = Vec::new();",
-        "        let inspected =",
-        "            super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))",
-        "                .unwrap();",
-        "        assert!(inspected.report.errors.is_empty());",
-        "        for stage in [",
-        "            \"evidence files\",",
-        "            \"reference coverage\",",
-        "            \"Rust attestation files\",",
-        "            \"Rust sidecar coverage\",",
-        "        ] {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 467,
-      "line_end": 548,
-      "text": [
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.identifiers`",
         "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.examples.definition`",
         "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
         "    let code_ranges = Parser::new(content)",
         "        .into_offset_iter()",
@@ -210,113 +171,31 @@
         "        index += 1;",
         "    }",
         "    blocks",
-        "}",
-        "",
+        "}"
+      ]
+    },
+    {
+      "rust_file": "src/lib.rs",
+      "rust_item": "fn[colon_fence]",
+      "text": [
         "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
         "    let trimmed = line.trim_start_matches(' ');",
         "    if line.len() - trimmed.len() > 3 {",
         "        return None;",
         "    }",
         "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
-        "    (length >= 3).then_some((&trimmed[length..], length))"
+        "    (length >= 3).then_some((&trimmed[length..], length))",
+        "}"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 468,
-      "line_end": 548,
+      "rust_file": "src/lib.rs",
+      "rust_item": "mod[tests]/fn[a_longer_colon_fence_contains_a_shorter_nested_directive]",
       "text": [
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`",
-        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
-        "    let code_ranges = Parser::new(content)",
-        "        .into_offset_iter()",
-        "        .filter_map(|(event, range)| {",
-        "            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)",
-        "        })",
-        "        .collect::<Vec<_>>();",
-        "    let mut lines = Vec::new();",
-        "    let mut position = 0;",
-        "    for segment in content.split_inclusive('\\n') {",
-        "        let end = position + segment.len();",
-        "        lines.push((",
-        "            position,",
-        "            end,",
-        "            segment.trim_end_matches('\\n').trim_end_matches('\\r'),",
-        "        ));",
-        "        position = end;",
-        "    }",
-        "",
-        "    let mut blocks = Vec::new();",
-        "    let mut index = 0;",
-        "    while index < lines.len() {",
-        "        let (start, body_start, line) = lines[index];",
-        "        let Some((suffix, fence_length)) = colon_fence(line) else {",
-        "            index += 1;",
-        "            continue;",
-        "        };",
-        "        let (kind, rest) = if let Some(rest) = suffix.strip_prefix(\"{req}\") {",
-        "            (DefinitionKind::Requirement, rest)",
-        "        } else if let Some(rest) = suffix.strip_prefix(\"{example}\") {",
-        "            (DefinitionKind::Example, rest)",
-        "        } else if let Some(rest) = suffix.strip_prefix(\"{definition}\") {",
-        "            (DefinitionKind::Term, rest)",
-        "        } else {",
-        "            index += 1;",
-        "            continue;",
-        "        };",
-        "        if overlaps_protected(start, body_start, &code_ranges)",
-        "            || !rest.chars().next().is_some_and(char::is_whitespace)",
-        "            || !valid_name(rest.trim())",
-        "        {",
-        "            index += 1;",
-        "            continue;",
-        "        }",
-        "        let name = rest.trim();",
-        "",
-        "        let close_index = (index + 1..lines.len()).find(|&candidate| {",
-        "            !overlaps_protected(lines[candidate].0, lines[candidate].1, &code_ranges)",
-        "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {",
-        "                    count >= fence_length && suffix.trim().is_empty()",
-        "                })",
-        "        });",
-        "        let (end, body_end, closed) = if let Some(close_index) = close_index {",
-        "            (lines[close_index].1, lines[close_index].0, true)",
-        "        } else {",
-        "            (content.len(), content.len(), false)",
-        "        };",
-        "        blocks.push(DefinitionBlock {",
-        "            start,",
-        "            end,",
-        "            body_start,",
-        "            body_end,",
-        "            name: name.to_owned(),",
-        "            kind,",
-        "            closed,",
-        "        });",
-        "        index += 1;",
-        "    }",
-        "    blocks",
-        "}",
-        "",
-        "// {impl}`requirements.ci.span`",
-        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
-        "    let trimmed = line.trim_start_matches(' ');",
-        "    if line.len() - trimmed.len() > 3 {",
-        "        return None;",
-        "    }",
-        "    let length = trimmed.bytes().take_while(|byte| *byte == b':').count();",
-        "    (length >= 3).then_some((&trimmed[length..], length))"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 852,
-      "line_end": 865,
-      "text": [
-        "",
         "    // {test}`requirements.ci.span`",
+        "    // {test}`requirements.ci.fence_lengths`",
         "    #[test]",
         "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
         "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
@@ -328,964 +207,881 @@
         "            &content[blocks[0].body_start..blocks[0].body_end],",
         "            \"Intro.\\n\\n:::{note}\\nNested.\\n:::\\n\"",
         "        );",
-        "        assert!(content[blocks[0].end..].contains(\"Outside.\"));"
+        "        assert!(content[blocks[0].end..].contains(\"Outside.\"));",
+        "    }"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 373,
+      "line_end": 373,
+      "text": [
+        "            \":::{req} ready\\nThe project MUST be ready.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 390,
+      "line_end": 390,
+      "text": [
+        "            \":::{{definition}} unit\\n:phrase: unit\\nA {}.\\n:::\\n\\n:::{{definition}} value\\n:phrase: value\\nA {}.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 396,
+      "line_end": 396,
+      "text": [
+        "            \":::{{req}} ready\\nReady uses {} and {}.\\n:::\\n\\n:::{{req}} base\\nBase cites {}.\\n:::\\n\\n:::{{req}} distant\\nDistant MUST work.\\n:::\\n\\n:::{{example}} case\\nReady example. {} {}\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 498,
+      "line_end": 498,
+      "text": [
+        "                \"text\": [\":::{req} ready\", \"The project MUST be ready.\", \":::\"]"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 571,
+      "line_end": 571,
+      "text": [
+        "            \":::{definition} ready\\n:phrase: ready\\nReady to proceed.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 625,
+      "line_end": 625,
+      "text": [
+        "            \":::{{req}} ready\\nReady relies on {} and refines {}.\\n:::\\n\\n:::{{req}} base\\nBase MUST hold.\\n:::\\n\\n:::{{req}} parent\\nParent MUST hold.\\n:::\\n\\n:::{{example}} citer\\nA case relying on ready. {}\\n:::\\n\\n:::{{example}} tester\\nA ready case. {} {}\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 506,
+      "line_end": 506,
+      "text": [
+        "            \":::{definition} value\\n:phrase: value\\nA useful value.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1145,
+      "line_end": 1145,
+      "text": [
+        "                \":::{{req}} ready\\nThe project MUST be ready.\\n:::\\n\\n:::{{req}} other\\nOther MUST hold.\\n:::\\n\\n:::{{example}} case\\nA ready case. {}\\n:::\\n\","
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 205,
-      "line_end": 209,
+      "line_start": 12,
+      "line_end": 12,
       "text": [
-        "            examples,",
-        "            evidence_files: evidence_files.len(),",
-        "            errors,",
-        "        },",
-        "        definitions,"
+        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1627,
-      "line_end": 1631,
+      "line_start": 283,
+      "line_end": 283,
       "text": [
-        "                let completed: Vec<_> = updates",
-        "                    .iter()",
-        "                    .filter(|update| update.stage == stage && update.total.is_some())",
-        "                    .map(|update| {",
-        "                        assert_eq!(update.total, Some(total), \"{stage}\");"
+        "        for block in definition_blocks(&content) {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1659,
-      "line_end": 1663,
+      "line_start": 1197,
+      "line_end": 1197,
       "text": [
-        "                    stage,",
-        "                    completed: 0,",
-        "                    total: Some(0),",
-        "                }),",
-        "                \"{stage}: {updates:?}\""
+        "            \":::{req} ready\\nThe check MUST pass.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1375,
+      "line_end": 1375,
+      "text": [
+        "            \"# Requirements\\n\\n:::{req} ready\\nThe check MUST pass.\\n\\n```text\\n{req}`example`\\n```\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1381,
+      "line_end": 1381,
+      "text": [
+        "                \"requirement\": \"The check MUST pass.\\n\\n```text\\n{req}`example`\\n```\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1417,
+      "line_end": 1417,
+      "text": [
+        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1495,
+      "line_end": 1495,
+      "text": [
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1542,
+      "line_end": 1542,
+      "text": [
+        "            \"# Requirements\\n\\n:::{req} ready\\nReady.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1590,
+      "line_end": 1590,
+      "text": [
+        "                \"# Requirements\\n\\n:::{{req}} first\\n{first}\\n:::\\n\\nOutside the requirement.\\n\\n:::{{req}} second\\nSecond MUST work.\\n:::\\n\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1617,
+      "line_end": 1617,
+      "text": [
+        "    fn reports_a_missing_closing_colon_fence() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1621,
+      "line_end": 1621,
+      "text": [
+        "            \":::{req} ready\\nReady.\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1649,
+      "line_end": 1649,
+      "text": [
+        "    fn validates_four_or_more_colon_fences_and_longer_closers() {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1651,
+      "line_end": 1651,
+      "text": [
+        "        for (opening, closing) in [(\"::::\", \"::::\"), (\"::::\", \":::::\"), (\":::::::\", \"::::::::\")] {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1656,
+      "line_end": 1656,
+      "text": [
+        "                    \"# Requirements\\n\\n{opening}{{req}} ready\\n{body}\\n{closing}\\n\\nOutside the requirement.\\n\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1690,
+      "line_end": 1690,
+      "text": [
+        "        let chapter = \"# Rules\\n\\n:::{req} ready\\nReady.\\n:::\\n\\n:::{example} case\\nGiven ready, it succeeds. CITE`rules.ready`\\n:::\\n\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1772,
+      "line_end": 1772,
+      "text": [
+        "            format!(\"{chapter}\\n:::{req} added\\nAdded.\\n:::\\n\", req = \"{req}\"),"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1815,
+      "line_end": 1815,
+      "text": [
+        "            \":::{req} ready\\nReady.\\n:::\\n\","
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1878,
+      "line_end": 1878,
+      "text": [
+        "        let chapter = \":::{req} repeated\\nReady.\\n:::\\n\\n:::{req} repeated\\nAgain.\\n:::\\n\\n:::{example} repeated\\nGiven ready. CITE`rules.repeated`\\n:::\\n\\n:::{example} case\\nGiven ready. CITE`rules.repeated`\\n:::\\n\\n:::{example} case\\nAgain. CITE`rules.repeated`\\n:::\\n\\n:::{example} empty\\n \\n:::\\n\\n:::{example} unclosed\\nNo close.\""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1910,
+      "line_end": 1910,
+      "text": [
+        "        let chapter = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} tested\\nGiven ready. TEST`rules.ready`\\n:::\\n\\n:::{example} cited\\nGiven ready. CITE`rules.ready`\\n:::\\n\\n:::{example} nested\\nLike the tested case. CITE`rules.tested`\\n:::\\n\""
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 14,
-      "line_end": 18,
+      "line_start": 15,
+      "line_end": 15,
       "text": [
-        "use crate::{",
-        "    Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,",
-        "    escape_html, overlaps_protected, protected_ranges, shield_badge,",
-        "};",
-        ""
+        "    Definition, DefinitionKind, EvidenceReport, chapter_href, colon_fence, definition_blocks,"
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 677,
-      "line_end": 681,
+      "line_start": 682,
+      "line_end": 682,
       "text": [
-        "fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {",
-        "    let protected = protected_ranges(content);",
-        "    let definitions = definition_blocks(content);",
-        "    let mut lines = Vec::new();",
-        "    let mut position = 0;"
+        "    let definitions = definition_blocks(content);"
       ]
     },
     {
       "file": "src/index.rs",
       "line_start": 699,
-      "line_end": 703,
+      "line_end": 699,
       "text": [
-        "        };",
-        "        if suffix.trim_end() != \"{requirements-index}\"",
-        "            || overlaps_protected(start, body_start, &protected)",
-        "            || definitions",
-        "                .iter()"
+        "        let Some((suffix, fence_length)) = colon_fence(line) else {"
       ]
     },
     {
       "file": "src/index.rs",
-      "line_start": 708,
-      "line_end": 712,
+      "line_start": 714,
+      "line_end": 714,
       "text": [
-        "        }",
-        "        let Some(close) = (index + 1..lines.len()).find(|&candidate| {",
-        "            !overlaps_protected(lines[candidate].0, lines[candidate].1, &protected)",
-        "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {",
-        "                    count >= fence_length && suffix.trim().is_empty()"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 752,
-      "line_end": 756,
-      "text": [
-        "    // {test}`requirements.index.chapter`",
-        "    #[test]",
-        "    fn marker_accepts_long_fences_and_ignores_examples() {",
-        "        let content = \"```text\\n:::{requirements-index}\\n:::\\n```\\n\\n::::{req} example\\n:::{requirements-index}\\n:::\\n::::\\n\\n::::{requirements-index}\\n::::\\n\";",
-        "        let ranges = marker_ranges(content).unwrap();"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 157,
-      "line_end": 161,
-      "text": [
-        "            continue;",
-        "        };",
-        "        let namespace = chapter_namespace(source_path);",
-        "        for block in definition_blocks(&chapter.content) {",
-        "            if !block.closed {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 257,
-      "line_end": 261,
-      "text": [
-        "    let mut result = String::with_capacity(content.len());",
-        "    let mut cursor = 0;",
-        "",
-        "    for block in definition_blocks(content)",
-        "        .into_iter()"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 467,
-      "line_end": 471,
-      "text": [
-        "// {impl}`requirements.references.markdown_literals`",
-        "// {impl}`requirements.examples.definition`",
-        "// {impl}`requirements.definitions.declaration`",
-        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
-        "    let code_ranges = Parser::new(content)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 504,
-      "line_end": 508,
-      "text": [
-        "            index += 1;",
-        "            continue;",
-        "        };",
-        "        if overlaps_protected(start, body_start, &code_ranges)",
-        "            || !rest.chars().next().is_some_and(char::is_whitespace)"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 514,
-      "line_end": 518,
-      "text": [
-        "        let name = rest.trim();",
-        "",
-        "        let close_index = (index + 1..lines.len()).find(|&candidate| {",
-        "            !overlaps_protected(lines[candidate].0, lines[candidate].1, &code_ranges)",
         "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 539,
-      "line_end": 543,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.ci.span`",
-        "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
-        "    let trimmed = line.trim_start_matches(' ');"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 549,
-      "line_end": 553,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.references.markdown_literals`",
-        "fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {",
-        "    ranges"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 562,
-      "line_end": 566,
-      "text": [
-        "pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {",
-        "    let protected = if markdown {",
-        "        let mut ranges = protected_ranges(content);",
-        "        for block in definition_blocks(content)",
-        "            .into_iter()"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 852,
-      "line_end": 858,
-      "text": [
-        "",
-        "    // {test}`requirements.ci.span`",
-        "    #[test]",
-        "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
-        "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
-        "        let blocks = definition_blocks(content);",
-        "        assert_eq!(blocks.len(), 1);"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 871,
-      "line_end": 875,
-      "text": [
-        "    fn examples_are_distinct_definitions_and_tests_link_to_them() {",
-        "        let source = \"::::{req} ready\\nReady.\\n\\n:::{example} something.foo\\nGiven ready, it succeeds. CITE`requirements.ready`\\n:::\\n::::\\n\\n:::{example} bad name\\nInvalid.\\n:::\\n\\n```text\\n:::{example} hidden\\nLiteral.\\n:::\\n```\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        let blocks = definition_blocks(&source);",
-        "        assert_eq!(blocks.len(), 2);"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 86,
-      "line_end": 90,
-      "text": [
-        "                    // Scan bodies, not the surrounding colon fences: Markdown code",
-        "                    // protection must be evaluated in the declaration's own context.",
-        "                    for block in crate::definition_blocks(&text) {",
-        "                        referenced_terms(",
-        "                            &text[block.body_start..block.body_end],"
-      ]
-    },
-    {
       "file": "src/index.rs",
-      "line_start": 749,
-      "line_end": 761,
-      "text": [
-        "    };",
-        "    use crate::{Definition, DefinitionKind, preprocess_book};",
-        "",
-        "    // {test}`requirements.index.chapter`",
-        "    #[test]",
-        "    fn marker_accepts_long_fences_and_ignores_examples() {",
-        "        let content = \"```text\\n:::{requirements-index}\\n:::\\n```\\n\\n::::{req} example\\n:::{requirements-index}\\n:::\\n::::\\n\\n::::{requirements-index}\\n::::\\n\";",
-        "        let ranges = marker_ranges(content).unwrap();",
-        "        assert_eq!(ranges.len(), 1);",
-        "        assert_eq!(",
-        "            &content[ranges[0].clone()],",
-        "            \"::::{requirements-index}\\n::::\\n\"",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 865,
-      "line_end": 877,
-      "text": [
-        "        assert!(content[blocks[0].end..].contains(\"Outside.\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.examples.definition`",
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn examples_are_distinct_definitions_and_tests_link_to_them() {",
-        "        let source = \"::::{req} ready\\nReady.\\n\\n:::{example} something.foo\\nGiven ready, it succeeds. CITE`requirements.ready`\\n:::\\n::::\\n\\n:::{example} bad name\\nInvalid.\\n:::\\n\\n```text\\n:::{example} hidden\\nLiteral.\\n:::\\n```\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        let blocks = definition_blocks(&source);",
-        "        assert_eq!(blocks.len(), 2);",
-        "        assert_eq!(blocks[0].kind, DefinitionKind::Requirement);",
-        "        assert_eq!(blocks[1].kind, DefinitionKind::Example);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1396,
-      "line_end": 1396,
-      "text": [
-        "        let entry_label = format!(\"{entry_label} ({location}; {purpose})\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1598,
-      "line_end": 1598,
-      "text": [
-        "                let errors = inspected.report.errors.join(\"\\n\");"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 755,
-      "line_end": 755,
+      "line_start": 758,
+      "line_end": 758,
       "text": [
         "        let content = \"```text\\n:::{requirements-index}\\n:::\\n```\\n\\n::::{req} example\\n:::{requirements-index}\\n:::\\n::::\\n\\n::::{requirements-index}\\n::::\\n\";"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 731,
-      "line_end": 731,
+      "file": "src/index.rs",
+      "line_start": 763,
+      "line_end": 763,
       "text": [
-        "    fn code_examples_and_legacy_roles_remain_literal() {"
+        "            \"::::{requirements-index}\\n::::\\n\""
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 765,
+      "line_end": 766,
+      "text": [
+        "        assert!(marker_ranges(\":::{requirements-index}\\n\").is_err());",
+        "        assert!(marker_ranges(\":::{requirements-index}\\nUnexpected.\\n:::\").is_err());"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 768,
+      "line_end": 768,
+      "text": [
+        "            marker_ranges(\"::::{requirements-index}\\n:::::\\n\")"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 798,
+      "line_end": 798,
+      "text": [
+        "            source.push_str(&format!(\":::{{req}} {name}\\n{body}\\n:::\\n\\n\"));"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1105,
+      "line_end": 1105,
+      "text": [
+        "                \":::{requirements-index}\\n:::\\n\".to_owned(),"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1120,
+      "line_end": 1120,
+      "text": [
+        "            \":::{requirements-index}\\n:::\\n\".to_owned(),"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1212,
+      "line_end": 1212,
+      "text": [
+        "        let source = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} pending\\nPending case. CITE`rules.ready`\\n:::\\n\\n:::{example} missing\\nMissing case. CITE`rules.ready`\\n:::\\n\""
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 1236,
+      "line_end": 1236,
+      "text": [
+        "            \":::{requirements-index}\\n:::\\n\".to_owned(),"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 830,
-      "line_end": 830,
-      "text": [
-        "    fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 846,
-      "line_end": 846,
-      "text": [
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 871,
-      "line_end": 871,
-      "text": [
-        "    fn examples_are_distinct_definitions_and_tests_link_to_them() {"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 197,
-      "line_end": 197,
-      "text": [
-        "        (Behavior::MixedJudgments, \"requirement requirements.alpha\") => json!(false),"
-      ]
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "line_start": 454,
-      "line_end": 454,
-      "text": [
-        "// {test}`requirements.authoring.progress`"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 141,
-      "line_end": 141,
-      "text": [
-        "            format!(\":::{{req}} ready\\n{REQUIREMENT}\\n:::\\n\"),"
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 146,
-      "line_end": 146,
-      "text": [
-        "            \":::{definition} readiness\\n:phrase: readiness\\n\\nSECRET_DEFINITION_TEXT.\\n:::\\n\","
-      ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "line_start": 432,
-      "line_end": 432,
-      "text": [
-        "        \"submit\","
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 34,
-      "line_end": 34,
-      "text": [
-        "        source.push_str(&format!(\":::{{req}} {name}\\n{text}\\n:::\\n\\n\"));"
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 37,
-      "line_end": 37,
-      "text": [
-        "        &\":::{example} case\\nGiven ready, it works. CITE`requirements.ready`\\n:::\\n\""
-      ]
-    },
-    {
-      "file": "tests/commands.rs",
-      "line_start": 352,
-      "line_end": 352,
-      "text": [
-        "    let output = habeas(temp.path(), &[\"status\", \"--verbose\", \"rules.unlinked\"]);"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 25,
-      "line_end": 25,
-      "text": [
-        "        \":::{req} ready\\nUse TERM`glossary.a`.\\n:::\\n\".replace(\"TERM\", \"{term}\"),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 28,
-      "line_end": 28,
-      "text": [
-        "    fs::write(temp.path().join(\"md/glossary.md\"), \":::{definition} a\\n:phrase: alpha\\n\\nSee TERM`glossary.b`.\\n:::\\n\\n:::{definition} b\\n:phrase: beta\\n\\nSee TERM`glossary.a`.\\n:::\\n\".replace(\"TERM\", \"{term}\")).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 134,
-      "line_end": 134,
-      "text": [
-        "    text.push_str(\"\\n:::{definition} unrelated\\n:phrase: unrelated\\n\\nNot referenced.\\n:::\\n\");"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
       "line_start": 161,
       "line_end": 161,
       "text": [
-        "            format!(\":::{{definition}} bad\\n{body}\\n:::\\n\"),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 175,
-      "line_end": 175,
-      "text": [
-        "        \":::{definition} open\\n:phrase: open\\n\\nNo closing fence.\\n\","
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 185,
-      "line_end": 185,
-      "text": [
-        "    fs::write(temp.path().join(\"md/bad.md\"), \":::{req} x\\nRequirement.\\n:::\\n:::{definition} x\\n:phrase: x\\n\\nDefinition.\\n:::\\nTERM`rules.ready` TERM`missing.name`\".replace(\"TERM\", \"{term}\")).unwrap();"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 211,
-      "line_end": 211,
-      "text": [
-        "        \":::{definition} a\\n:phrase: *alpha* & <beta>\\n\\nThe body.\\n:::\\n\".into(),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 360,
-      "line_end": 360,
-      "text": [
-        "        format!(\":::{{req}} ready\\n{body}\\n:::\\n\"),"
-      ]
-    },
-    {
-      "file": "tests/definitions.rs",
-      "line_start": 381,
-      "line_end": 381,
-      "text": [
-        "        + &\"\\n:::{example} case\\nCITE`rules.ready` with TERM`glossary.a`.\\n:::\\n\""
-      ]
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "line_start": 143,
-      "line_end": 143,
-      "text": [
-        "    )"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 23,
-      "line_end": 23,
-      "text": [
-        "        \":::{example} timeout\".to_owned(),"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 25,
-      "line_end": 25,
-      "text": [
-        "        \":::\".to_owned(),"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 30,
-      "line_end": 30,
-      "text": [
-        "            \":::{{req}} ready\\nThe behavior MUST work.\\n:::\\n\\n{}\\n\","
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 264,
-      "line_end": 264,
-      "text": [
-        "            \"citations\": [{\"role\": \"impl\", \"name\": \"requirements.ready\"}],"
-      ]
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "line_start": 311,
-      "line_end": 311,
-      "text": [
-        "    assert!(info.contains(\"rust-lang/rust#123\"));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1585,
-      "line_end": 1625,
-      "text": [
-        "                inspected.report.evidence_files,",
-        "                expected.report.evidence_files",
-        "            );",
-        "            assert_eq!(inspected.report.errors, expected.report.errors);",
-        "            assert_eq!(inspected.rust_functions, expected.rust_functions);",
-        "            assert_eq!(inspected.discovery_errors, expected.discovery_errors);",
-        "            assert_eq!(",
-        "                inspected.definitions.keys().collect::<Vec<_>>(),",
-        "                expected.definitions.keys().collect::<Vec<_>>()",
-        "            );",
-        "            assert_eq!(inspected.report.requirements, 1);",
-        "            assert_eq!(inspected.report.examples, 0);",
-        "            if invalid {",
-        "                let errors = inspected.report.errors.join(\"\\n\");",
-        "                for error in [",
-        "                    \"invalid JSON\",",
-        "                    \"cannot parse Rust source\",",
-        "                    \"orphaned Rust attestation file\",",
-        "                ] {",
-        "                    assert!(errors.contains(error), \"missing {error:?}: {errors}\");",
-        "                }",
-        "                assert_eq!(",
-        "                    inspected.rust_functions,",
-        "                    [(\"src/lib.rs\".into(), \"fn[retained]\".into(), false)]",
-        "                );",
-        "            } else {",
-        "                assert!(inspected.report.errors.is_empty());",
-        "            }",
-        "            assert!(updates.iter().any(|update| update.total.is_none()));",
-        "            assert!(updates.iter().all(|update| {",
-        "                update",
-        "                    .total",
-        "                    .map_or(update.completed == 0, |total| update.completed <= total)",
-        "            }));",
-        "            let expected_counts = [",
-        "                (\"evidence files\", if invalid { 2 } else { 1 }),",
-        "                (\"reference source files\", if invalid { 6 } else { 3 }),",
-        "                (\"reference coverage\", 1),",
-        "                (\"Rust attestation files\", if invalid { 3 } else { 1 }),",
-        "                (\"Rust sidecar coverage\", if invalid { 1 } else { 0 }),",
-        "            ];"
+        "        for block in definition_blocks(&chapter.content) {"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 506,
-      "line_end": 506,
+      "line_start": 262,
+      "line_end": 262,
       "text": [
-        "        };"
+        "    for block in definition_blocks(content)"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 516,
-      "line_end": 516,
+      "line_start": 476,
+      "line_end": 476,
       "text": [
-        "        let close_index = (index + 1..lines.len()).find(|&candidate| {"
+        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 541,
-      "line_end": 541,
+      "line_start": 499,
+      "line_end": 499,
       "text": [
-        "// {impl}`requirements.ci.span`"
+        "        let Some((suffix, fence_length)) = colon_fence(line) else {"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 551,
-      "line_end": 551,
+      "line_start": 503,
+      "line_end": 503,
       "text": [
-        "// {impl}`requirements.references.markdown_literals`"
+        "        let (kind, rest) = if let Some(rest) = suffix.strip_prefix(\"{req}\") {"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 730,
-      "line_end": 730,
+      "line_start": 524,
+      "line_end": 524,
       "text": [
-        "    #[test]"
+        "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 854,
-      "line_end": 854,
+      "line_start": 549,
+      "line_end": 549,
       "text": [
-        "    #[test]"
+        "fn colon_fence(line: &str) -> Option<(&str, usize)> {"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 720,
-      "line_end": 865,
+      "line_start": 573,
+      "line_end": 573,
       "text": [
-        "            Path::new(\"requirements.md\"),",
-        "            Some(\"habeas-req-requirements.cli.mdbook\"),",
-        "        );",
-        "        assert_eq!(",
-        "            definition,",
-        "            \"../requirements.html#habeas-req-requirements.cli%2Emdbook\"",
-        "        );",
-        "    }",
-        "",
-        "    // {test}`requirements.references.markdown_literals`",
-        "    #[test]",
-        "    fn code_examples_and_legacy_roles_remain_literal() {",
-        "        let source = \"`{req}`inline``\\n\\n```text\\n   :::{req} block\\n```\\n\\n{req}`legacy`\\n\\n:::{req} visible\\nVisible.\\n:::\";",
-        "        let rendered = replace_definitions(source, \"requirements\", None, None);",
+        "        for block in definition_blocks(content)"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 689,
+      "line_end": 689,
+      "text": [
+        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 707,
+      "line_end": 707,
+      "text": [
+        "            \":::{req} tui.table\\nThe table MUST be visible.\\n:::\","
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 714,
+      "line_end": 714,
+      "text": [
+        "        assert!(!rendered.contains(\"{req}\"));"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 741,
+      "line_end": 741,
+      "text": [
+        "        let source = \"`{req}`inline``\\n\\n```text\\n   :::{req} block\\n```\\n\\n{req}`legacy`\\n\\n:::{req} visible\\nVisible.\\n:::\";"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 743,
+      "line_end": 745,
+      "text": [
         "        assert!(rendered.contains(\"{req}`inline`\"));",
         "        assert!(rendered.contains(\":::{req} block\"));",
-        "        assert!(rendered.contains(\"{req}`legacy`\"));",
-        "        assert!(rendered.contains(\"alt=\\\"req requirements.visible\\\"\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.ci.identifiers`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn invalid_names_remain_literal_and_html_is_escaped() {",
-        "        let rendered = replace_definitions(",
-        "            \":::{req} bad name\\nInvalid.\\n:::\\n\\n:::{req} good\\nGood.\\n:::\",",
-        "            \"a&b\",",
-        "            None,",
-        "            None,",
-        "        );",
-        "        assert!(rendered.contains(\":::{req} bad name\"));",
-        "        assert!(rendered.contains(\"alt=\\\"req a&amp;b.good\\\"\"));",
-        "        assert!(reference_roles(\"{impl}`bad name`\", false).is_empty());",
-        "    }",
-        "",
-        "    // {test}`requirements.references.book_badges`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn shields_badge_urls_escape_requirement_names() {",
-        "        let badge = shield_badge(\"req\", \"requirements.foo_bar-baz\", \"006ba8\");",
-        "        assert!(badge.contains(",
-        "            \"https://img.shields.io/badge/req-requirements.foo__bar--baz-006ba8?style=flat-square&amp;labelColor=555\"",
-        "        ));",
-        "        assert!(badge.contains(\"alt=\\\"req requirements.foo_bar-baz\\\"\"));",
-        "",
-        "        let status = shield_badge(\"evidence\", \"Determination false\", \"ae5d14\");",
-        "        assert!(status.contains(\"badge/evidence-Determination_false-ae5d14\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn references_in_nested_chapters_link_to_the_requirement_definition() {",
-        "        let mut book = Book::new();",
-        "        book.push_item(Chapter::new(",
-        "            \"Requirements\",",
-        "            \":::{req} ready\\nReady.\\n:::\".to_owned(),",
-        "            \"requirements.md\",",
-        "            Vec::new(),",
-        "        ));",
-        "        let references = [\"impl\", \"cite\", \"test\"]",
-        "            .iter()",
-        "            .map(|kind| format!(\"{{{kind}}}`requirements.ready`\"))",
-        "            .collect::<Vec<_>>()",
-        "            .join(\" \");",
-        "        book.push_item(Chapter::new(",
-        "            \"Guide\",",
-        "            references,",
-        "            \"guides/deep.md\",",
-        "            Vec::new(),",
-        "        ));",
-        "",
-        "        preprocess_book(&mut book, Path::new(\".\")).unwrap();",
-        "        let chapters = book.chapters().collect::<Vec<_>>();",
-        "        assert!(",
-        "            chapters[0]",
-        "                .content",
-        "                .contains(\"id=\\\"habeas-req-requirements.ready\\\"\")",
-        "        );",
-        "        for (kind, color) in [(\"impl\", \"237346\"), (\"cite\", \"7151a1\"), (\"test\", \"ae5d14\")] {",
-        "            assert!(chapters[1].content.contains(&format!(",
-        "                \"class=\\\"habeas-req-badge habeas-req-ref-{kind}\\\" href=\\\"../requirements.html#habeas-req-requirements.ready\\\"\"",
-        "            )));",
-        "            assert!(chapters[1].content.contains(&format!(",
-        "                \"img.shields.io/badge/{kind}-requirements.ready-{color}\"",
-        "            )));",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.references.markdown_literals`",
-        "    #[test]",
-        "    fn markdown_examples_and_escaped_references_stay_literal() {",
-        "        let marker = [\"{\", \"impl}`requirements.ready`\"].concat();",
-        "        let content = format!(\"`{marker}`\\n\\n```text\\n{marker}\\n```\\n\\n\\\\{marker}\");",
-        "        let mut book = Book::new();",
-        "        book.push_item(Chapter::new(",
-        "            \"Requirements\",",
-        "            \":::{req} ready\\nReady.\\n:::\".to_owned(),",
-        "            \"requirements.md\",",
-        "            Vec::new(),",
-        "        ));",
-        "        book.push_item(Chapter::new(\"Guide\", content, \"guide.md\", Vec::new()));",
-        "",
-        "        preprocess_book(&mut book, Path::new(\".\")).unwrap();",
-        "        let guide = book.chapters().nth(1).unwrap();",
-        "        assert_eq!(guide.content.matches(&marker).count(), 3);",
-        "        assert!(!guide.content.contains(\"habeas-req-ref-impl\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {",
-        "        let source = \"An inline {req}`inline` role.\\n\\n:::{req} defined\\nDefinition.\\n\\n## Details\\n\\n```text\\nexample\\n```\\n:::\\n\\nAfter.\";",
-        "        let rendered = replace_definitions(source, \"requirements\", None, None);",
-        "        assert!(rendered.contains(\"An inline {req}`inline` role.\"));",
-        "        assert!(!rendered.contains(\"habeas-req-requirements.inline\"));",
-        "        assert!(rendered.contains(\"id=\\\"habeas-req-requirements.defined\\\"\"));",
-        "        assert!(rendered.contains(\"## Details\"));",
-        "        assert!(rendered.contains(\"```text\\nexample\\n```\"));",
-        "        assert!(rendered.contains(\"After.\"));",
-        "        assert!(!rendered.contains(\":::{req} defined\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.references.targets`",
-        "    #[test]",
-        "    fn references_in_requirement_bodies_are_scanned_as_markdown() {",
-        "        let known = [\"{\", \"cite}`requirements.ready`\"].concat();",
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
-        "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");",
-        "        let references = reference_roles(&content, true);",
-        "        assert_eq!(references.len(), 1);",
-        "        assert_eq!(references[0].name, \"requirements.ready\");",
-        "    }",
-        "",
-        "    // {test}`requirements.ci.span`",
-        "    #[test]",
-        "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
-        "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
-        "        let blocks = definition_blocks(content);",
-        "        assert_eq!(blocks.len(), 1);",
-        "        assert!(blocks[0].closed);",
-        "        assert_eq!(blocks[0].kind, DefinitionKind::Requirement);",
-        "        assert_eq!(",
-        "            &content[blocks[0].body_start..blocks[0].body_end],",
-        "            \"Intro.\\n\\n:::{note}\\nNested.\\n:::\\n\"",
-        "        );",
-        "        assert!(content[blocks[0].end..].contains(\"Outside.\"));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1468,
-      "line_end": 1472,
-      "text": [
-        "                    rust_item,",
-        "                }) if selected_file == rust_file && rust_item == selector => {",
-        "                    self_inputs += 1;",
-        "                }",
-        "                Some(InputSelector::Requirements { .. }) => {"
+        "        assert!(rendered.contains(\"{req}`legacy`\"));"
       ]
     },
     {
       "file": "src/lib.rs",
-      "line_start": 828,
-      "line_end": 832,
+      "line_start": 754,
+      "line_end": 754,
       "text": [
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {",
-        "        let source = \"An inline {req}`inline` role.\\n\\n:::{req} defined\\nDefinition.\\n\\n## Details\\n\\n```text\\nexample\\n```\\n:::\\n\\nAfter.\";",
-        "        let rendered = replace_definitions(source, \"requirements\", None, None);"
+        "            \":::{req} bad name\\nInvalid.\\n:::\\n\\n:::{req} good\\nGood.\\n:::\","
       ]
     },
     {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 84,
-      "line_end": 90,
+      "file": "src/lib.rs",
+      "line_start": 759,
+      "line_end": 759,
       "text": [
-        "| `src/evidence.rs:914` `reports_unknown_references_and_uncovered_lines` | `requirements.references.targets` |",
-        "| `src/evidence.rs:959` `colon_requirement_span_includes_markdown_and_excludes_following_text` | `requirements.ci.span` |",
-        "| `src/evidence.rs:992` `reports_a_missing_closing_colon_fence` | `requirements.ci.span`, `requirements.ci.definition_errors` |",
-        "| `src/evidence.rs:1024` `validates_four_or_more_colon_fences_and_longer_closers` | `requirements.ci.fence_lengths` |",
-        "| `src/index.rs:552` `marker_accepts_long_fences_and_ignores_examples` | `requirements.index.chapter` |",
-        "| `src/index.rs:575` `index_shows_evidence_states_and_links_generated_chapters` | `requirements.index.chapter`, `requirements.index.state`, `requirements.index.navigation`, `requirements.index.source_links` |",
-        "| `src/index.rs:721` `detail_page_renders_markdown_and_highlighted_input_sections` | `requirements.index.detail_format` |"
+        "        assert!(rendered.contains(\":::{req} bad name\"));"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1675,
-      "line_end": 1681,
+      "file": "src/lib.rs",
+      "line_start": 784,
+      "line_end": 784,
       "text": [
-        "            (\"\", \"src\"),",
-        "            (\"[book]\\ntitle = 'Example'\\n\", \"src\"),",
-        "            (\"[book]\\nsrc = 'docs'\\n\", \"docs\"),",
-        "            (\"book = { src = 'docs' }\\n\", \"docs\"),",
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();"
+        "            \":::{req} ready\\nReady.\\n:::\".to_owned(),"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1740,
-      "line_end": 1746,
+      "file": "src/lib.rs",
+      "line_start": 826,
+      "line_end": 826,
       "text": [
-        "                \"inputs\": [{",
-        "                    \"file\": \"src/main.rs\",",
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 2,",
-        "                    \"text\": [\"// first line\", \"// second line\"]",
-        "                }]",
-        "            })"
+        "            \":::{req} ready\\nReady.\\n:::\".to_owned(),"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 9,
-      "line_end": 15,
+      "file": "src/lib.rs",
+      "line_start": 842,
+      "line_end": 842,
       "text": [
-        "use crate::inputs::{InputSelector, ResolvedInput};",
-        "use crate::judgment::Judgment;",
-        "use crate::{",
-        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
-        "    reference_roles, valid_name,",
-        "};",
-        ""
+        "        let source = \"An inline {req}`inline` role.\\n\\n:::{req} defined\\nDefinition.\\n\\n## Details\\n\\n```text\\nexample\\n```\\n:::\\n\\nAfter.\";"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 231,
-      "line_end": 237,
+      "file": "src/lib.rs",
+      "line_start": 844,
+      "line_end": 844,
       "text": [
-        "                    None => None,",
-        "                };",
-        "                match table.and_then(|table| table.get(\"src\")) {",
-        "                    Some(item) => match item.as_str() {",
-        "                        Some(source) => source.to_owned(),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());"
+        "        assert!(rendered.contains(\"An inline {req}`inline` role.\"));"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1710,
-      "line_end": 1716,
+      "file": "src/lib.rs",
+      "line_start": 850,
+      "line_end": 850,
       "text": [
-        "        ] {",
-        "            fs::write(&path, configuration).unwrap();",
-        "            let mut errors = Vec::new();",
-        "            super::book_source_dir(root, &mut errors);",
-        "            assert!(",
-        "                errors.iter().any(|error| error.contains(expected)),",
-        "                \"{configuration:?}: {errors:?}\""
+        "        assert!(!rendered.contains(\":::{req} defined\"));"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 1742,
-      "line_end": 1748,
+      "file": "src/lib.rs",
+      "line_start": 859,
+      "line_end": 859,
       "text": [
-        "                    \"line_start\": 1,",
-        "                    \"line_end\": 2,",
-        "                    \"text\": [\"// first line\", \"// second line\"]",
-        "                }]",
-        "            })",
-        "            .to_string(),",
-        "        )"
+        "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");"
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "line_start": 4,
-      "line_end": 20,
+      "file": "src/lib.rs",
+      "line_start": 868,
+      "line_end": 870,
       "text": [
-        "use std::path::{Component, Path, PathBuf};",
+        "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
+        "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
+        "        let blocks = definition_blocks(content);"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 886,
+      "line_end": 886,
+      "text": [
+        "        let source = \"::::{req} ready\\nReady.\\n\\n:::{example} something.foo\\nGiven ready, it succeeds. CITE`requirements.ready`\\n:::\\n::::\\n\\n:::{example} bad name\\nInvalid.\\n:::\\n\\n```text\\n:::{example} hidden\\nLiteral.\\n:::\\n```\""
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 888,
+      "line_end": 888,
+      "text": [
+        "        let blocks = definition_blocks(&source);"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 923,
+      "line_end": 924,
+      "text": [
+        "        assert!(chapters[0].content.contains(\":::{example} bad name\"));",
+        "        assert!(chapters[0].content.contains(\":::{example} hidden\"));"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 88,
+      "line_end": 88,
+      "text": [
+        "                    for block in crate::definition_blocks(&text) {"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 670,
+      "line_end": 750,
+      "text": [
+        "        Some(\"toml\") => \"ini\",",
+        "        Some(\"java\") => \"java\",",
+        "        Some(\"js\" | \"jsx\" | \"mjs\" | \"cjs\") => \"javascript\",",
+        "        Some(\"ts\" | \"tsx\" | \"mts\" | \"cts\") => \"typescript\",",
+        "        Some(\"py\") => \"python\",",
+        "        _ => \"plaintext\",",
+        "    }",
+        "}",
         "",
-        "use serde_json::{Map, Value};",
-        "use toml_edit::DocumentMut;",
+        "// {impl}`requirements.index.chapter`",
+        "fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {",
+        "    let protected = protected_ranges(content);",
+        "    let definitions = definition_blocks(content);",
+        "    let mut lines = Vec::new();",
+        "    let mut position = 0;",
+        "    for segment in content.split_inclusive('\\n') {",
+        "        let end = position + segment.len();",
+        "        lines.push((",
+        "            position,",
+        "            end,",
+        "            segment.trim_end_matches('\\n').trim_end_matches('\\r'),",
+        "        ));",
+        "        position = end;",
+        "    }",
         "",
-        "use crate::inputs::{InputSelector, ResolvedInput};",
-        "use crate::judgment::Judgment;",
-        "use crate::{",
-        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
-        "    reference_roles, valid_name,",
-        "};",
+        "    let mut ranges = Vec::new();",
+        "    let mut index = 0;",
+        "    while index < lines.len() {",
+        "        let (start, body_start, line) = lines[index];",
+        "        let Some((suffix, fence_length)) = colon_fence(line) else {",
+        "            index += 1;",
+        "            continue;",
+        "        };",
+        "        if suffix.trim_end() != \"{requirements-index}\"",
+        "            || overlaps_protected(start, body_start, &protected)",
+        "            || definitions",
+        "                .iter()",
+        "                .any(|block| block.start <= start && start < block.end)",
+        "        {",
+        "            index += 1;",
+        "            continue;",
+        "        }",
+        "        let Some(close) = (index + 1..lines.len()).find(|&candidate| {",
+        "            !overlaps_protected(lines[candidate].0, lines[candidate].1, &protected)",
+        "                && colon_fence(lines[candidate].2).is_some_and(|(suffix, count)| {",
+        "                    count >= fence_length && suffix.trim().is_empty()",
+        "                })",
+        "        }) else {",
+        "            return Err(invalid_index(",
+        "                \"{requirements-index} is missing a closing colon fence\",",
+        "            ));",
+        "        };",
+        "        if !content[body_start..lines[close].0].trim().is_empty() {",
+        "            return Err(invalid_index(",
+        "                \"{requirements-index} must have an empty body\",",
+        "            ));",
+        "        }",
+        "        ranges.push(start..lines[close].1);",
+        "        index = close + 1;",
+        "    }",
+        "    Ok(ranges)",
+        "}",
         "",
-        "// {impl}`requirements.integration.report_api`",
-        "#[derive(Debug)]",
-        "pub struct EvidenceReport {",
-        "    pub requirements: usize,",
-        "    pub examples: usize,"
+        "// {impl}`requirements.index.chapter`",
+        "fn invalid_index(message: &str) -> io::Error {",
+        "    io::Error::new(io::ErrorKind::InvalidData, message)",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    use std::collections::BTreeMap;",
+        "    use std::fs;",
+        "    use std::path::Path;",
+        "",
+        "    use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};",
+        "    use mdbook_preprocessor::config::Config;",
+        "    use serde_json::json;",
+        "    use tempfile::TempDir;",
+        "",
+        "    use super::{",
+        "        DetailEvidence, EvidenceState, IndexPlan, RenderSources, SourceLinks, code_language,"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 232,
-      "line_end": 248,
+      "line_start": 265,
+      "line_end": 340,
       "text": [
-        "                };",
-        "                match table.and_then(|table| table.get(\"src\")) {",
-        "                    Some(item) => match item.as_str() {",
-        "                        Some(source) => source.to_owned(),",
-        "                        None => {",
-        "                            errors.push(\"book.toml: book.src must be a string\".to_owned());",
-        "                            return root.join(\"md\");",
-        "                        }",
-        "                    },",
-        "                    None => \"src\".to_owned(),",
-        "                }",
-        "            }",
+        "",
+        "    for file in files_with_extension(root, md_root, \"md\", errors) {",
+        "        let relative = file",
+        "            .strip_prefix(md_root)",
+        "            .expect(\"chapter file is inside md directory\");",
+        "        if relative == Path::new(\"SUMMARY.md\") {",
+        "            continue;",
+        "        }",
+        "",
+        "        let label = display_path(root, &file);",
+        "        let content = match fs::read_to_string(&file) {",
+        "            Ok(content) => content,",
         "            Err(error) => {",
-        "                errors.push(format!(\"book.toml: invalid TOML: {error}\"));",
-        "                return root.join(\"md\");",
-        "            }",
-        "        },"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 293,
-      "line_end": 299,
-      "text": [
+        "                errors.push(format!(\"{label}: cannot read chapter: {error}\"));",
+        "                continue;",
         "            }",
         "        };",
         "        let namespace = chapter_namespace(relative);",
         "        for block in definition_blocks(&content) {",
         "            let line = content[..block.start]",
         "                .bytes()",
-        "                .filter(|byte| *byte == b'\\n')"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 316,
-      "line_end": 322,
-      "text": [
+        "                .filter(|byte| *byte == b'\\n')",
+        "                .count()",
+        "                + 1;",
+        "            let source = format!(\"{label}:{line}\");",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            if !valid_name(&name) {",
+        "                errors.push(format!(",
+        "                    \"{source}: invalid {} name {name:?}\",",
+        "                    block.kind.noun()",
+        "                ));",
+        "                continue;",
+        "            }",
+        "",
+        "            if !block.closed {",
+        "                errors.push(format!(",
+        "                    \"{source}: {} {name} is missing a closing colon fence\",",
+        "                    block.kind.noun()",
         "                ));",
         "            }",
         "            // {impl}`requirements.ci.span`",
         "            let text = content[block.body_start..block.body_end].trim().to_owned();",
         "            if text.is_empty() {",
         "                errors.push(format!(",
-        "                    \"{source}: {} {name} has no text\","
+        "                    \"{source}: {} {name} has no text\",",
+        "                    block.kind.noun()",
+        "                ));",
+        "            }",
+        "",
+        "            if block.kind == DefinitionKind::Term",
+        "                && let Err(error) = crate::terms::declaration(&text)",
+        "            {",
+        "                errors.push(format!(\"{source}: definition {name}: {error}\"));",
+        "            }",
+        "            match definitions.entry(name.clone()) {",
+        "                Entry::Vacant(slot) => {",
+        "                    let raw_lines = content[block.start..block.end]",
+        "                        .lines()",
+        "                        .map(|line| line.strip_suffix('\\r').unwrap_or(line).to_owned())",
+        "                        .collect::<Vec<_>>();",
+        "                    slot.insert(Declaration {",
+        "                        kind: block.kind,",
+        "                        text,",
+        "                        source,",
+        "                        file: label.clone(),",
+        "                        line_start: line,",
+        "                        line_end: line + raw_lines.len().saturating_sub(1),",
+        "                        raw_lines,",
+        "                    });",
+        "                }",
+        "                Entry::Occupied(previous) => errors.push(format!(",
+        "                    \"{source}: duplicate {} {name}; first declared at {}\",",
+        "                    block.kind.noun(),",
+        "                    previous.get().source",
+        "                )),",
+        "            }"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 140,
+      "line_end": 300,
+      "text": [
+        "    pub(crate) start: usize,",
+        "    end: usize,",
+        "    pub(crate) name: &'a str,",
+        "    pub(crate) kind: ReferenceKind,",
+        "}",
+        "",
+        "// {impl}`requirements.cli.mdbook`",
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.definitions.references`",
+        "// {impl}`requirements.definitions.selection`",
+        "pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {",
+        "    let mut definitions = BTreeMap::new();",
+        "    for chapter in book.chapters() {",
+        "        let Some(source_path) = chapter.source_path.as_deref().or(chapter.path.as_deref()) else {",
+        "            continue;",
+        "        };",
+        "        let Some(render_path) = chapter.path.as_deref() else {",
+        "            continue;",
+        "        };",
+        "        let namespace = chapter_namespace(source_path);",
+        "        for block in definition_blocks(&chapter.content) {",
+        "            if !block.closed {",
+        "                continue;",
+        "            }",
+        "            let name = full_requirement_name(&namespace, &block.name);",
+        "            definitions.entry(name).or_insert_with(|| Definition {",
+        "                path: render_path.to_path_buf(),",
+        "                text: chapter.content[block.body_start..block.body_end]",
+        "                    .trim()",
+        "                    .to_owned(),",
+        "                kind: block.kind,",
+        "            });",
+        "        }",
+        "    }",
+        "    let evidence_definitions = definitions",
+        "        .iter()",
+        "        .filter(|(_, d)| d.kind != DefinitionKind::Term)",
+        "        .map(|(name, d)| {",
+        "            (",
+        "                name.clone(),",
+        "                Definition {",
+        "                    path: d.path.clone(),",
+        "                    text: d.text.clone(),",
+        "                    kind: d.kind,",
+        "                },",
+        "            )",
+        "        })",
+        "        .collect();",
+        "    let index = index::IndexPlan::find(book, &evidence_definitions)?;",
+        "    if let Some(plan) = index.as_ref() {",
+        "        plan.populate(book, root, &evidence_definitions)?;",
+        "    }",
+        "",
+        "    // {impl}`requirements.index.source_links`",
+        "    book.for_each_chapter_mut(|chapter| {",
+        "        if chapter.source_path.is_none()",
+        "            || chapter",
+        "                .path",
+        "                .as_deref()",
+        "                .is_some_and(|path| index.as_ref().is_some_and(|plan| plan.is_detail_path(path)))",
+        "        {",
+        "            if let Some(path) = chapter.path.as_deref() {",
+        "                chapter.content = replace_references(&chapter.content, path, &definitions);",
+        "            }",
+        "            return;",
+        "        }",
+        "        let namespace = chapter",
+        "            .source_path",
+        "            .as_deref()",
+        "            .or(chapter.path.as_deref())",
+        "            .map(chapter_namespace)",
+        "            .unwrap_or_default();",
+        "        chapter.content = replace_definitions(",
+        "            &chapter.content,",
+        "            &namespace,",
+        "            chapter.path.as_deref(),",
+        "            index.as_ref(),",
+        "        );",
+        "        if let Some(path) = chapter.path.as_deref() {",
+        "            chapter.content = replace_references(&chapter.content, path, &definitions);",
+        "        }",
+        "    });",
+        "    Ok(())",
+        "}",
+        "",
+        "// {impl}`requirements.ci.identifiers`",
+        "fn chapter_namespace(path: &Path) -> String {",
+        "    let path = path.with_extension(\"\");",
+        "    let mut parts: Vec<_> = path",
+        "        .components()",
+        "        .filter_map(|part| match part {",
+        "            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),",
+        "            _ => None,",
+        "        })",
+        "        .collect();",
+        "",
+        "    if parts.len() > 1 && parts[0] == \"reqs\" {",
+        "        parts.remove(0);",
+        "    }",
+        "    if parts.len() > 1 && matches!(parts.last().map(String::as_str), Some(\"index\" | \"README\")) {",
+        "        parts.pop();",
+        "    }",
+        "",
+        "    parts.join(\".\")",
+        "}",
+        "",
+        "// {impl}`requirements.index.navigation`",
+        "// {impl}`requirements.references.book_badges`",
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.definitions.references`",
+        "// {impl}`requirements.examples.index`",
+        "fn replace_definitions(",
+        "    content: &str,",
+        "    namespace: &str,",
+        "    current_path: Option<&Path>,",
+        "    index: Option<&index::IndexPlan>,",
+        ") -> String {",
+        "    let mut result = String::with_capacity(content.len());",
+        "    let mut cursor = 0;",
+        "",
+        "    for block in definition_blocks(content)",
+        "        .into_iter()",
+        "        .filter(|block| block.closed)",
+        "    {",
+        "        if block.start < cursor {",
+        "            continue;",
+        "        }",
+        "        result.push_str(&content[cursor..block.start]);",
+        "        let full_name = full_requirement_name(namespace, &block.name);",
+        "        // {impl}`requirements.references.safe_badges`",
+        "        let escaped_name = escape_html(&full_name);",
+        "        if block.kind == DefinitionKind::Term {",
+        "            if let Ok((phrase, body)) =",
+        "                terms::declaration(&content[block.body_start..block.body_end])",
+        "            {",
+        "                result.push_str(&format!(",
+        "                    \"<strong id=\\\"{}\\\">{}</strong>\\n\\n\",",
+        "                    escape_html(&block.kind.anchor(&full_name)),",
+        "                    terms::escaped_phrase(phrase)",
+        "                ));",
+        "                result.push_str(body);",
+        "                result.push('\\n');",
+        "            } else {",
+        "                result.push_str(&content[block.start..block.end]);",
+        "            }",
+        "            cursor = block.end;",
+        "            continue;",
+        "        }",
+        "        let badge = shield_badge(",
+        "            block.kind.badge(),",
+        "            &full_name,",
+        "            if block.kind == DefinitionKind::Example {",
+        "                \"5b62a8\"",
+        "            } else {",
+        "                \"006ba8\"",
+        "            },",
+        "        );",
+        "        let detail_href = current_path",
+        "            .zip(index)"
       ]
     }
   ]

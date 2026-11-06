@@ -331,13 +331,19 @@ pub(crate) fn validate_rust_functions(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
+    discovery_errors: &mut Vec<String>,
 ) {
-    for file in rust_files(root, errors) {
+    let initial_errors = errors.len();
+    let files = rust_files(root, errors);
+    discovery_errors.extend(errors[initial_errors..].iter().cloned());
+    for file in files {
         let label = display_path(root, &file);
         let source = match fs::read_to_string(&file) {
             Ok(source) => source,
             Err(error) => {
-                errors.push(format!("{label}: cannot read Rust source: {error}"));
+                let error = format!("{label}: cannot read Rust source: {error}");
+                discovery_errors.push(error.clone());
+                errors.push(error);
                 continue;
             }
         };
@@ -350,10 +356,12 @@ pub(crate) fn validate_rust_functions(
                 }
             }
             Err(error) => {
-                errors.push(format!(
+                let error = format!(
                     "{label}:{}: cannot parse Rust source: {error}",
                     error.span().start().line
-                ));
+                );
+                discovery_errors.push(error.clone());
+                errors.push(error);
             }
         }
     }
@@ -553,7 +561,7 @@ fn outer() {
         .unwrap();
 
         let mut errors = Vec::new();
-        validate_rust_functions(project.path(), &definitions(), &mut errors);
+        validate_rust_functions(project.path(), &definitions(), &mut errors, &mut Vec::new());
         assert_eq!(errors.len(), 3, "{errors:?}");
         assert!(errors.iter().any(|error| {
             error.contains("src/lib.rs:1: function uncited has no requirement or example citation")

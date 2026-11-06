@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use the Habeas authoring harness to create or refresh requirement evidence and Rust function attestations, and address Cargo validation failures.
+description: Use the Habeas authoring harness to create or refresh requirement and example evidence, and address Cargo validation failures.
 ---
 
 # Habeas evidence
@@ -11,9 +11,10 @@ Run the authoring harness from the Cargo and mdBook project:
 habeas author --all
 ```
 
-It fills in missing, stale, invalid, or false evidence for requirements, named
-examples, and first-party Rust functions. Current accepted records, including
-FIXME judgments, are preserved. Each assessment runs in its own model conversation.
+It fills in missing, stale, or invalid evidence for requirements and named
+examples. Current records are preserved, including FIXME judgments and false
+judgments whose subject and inputs are unchanged; rerun one explicitly with
+`habeas author <full-name>`. Each assessment runs in its own model conversation.
 The harness records delivered source inputs and writes the model's judgment and
 rationale. The supervising agent must not compose or refresh evidence JSON,
 determinations, rationales, or source snapshots itself, or delegate that work to
@@ -44,31 +45,40 @@ setting overrides its default. If the provider reports throttling, lower that
 setting and rerun the command. Do not substitute manual evidence creation when
 configuration or provider access is missing; report the blocker.
 
-Use `habeas status [<glob>]` to find requirements and examples needing attention,
+Use `habeas status [<selection>]` to find requirements and examples needing attention,
 or `--all` to include accepted records. Status groups FIXME judgments by issue;
 use `--verbose` to list the judgments and original FIXME entries in each group.
-Use `habeas info <glob>` to inspect their
-judgments, inputs, and validation findings. Globs match whole names; `*` matches
-any number of characters, including dots. For a focused reassessment, run
+Use `habeas info <selection>` to inspect their
+judgments, inputs, and validation findings. A selection is a full name, which
+selects exactly, or a glob matching whole names, where `*` matches any number of
+characters, including dots. For a focused reassessment, run
 `habeas author <full-name>`; add `--stdout` to inspect its JSON without changing
 the evidence file.
 
-Address findings by fixing implementation, tests, or source citations. Review a
+Address findings by fixing implementation, tests, or source references. Review a
 substantive change to an approved requirement with the user before changing its
-text. Every first-party Rust function or method needs its own applicable
-requirement or example citations, including trait methods and test helpers; an
-enclosing module citation does not cover its functions. When no existing
+text. Every first-party Rust function or method needs its own requirement or
+example reference, including trait methods and test helpers; an enclosing module
+reference does not cover its functions. Mark code `{impl}` where it implements
+part of a definition and tests `{test}` where they are designed to verify it; use
+`{cite}` only for related code that does neither. A requirement can `{impl}`
+another requirement it refines, and an example can `{test}` or `{cite}` a
+requirement. When no existing
 requirement explains behavior, propose an appropriate requirement rather than
 waiving the function or inventing evidence.
 Missing evidence or a truthful false judgment is expected while implementation
 is pending; do not write placeholder evidence yourself.
 
-The harness assesses requirements against their implementation and testing of
-interesting design cases. It may justify absent tests for simple logic or where
-testing is impractical. Examples require tests covering the scenario and expected
-outcomes; an accepted true judgment needs a covered `{test}` reference. Function
-attestations assess whether all applicable requirements and examples are cited,
-including ones the function does not already cite.
+The harness assesses each requirement against the code marked `{impl}` for it
+and checks that its `{test}` sources cover interesting design cases. It may
+justify absent tests for simple logic or where testing is impractical. The same
+review checks that the implementation is marked completely: code that implements
+part of the requirement without `{impl}`, including code that only cites it, is a
+gap, and so is behavior in `{impl}` code that no definition implemented there
+specifies. Examples require tests covering the scenario and expected outcomes; an
+accepted true judgment needs a covered `{test}` reference. `{impl}` and `{test}`
+lines must be covered by the referenced definition's evidence; `{cite}` lines
+need no coverage.
 
 Requirement and example judgments are `true`, `false`, or `{"FIXME": ["#125"]}`.
 FIXME means source comments or tests explicitly acknowledge every remaining gap;
@@ -76,8 +86,9 @@ the entries identify issues or other source content. The convention is
 `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but other source locations are allowed.
 The harness records these references; do not invent issue numbers or change a
 judgment to make validation pass. CI accepts true and FIXME only when all schema,
-freshness, and coverage checks also pass. Function attestations remain boolean
-and must be true to validate.
+freshness, and coverage checks also pass. Each determination stands alone: a
+false judgment does not fail the definitions its subject implements, tests, or
+cites.
 
 After source or requirement fixes, rerun `habeas author --all`, then
 `cargo test --workspace`. Authoring preserves completed writes when another

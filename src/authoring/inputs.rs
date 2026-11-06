@@ -12,20 +12,14 @@ use crate::{DefinitionKind, ReferenceKind};
 
 pub(crate) enum AssessmentKind {
     Definition(DefinitionKind),
-    RustFunction {
-        rust_item: String,
-        citations: Vec<Value>,
-    },
 }
 
 impl AssessmentKind {
-    // {impl}`requirements.authoring.function_attestations`
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.authoring.initial_prompt`
     pub(crate) fn noun(&self) -> &'static str {
         match self {
             Self::Definition(kind) => kind.noun(),
-            Self::RustFunction { .. } => "rust_function",
         }
     }
 }
@@ -79,6 +73,11 @@ impl AssessmentSources {
                     reference.name
                 )));
             }
+            // Only `{cite}` leaves the subject; its `{impl}` and `{test}`
+            // references point into it from the definitions it implements or tests.
+            if reference.kind != ReferenceKind::Cite {
+                continue;
+            }
             insert_selector(
                 &mut selectors,
                 InputSelector::Requirements {
@@ -92,8 +91,11 @@ impl AssessmentSources {
         if !errors.is_empty() {
             return Err(io::Error::other(errors.join("\n")));
         }
+        // `{impl}` and `{test}` point from the subject to their sources; `{cite}`
+        // sites point into the subject and are discoverable with `references`.
         for reference in references.iter().filter(|reference| {
-            reference.name == subject_name && reference.kind != ReferenceKind::Term
+            reference.name == subject_name
+                && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
         }) {
             access.file(&root, &reference.file)?;
             insert_selector(
@@ -102,40 +104,8 @@ impl AssessmentSources {
             );
         }
 
-        let evidence_path = root.join("evidence").join(format!("{subject_name}.json"));
-        match fs::read_to_string(&evidence_path) {
-            Ok(content) => {
-                let evidence: Value = serde_json::from_str(&content).map_err(|error| {
-                    io::Error::other(format!("{}: {error}", evidence_path.display()))
-                })?;
-                let inputs = evidence
-                    .get("inputs")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        io::Error::other(format!(
-                            "{}: existing evidence inputs must be an array",
-                            evidence_path.display()
-                        ))
-                    })?;
-                for (index, input) in inputs.iter().enumerate() {
-                    let selector = InputSelector::from_input(input).ok_or_else(|| {
-                        io::Error::other(format!(
-                            "{}: inputs[{index}] has no resolvable selector",
-                            evidence_path.display()
-                        ))
-                    })?;
-                    insert_selector(&mut selectors, selector);
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("{}: {error}", evidence_path.display()),
-                ));
-            }
-        }
-
+        // Existing evidence only decides whether to reassess; its inputs are
+        // not carried forward.
         let mut mandatory = Vec::new();
         for selector in selectors {
             if !generated_evidence_selector(&root, &access, &selector) {
@@ -160,111 +130,6 @@ impl AssessmentSources {
             subject_name: subject_name.to_owned(),
             subject_kind: AssessmentKind::Definition(subject.kind),
             subject_text: subject.text.clone(),
-            mandatory,
-            recorded: Vec::new(),
-        })
-    }
-
-    // {impl}`requirements.authoring.function_attestations`
-    // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.ci.authoring_inputs`
-    // {impl}`requirements.references.rust_function_attestations`
-    // {impl}`requirements.definitions.authoring_inputs`
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.read_denial`
-    pub(crate) fn prepare_function(
-        root: &Path,
-        rust_file: &str,
-        rust_item: &str,
-    ) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
-        let definitions = load_definitions(&root)?;
-        access.file(&root, Path::new(rust_file))?;
-        let (_, source) = read_project_file(&root, rust_file).map_err(io::Error::other)?;
-        let (_, citations) = crate::rust_items::function_citations(&source, &definitions)
-            .map_err(|error| {
-                io::Error::other(format!("{rust_file}: cannot parse Rust source: {error}"))
-            })?
-            .into_iter()
-            .find(|(item, _)| item.selector == rust_item)
-            .ok_or_else(|| {
-                io::Error::other(format!(
-                    "{rust_file}: no function matches Rust item {rust_item:?}"
-                ))
-            })?;
-        let mut selectors = vec![
-            InputSelector::RustItem {
-                rust_file: rust_file.to_owned(),
-                rust_item: rust_item.to_owned(),
-            },
-            InputSelector::Requirements {
-                requirements: "*".to_owned(),
-            },
-        ];
-        let path = root.join("evidence/rust").join(format!("{rust_file}.json"));
-        match fs::read_to_string(&path) {
-            Ok(content) => {
-                let sidecar: Value = serde_json::from_str(&content)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-                let functions = sidecar["functions"].as_array().ok_or_else(|| {
-                    io::Error::other(format!(
-                        "{}: existing functions must be an array",
-                        path.display()
-                    ))
-                })?;
-                if let Some(entry) = functions
-                    .iter()
-                    .find(|entry| entry["rust_item"] == rust_item)
-                {
-                    let inputs = entry["inputs"].as_array().ok_or_else(|| {
-                        io::Error::other(format!(
-                            "{}: existing inputs must be an array",
-                            path.display()
-                        ))
-                    })?;
-                    for (index, input) in inputs.iter().enumerate() {
-                        let selector = InputSelector::from_input(input).ok_or_else(|| {
-                            io::Error::other(format!(
-                                "{}: inputs[{index}] has no resolvable selector",
-                                path.display()
-                            ))
-                        })?;
-                        insert_selector(&mut selectors, selector);
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("{}: {error}", path.display()),
-                ));
-            }
-        }
-        let mut mandatory = Vec::new();
-        for selector in selectors {
-            if !generated_evidence_selector(&root, &access, &selector) {
-                mandatory.push(source_input(&root, &access, &definitions, &selector)?);
-            }
-        }
-        for input in definition_inputs(&root, &access, &definitions, &mandatory, None)? {
-            if !mandatory.contains(&input) {
-                mandatory.push(input);
-            }
-        }
-        Ok(Self {
-            root,
-            access,
-            subject_name: format!("{rust_file}:{rust_item}"),
-            subject_kind: AssessmentKind::RustFunction {
-                rust_item: rust_item.to_owned(),
-                citations: citations
-                    .into_iter()
-                    .map(|(role, name)| json!({"role": role, "name": name}))
-                    .collect(),
-            },
-            subject_text: String::new(),
             mandatory,
             recorded: Vec::new(),
         })
@@ -347,6 +212,8 @@ fn generated_evidence_selector(
 // {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.definitions.selection`
+// {impl}`requirements.references.definition_globs`
 fn source_input(
     root: &Path,
     access: &SourceAccess,
@@ -528,11 +395,12 @@ pub(super) mod tests {
         );
         fs::write(root.path().join("md/terms.md"), terms).unwrap();
         let declarations = format!(
-            ":::{{req}} ready\nReady uses {} and {}.\n:::\n\n:::{{req}} base\nBase cites {}.\n:::\n\n:::{{req}} distant\nDistant MUST work.\n:::\n\n:::{{example}} case\nReady example. {}\n:::\n",
+            ":::{{req}} ready\nReady uses {} and {}.\n:::\n\n:::{{req}} base\nBase cites {}.\n:::\n\n:::{{req}} distant\nDistant MUST work.\n:::\n\n:::{{example}} case\nReady example. {} {}\n:::\n",
             role("cite", "requirements.base"),
             role("term", "terms.unit"),
             role("cite", "requirements.distant"),
-            role("cite", "requirements.ready")
+            role("cite", "requirements.ready"),
+            role("test", "requirements.ready")
         );
         fs::write(root.path().join("md/requirements.md"), declarations).unwrap();
         fs::write(root.path().join("src/lib.rs"), format!("struct Thing;\nimpl Thing {{\n    // {}\n    fn run(&self) {{}}\n    fn unrelated(&self) {{}}\n}}\n// {}\nfn test_ready() {{}}\n", role("impl", "requirements.ready"), role("test", "requirements.ready"))).unwrap();
@@ -587,9 +455,8 @@ pub(super) mod tests {
                 .count(),
             2
         );
-        assert!(inputs.iter().any(
-            |input| input["file"] == "notes.txt" && input["text"] == json!(["new source text"])
-        ));
+        // Earlier evidence inputs are not carried forward.
+        assert!(!inputs.iter().any(|input| input["file"] == "notes.txt"));
         assert!(
             !serde_json::to_string(inputs)
                 .unwrap()
@@ -609,174 +476,70 @@ pub(super) mod tests {
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.ci.authoring_inputs`
     #[test]
-    fn unresolved_existing_selector_fails_before_inference() {
+    fn unresolvable_earlier_inputs_do_not_block_reassessment() {
         let root = project();
         fs::create_dir(root.path().join("evidence")).unwrap();
         fs::write(
             root.path().join("evidence/requirements.ready.json"),
             json!({
-                "inputs": [{"file":"missing.txt", "line_start":1, "line_end":1}]
+                "inputs": [
+                    {"file":"missing.txt", "line_start":1, "line_end":1},
+                    {"rust_file":"src/lib.rs", "rust_item":"fn[removed]", "text":["fn removed() {}"]},
+                    {"requirements":"requirements.removed", "matches":["requirements.removed"], "text":["gone"]}
+                ]
             })
             .to_string(),
         )
         .unwrap();
-        assert!(
-            AssessmentSources::prepare(root.path(), "requirements.ready")
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("missing.txt")
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert_eq!(
+            sources.mandatory_inputs(),
+            &[json!({
+                "requirements": "requirements.ready",
+                "matches": ["requirements.ready"],
+                "text": [":::{req} ready", "The project MUST be ready.", ":::"]
+            })]
         );
         assert!(AssessmentSources::prepare(root.path(), "missing").is_err());
     }
 
-    // {test}`requirements.authoring.function_attestations`
     // {test}`requirements.authoring.mandatory_inputs`
-    // {test}`requirements.definitions.authoring_inputs`
     // {test}`requirements.ci.authoring_inputs`
     #[test]
-    fn function_inputs_include_uncited_definitions_and_current_sources() {
+    fn earlier_evidence_inputs_and_judgments_are_not_carried_forward() {
         let root = project();
-        fs::write(
-            root.path().join("md/requirements.md"),
-            format!(
-                ":::{{req}} ready\nThe project MUST be ready.\n:::\n\n:::{{req}} uncited\nUse {}.\n:::\n",
-                role("term", "terms.unit")
-            ),
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("md/terms.md"),
-            ":::{definition} unit\n:phrase: unit\nA complete unit.\n:::\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("src/lib.rs"),
-            format!(
-                "// {}\npub fn ready() {{}}\n",
-                role("impl", "requirements.ready")
-            ),
-        )
-        .unwrap();
-        fs::write(root.path().join("notes.txt"), "current notes\n").unwrap();
-        fs::create_dir_all(root.path().join("evidence/rust/src")).unwrap();
-        fs::write(
-            root.path().join("evidence/rust/src/lib.rs.json"),
-            json!({"rust_file": "src/lib.rs", "functions": [{
-                "rust_item": "fn[ready]", "determination": true,
-                "rationale": "OLD_PRIVATE_RATIONALE", "inputs": [
-                    {"rust_file": "src/lib.rs", "rust_item": "fn[ready]", "text": ["old function"]},
-                    {"file": "notes.txt", "line_start": 1, "line_end": 1, "text": ["old notes"]}
-                ]
-            }]})
-            .to_string(),
-        )
-        .unwrap();
-        let sources =
-            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]").unwrap();
-        let inputs = sources.mandatory_inputs();
-        assert_eq!(sources.subject_name, "src/lib.rs:fn[ready]");
-        assert_eq!(sources.subject_kind.noun(), "rust_function");
-        let AssessmentKind::RustFunction { citations, .. } = &sources.subject_kind else {
-            panic!("expected function assessment");
-        };
-        assert_eq!(
-            citations,
-            &vec![json!({"role": "impl", "name": "requirements.ready"})]
-        );
-        assert_eq!(
-            inputs
-                .iter()
-                .filter(|input| input["rust_item"] == "fn[ready]")
-                .count(),
-            1
-        );
-        assert!(inputs.iter().any(|input| input["requirements"] == "*"
-            && input["matches"] == json!(["requirements.ready", "requirements.uncited"])));
-        assert!(
-            inputs
-                .iter()
-                .any(|input| input["definition"] == "terms.unit")
-        );
-        assert!(
-            inputs
-                .iter()
-                .any(|input| input["text"] == json!(["current notes"]))
-        );
-        assert!(
-            !serde_json::to_string(inputs)
-                .unwrap()
-                .contains("OLD_PRIVATE_RATIONALE")
-        );
-        assert!(
-            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[missing]").is_err()
-        );
-    }
-
-    // {test}`requirements.authoring.mandatory_inputs`
-    // {test}`requirements.authoring.function_attestations`
-    // {test}`requirements.ci.authoring_inputs`
-    #[test]
-    fn existing_generated_evidence_inputs_are_omitted_before_resolution() {
-        let root = project();
-        fs::write(
-            root.path().join("src/lib.rs"),
-            format!(
-                "// {}\npub fn ready() {{}}\n",
-                role("impl", "requirements.ready")
-            ),
-        )
-        .unwrap();
         fs::write(root.path().join("notes.txt"), "current source\n").unwrap();
-        fs::create_dir_all(root.path().join("evidence/rust/src")).unwrap();
-        let mut old_inputs = vec![
-            json!({"file":"evidence/requirements.ready.json", "line_start":1, "line_end":999999, "text":["old judgment"]}),
-            json!({"file":"evidence/removed.json", "line_start":1, "line_end":2, "text":["removed evidence"]}),
-            json!({"file":"notes.txt", "line_start":1, "line_end":1, "text":["old source"]}),
-        ];
-        if cfg!(unix) {
-            old_inputs.push(json!({"file":"previous-evidence.json", "line_start":1, "line_end":999999, "text":["aliased judgment"]}));
-        }
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        let old = json!({
+            "requirement": "The project MUST be ready.",
+            "determination": false,
+            "rationale": "old secret judgment",
+            "inputs": [
+                {"file":"evidence/requirements.ready.json", "line_start":1, "line_end":1, "text":["old judgment"]},
+                {"file":"notes.txt", "line_start":1, "line_end":1, "text":["old source"]},
+            ]
+        });
         let path = root.path().join("evidence/requirements.ready.json");
-        fs::write(&path, json!({"inputs":old_inputs}).to_string()).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&path, root.path().join("previous-evidence.json")).unwrap();
-        fs::write(
-            root.path().join("evidence/rust/src/lib.rs.json"),
-            json!({"rust_file":"src/lib.rs", "functions":[{
-                "rust_item":"fn[ready]", "inputs":old_inputs,
-            }]})
-            .to_string(),
-        )
-        .unwrap();
-        for sources in [
-            AssessmentSources::prepare(root.path(), "requirements.ready").unwrap(),
-            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]").unwrap(),
-        ] {
-            let file_inputs = sources
-                .mandatory_inputs()
-                .iter()
-                .filter(|input| input.get("file").is_some())
-                .collect::<Vec<_>>();
-            assert_eq!(file_inputs.len(), 1);
-            assert_eq!(file_inputs[0]["file"], "notes.txt");
-            assert_eq!(file_inputs[0]["text"], json!(["current source"]));
-        }
+        fs::write(&path, old.to_string()).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let supplied = serde_json::to_string(sources.mandatory_inputs()).unwrap();
+        assert!(!supplied.contains("notes.txt"), "{supplied}");
+        assert!(!supplied.contains("evidence/"), "{supplied}");
+        assert!(!supplied.contains("old secret judgment"), "{supplied}");
         assert_eq!(
-            serde_json::from_str::<Value>(&fs::read_to_string(path).unwrap()).unwrap()["inputs"],
-            json!(old_inputs)
+            serde_json::from_str::<Value>(&fs::read_to_string(path).unwrap()).unwrap(),
+            old
         );
     }
 
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.definitions.authoring_inputs`
-    // {test}`requirements.ci.authoring_inputs`
-    // {test}`requirements.authoring.function_attestations`
     // {test}`requirements.authoring_input`
     // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.authoring.read_denial`
     #[test]
-    fn mandatory_git_inputs_require_staging_declarations_sources_terms_and_old_selectors() {
+    fn mandatory_git_inputs_require_staging_declarations_sources_and_terms() {
         let root = project();
         git(root.path(), &["init", "--quiet"]);
         git(root.path(), &["add", "Cargo.toml", "book.toml"]);
@@ -797,16 +560,13 @@ pub(super) mod tests {
             ),
         )
         .unwrap();
-        for result in [
-            AssessmentSources::prepare(root.path(), "requirements.ready"),
-            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]"),
-        ] {
-            let error = result.err().unwrap();
-            assert!(
-                error.to_string().contains("src/lib.rs") && error.to_string().contains("git add"),
-                "{error}"
-            );
-        }
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("src/lib.rs") && error.to_string().contains("git add"),
+            "{error}"
+        );
         git(root.path(), &["add", "src"]);
         fs::write(
             root.path().join("md/terms.md"),
@@ -830,103 +590,85 @@ pub(super) mod tests {
             "{error}"
         );
         git(root.path(), &["add", "md/terms.md"]);
-        fs::write(root.path().join("notes.txt"), "current notes\n").unwrap();
-        fs::create_dir_all(root.path().join("evidence/rust/src")).unwrap();
-        let inputs =
-            json!([{"file":"notes.txt", "line_start":1, "line_end":1, "text":["old notes"]}]);
-        fs::write(
-            root.path().join("evidence/requirements.ready.json"),
-            json!({"inputs":inputs}).to_string(),
-        )
-        .unwrap();
-        fs::write(root.path().join("evidence/rust/src/lib.rs.json"), json!({"rust_file":"src/lib.rs", "functions":[{"rust_item":"fn[ready]", "inputs":inputs}]}).to_string()).unwrap();
-        for result in [
-            AssessmentSources::prepare(root.path(), "requirements.ready"),
-            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]"),
-        ] {
-            let error = result.err().unwrap();
-            assert!(
-                error.to_string().contains("notes.txt") && error.to_string().contains("git add"),
-                "{error}"
-            );
-        }
-        git(root.path(), &["add", "notes.txt"]);
-        for sources in [
-            AssessmentSources::prepare(root.path(), "requirements.ready").unwrap(),
-            AssessmentSources::prepare_function(root.path(), "src/lib.rs", "fn[ready]").unwrap(),
-        ] {
-            assert!(
-                sources
-                    .mandatory_inputs()
-                    .iter()
-                    .any(|input| input["file"] == "notes.txt"
-                        && input["text"] == json!(["current notes"]))
-            );
-        }
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["definition"] == "terms.ready")
+        );
     }
 
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.ci.authoring_inputs`
     #[test]
-    fn existing_evidence_inputs_obey_explicit_allow_and_fatal_disallow() {
+    fn disallowed_mandatory_inputs_abort_preparation() {
         let root = project();
-        fs::create_dir(root.path().join("evidence")).unwrap();
-        fs::write(
-            root.path().join("evidence/notes.txt"),
-            "reviewable output\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("evidence/requirements.ready.json"),
-            json!({"inputs":[{
-                "file":"evidence/notes.txt", "line_start":1, "line_end":1, "text":["old"]
-            }]})
-            .to_string(),
-        )
-        .unwrap();
         fs::write(
             root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['evidence']\n",
+            "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
         )
         .unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(
-            sources
-                .mandatory_inputs()
-                .iter()
-                .any(|input| input["file"] == "evidence/notes.txt"
-                    && input["text"] == json!(["reviewable output"]))
-        );
-        for denied in ["evidence/notes.txt", "md/requirements.md"] {
-            fs::write(
-                root.path().join("habeas.toml"),
-                format!("version = 1\n[evidence]\nallow = ['evidence']\ndisallow = ['{denied}']\n"),
-            )
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
             .unwrap();
-            let error = AssessmentSources::prepare(root.path(), "requirements.ready")
-                .err()
-                .unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            assert!(error.to_string().contains(denied), "{error}");
-        }
-        fs::write(root.path().join("notes.txt"), "ordinary source\n").unwrap();
-        fs::write(root.path().join("habeas.toml"), "version = 1\n").unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("md/requirements.md"), "{error}");
+    }
+
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.references.targets`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn only_edges_leaving_the_subject_contribute_inputs() {
+        let root = project();
+        let declarations = format!(
+            ":::{{req}} ready\nReady relies on {} and refines {}.\n:::\n\n:::{{req}} base\nBase MUST hold.\n:::\n\n:::{{req}} parent\nParent MUST hold.\n:::\n\n:::{{example}} citer\nA case relying on ready. {}\n:::\n\n:::{{example}} tester\nA ready case. {} {}\n:::\n",
+            role("cite", "requirements.base"),
+            role("impl", "requirements.parent"),
+            role("cite", "requirements.ready"),
+            role("cite", "requirements.base"),
+            role("test", "requirements.ready")
+        );
+        fs::write(root.path().join("md/requirements.md"), declarations).unwrap();
         fs::write(
-            root.path().join("evidence/requirements.ready.json"),
-            json!({"inputs":[{
-                "file":"evidence/../notes.txt", "line_start":1, "line_end":1, "text":["old"]
-            }]})
-            .to_string(),
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn run() {{}}\n// {}\nfn helper() {{}}\n// {}\nfn check() {{}}\n",
+                role("impl", "requirements.ready"),
+                role("cite", "requirements.ready"),
+                role("test", "requirements.ready")
+            ),
         )
         .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let inputs = sources.mandatory_inputs();
+        let has_requirements =
+            |name: &str| inputs.iter().any(|input| input["requirements"] == name);
+        let has_item = |item: &str| inputs.iter().any(|input| input["rust_item"] == item);
+        assert!(has_requirements("requirements.ready"));
+        assert!(has_requirements("requirements.base"), "{inputs:#?}");
+        assert!(has_requirements("requirements.tester"), "{inputs:#?}");
+        assert!(has_item("fn[run]"), "{inputs:#?}");
+        assert!(has_item("fn[check]"), "{inputs:#?}");
+        assert!(!has_item("fn[helper]"), "{inputs:#?}");
+        assert!(!has_requirements("requirements.citer"), "{inputs:#?}");
+        assert!(!has_requirements("requirements.parent"), "{inputs:#?}");
+
+        let parent = AssessmentSources::prepare(root.path(), "requirements.parent").unwrap();
+        let inputs = parent.mandatory_inputs();
         assert!(
-            sources
-                .mandatory_inputs()
+            inputs
                 .iter()
-                .any(|input| input["file"] == "evidence/../notes.txt")
+                .any(|input| input["requirements"] == "requirements.ready"),
+            "{inputs:#?}"
+        );
+        assert!(
+            !inputs
+                .iter()
+                .any(|input| input["requirements"] == "requirements.base"),
+            "{inputs:#?}"
         );
     }
 }

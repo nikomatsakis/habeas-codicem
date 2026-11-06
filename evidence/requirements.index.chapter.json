@@ -1,7 +1,7 @@
 {
   "requirement": "An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. When present, `habeas mdbook` MUST replace it with a table of all requirements defined in rendered chapters and MUST add one evidence detail subchapter per requirement.",
   "determination": true,
-  "rationale": "**Verdict:** The requirement is implemented as stated, and the tests cover its main cases. I read the code and tests supplied in the inputs. I did not run the tests.\n\n**Implementation**\n- `marker_ranges` (src/index.rs ~676–728) finds `{requirements-index}` directives.\n  - It uses `colon_fence` to accept an opening fence of three or more colons.\n  - It accepts a closing fence with at least as many colons. A missing closing fence is an error.\n  - It rejects any non-empty body, with the error \"must have an empty body\".\n  - It skips markers inside protected ranges, such as code fences, and inside `req` or other definition blocks.\n- `IndexPlan::find` (~251–293) scans all chapters. A second directive anywhere in the book, including in the same chapter, returns the error \"a book may contain only one {requirements-index} directive\". With no directive it returns `None`.\n- When a directive is present, `find` plans one detail path per definition. The definitions are the requirements and examples collected in `preprocess_book` from chapters that have paths, with terms excluded. It also checks that no detail path collides with an existing chapter.\n- `populate` (~300–396) replaces the directive range with the evidence table. It appends one detail subchapter per definition as a `sub_item` of the index chapter, with section numbers.\n- The real book uses the feature. `md/requirements-index.md` contains the directive and is listed in `md/SUMMARY.md`.\n\n**Tests**\n- `marker_accepts_long_fences_and_ignores_examples` covers these cases:\n  - a directive inside a code fence is ignored;\n  - a directive inside a `req` example block is ignored;\n  - a four-colon fence is accepted;\n  - a missing closing fence is an error;\n  - a non-empty body is an error;\n  - a longer closing fence (five colons closing a four-colon opener) is accepted.\n- `index_shows_evidence_states_and_links_generated_chapters` runs the full `preprocess_book` path.\n  - The directive is replaced, with no leftover `{requirements-index}` text.\n  - The table has a row for each of five requirements.\n  - Exactly five detail subchapters are created, with correct paths, numbering, and content.\n- `repeated_index_markers_fail_with_a_clear_error` covers the rule that a book may contain at most one directive.\n\n**Gaps:** These are minor.\n- No test uses a closing fence shorter than the opener.\n- No test covers the \"standalone\" aspect in other forms, such as indentation.\n\nNeither is a significant gap, and there are no FIXMEs.",
+  "rationale": "**Judgment: the sources satisfy `requirements.index.chapter`.** I judged this from the supplied inputs only. I did not run the tests or make any extra tool calls.\n\n**Directive recognition: `marker_ranges` in `src/index.rs`, marked {impl}**\n- It matches a line that is a colon fence of three or more colons followed by `{requirements-index}`. That line must be standalone: `colon_fence` allows at most 3 leading spaces, and the suffix must match exactly.\n- It looks for a closing line that is a pure colon fence of at least the opening length. So `::::` can be closed by `:::::`.\n- It rejects a missing closing fence and a non-empty body, both with a clear `InvalidData` error from `invalid_index`.\n- It ignores directives inside protected Markdown literals, such as code fences, and inside `{req}`, `{example}` and similar definition blocks. This keeps documentation examples from counting as real directives.\n\n**At most one directive: `IndexPlan::find`, marked {impl}**\n- It scans every chapter and errors with \"a book may contain only one {requirements-index} directive\" if a second range appears. This covers two directives in different chapters and two in the same chapter.\n- It also detects detail-page path conflicts, which `requirements.index.path_conflicts` covers.\n\n**Replacement and subchapters: `IndexPlan::populate`, marked {impl}**\n- It builds one table row per definition in the plan. The plan holds the non-term definitions from chapters that have a render path. It adds a row for each requirement, and for each example under `requirements.examples.index`.\n- It replaces the directive range with the rendered table.\n- It appends one detail subchapter per definition to the index chapter's `sub_items`.\n- Related behaviour (navigation, state labels, source links, detail format) is marked {impl} against its own requirements. I found no unmarked behaviour that this requirement does not specify.\n\n**Tests**\n- `marker_accepts_long_fences_and_ignores_examples` covers:\n  - a directive inside a code fence is ignored;\n  - a directive inside a `{req}` example is ignored;\n  - a `::::` directive is accepted;\n  - a missing close is an error;\n  - a non-empty body is an error;\n  - a longer closing fence is accepted.\n- `index_shows_evidence_states_and_links_generated_chapters` runs `preprocess_book` on a real fixture. It asserts that:\n  - the directive text is gone;\n  - the table has a row for each of the 5 requirements;\n  - there are exactly 5 subchapters;\n  - the numbering, paths and content of the subchapters are correct.\n- `repeated_index_markers_fail_with_a_clear_error` covers the \"no more than one\" rule across two chapters.\n- The repository's own book uses the directive in `md/requirements-index.md` and lists it in `SUMMARY.md`.\n\n**Minor gaps, not enough to fail**\n- Two directives in the same chapter are not tested directly, though `find` handles that case.\n- A closing fence shorter than the opening fence is not tested directly, though `find` handles that case.",
   "inputs": [
     {
       "requirements": "requirements.index.chapter",
@@ -60,6 +60,104 @@
         "            chapter_path,",
         "            detail_paths,",
         "        }))",
+        "    }"
+      ]
+    },
+    {
+      "rust_file": "src/index.rs",
+      "rust_item": "impl[IndexPlan]/fn[populate]",
+      "text": [
+        "    // {impl}`requirements.index.state`",
+        "    // {impl}`requirements.examples.index`",
+        "    // {impl}`requirements.index.chapter`",
+        "    pub(crate) fn populate(",
+        "        &self,",
+        "        book: &mut Book,",
+        "        root: &Path,",
+        "        definitions: &BTreeMap<String, Definition>,",
+        "    ) -> io::Result<()> {",
+        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
+        "        let source_links = SourceLinks::from_config(&config)?;",
+        "        let inspection = inspect_repository(root)?;",
+        "        let report = &inspection.report;",
+        "        let mut rows = Vec::new();",
+        "        let mut pages = Vec::new();",
+        "        for (name, detail_path) in &self.detail_paths {",
+        "            let evidence_path = root.join(\"evidence\").join(format!(\"{name}.json\"));",
+        "            let evidence = LoadedDetailEvidence::load(root, name, report);",
+        "            let detail_href = chapter_href(&self.chapter_path, detail_path, None);",
+        "            let definition = definitions",
+        "                .get(name)",
+        "                .expect(\"every detail page has a definition\");",
+        "            rows.push((",
+        "                format!(\"[`{name}`]({detail_href}) ({})\", definition.kind.noun()),",
+        "                evidence.state().label(),",
+        "            ));",
+        "            let content = render_detail_page(",
+        "                name,",
+        "                detail_path,",
+        "                &self.chapter_path,",
+        "                definition,",
+        "                evidence.borrowed(),",
+        "                &RenderSources {",
+        "                    root,",
+        "                    definitions: &inspection.definitions,",
+        "                    source_links: source_links.as_ref(),",
+        "                },",
+        "            );",
+        "            // {impl}`requirements.index.source_links`",
+        "            let source_path = if evidence_path.exists() {",
+        "                evidence_edit_path(&config.book.src, name)",
+        "            } else {",
+        "                definition.path.clone()",
+        "            };",
+        "            pages.push((name.clone(), detail_path.clone(), content, source_path));",
+        "        }",
+        "",
+        "        // {impl}`requirements.cli.shared_status_rendering`",
+        "        let rows = render_evidence_table(&rows);",
+        "",
+        "        // {impl}`requirements.index.navigation`",
+        "        let mut found = false;",
+        "        book.for_each_chapter_mut(|chapter| {",
+        "            if chapter.path.as_deref() != Some(self.chapter_path.as_path()) {",
+        "                return;",
+        "            }",
+        "            found = true;",
+        "            let ranges = marker_ranges(&chapter.content)",
+        "                .expect(\"the index directive was checked before the book was changed\");",
+        "            let range = ranges",
+        "                .into_iter()",
+        "                .next()",
+        "                .expect(\"the planned index directive is still present\");",
+        "            chapter.content.replace_range(range, &rows);",
+        "            let mut parent_names = chapter.parent_names.clone();",
+        "            parent_names.push(chapter.name.clone());",
+        "            let first_number = chapter",
+        "                .sub_items",
+        "                .iter()",
+        "                .filter_map(|item| match item {",
+        "                    BookItem::Chapter(child) => child.number.as_ref()?.last().copied(),",
+        "                    _ => None,",
+        "                })",
+        "                .max()",
+        "                .unwrap_or(0)",
+        "                + 1;",
+        "            for (offset, (name, path, content, source_path)) in pages.iter().enumerate() {",
+        "                let mut page = Chapter::new(name, content.clone(), path, parent_names.clone());",
+        "                page.source_path = Some(source_path.clone());",
+        "                page.number = chapter.number.as_ref().map(|number| {",
+        "                    let mut number = number.to_vec();",
+        "                    number.push(first_number + offset as u32);",
+        "                    SectionNumber::new(number)",
+        "                });",
+        "                chapter.sub_items.push(BookItem::Chapter(page));",
+        "            }",
+        "        });",
+        "        if !found {",
+        "            return Err(invalid_index(\"the requirements index chapter disappeared\"));",
+        "        }",
+        "        Ok(())",
         "    }"
       ]
     },
@@ -166,6 +264,8 @@
         "    // {test}`requirements.index.navigation`",
         "    // {test}`requirements.index.source_links`",
         "    // {test}`requirements.cli.shared_status_rendering`",
+        "    // {test}`requirements.index.detail_format`",
+        "    // {test}`requirements.index.invalid_detail`",
         "    #[test]",
         "    fn index_shows_evidence_states_and_links_generated_chapters() {",
         "        let temp = TempDir::new().unwrap();",
@@ -381,14 +481,14 @@
       "line_start": 251,
       "line_end": 258,
       "text": [
-        "[authoring.projects.\"/absolute/path/to/project\"]",
-        "config = \"local\"",
-        "```",
-        "",
-        "The invocation's `--config` wins over that project selection, which wins over the",
-        "default. Remove the project table or default field to remove a selection. Delete",
-        "a configuration's table to remove it, updating selections that named it. Provider",
-        "inference options go under `[authoring.configs.<name>.options]`; supported keys"
+        "`--stdout` is available for one named subject; it cannot be combined with `--all`.",
+        "Usage is still recorded outside the project, with `evidence_output` identifying",
+        "the selected `file` or `stdout` destination and `evidence_written` reporting",
+        "whether the write succeeded.",
+        "{cite}`requirements.authoring.invocation`",
+        "{cite}`requirements.authoring.submission`",
+        "{cite}`requirements.authoring.persistence`",
+        "{cite}`requirements.authoring.usage_storage`"
       ]
     },
     {
@@ -407,6 +507,11 @@
       "line_start": 1093,
       "line_end": 1107,
       "text": [
+        "        ] {",
+        "            assert_eq!(code_language(Some(file)), expected, \"{file}\");",
+        "        }",
+        "    }",
+        "",
         "    // {test}`requirements.index.chapter`",
         "    #[test]",
         "    fn repeated_index_markers_fail_with_a_clear_error() {",
@@ -416,12 +521,7 @@
         "                \"Index\",",
         "                \":::{requirements-index}\\n:::\\n\".to_owned(),",
         "                path,",
-        "                Vec::new(),",
-        "            ));",
-        "        }",
-        "        let error = preprocess_book(&mut book, Path::new(\".\")).unwrap_err();",
-        "        assert!(error.to_string().contains(\"only one\"));",
-        "    }"
+        "                Vec::new(),"
       ]
     },
     {
@@ -479,6 +579,7 @@
       "line_start": 355,
       "line_end": 396,
       "text": [
+        "        // {impl}`requirements.index.navigation`",
         "        let mut found = false;",
         "        book.for_each_chapter_mut(|chapter| {",
         "            if chapter.path.as_deref() != Some(self.chapter_path.as_path()) {",
@@ -519,8 +620,7 @@
         "            return Err(invalid_index(\"the requirements index chapter disappeared\"));",
         "        }",
         "        Ok(())",
-        "    }",
-        "}"
+        "    }"
       ]
     },
     {
@@ -528,6 +628,9 @@
       "line_start": 676,
       "line_end": 728,
       "text": [
+        "    }",
+        "}",
+        "",
         "// {impl}`requirements.index.chapter`",
         "fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {",
         "    let protected = protected_ranges(content);",
@@ -577,10 +680,7 @@
         "            ));",
         "        }",
         "        ranges.push(start..lines[close].1);",
-        "        index = close + 1;",
-        "    }",
-        "    Ok(ranges)",
-        "}"
+        "        index = close + 1;"
       ]
     },
     {
@@ -588,9 +688,9 @@
       "line_start": 730,
       "line_end": 732,
       "text": [
-        "// {impl}`requirements.index.chapter`",
-        "fn invalid_index(message: &str) -> io::Error {",
-        "    io::Error::new(io::ErrorKind::InvalidData, message)"
+        "    Ok(ranges)",
+        "}",
+        ""
       ]
     },
     {
@@ -598,6 +698,9 @@
       "line_start": 752,
       "line_end": 770,
       "text": [
+        "    };",
+        "    use crate::{Definition, DefinitionKind, preprocess_book};",
+        "",
         "    // {test}`requirements.index.chapter`",
         "    #[test]",
         "    fn marker_accepts_long_fences_and_ignores_examples() {",
@@ -613,10 +716,7 @@
         "        assert_eq!(",
         "            marker_ranges(\"::::{requirements-index}\\n:::::\\n\")",
         "                .unwrap()",
-        "                .len(),",
-        "            1",
-        "        );",
-        "    }"
+        "                .len(),"
       ]
     },
     {
@@ -624,13 +724,13 @@
       "line_start": 772,
       "line_end": 778,
       "text": [
+        "        );",
+        "    }",
+        "",
         "    // {test}`requirements.index.chapter`",
         "    // {test}`requirements.index.state`",
         "    // {test}`requirements.index.navigation`",
-        "    // {test}`requirements.index.source_links`",
-        "    // {test}`requirements.cli.shared_status_rendering`",
-        "    #[test]",
-        "    fn index_shows_evidence_states_and_links_generated_chapters() {"
+        "    // {test}`requirements.index.source_links`"
       ]
     },
     {
@@ -638,6 +738,11 @@
       "line_start": 821,
       "line_end": 836,
       "text": [
+        "                .to_string(),",
+        "            )",
+        "            .unwrap();",
+        "        }",
+        "",
         "        let mut book = Book::new();",
         "        book.push_item(Chapter::new(",
         "            \"Requirements\",",
@@ -648,12 +753,7 @@
         "        let mut index_chapter = Chapter::new(",
         "            \"Requirements index\",",
         "            \"# Requirements index\\n\\n:::{requirements-index}\\n:::\\n\".to_owned(),",
-        "            \"appendix/requirements-index.md\",",
-        "            Vec::new(),",
-        "        );",
-        "        index_chapter.number = Some(SectionNumber::new(vec![4]));",
-        "        book.push_item(index_chapter);",
-        "        preprocess_book(&mut book, temp.path()).unwrap();"
+        "            \"appendix/requirements-index.md\","
       ]
     },
     {
@@ -779,6 +879,7 @@
         "",
         "    // {impl}`requirements.index.state`",
         "    // {impl}`requirements.examples.index`",
+        "    // {impl}`requirements.index.chapter`",
         "    pub(crate) fn populate(",
         "        &self,",
         "        book: &mut Book,",
@@ -831,8 +932,7 @@
         "        book.for_each_chapter_mut(|chapter| {",
         "            if chapter.path.as_deref() != Some(self.chapter_path.as_path()) {",
         "                return;",
-        "            }",
-        "            found = true;"
+        "            }"
       ]
     },
     {
@@ -840,7 +940,7 @@
       "line_start": 149,
       "line_end": 149,
       "text": [
-        "// {impl}`requirements.definitions.selection`"
+        "// {impl}`requirements.definitions.references`"
       ]
     },
     {
@@ -848,7 +948,7 @@
       "line_start": 469,
       "line_end": 469,
       "text": [
-        "// {impl}`requirements.definitions.declaration`"
+        ""
       ]
     },
     {
@@ -856,7 +956,7 @@
       "line_start": 541,
       "line_end": 541,
       "text": [
-        "// {impl}`requirements.ci.span`"
+        "        });"
       ]
     },
     {
@@ -864,7 +964,7 @@
       "line_start": 551,
       "line_end": 551,
       "text": [
-        "// {impl}`requirements.references.markdown_literals`"
+        "    if line.len() - trimmed.len() > 3 {"
       ]
     },
     {
@@ -872,7 +972,7 @@
       "line_start": 617,
       "line_end": 617,
       "text": [
-        "// {impl}`requirements.references.markdown_literals`"
+        "                kind,"
       ]
     },
     {
@@ -880,6 +980,7 @@
       "line_start": 140,
       "line_end": 230,
       "text": [
+        "    pub(crate) start: usize,",
         "    end: usize,",
         "    pub(crate) name: &'a str,",
         "    pub(crate) kind: ReferenceKind,",
@@ -969,8 +1070,7 @@
         "fn chapter_namespace(path: &Path) -> String {",
         "    let path = path.with_extension(\"\");",
         "    let mut parts: Vec<_> = path",
-        "        .components()",
-        "        .filter_map(|part| match part {"
+        "        .components()"
       ]
     },
     {
@@ -978,6 +1078,12 @@
       "line_start": 535,
       "line_end": 560,
       "text": [
+        "            end,",
+        "            body_start,",
+        "            body_end,",
+        "            name: name.to_owned(),",
+        "            kind,",
+        "            closed,",
         "        });",
         "        index += 1;",
         "    }",
@@ -985,6 +1091,7 @@
         "}",
         "",
         "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.fence_lengths`",
         "fn colon_fence(line: &str) -> Option<(&str, usize)> {",
         "    let trimmed = line.trim_start_matches(' ');",
         "    if line.len() - trimmed.len() > 3 {",
@@ -996,14 +1103,7 @@
         "",
         "// {impl}`requirements.references.markdown_literals`",
         "fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {",
-        "    ranges",
-        "        .iter()",
-        "        .any(|range| start < range.end && range.start < end)",
-        "}",
-        "",
-        "// {impl}`requirements.references.targets`",
-        "// {impl}`requirements.ci.identifiers`",
-        "// {impl}`requirements.references.markdown_literals`"
+        "    ranges"
       ]
     },
     {

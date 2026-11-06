@@ -121,6 +121,7 @@ impl BatchProgress {
 
     // {impl}`requirements.authoring.progress`
     // {impl}`requirements.authoring.batch`
+    // {impl}`requirements.authoring.reporting`
     pub(super) fn failed(&mut self, label: &str, error: &impl std::fmt::Display) {
         self.errors += 1;
         self.println(&format!("{label}: {error}"));
@@ -139,6 +140,7 @@ impl BatchProgress {
 
     // {impl}`requirements.authoring.progress`
     // {impl}`requirements.authoring.batch`
+    // {impl}`requirements.authoring.reporting`
     pub(super) fn println(&self, message: &str) {
         if let Some(bar) = &self.bar {
             bar.println(message);

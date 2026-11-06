@@ -81,6 +81,7 @@ impl DefinitionKind {
     // {impl}`requirements.references.book_badges`
     // {impl}`requirements.examples.index`
     // {impl}`requirements.definitions.references`
+    // {impl}`requirements.index.navigation`
     pub(crate) fn anchor(self, name: &str) -> String {
         format!("habeas-{}-{name}", self.badge())
     }
@@ -248,6 +249,7 @@ fn chapter_namespace(path: &Path) -> String {
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.definitions.references`
+// {impl}`requirements.examples.index`
 fn replace_definitions(
     content: &str,
     namespace: &str,
@@ -332,6 +334,8 @@ fn replace_definitions(
 
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.definitions.references`
+// {impl}`requirements.index.navigation`
+// {impl}`requirements.examples.index`
 fn replace_references(
     content: &str,
     current_path: &Path,
@@ -454,6 +458,7 @@ pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) 
 }
 
 // {impl}`requirements.ci.identifiers`
+// {impl}`requirements.ci.coverage`
 fn full_requirement_name(namespace: &str, name: &str) -> String {
     if namespace.is_empty() {
         name.to_owned()
@@ -467,6 +472,7 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.ci.fence_lengths`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     let code_ranges = Parser::new(content)
         .into_offset_iter()
@@ -539,6 +545,7 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
 }
 
 // {impl}`requirements.ci.span`
+// {impl}`requirements.ci.fence_lengths`
 fn colon_fence(line: &str) -> Option<(&str, usize)> {
     let trimmed = line.trim_start_matches(' ');
     if line.len() - trimmed.len() > 3 {
@@ -559,6 +566,7 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.definitions.references`
+// {impl}`requirements.definitions.declaration`
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
     let protected = if markdown {
         let mut ranges = protected_ranges(content);
@@ -637,6 +645,7 @@ fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
 }
 
 // {impl}`requirements.references.markdown_literals`
+// {impl}`requirements.references.targets`
 fn is_escaped(content: &str, position: usize) -> bool {
     content[..position]
         .bytes()
@@ -806,6 +815,7 @@ mod tests {
     }
 
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.references.targets`
     #[test]
     fn markdown_examples_and_escaped_references_stay_literal() {
         let marker = ["{", "impl}`requirements.ready`"].concat();
@@ -826,6 +836,7 @@ mod tests {
     }
 
     // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.markdown_literals`
     #[test]
     fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {
         let source = "An inline {req}`inline` role.\n\n:::{req} defined\nDefinition.\n\n## Details\n\n```text\nexample\n```\n:::\n\nAfter.";
@@ -840,6 +851,7 @@ mod tests {
     }
 
     // {test}`requirements.references.targets`
+    // {test}`requirements.references.markdown_literals`
     #[test]
     fn references_in_requirement_bodies_are_scanned_as_markdown() {
         let known = ["{", "cite}`requirements.ready`"].concat();
@@ -851,6 +863,7 @@ mod tests {
     }
 
     // {test}`requirements.ci.span`
+    // {test}`requirements.ci.fence_lengths`
     #[test]
     fn a_longer_colon_fence_contains_a_shorter_nested_directive() {
         let content = "::::{req} ready\nIntro.\n\n:::{note}\nNested.\n:::\n::::\n\nOutside.";
@@ -867,6 +880,7 @@ mod tests {
 
     // {test}`requirements.examples.definition`
     // {test}`requirements.references.book_badges`
+    // {test}`requirements.ci.identifiers`
     #[test]
     fn examples_are_distinct_definitions_and_tests_link_to_them() {
         let source = "::::{req} ready\nReady.\n\n:::{example} something.foo\nGiven ready, it succeeds. CITE`requirements.ready`\n:::\n::::\n\n:::{example} bad name\nInvalid.\n:::\n\n```text\n:::{example} hidden\nLiteral.\n:::\n```"

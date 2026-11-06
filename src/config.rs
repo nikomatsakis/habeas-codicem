@@ -81,6 +81,7 @@ impl SecretString {
 
 impl fmt::Debug for SecretString {
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.authoring.configuration_structure`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("<redacted>")
     }
@@ -213,6 +214,7 @@ impl UserConfig {
     // {impl}`requirements.authoring.configuration_serialization`
     // {impl}`requirements.authoring.concurrency`
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.configuration.serialization`
     pub fn parse(text: &str, path: &Path) -> io::Result<Self> {
         let config: Self = decode(toml::Value::Table(parse_document(text, path)?), path, "")?;
         config.validate(path)?;
@@ -245,6 +247,8 @@ impl WorkspaceConfig {
     // {impl}`requirements.configuration.workspace_structure`
     // {impl}`requirements.configuration.loading`
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.authoring.configuration_serialization`
+    // {impl}`requirements.configuration.serialization`
     pub fn parse(text: &str, path: &Path) -> io::Result<Self> {
         let table = parse_document(text, path)?;
         validate_workspace_common(&table, path)?;
@@ -255,6 +259,7 @@ impl WorkspaceConfig {
 
     // {impl}`requirements.configuration.workspace_structure`
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_serialization`
     pub fn to_toml(&self) -> io::Result<String> {
         self.validate(Path::new("workspace configuration"))?;
         toml::to_string_pretty(self).map_err(|_| {
@@ -313,6 +318,7 @@ impl EvidenceConfig {
 impl ProjectConfig {
     // {impl}`requirements.configuration.structure`
     // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.configuration.workspace_structure`
     pub fn from_book_toml(text: &str, path: &Path) -> io::Result<Option<Self>> {
         let book: toml::Table = toml::from_str(text).map_err(|error| invalid(path, "", error))?;
         book.get("habeas")
@@ -630,6 +636,8 @@ pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {
 
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
+// {impl}`requirements.configuration.serialization`
 pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {
     let Some((path, table)) = workspace_document(root)? else {
         return Ok(None);
@@ -651,6 +659,7 @@ pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceCo
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.credentials`
+// {impl}`requirements.authoring.deterministic_validation`
 pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEvidenceConfig>> {
     let Some((path, table)) = workspace_document(root)? else {
         return Ok(None);
@@ -835,6 +844,8 @@ pub fn resolve_authoring_from(
 // {impl}`requirements.authoring.configuration_storage`
 // {impl}`requirements.configuration.workspace_structure`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.authoring.configuration`
+// {impl}`requirements.configuration.serialization`
 pub fn resolve_authoring_with_workspace_from(
     path: &Path,
     user: Option<&UserConfig>,

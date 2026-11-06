@@ -1,7 +1,7 @@
 {
-  "requirement": "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.\n\n```text\n{impl}`requirements.references.targets`\n{cite}`requirements.references.targets`\n{test}`requirements.references.targets`\n```",
+  "requirement": "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.\n\n```text\n{impl}`requirements.references.targets`\n{cite}`requirements.references.targets`\n{test}`requirements.references.targets`\n```",
   "determination": true,
-  "rationale": "**Verdict:** the code implements `requirements.references.targets` as stated, and the tests cover the main points. A few edge cases have no direct test.\n\n**Implementation**\n- `reference_roles` (src/lib.rs, around lines 557–613) finds `{impl}`, `{cite}` and `{test}` roles followed by a backtick-delimited name. It also handles `{term}`, which belongs to other requirements.\n  - It accepts a name only if `valid_name` passes, which allows dotted identifiers.\n  - It skips escaped roles using `is_escaped`.\n  - For Markdown files, it skips anything in `protected_ranges`, which covers code blocks, inline code and HTML. This keeps escaped roles and code examples literal.\n- `collect_references_with_progress` (src/evidence.rs) walks the whole project tree.\n  - It excludes the root-level `.git`, `target`, `book` and `evidence` directories, so evidence snapshots and generated build output are not counted.\n  - It skips binary and non-UTF-8 files.\n  - It records each reference's file and line, computed from the number of newlines before the match.\n  - `collect_references` is a thin wrapper around it.\n- `validate_references` (src/evidence.rs, around lines 960–1040) looks each non-term reference up in the definitions. If there is no `{req}` or `{example}` definition, it pushes the error `<file>:<line>: {role}`name` has no matching requirement or example`. This matches the \"fail with the source file and line\" requirement.\n\n**Tests**\n- `reports_unknown_references_and_uncovered_lines` (src/evidence.rs) builds a fixture with a known and an unknown reference.\n  - It asserts that `src/main.rs:3: {impl}`missing.requirement` has no matching requirement` is reported with the file and line.\n  - It asserts that there are exactly 2 errors.\n  - The fixture's `evidence/foo.bar.ready.json` embeds the literal `{test}` text. If evidence files were scanned, that would add a third error. The exact count therefore also checks that evidence snapshots are excluded.\n- `references_in_requirement_bodies_are_scanned_as_markdown` (src/lib.rs) checks that a reference in a requirement body is found and that one inside a fenced code block is ignored.\n- `markdown_examples_and_escaped_references_stay_literal` (src/lib.rs) checks that inline-code, fenced and backslash-escaped roles remain literal. It cites the `markdown_literals` requirement, but it exercises the same scanner.\n\n**Gaps (minor, none flagged as acknowledged)**\n- No direct test covers the `target` and `book` directory exclusions. The code is a simple `matches!` on directory names, so this is low risk.\n- There is no end-to-end test of an unknown `{cite}` reference, or of an unknown reference in a Markdown file. The code path is the same for all roles and file types, and `reference_roles` is tested for Markdown separately.\n\nThese gaps are small relative to the simple, uniform implementation, so I judge the requirement met.",
+  "rationale": "I judge the requirement satisfied. The implementation covers each obligation and is marked `{impl}`, and the tests cover the main cases. The one untested item is the `target` and `book` exclusion, which is minor.\n\n**Implementation**\n- `reference_roles` (src/lib.rs, `{impl}`) parses `{impl}`, `{cite}`, `{test}` (and `{term}`) roles that carry a backtick-delimited, valid full name.\n  - In Markdown it leaves escaped roles literal through `is_escaped` (also `{impl}`) and skips code blocks, inline code and HTML through `protected_ranges`/`is_protected` (these two are marked for `markdown_literals`).\n  - `valid_name` is marked for `ci.identifiers`.\n  - It returns each role's start offset and kind.\n- `collect_references` and `collect_references_with_progress` (src/evidence.rs, `{impl}`) scan the project's text files.\n  - They skip non-UTF-8 and NUL-containing files.\n  - They convert offsets to line numbers and record the file, line, name and kind.\n  - They exclude the root-level `.git`, `target`, `book` and `evidence` directories, so evidence snapshots and generated build output are not counted.\n- `validate_references` (src/evidence.rs, `{impl}`) fails with `file:line` when a name has no matching `{req}` or `{example}` definition.\n  - It groups the remaining references as edges to definitions.\n  - It treats `{cite}` as an edge from the source to the definition, so a cite needs no evidence coverage. `{impl}` and `{test}` are edges from the definition and are checked against evidence inputs.\n- The authoring input selection (src/authoring/inputs.rs) uses these edges in the right direction, and a test checks it.\n- The extra behaviour in these functions (progress reporting, `{term}` handling, the example evidence check) is tied to other definitions that the same items mark as implemented.\n\n**Tests**\n- `reports_unknown_references_and_uncovered_lines` checks that an unknown name is reported with `src/main.rs:3` and that an uncovered `{test}` line is reported. Its evidence JSON also contains reference text, and exactly two errors are expected. That shows the `evidence/` directory is not scanned.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks that `{cite}` is a source-to-definition edge, while `{impl}` and `{test}` are definition-to-source edges.\n- `markdown_examples_and_escaped_references_stay_literal` and `references_in_requirement_bodies_are_scanned_as_markdown` check that roles in code spans, fenced code and escaped roles stay literal, and that roles in requirement bodies are still scanned.\n- `only_edges_leaving_the_subject_contribute_inputs` checks the edge directions for cite, impl and test, including declarations as sources.\n\n**Minor gap:** I found no test that puts a role under `target/` or `book/` to confirm those directories are skipped. The `evidence/` exclusion is exercised only implicitly. The exclusion code is simple and I don't consider this a material gap.",
   "inputs": [
     {
       "requirements": "requirements.references.targets",
@@ -10,7 +10,7 @@
       ],
       "text": [
         ":::{req} targets",
-        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.",
+        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references.",
         "",
         "```text",
         "{impl}`requirements.references.targets`",
@@ -21,14 +21,63 @@
       ]
     },
     {
-      "requirements": "requirements.references.book_badges",
-      "matches": [
-        "requirements.references.book_badges"
-      ],
+      "rust_file": "src/authoring/inputs.rs",
+      "rust_item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
       "text": [
-        ":::{req} book_badges",
-        "In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`.",
-        ":::"
+        "    // {test}`requirements.references.authoring_inputs`",
+        "    // {test}`requirements.references.targets`",
+        "    // {test}`requirements.authoring.mandatory_inputs`",
+        "    #[test]",
+        "    fn only_edges_leaving_the_subject_contribute_inputs() {",
+        "        let root = project();",
+        "        let declarations = format!(",
+        "            \":::{{req}} ready\\nReady relies on {} and refines {}.\\n:::\\n\\n:::{{req}} base\\nBase MUST hold.\\n:::\\n\\n:::{{req}} parent\\nParent MUST hold.\\n:::\\n\\n:::{{example}} citer\\nA case relying on ready. {}\\n:::\\n\\n:::{{example}} tester\\nA ready case. {} {}\\n:::\\n\",",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"impl\", \"requirements.parent\"),",
+        "            role(\"cite\", \"requirements.ready\"),",
+        "            role(\"cite\", \"requirements.base\"),",
+        "            role(\"test\", \"requirements.ready\")",
+        "        );",
+        "        fs::write(root.path().join(\"md/requirements.md\"), declarations).unwrap();",
+        "        fs::write(",
+        "            root.path().join(\"src/lib.rs\"),",
+        "            format!(",
+        "                \"// {}\\nfn run() {{}}\\n// {}\\nfn helper() {{}}\\n// {}\\nfn check() {{}}\\n\",",
+        "                role(\"impl\", \"requirements.ready\"),",
+        "                role(\"cite\", \"requirements.ready\"),",
+        "                role(\"test\", \"requirements.ready\")",
+        "            ),",
+        "        )",
+        "        .unwrap();",
+        "        let sources = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();",
+        "        let inputs = sources.mandatory_inputs();",
+        "        let has_requirements =",
+        "            |name: &str| inputs.iter().any(|input| input[\"requirements\"] == name);",
+        "        let has_item = |item: &str| inputs.iter().any(|input| input[\"rust_item\"] == item);",
+        "        assert!(has_requirements(\"requirements.ready\"));",
+        "        assert!(has_requirements(\"requirements.base\"), \"{inputs:#?}\");",
+        "        assert!(has_requirements(\"requirements.tester\"), \"{inputs:#?}\");",
+        "        assert!(has_item(\"fn[run]\"), \"{inputs:#?}\");",
+        "        assert!(has_item(\"fn[check]\"), \"{inputs:#?}\");",
+        "        assert!(!has_item(\"fn[helper]\"), \"{inputs:#?}\");",
+        "        assert!(!has_requirements(\"requirements.citer\"), \"{inputs:#?}\");",
+        "        assert!(!has_requirements(\"requirements.parent\"), \"{inputs:#?}\");",
+        "",
+        "        let parent = AssessmentSources::prepare(root.path(), \"requirements.parent\").unwrap();",
+        "        let inputs = parent.mandatory_inputs();",
+        "        assert!(",
+        "            inputs",
+        "                .iter()",
+        "                .any(|input| input[\"requirements\"] == \"requirements.ready\"),",
+        "            \"{inputs:#?}\"",
+        "        );",
+        "        assert!(",
+        "            !inputs",
+        "                .iter()",
+        "                .any(|input| input[\"requirements\"] == \"requirements.base\"),",
+        "            \"{inputs:#?}\"",
+        "        );",
+        "    }"
       ]
     },
     {
@@ -105,7 +154,12 @@
         "            ));",
         "        }",
         "        let inputs = evidence_input_ranges(root, &evidence_file, definitions);",
-        "        for reference in references {",
+        "        // `{cite}` points from its source to the definition, so it is not part of",
+        "        // the definition's evidence.",
+        "        for reference in references",
+        "            .into_iter()",
+        "            .filter(|reference| reference.kind != ReferenceKind::Cite)",
+        "        {",
         "            if !inputs.iter().any(|input| {",
         "                input.file == reference.file",
         "                    && input.line_start <= reference.line",
@@ -257,6 +311,7 @@
       "rust_item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
       "text": [
         "    // {test}`requirements.references.targets`",
+        "    // {test}`requirements.references.evidence_coverage`",
         "    #[test]",
         "    fn reports_unknown_references_and_uncovered_lines() {",
         "        let temp = fixture();",
@@ -303,6 +358,75 @@
       ]
     },
     {
+      "rust_file": "src/evidence.rs",
+      "rust_item": "mod[tests]/fn[uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are]",
+      "text": [
+        "    // {test}`requirements.references.evidence_coverage`",
+        "    // {test}`requirements.references.targets`",
+        "    #[test]",
+        "    fn uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are() {",
+        "        let temp = fixture();",
+        "        fs::write(",
+        "            temp.path().join(\"md/rules.md\"),",
+        "            \":::{req} ready\\nReady.\\n:::\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        let source = \"// CITE`rules.ready`\\nfn helper() {}\\n// IMPL`rules.ready`\\nfn run() {}\\n// TEST`rules.ready`\\nfn check() {}\\n\"",
+        "            .replace(\"CITE\", \"{cite}\")",
+        "            .replace(\"IMPL\", \"{impl}\")",
+        "            .replace(\"TEST\", \"{test}\");",
+        "        fs::write(temp.path().join(\"src/main.rs\"), &source).unwrap();",
+        "        let lines = source.lines().collect::<Vec<_>>();",
+        "        let record = |inputs: serde_json::Value| {",
+        "            json!({",
+        "                \"requirement\": \"Ready.\",",
+        "                \"determination\": true,",
+        "                \"rationale\": \"The implementation and test were examined.\",",
+        "                \"inputs\": inputs",
+        "            })",
+        "            .to_string()",
+        "        };",
+        "        let path = temp.path().join(\"evidence/rules.ready.json\");",
+        "        fs::write(&path, record(json!([]))).unwrap();",
+        "        let errors = validate_repository(temp.path()).unwrap().errors;",
+        "        let uncovered: Vec<_> = errors",
+        "            .iter()",
+        "            .filter(|error| error.contains(\"no input covers\"))",
+        "            .collect();",
+        "        assert_eq!(uncovered.len(), 2, \"{errors:#?}\");",
+        "        assert!(",
+        "            uncovered",
+        "                .iter()",
+        "                .any(|error| error.contains(\"impl\") && error.contains(\"src/main.rs:3\")),",
+        "            \"{errors:#?}\"",
+        "        );",
+        "        assert!(",
+        "            uncovered",
+        "                .iter()",
+        "                .any(|error| error.contains(\"test\") && error.contains(\"src/main.rs:5\")),",
+        "            \"{errors:#?}\"",
+        "        );",
+        "        assert!(",
+        "            !errors.iter().any(|error| error.contains(\"src/main.rs:1\")),",
+        "            \"{errors:#?}\"",
+        "        );",
+        "",
+        "        fs::write(",
+        "            &path,",
+        "            record(json!([{",
+        "                \"file\": \"src/main.rs\",",
+        "                \"line_start\": 3,",
+        "                \"line_end\": 6,",
+        "                \"text\": lines[2..6]",
+        "            }])),",
+        "        )",
+        "        .unwrap();",
+        "        let report = validate_repository(temp.path()).unwrap();",
+        "        assert!(report.errors.is_empty(), \"{:?}\", report.errors);",
+        "    }"
+      ]
+    },
+    {
       "rust_file": "src/lib.rs",
       "rust_item": "fn[reference_roles]",
       "text": [
@@ -310,6 +434,7 @@
         "// {impl}`requirements.ci.identifiers`",
         "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.definitions.references`",
+        "// {impl}`requirements.definitions.declaration`",
         "pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {",
         "    let protected = if markdown {",
         "        let mut ranges = protected_ranges(content);",
@@ -368,166 +493,10 @@
     },
     {
       "rust_file": "src/lib.rs",
-      "rust_item": "mod[tests]/fn[references_in_requirement_bodies_are_scanned_as_markdown]",
+      "rust_item": "fn[is_escaped]",
       "text": [
-        "    // {test}`requirements.references.targets`",
-        "    #[test]",
-        "    fn references_in_requirement_bodies_are_scanned_as_markdown() {",
-        "        let known = [\"{\", \"cite}`requirements.ready`\"].concat();",
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
-        "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");",
-        "        let references = reference_roles(&content, true);",
-        "        assert_eq!(references.len(), 1);",
-        "        assert_eq!(references[0].name, \"requirements.ready\");",
-        "    }"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 14,
-      "line_end": 14,
-      "text": [
-        "In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. These badges use the syntax defined by {cite}`requirements.references.targets`."
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1513,
-      "line_end": 1553,
-      "text": [
-        "}",
-        "",
-        "#[cfg(test)]",
-        "mod tests {",
-        "    use std::fs;",
-        "",
-        "    use serde_json::json;",
-        "    use tempfile::TempDir;",
-        "",
-        "    use super::validate_repository;",
-        "",
-        "    // {test}`requirements.integration.report_api`",
-        "    fn fixture() -> TempDir {",
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"md/reqs/foo\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"src/main.rs\"),",
-        "            \"// first line\\n// second line\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        temp",
-        "    }",
-        "",
-        "    // {test}`requirements.authoring.progress`",
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.errors`",
-        "    #[test]",
-        "    fn inspection_progress_preserves_validation_and_finishes_each_phase() {",
-        "        let temp = fixture();",
-        "        let root = temp.path();",
-        "        fs::write(",
-        "            root.join(\"md/requirements.md\"),",
-        "            \":::{req} ready\\nThe check MUST pass.\\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            root.join(\"evidence/requirements.ready.json\"),",
-        "            json!({"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 557,
-      "line_end": 613,
-      "text": [
-        "",
+        "// {impl}`requirements.references.markdown_literals`",
         "// {impl}`requirements.references.targets`",
-        "// {impl}`requirements.ci.identifiers`",
-        "// {impl}`requirements.references.markdown_literals`",
-        "// {impl}`requirements.definitions.references`",
-        "pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {",
-        "    let protected = if markdown {",
-        "        let mut ranges = protected_ranges(content);",
-        "        for block in definition_blocks(content)",
-        "            .into_iter()",
-        "            .filter(|b| b.kind == DefinitionKind::Term)",
-        "        {",
-        "            let body = &content[block.body_start..block.body_end];",
-        "            let option_start = block.body_start + body.len() - body.trim_start().len();",
-        "            let option_end = content[option_start..block.body_end]",
-        "                .find('\\n')",
-        "                .map_or(block.body_end, |offset| option_start + offset);",
-        "            ranges.push(option_start..option_end);",
-        "        }",
-        "        ranges",
-        "    } else {",
-        "        Vec::new()",
-        "    };",
-        "    let mut references = Vec::new();",
-        "",
-        "    for (start, _) in content.match_indices('{') {",
-        "        if is_escaped(content, start) || is_protected(start, &protected) {",
-        "            continue;",
-        "        }",
-        "        let remaining = &content[start..];",
-        "        let (kind, prefix) = if remaining.starts_with(\"{impl}`\") {",
-        "            (ReferenceKind::Impl, \"{impl}`\")",
-        "        } else if remaining.starts_with(\"{cite}`\") {",
-        "            (ReferenceKind::Cite, \"{cite}`\")",
-        "        } else if remaining.starts_with(\"{test}`\") {",
-        "            (ReferenceKind::Test, \"{test}`\")",
-        "        } else if remaining.starts_with(\"{term}`\") {",
-        "            (ReferenceKind::Term, \"{term}`\")",
-        "        } else {",
-        "            continue;",
-        "        };",
-        "        let name_start = start + prefix.len();",
-        "        let Some(name_end_offset) = content[name_start..].find('`') else {",
-        "            continue;",
-        "        };",
-        "        let name_end = name_start + name_end_offset;",
-        "        let name = &content[name_start..name_end];",
-        "        if valid_name(name) {",
-        "            references.push(ReferenceMatch {",
-        "                start,",
-        "                end: name_end + 1,",
-        "                name,",
-        "                kind,",
-        "            });",
-        "        }",
-        "    }",
-        ""
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 617,
-      "line_end": 629,
-      "text": [
-        "// {impl}`requirements.references.markdown_literals`",
-        "fn protected_ranges(content: &str) -> Vec<Range<usize>> {",
-        "    let mut ranges = Vec::new();",
-        "",
-        "    for (event, range) in Parser::new(content).into_offset_iter() {",
-        "        match event {",
-        "            Event::Start(Tag::CodeBlock(_)) => ranges.push(range),",
-        "            Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => ranges.push(range),",
-        "            _ => {}",
-        "        }",
-        "    }",
-        "",
-        "    ranges"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 639,
-      "line_end": 650,
-      "text": [
-        "// {impl}`requirements.references.markdown_literals`",
         "fn is_escaped(content: &str, position: usize) -> bool {",
         "    content[..position]",
         "        .bytes()",
@@ -536,483 +505,15 @@
         "        .count()",
         "        % 2",
         "        == 1",
-        "}",
-        "",
-        "// {impl}`requirements.ci.identifiers`"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 841,
-      "line_end": 850,
-      "text": [
-        "",
-        "    // {test}`requirements.references.targets`",
-        "    #[test]",
-        "    fn references_in_requirement_bodies_are_scanned_as_markdown() {",
-        "        let known = [\"{\", \"cite}`requirements.ready`\"].concat();",
-        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
-        "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");",
-        "        let references = reference_roles(&content, true);",
-        "        assert_eq!(references.len(), 1);",
-        "        assert_eq!(references[0].name, \"requirements.ready\");"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 867,
-      "line_end": 915,
-      "text": [
-        "",
-        "    // {test}`requirements.examples.definition`",
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn examples_are_distinct_definitions_and_tests_link_to_them() {",
-        "        let source = \"::::{req} ready\\nReady.\\n\\n:::{example} something.foo\\nGiven ready, it succeeds. CITE`requirements.ready`\\n:::\\n::::\\n\\n:::{example} bad name\\nInvalid.\\n:::\\n\\n```text\\n:::{example} hidden\\nLiteral.\\n:::\\n```\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        let blocks = definition_blocks(&source);",
-        "        assert_eq!(blocks.len(), 2);",
-        "        assert_eq!(blocks[0].kind, DefinitionKind::Requirement);",
-        "        assert_eq!(blocks[1].kind, DefinitionKind::Example);",
-        "",
-        "        let mut book = Book::new();",
-        "        book.push_item(Chapter::new(",
-        "            \"Requirements\",",
-        "            source,",
-        "            \"requirements.md\",",
-        "            Vec::new(),",
-        "        ));",
-        "        book.push_item(Chapter::new(",
-        "            \"Guide\",",
-        "            \"TEST`requirements.something.foo`\".replace(\"TEST\", \"{test}\"),",
-        "            \"guides/deep.md\",",
-        "            Vec::new(),",
-        "        ));",
-        "        preprocess_book(&mut book, Path::new(\".\")).unwrap();",
-        "        let chapters = book.chapters().collect::<Vec<_>>();",
-        "        assert!(",
-        "            chapters[0]",
-        "                .content",
-        "                .contains(\"id=\\\"habeas-req-requirements.ready\\\"\")",
-        "        );",
-        "        assert!(",
-        "            chapters[0]",
-        "                .content",
-        "                .contains(\"id=\\\"habeas-example-requirements.something.foo\\\"\")",
-        "        );",
-        "        assert!(",
-        "            chapters[0]",
-        "                .content",
-        "                .contains(\"alt=\\\"example requirements.something.foo\\\"\")",
-        "        );",
-        "        assert!(chapters[0].content.contains(\":::{example} bad name\"));",
-        "        assert!(chapters[0].content.contains(\":::{example} hidden\"));",
-        "        assert!(",
-        "            chapters[1].content.contains(",
-        "                \"href=\\\"../requirements.html#habeas-example-requirements.something.foo\\\"\"",
-        "            )",
-        "        );"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 23,
-      "line_end": 27,
-      "text": [
-        "// {impl}`requirements.authoring.credentials`",
-        "pub(crate) fn definitions() -> Vec<Value> {",
-        "    // Providers such as Anthropic require a plain object at the schema root.",
-        "    // Describe the alternative forms here and enforce them in read().",
-        "    vec!["
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 35,
-      "line_end": 43,
-      "text": [
-        "                \"rust_file\":{\"type\":\"string\"},",
-        "                \"rust_item\":{\"type\":\"string\"},",
-        "                \"requirements\":{\"type\":\"string\"},",
-        "                \"definition\":{\"type\":\"string\"}",
-        "            }, \"additionalProperties\":false}",
-        "        }),",
-        "        json!({",
-        "            \"name\": \"list_files\", \"description\": \"List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests abort the assessment.\",",
-        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 450,
-      "line_end": 454,
-      "text": [
-        "            )",
-        "            .is_ok()",
-        "        );",
-        "        assert!(dispatch(&sources, \"habeas\", &json!({\"definition\":\"terms.value\"})).is_ok());",
-        "    }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 57,
-      "line_end": 61,
-      "text": [
-        "// {impl}`requirements.ci.definition_errors`",
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1016,
-      "line_end": 1025,
-      "text": [
-        "                \"{}: example {name} has a true determination but no {{test}} reference\",",
-        "                display_path(root, &evidence_file)",
-        "            ));",
-        "        }",
-        "        let inputs = evidence_input_ranges(root, &evidence_file, definitions);",
-        "        for reference in references {",
-        "            if !inputs.iter().any(|input| {",
-        "                input.file == reference.file",
-        "                    && input.line_start <= reference.line",
-        "                    && reference.line <= input.line_end"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1035,
-      "line_end": 1039,
-      "text": [
-        "            }",
-        "        }",
-        "    }",
-        "    progress(InspectionProgress {",
-        "        stage: \"reference coverage\","
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 730,
-      "line_end": 734,
-      "text": [
-        "// {impl}`requirements.index.chapter`",
-        "fn invalid_index(message: &str) -> io::Error {",
-        "    io::Error::new(io::ErrorKind::InvalidData, message)",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 267,
-      "line_end": 271,
-      "text": [
-        "        result.push_str(&content[cursor..block.start]);",
-        "        let full_name = full_requirement_name(namespace, &block.name);",
-        "        // {impl}`requirements.references.safe_badges`",
-        "        let escaped_name = escape_html(&full_name);",
-        "        if block.kind == DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 275,
-      "line_end": 279,
-      "text": [
-        "                result.push_str(&format!(",
-        "                    \"<strong id=\\\"{}\\\">{}</strong>\\n\\n\",",
-        "                    escape_html(&block.kind.anchor(&full_name)),",
-        "                    terms::escaped_phrase(phrase)",
-        "                ));"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 304,
-      "line_end": 308,
-      "text": [
-        "        result.push_str(\" class=\\\"habeas-req-badge\\\" id=\\\"habeas-\");",
-        "        result.push_str(block.kind.badge());",
-        "        result.push('-');",
-        "        result.push_str(&escaped_name);",
-        "        result.push('\"');"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 355,
-      "line_end": 359,
-      "text": [
-        "                    result.push_str(&format!(",
-        "                        \"<a href=\\\"{}\\\">{}</a>\",",
-        "                        escape_html(&href),",
-        "                        terms::escaped_phrase(phrase)",
-        "                    ));"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 580,
-      "line_end": 584,
-      "text": [
-        "    let mut references = Vec::new();",
-        "",
-        "    for (start, _) in content.match_indices('{') {",
-        "        if is_escaped(content, start) || is_protected(start, &protected) {",
-        "            continue;"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 637,
-      "line_end": 641,
-      "text": [
-        "}",
-        "",
-        "// {impl}`requirements.references.markdown_literals`",
-        "fn is_escaped(content: &str, position: usize) -> bool {",
-        "    content[..position]"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 660,
-      "line_end": 675,
-      "text": [
-        "",
-        "// {impl}`requirements.references.safe_badges`",
-        "fn escape_html(value: &str) -> String {",
-        "    let mut escaped = String::with_capacity(value.len());",
-        "    for character in value.chars() {",
-        "        match character {",
-        "            '&' => escaped.push_str(\"&amp;\"),",
-        "            '<' => escaped.push_str(\"&lt;\"),",
-        "            '>' => escaped.push_str(\"&gt;\"),",
-        "            '\"' => escaped.push_str(\"&quot;\"),",
-        "            '\\'' => escaped.push_str(\"&#39;\"),",
-        "            _ => escaped.push(character),",
-        "        }",
-        "    }",
-        "    escaped",
         "}"
       ]
     },
     {
-      "file": "src/lib.rs",
-      "line_start": 740,
-      "line_end": 744,
+      "rust_file": "src/lib.rs",
+      "rust_item": "mod[tests]/fn[markdown_examples_and_escaped_references_stay_literal]",
       "text": [
-        "    // {test}`requirements.ci.identifiers`",
-        "    // {test}`requirements.references.safe_badges`",
-        "    #[test]",
-        "    fn invalid_names_remain_literal_and_html_is_escaped() {",
-        "        let rendered = replace_definitions("
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 807,
-      "line_end": 811,
-      "text": [
-        "",
         "    // {test}`requirements.references.markdown_literals`",
-        "    #[test]",
-        "    fn markdown_examples_and_escaped_references_stay_literal() {",
-        "        let marker = [\"{\", \"impl}`requirements.ready`\"].concat();"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 543,
-      "line_end": 547,
-      "text": [
-        "        fs::write(project.path().join(\"tests/broken.rs\"), \"fn unfinished( {\\n\").unwrap();",
-        "        fs::write(",
-        "            project.path().join(\"target/generated.rs\"),",
-        "            \"fn ignored() {}\\n\",",
-        "        )"
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 408,
-      "line_end": 422,
-      "text": [
-        "// {impl}`requirements.references.rust_item_selectors`",
-        "fn escape_segment(source: &str) -> String {",
-        "    let mut escaped = String::new();",
-        "    for character in source.chars() {",
-        "        if matches!(character, '%' | '[' | ']' | '/' | '#') || character.is_whitespace() {",
-        "            for byte in character.to_string().bytes() {",
-        "                escaped.push_str(&format!(\"%{byte:02X}\"));",
-        "            }",
-        "        } else {",
-        "            escaped.push(character);",
-        "        }",
-        "    }",
-        "    escaped",
-        "}",
-        ""
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "line_start": 144,
-      "line_end": 148,
-      "text": [
-        "",
-        "// {impl}`requirements.definitions.references`",
-        "pub(crate) fn escaped_phrase(phrase: &str) -> String {",
-        "    let mut output = String::new();",
-        "    for ch in phrase.chars() {"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 29,
-      "line_end": 29,
-      "text": [
-        "| `src/lib.rs:411` `reference_roles` | `requirements.references.targets`, `requirements.ci.identifiers`, `requirements.references.markdown_literals` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 35,
-      "line_end": 35,
-      "text": [
-        "| `src/evidence.rs:28` `validate_repository` | `requirements.integration.report_api`, `requirements.ci.coverage`, `requirements.ci.orphans`, `requirements.references.targets`, `requirements.references.evidence_coverage` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 49,
-      "line_end": 50,
-      "text": [
-        "| `src/evidence.rs:567` `validate_references` | `requirements.references.targets`, `requirements.references.evidence_coverage` |",
-        "| `src/evidence.rs:613` `collect_references` | `requirements.references.targets` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 84,
-      "line_end": 84,
-      "text": [
-        "| `src/evidence.rs:914` `reports_unknown_references_and_uncovered_lines` | `requirements.references.targets` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 104,
-      "line_end": 104,
-      "text": [
-        "| `src/lib.rs:679` `references_in_requirement_bodies_are_scanned_as_markdown` | `requirements.references.targets` |"
-      ]
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "line_start": 127,
-      "line_end": 127,
-      "text": [
-        "| `src/evidence.rs:566` | unknown or uncovered reference | `requirements.references.targets`, `requirements.references.evidence_coverage` |"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 7,
-      "line_end": 9,
-      "text": [
-        "{impl}`requirements.references.targets`",
-        "{cite}`requirements.references.targets`",
-        "{test}`requirements.references.targets`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 900,
-      "line_end": 900,
-      "text": [
-        "                None"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 980,
-      "line_end": 980,
-      "text": [
-        "                .or_default()"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1623,
-      "line_end": 1623,
-      "text": [
-        "                (\"Rust attestation files\", if invalid { 3 } else { 1 }),"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 557,
-      "line_end": 557,
-      "text": [
-        ""
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 841,
-      "line_end": 841,
-      "text": [
-        ""
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1018,
-      "line_end": 1024,
-      "text": [
-        "            ));",
-        "        }",
-        "        let inputs = evidence_input_ranges(root, &evidence_file, definitions);",
-        "        for reference in references {",
-        "            if !inputs.iter().any(|input| {",
-        "                input.file == reference.file",
-        "                    && input.line_start <= reference.line"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1390,
-      "line_end": 1396,
-      "text": [
-        "                format!(",
-        "                    \"{rust_file}:{} {selector} ({})\",",
-        "                    function.declaration_line, function.name",
-        "                )",
-        "            },",
-        "        );",
-        "        let entry_label = format!(\"{entry_label} ({location}; {purpose})\");"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 800,
-      "line_end": 840,
-      "text": [
-        "                \"class=\\\"habeas-req-badge habeas-req-ref-{kind}\\\" href=\\\"../requirements.html#habeas-req-requirements.ready\\\"\"",
-        "            )));",
-        "            assert!(chapters[1].content.contains(&format!(",
-        "                \"img.shields.io/badge/{kind}-requirements.ready-{color}\"",
-        "            )));",
-        "        }",
-        "    }",
-        "",
-        "    // {test}`requirements.references.markdown_literals`",
+        "    // {test}`requirements.references.targets`",
         "    #[test]",
         "    fn markdown_examples_and_escaped_references_stay_literal() {",
         "        let marker = [\"{\", \"impl}`requirements.ready`\"].concat();",
@@ -1030,926 +531,94 @@
         "        let guide = book.chapters().nth(1).unwrap();",
         "        assert_eq!(guide.content.matches(&marker).count(), 3);",
         "        assert!(!guide.content.contains(\"habeas-req-ref-impl\"));",
-        "    }",
-        "",
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {",
-        "        let source = \"An inline {req}`inline` role.\\n\\n:::{req} defined\\nDefinition.\\n\\n## Details\\n\\n```text\\nexample\\n```\\n:::\\n\\nAfter.\";",
-        "        let rendered = replace_definitions(source, \"requirements\", None, None);",
-        "        assert!(rendered.contains(\"An inline {req}`inline` role.\"));",
-        "        assert!(!rendered.contains(\"habeas-req-requirements.inline\"));",
-        "        assert!(rendered.contains(\"id=\\\"habeas-req-requirements.defined\\\"\"));",
-        "        assert!(rendered.contains(\"## Details\"));",
-        "        assert!(rendered.contains(\"```text\\nexample\\n```\"));",
-        "        assert!(rendered.contains(\"After.\"));",
-        "        assert!(!rendered.contains(\":::{req} defined\"));",
         "    }"
       ]
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 4,
-      "line_end": 10,
+      "rust_file": "src/lib.rs",
+      "rust_item": "mod[tests]/fn[references_in_requirement_bodies_are_scanned_as_markdown]",
       "text": [
-        "use std::path::{Path, PathBuf};",
-        "",
-        "use serde_json::{Value, json};",
-        "",
-        "use super::access::SourceAccess;",
-        "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
-        "use crate::inputs::{InputSelector, read_project_file};"
+        "    // {test}`requirements.references.targets`",
+        "    // {test}`requirements.references.markdown_literals`",
+        "    #[test]",
+        "    fn references_in_requirement_bodies_are_scanned_as_markdown() {",
+        "        let known = [\"{\", \"cite}`requirements.ready`\"].concat();",
+        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
+        "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");",
+        "        let references = reference_roles(&content, true);",
+        "        assert_eq!(references.len(), 1);",
+        "        assert_eq!(references[0].name, \"requirements.ready\");",
+        "    }"
       ]
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 78,
-      "line_end": 84,
+      "file": "src/lib.rs",
+      "line_start": 468,
+      "line_end": 484,
       "text": [
-        "                    \"{subject_name}: referenced subject {} does not exist\",",
-        "                    reference.name",
-        "                )));",
-        "            }",
-        "            insert_selector(",
-        "                &mut selectors,",
-        "                InputSelector::Requirements {"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 404,
-      "line_end": 411,
-      "text": [
-        "        .unwrap();",
-        "        assert_eq!(read.inputs.len(), 2);",
-        "        assert_eq!(read.result[\"definitions\"][0][\"definition\"], \"terms.value\");",
-        "        assert!(sources.recorded_inputs().is_empty());",
-        "        sources.record_inputs(&read.inputs);",
-        "        sources.record_inputs(&read.inputs);",
-        "        assert_eq!(sources.recorded_inputs().len(), 2);",
-        "        let eof = dispatch("
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 461,
-      "line_end": 467,
-      "text": [
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        fs::write(root.path().join(\".gitignore\"), \"ignored.txt\\n\").unwrap();",
-        "        fs::write(root.path().join(\"ignored.txt\"), \"needle\\n\").unwrap();",
-        "        fs::write(root.path().join(\".hidden.txt\"), \"needle\\n\").unwrap();",
-        "        let lines = (1..=20)",
-        "            .map(|number| {",
-        "                if number == 2 || number == 6 {"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 513,
-      "line_end": 519,
-      "text": [
-        "        fs::create_dir(root.path().join(\"src/evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/old.json\"),",
-        "            \"needle in a previous judgment\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 158,
-      "line_end": 164,
-      "text": [
-        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
-        "    }",
-        "    progress(InspectionProgress {",
-        "        stage: \"evidence files\",",
-        "        completed: ordinary_files.len(),",
-        "        total: Some(ordinary_files.len()),",
-        "    });"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 913,
-      "line_end": 919,
-      "text": [
-        "    key: &str,",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") -> Option<&'a Vec<Value>> {",
-        "    match object.get(key) {",
-        "        Some(Value::Array(values)) => Some(values),",
-        "        Some(_) => {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 984,
-      "line_end": 990,
-      "text": [
-        "                \"{}:{}: {{{}}}`{}` has no matching requirement or example\",",
-        "                display_path(root, &reference.file),",
-        "                reference.line,",
-        "                reference.kind.label(),",
-        "                reference.name",
-        "            ));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1024,
-      "line_end": 1030,
-      "text": [
-        "                    && input.line_start <= reference.line",
-        "                    && reference.line <= input.line_end",
-        "            }) {",
-        "                errors.push(format!(",
-        "                    \"{}: no input covers {{{}}}`{}` at {}:{}\",",
-        "                    display_path(root, &evidence_file),",
-        "                    reference.kind.label(),"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 313,
-      "line_end": 319,
-      "text": [
-        "                let name = entry.file_name();",
-        "                if !matches!(name.to_str(), Some(\".git\" | \"target\"))",
-        "                    && !(directory == root",
-        "                        && matches!(name.to_str(), Some(\"book\" | \"evidence\" | \"vendor\")))",
-        "                {",
-        "                    stack.push(path);",
-        "                }"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 542,
-      "line_end": 554,
-      "text": [
-        "        .unwrap();",
-        "        fs::write(project.path().join(\"tests/broken.rs\"), \"fn unfinished( {\\n\").unwrap();",
-        "        fs::write(",
-        "            project.path().join(\"target/generated.rs\"),",
-        "            \"fn ignored() {}\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            project.path().join(\"evidence/fixture.rs\"),",
-        "            \"fn ignored() {}\\n\",",
-        "        )",
-        "        .unwrap();",
-        ""
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 36,
-      "line_end": 42,
-      "text": [
-        "// {impl}`requirements.integration.symposium_setup_hook`",
-        "fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {",
-        "    let table = book",
-        "        .get(\"book\")",
-        "        .map(|item| item.as_table_like().ok_or(\"book must be a table\"))",
-        "        .transpose()?;",
-        "    match table.and_then(|table| table.get(\"src\")) {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1390,
-      "line_end": 1470,
-      "text": [
-        "                format!(",
-        "                    \"{rust_file}:{} {selector} ({})\",",
-        "                    function.declaration_line, function.name",
-        "                )",
-        "            },",
-        "        );",
-        "        let entry_label = format!(\"{entry_label} ({location}; {purpose})\");",
-        "        if !present.insert(selector.to_owned()) {",
-        "            valid.remove(selector);",
-        "            errors.push(format!(",
-        "                \"{entry_label}: duplicate Rust function attestation\"",
-        "            ));",
-        "        }",
-        "        if current.is_none() {",
-        "            errors.push(format!(\"{entry_label}: orphaned Rust function attestation\"));",
-        "        }",
-        "        let recorded_citations =",
-        "            array_field(entry, \"citations\", &entry_label, errors).map(|values| {",
-        "                let mut citations = BTreeSet::new();",
-        "                for (citation_index, value) in values.iter().enumerate() {",
-        "                    let citation_label = format!(\"{entry_label}: citations[{citation_index}]\");",
-        "                    let Some(value) = value.as_object() else {",
-        "                        errors.push(format!(\"{citation_label}: expected a JSON object\"));",
-        "                        continue;",
-        "                    };",
-        "                    check_keys(value, &[\"role\", \"name\"], &citation_label, errors);",
-        "                    let role = string_field(value, \"role\", &citation_label, errors);",
-        "                    let name = string_field(value, \"name\", &citation_label, errors);",
-        "                    if let (Some(role), Some(name)) = (role, name) {",
-        "                        if !matches!(role, \"impl\" | \"cite\" | \"test\") {",
-        "                            errors",
-        "                                .push(format!(\"{citation_label}: invalid citation role {role:?}\"));",
-        "                        }",
-        "                        if !definitions.contains_key(name) {",
-        "                            errors.push(format!(\"{citation_label}: unknown definition {name:?}\"));",
-        "                        }",
-        "                        if !citations.insert((role.to_owned(), name.to_owned())) {",
-        "                            errors.push(format!(\"{citation_label}: duplicate citation\"));",
-        "                        }",
-        "                    }",
-        "                }",
-        "                citations",
-        "            });",
-        "        if let (Some(recorded), Some((_, current))) = (recorded_citations.as_ref(), current)",
-        "            && recorded != *current",
-        "        {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: citation set changed; recorded {recorded:?}, current {current:?}\"",
-        "            ));",
-        "        }",
-        "        if recorded_citations.as_ref().is_some_and(BTreeSet::is_empty) {",
-        "            errors.push(format!(\"{entry_label}: citations must not be empty\"));",
-        "        }",
-        "        let determination = boolean_field(entry, \"determination\", &entry_label, errors);",
-        "        let rationale = string_field(entry, \"rationale\", &entry_label, errors);",
-        "        if rationale.is_some_and(|value| value.trim().is_empty()) {",
-        "            errors.push(format!(\"{entry_label}: rationale must not be empty\"));",
-        "        }",
-        "        if determination == Some(false) {",
-        "            errors.push(format!(",
-        "                \"{entry_label}: determination is false: {}\",",
-        "                rationale.unwrap_or(\"\")",
-        "            ));",
-        "        }",
-        "        let Some(inputs) = array_field(entry, \"inputs\", &entry_label, errors) else {",
-        "            continue;",
-        "        };",
-        "        crate::terms::validate_dependencies(definitions, entry, None, &entry_label, errors);",
-        "        let mut self_inputs = 0;",
-        "        let mut definition_inputs = 0;",
-        "        let mut matched_definitions = BTreeSet::new();",
-        "        for (input_index, input) in inputs.iter().enumerate() {",
-        "            let input_label = format!(\"{entry_label}: inputs[{input_index}]\");",
-        "            let input_selector = InputSelector::from_input(input);",
-        "            let resolved = validate_input(root, definitions, input, &input_label, errors);",
-        "            match input_selector {",
-        "                Some(InputSelector::RustItem {",
-        "                    rust_file: selected_file,",
-        "                    rust_item,",
-        "                }) if selected_file == rust_file && rust_item == selector => {",
-        "                    self_inputs += 1;"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 914,
-      "line_end": 918,
-      "text": [
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") -> Option<&'a Vec<Value>> {",
-        "    match object.get(key) {",
-        "        Some(Value::Array(values)) => Some(values),"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 985,
-      "line_end": 989,
-      "text": [
-        "                display_path(root, &reference.file),",
-        "                reference.line,",
-        "                reference.kind.label(),",
-        "                reference.name",
-        "            ));"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1041,
-      "line_end": 1045,
-      "text": [
-        "        total: Some(subjects.len()),",
-        "    });",
         "}",
         "",
-        "// {impl}`requirements.references.targets`"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "line_start": 9,
-      "line_end": 9,
-      "text": [
-        "{test}`requirements.references.targets`"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1632,
-      "line_end": 1632,
-      "text": [
-        "                        update.completed"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 842,
-      "line_end": 842,
-      "text": [
-        "    // {test}`requirements.references.targets`"
-      ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "line_start": 178,
-      "line_end": 184,
-      "text": [
-        "",
-        "    // {impl}`requirements.authoring.mandatory_inputs`",
-        "    // {impl}`requirements.configuration.evidence_paths`",
-        "    // {impl}`requirements.authoring.source_tools`",
-        "    // {impl}`requirements.ci.authoring_inputs`",
-        "    pub(crate) fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {",
-        "        let joined = root.join(path);"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 441,
-      "line_end": 447,
-      "text": [
-        "                declaration.file == file",
-        "                    && declaration.line_start <= reference.line",
-        "                    && reference.line <= declaration.line_end",
-        "            })",
-        "            .min_by_key(|(_, declaration)| declaration.line_end - declaration.line_start)",
-        "    {",
-        "        return Ok(if declaration.kind == DefinitionKind::Term {"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "line_start": 126,
-      "line_end": 132,
-      "text": [
-        "            credentials.access_key_id.expose_secret(),",
-        "            credentials.secret_access_key.expose_secret(),",
-        "            credentials",
-        "                .session_token",
-        "                .as_ref()",
-        "                .map(|value| value.expose_secret().to_owned()),",
-        "            None,"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 457,
-      "line_end": 463,
-      "text": [
-        "    // {test}`requirements.authoring.additional_read`",
-        "    #[test]",
-        "    fn search_merges_context_windows_and_respects_ignore_rules() {",
-        "        let root = project();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        fs::write(root.path().join(\".gitignore\"), \"ignored.txt\\n\").unwrap();",
-        "        fs::write(root.path().join(\"ignored.txt\"), \"needle\\n\").unwrap();"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "line_start": 441,
-      "line_end": 447,
-      "text": [
-        "                    if config.api_key_env.is_some() {",
-        "                        return Err(invalid(",
-        "                            path,",
-        "                            &format!(\"{setting}.api_key\"),",
-        "                            \"api_key and api_key_env cannot both be set\",",
-        "                        ));",
-        "                    }"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 154,
-      "line_end": 160,
-      "text": [
-        "            present.insert(name.to_owned());",
-        "        } else {",
-        "            errors.push(format!(\"{label}: no matching requirement or example\"));",
-        "        }",
-        "        validate_evidence_file(&root, file, expected, &definitions, &mut errors);",
-        "    }",
-        "    progress(InspectionProgress {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1404,
-      "line_end": 1410,
-      "text": [
-        "            errors.push(format!(\"{entry_label}: orphaned Rust function attestation\"));",
-        "        }",
-        "        let recorded_citations =",
-        "            array_field(entry, \"citations\", &entry_label, errors).map(|values| {",
-        "                let mut citations = BTreeSet::new();",
-        "                for (citation_index, value) in values.iter().enumerate() {",
-        "                    let citation_label = format!(\"{entry_label}: citations[{citation_index}]\");"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1418,
-      "line_end": 1424,
-      "text": [
-        "                    if let (Some(role), Some(name)) = (role, name) {",
-        "                        if !matches!(role, \"impl\" | \"cite\" | \"test\") {",
-        "                            errors",
-        "                                .push(format!(\"{citation_label}: invalid citation role {role:?}\"));",
-        "                        }",
-        "                        if !definitions.contains_key(name) {",
-        "                            errors.push(format!(\"{citation_label}: unknown definition {name:?}\"));"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 310,
-      "line_end": 316,
-      "text": [
-        "        root: &Path,",
-        "        definitions: &BTreeMap<String, Definition>,",
-        "    ) -> io::Result<()> {",
-        "        let config = Config::from_disk(root.join(\"book.toml\")).map_err(io::Error::other)?;",
-        "        let source_links = SourceLinks::from_config(&config)?;",
-        "        let inspection = inspect_repository(root)?;",
-        "        let report = &inspection.report;"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 780,
-      "line_end": 786,
-      "text": [
-        "        fs::create_dir_all(temp.path().join(\"md/requirements\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"src\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let requirements = [",
-        "            (\"ready\", \"Ready MUST work.\"),",
-        "            (\"pending\", \"Pending MUST work.\"),"
-      ]
-    },
-    {
-      "file": "src/index.rs",
-      "line_start": 1203,
-      "line_end": 1209,
-      "text": [
-        "        let temp = TempDir::new().unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"md\")).unwrap();",
-        "        fs::create_dir_all(temp.path().join(\"evidence\")).unwrap();",
-        "        fs::write(temp.path().join(\"book.toml\"), \"[book]\\nsrc = \\\"md\\\"\\n\").unwrap();",
-        "        let source = \":::{req} ready\\nReady.\\n:::\\n\\n:::{example} pending\\nPending case. CITE`rules.ready`\\n:::\\n\\n:::{example} missing\\nMissing case. CITE`rules.ready`\\n:::\\n\"",
-        "            .replace(\"CITE\", \"{cite}\");",
-        "        fs::write(temp.path().join(\"md/rules.md\"), &source).unwrap();"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 32,
-      "line_end": 38,
-      "text": [
-        "    let cwd = std::env::current_dir().expect(\"cannot determine current directory\");",
-        "    let root = cwd",
-        "        .ancestors()",
-        "        .find(|path| path.join(\"Cargo.toml\").is_file() && path.join(\"book.toml\").is_file())",
-        "        .expect(\"cannot find Cargo and mdBook project root\");",
-        "    let report = validate_repository(root).expect(\"cannot validate requirement evidence\");",
-        "    if !report.errors.is_empty() {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 768,
-      "line_end": 774,
-      "text": [
-        "",
-        "    // {test}`requirements.references.book_badges`",
-        "    #[test]",
-        "    fn references_in_nested_chapters_link_to_the_requirement_definition() {",
-        "        let mut book = Book::new();",
-        "        book.push_item(Chapter::new(",
-        "            \"Requirements\","
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 852,
-      "line_end": 858,
-      "text": [
-        "",
-        "    // {test}`requirements.ci.span`",
-        "    #[test]",
-        "    fn a_longer_colon_fence_contains_a_shorter_nested_directive() {",
-        "        let content = \"::::{req} ready\\nIntro.\\n\\n:::{note}\\nNested.\\n:::\\n::::\\n\\nOutside.\";",
-        "        let blocks = definition_blocks(content);",
-        "        assert_eq!(blocks.len(), 1);"
-      ]
-    },
-    {
-      "file": "src/main.rs",
-      "line_start": 54,
-      "line_end": 60,
-      "text": [
-        "    #[command(hide = true)]",
-        "    Hook {",
-        "        #[command(subcommand)]",
-        "        command: HookCommand,",
-        "    },",
-        "    #[command(",
-        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\", \"for_rust_item\"])),"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 311,
-      "line_end": 317,
-      "text": [
-        "            };",
-        "            if kind.is_dir() {",
-        "                let name = entry.file_name();",
-        "                if !matches!(name.to_str(), Some(\".git\" | \"target\"))",
-        "                    && !(directory == root",
-        "                        && matches!(name.to_str(), Some(\"book\" | \"evidence\" | \"vendor\")))",
-        "                {"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 477,
-      "line_end": 483,
-      "text": [
-        "",
-        "    // {test}`requirements.references.rust_function_coverage`",
-        "    #[test]",
-        "    fn checks_trait_test_helper_and_nested_functions_separately() {",
-        "        let source = r#\"",
-        "trait Work {",
-        "    fn uncited_trait_method(&self);"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 532,
-      "line_end": 548,
-      "text": [
-        "        fs::create_dir_all(project.path().join(\"src\")).unwrap();",
-        "        fs::create_dir_all(project.path().join(\"src/evidence\")).unwrap();",
-        "        fs::create_dir_all(project.path().join(\"tests\")).unwrap();",
-        "        fs::create_dir_all(project.path().join(\"target\")).unwrap();",
-        "        fs::create_dir_all(project.path().join(\"evidence\")).unwrap();",
-        "        fs::write(project.path().join(\"src/lib.rs\"), \"fn uncited() {}\\n\").unwrap();",
-        "        fs::write(",
-        "            project.path().join(\"src/evidence/check.rs\"),",
-        "            \"fn nested_source() {}\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(project.path().join(\"tests/broken.rs\"), \"fn unfinished( {\\n\").unwrap();",
-        "        fs::write(",
-        "            project.path().join(\"target/generated.rs\"),",
-        "            \"fn ignored() {}\\n\",",
-        "        )",
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 560,
-      "line_end": 566,
-      "text": [
-        "        }));",
-        "        assert!(errors.iter().any(|error| {",
-        "            error.contains(",
-        "                \"src/evidence/check.rs:1: function nested_source has no requirement or example citation\",",
-        "            )",
-        "        }));",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/rust_items.rs",
-      "line_start": 564,
-      "line_end": 570,
-      "text": [
-        "    use super::parse_items;",
-        "",
-        "    // {test}`requirements.references.rust_item_selectors`",
-        "    // {test}`requirements.references.selector_nested`",
-        "    // {test}`requirements.references.selector_impl_and_trait`",
-        "    // {test}`requirements.references.selector_inline_and_foreign`",
-        "    // {test}`requirements.references.selector_duplicate_names`"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 58,
-      "line_end": 64,
-      "text": [
-        "pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {",
-        "    cwd.ancestors()",
-        "        .find(|directory| {",
-        "            directory.join(\"Cargo.toml\").is_file() && directory.join(\"book.toml\").is_file()",
+        "// {impl}`requirements.ci.span`",
+        "// {impl}`requirements.ci.identifiers`",
+        "// {impl}`requirements.references.markdown_literals`",
+        "// {impl}`requirements.examples.definition`",
+        "// {impl}`requirements.definitions.declaration`",
+        "// {impl}`requirements.ci.fence_lengths`",
+        "pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {",
+        "    let code_ranges = Parser::new(content)",
+        "        .into_offset_iter()",
+        "        .filter_map(|(event, range)| {",
+        "            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)",
         "        })",
-        "        .map(Path::to_path_buf)",
-        "}"
+        "        .collect::<Vec<_>>();",
+        "    let mut lines = Vec::new();",
+        "    let mut position = 0;"
       ]
     },
     {
-      "file": "src/setup.rs",
-      "line_start": 92,
-      "line_end": 98,
+      "file": "src/lib.rs",
+      "line_start": 618,
+      "line_end": 649,
       "text": [
-        "// {impl}`requirements.cli.setup`",
-        "pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {",
-        "    let root = project_root()?;",
-        "    let book_path = root.join(\"book.toml\");",
-        "    let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;",
-        "    // {impl}`requirements.cli.setup_project`",
-        "    let source = book_source(&book)?.to_owned();"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 188,
-      "line_end": 194,
-      "text": [
-        "        return false;",
+        "            });",
+        "        }",
         "    }",
         "",
-        "    let book = match fs::read_to_string(root.join(\"book.toml\"))",
-        "        .ok()",
-        "        .and_then(|source| source.parse::<DocumentMut>().ok())",
-        "    {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 56,
-      "line_end": 62,
-      "text": [
-        "// {impl}`requirements.ci.book_source`",
-        "// {impl}`requirements.ci.definition_errors`",
-        "pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {",
-        "    let root = fs::canonicalize(root)?;",
-        "    let mut errors = Vec::new();",
-        "    let md_root = book_source_dir(&root, &mut errors);",
-        "    let definitions = collect_definitions(&root, &md_root, &mut errors);"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1040,
-      "line_end": 1046,
-      "text": [
-        "        completed: subjects.len(),",
-        "        total: Some(subjects.len()),",
-        "    });",
+        "    references",
         "}",
         "",
-        "// {impl}`requirements.references.targets`",
-        "pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 729,
-      "line_end": 729,
-      "text": [
-        "    // {test}`requirements.references.markdown_literals`"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 808,
-      "line_end": 808,
-      "text": [
-        "    // {test}`requirements.references.markdown_literals`"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 7,
-      "line_end": 11,
-      "text": [
+        "// {impl}`requirements.references.markdown_literals`",
+        "fn protected_ranges(content: &str) -> Vec<Range<usize>> {",
+        "    let mut ranges = Vec::new();",
         "",
-        "use super::access::SourceAccess;",
-        "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
-        "use crate::inputs::{InputSelector, read_project_file};",
-        "use crate::{DefinitionKind, ReferenceKind};"
-      ]
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "line_start": 89,
-      "line_end": 93,
-      "text": [
-        "",
-        "        let mut errors = Vec::new();",
-        "        let references = collect_references(&root, &mut errors);",
-        "        if !errors.is_empty() {",
-        "            return Err(io::Error::other(errors.join(\"\\n\")));"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 899,
-      "line_end": 903,
-      "text": [
-        "        )",
-        "        .unwrap();",
-        "        fs::write(root.path().join(\".gitignore\"), \"target/\\n\").unwrap();",
-        "        git(root.path(), &[\"init\", \"--quiet\"]);",
-        "        git(root.path(), &[\"add\", \".\"]);"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 912,
-      "line_end": 916,
-      "text": [
-        "        );",
-        "        assert!(!root.path().join(\"target\").exists());",
-        "        let out = root.path().join(\"target/debug/build/fixture-hash/out\");",
-        "        fs::create_dir_all(&out).unwrap();",
-        "        fs::write(out.join(\"generated.rs\"), \"pub fn generated_needle() {}\\n\").unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 928,
-      "line_end": 936,
-      "text": [
-        "                .unwrap()",
-        "                .iter()",
-        "                .any(|entry| entry[\"path\"] == \"target/debug/build/fixture-hash/out\")",
-        "        );",
-        "        let search = dispatch(&sources, \"ripgrep\", &json!({\"pattern\":\"generated_needle\"})).unwrap();",
-        "        assert_eq!(search.inputs.len(), 1);",
-        "        let read = dispatch(&sources, \"habeas\", &json!({\"rust_file\":\"target/debug/build/fixture-hash/out/generated.rs\", \"rust_item\":\"fn[generated_needle]\"})).unwrap();",
-        "        assert_eq!(",
-        "            read.result[\"input\"][\"text\"],"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 941,
-      "line_end": 945,
-      "text": [
-        "                &sources,",
-        "                \"habeas\",",
-        "                &json!({\"file\":\"target/debug/build/fixture-hash/root-output\", \"line_start\":1})",
-        "            )",
-        "            .err()"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 950,
-      "line_end": 954,
-      "text": [
-        "        fs::write(",
-        "            root.path().join(\"habeas.toml\"),",
-        "            \"version = 1\\n[evidence]\\ndisallow = ['target/debug/build/fixture-hash/out']\\n\",",
-        "        )",
-        "        .unwrap();"
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 961,
-      "line_end": 965,
-      "text": [
-        "                .unwrap()",
-        "                .iter()",
-        "                .any(|entry| entry[\"path\"] == \"target/debug/build/fixture-hash/out\")",
-        "        );",
-        "        assert!("
-      ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "line_start": 972,
-      "line_end": 984,
-      "text": [
-        "            (",
-        "                \"habeas\",",
-        "                json!({\"file\":\"target/debug/build/fixture-hash/out/generated.rs\", \"line_start\":1}),",
-        "            ),",
-        "            (",
-        "                \"list_files\",",
-        "                json!({\"path\":\"target/debug/build/fixture-hash/out\"}),",
-        "            ),",
-        "            (",
-        "                \"ripgrep\",",
-        "                json!({\"path\":\"target/debug/build/fixture-hash/out\", \"pattern\":\"generated_needle\"}),",
-        "            ),",
-        "        ] {"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 165,
-      "line_end": 169,
-      "text": [
-        "",
-        "    // {impl}`requirements.ci.coverage`",
-        "    for (name, definition) in &definitions {",
-        "        if definition.kind != DefinitionKind::Term && !present.contains(name) {",
-        "            errors.push(format!("
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 904,
-      "line_end": 908,
-      "text": [
-        "            errors.push(format!(\"{label}: missing field {key:?}\"));",
-        "            None",
+        "    for (event, range) in Parser::new(content).into_offset_iter() {",
+        "        match event {",
+        "            Event::Start(Tag::CodeBlock(_)) => ranges.push(range),",
+        "            Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => ranges.push(range),",
+        "            _ => {}",
         "        }",
         "    }",
-        "}"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 975,
-      "line_end": 979,
-      "text": [
-        "            continue;",
-        "        }",
-        "        if target.is_some_and(|d| d.kind != DefinitionKind::Term) {",
-        "            by_definition",
-        "                .entry(reference.name.clone())"
-      ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "line_start": 1015,
-      "line_end": 1019,
-      "text": [
-        "            errors.push(format!(",
-        "                \"{}: example {name} has a true determination but no {{test}} reference\",",
-        "                display_path(root, &evidence_file)",
-        "            ));",
-        "        }"
-      ]
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "line_start": 314,
-      "line_end": 318,
-      "text": [
-        "                if !matches!(name.to_str(), Some(\".git\" | \"target\"))",
-        "                    && !(directory == root",
-        "                        && matches!(name.to_str(), Some(\"book\" | \"evidence\" | \"vendor\")))",
-        "                {",
-        "                    stack.push(path);"
-      ]
-    },
-    {
-      "file": "src/setup.rs",
-      "line_start": 37,
-      "line_end": 41,
-      "text": [
-        "fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {",
-        "    let table = book",
-        "        .get(\"book\")",
-        "        .map(|item| item.as_table_like().ok_or(\"book must be a table\"))",
-        "        .transpose()?;"
-      ]
-    },
-    {
-      "file": "src/lib.rs",
-      "line_start": 636,
-      "line_end": 666,
-      "text": [
+        "",
+        "    ranges",
+        "}",
+        "",
+        "// {impl}`requirements.references.markdown_literals`",
+        "fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {",
+        "    ranges",
+        "        .iter()",
         "        .any(|range| range.start <= position && position < range.end)",
         "}",
         "",
         "// {impl}`requirements.references.markdown_literals`",
-        "fn is_escaped(content: &str, position: usize) -> bool {",
-        "    content[..position]",
-        "        .bytes()",
+        "// {impl}`requirements.references.targets`",
+        "fn is_escaped(content: &str, position: usize) -> bool {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 652,
+      "line_end": 668,
+      "text": [
         "        .rev()",
         "        .take_while(|byte| *byte == b'\\\\')",
         "        .count()",
@@ -1966,36 +635,98 @@
         "                    .bytes()",
         "                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))",
         "        })",
-        "}",
+        "}"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 7,
+      "line_end": 11,
+      "text": [
         "",
-        "// {impl}`requirements.references.safe_badges`",
-        "fn escape_html(value: &str) -> String {",
-        "    let mut escaped = String::with_capacity(value.len());",
-        "    for character in value.chars() {",
-        "        match character {",
-        "            '&' => escaped.push_str(\"&amp;\"),"
+        "use super::access::SourceAccess;",
+        "use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};",
+        "use crate::inputs::{InputSelector, read_project_file};",
+        "use crate::{DefinitionKind, ReferenceKind};"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 61,
+      "line_end": 65,
+      "text": [
+        "        }];",
+        "",
+        "        for reference in crate::reference_roles(&subject.text, true) {",
+        "            if reference.kind == ReferenceKind::Term {",
+        "                continue;"
+      ]
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "line_start": 88,
+      "line_end": 92,
+      "text": [
+        "",
+        "        let mut errors = Vec::new();",
+        "        let references = collect_references(&root, &mut errors);",
+        "        if !errors.is_empty() {",
+        "            return Err(io::Error::other(errors.join(\"\\n\")));"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 222,
+      "line_end": 226,
+      "text": [
+        "    }",
+        "    let mut errors = Vec::new();",
+        "    let mut found = crate::evidence::collect_references(&sources.root, &mut errors);",
+        "    if !errors.is_empty() {",
+        "        return Err(io::Error::other(errors.join(\"\\n\")));"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 961,
-      "line_end": 967,
+      "line_start": 11,
+      "line_end": 15,
       "text": [
-        "    progress: &mut impl FnMut(InspectionProgress),",
+        "use crate::{",
+        "    DefinitionKind, ReferenceKind, chapter_namespace, definition_blocks, full_requirement_name,",
+        "    reference_roles, valid_name,",
+        "};",
+        ""
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 344,
+      "line_end": 348,
+      "text": [
+        "    for (name, definition) in &definitions {",
+        "        if definition.kind == DefinitionKind::Example",
+        "            && !reference_roles(&definition.text, true)",
+        "                .into_iter()",
+        "                .any(|reference| {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 931,
+      "line_end": 935,
+      "text": [
         ") {",
         "    let mut by_definition: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();",
         "    for reference in collect_references_with_progress(root, errors, progress) {",
         "        let target = definitions.get(&reference.name);",
-        "        if reference.kind == ReferenceKind::Term {",
-        "            if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {"
+        "        if reference.kind == ReferenceKind::Term {"
       ]
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 1043,
-      "line_end": 1055,
+      "line_start": 1018,
+      "line_end": 1028,
       "text": [
-        "}",
         "",
         "// {impl}`requirements.references.targets`",
         "pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {",
@@ -2006,62 +737,369 @@
         "// {impl}`requirements.authoring.progress`",
         "fn collect_references_with_progress(",
         "    root: &Path,",
-        "    errors: &mut Vec<String>,",
-        "    progress: &mut impl FnMut(InspectionProgress),"
+        "    errors: &mut Vec<String>,"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1107,
+      "line_end": 1111,
+      "text": [
+        "        }",
+        "        let markdown = file.extension().is_some_and(|extension| extension == \"md\");",
+        "        for role in reference_roles(&content, markdown) {",
+        "            let line = content[..role.start]",
+        "                .bytes()"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 345,
+      "line_end": 349,
+      "text": [
+        "    let mut cursor = 0;",
+        "",
+        "    for reference in reference_roles(content, true) {",
+        "        result.push_str(&content[cursor..reference.start]);",
+        "        if let Some(target) = definitions.get(reference.name) {"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 568,
+      "line_end": 572,
+      "text": [
+        "// {impl}`requirements.definitions.references`",
+        "// {impl}`requirements.definitions.declaration`",
+        "pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {",
+        "    let protected = if markdown {",
+        "        let mut ranges = protected_ranges(content);"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 688,
+      "line_end": 692,
+      "text": [
+        "    use super::{",
+        "        DefinitionKind, chapter_href, chapter_namespace, definition_blocks, preprocess_book,",
+        "        reference_roles, replace_definitions, shield_badge,",
+        "    };",
+        "    use mdbook_preprocessor::book::{Book, Chapter};"
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 759,
+      "line_end": 763,
+      "text": [
+        "        assert!(rendered.contains(\":::{req} bad name\"));",
+        "        assert!(rendered.contains(\"alt=\\\"req a&amp;b.good\\\"\"));",
+        "        assert!(reference_roles(\"{impl}`bad name`\", false).is_empty());",
+        "    }",
+        ""
+      ]
+    },
+    {
+      "file": "src/lib.rs",
+      "line_start": 858,
+      "line_end": 862,
+      "text": [
+        "        let example = [\"{\", \"cite}`missing.example`\"].concat();",
+        "        let content = format!(\":::{{req}} ready\\nSee {known}.\\n\\n```text\\n{example}\\n```\\n:::\");",
+        "        let references = reference_roles(&content, true);",
+        "        assert_eq!(references.len(), 1);",
+        "        assert_eq!(references[0].name, \"requirements.ready\");"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 9,
+      "line_end": 13,
+      "text": [
+        "",
+        "use crate::evidence::Declaration;",
+        "use crate::reference_roles;",
+        "",
+        "// {impl}`requirements.references.rust_function_coverage`"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 254,
+      "line_end": 258,
+      "text": [
+        "            continue;",
+        "        };",
+        "        if reference_roles(&source[comments[comment_index].clone()], false)",
+        "            .iter()",
+        "            .any(|role| {"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 5,
+      "line_end": 9,
+      "text": [
+        "use crate::evidence::Declaration;",
+        "use crate::inputs::InputSelector;",
+        "use crate::{DefinitionKind, ReferenceKind, reference_roles};",
+        "",
+        "// {impl}`requirements.definitions.declaration`"
+      ]
+    },
+    {
+      "file": "src/terms.rs",
+      "line_start": 35,
+      "line_end": 39,
+      "text": [
+        "fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {",
+        "    names.extend(",
+        "        reference_roles(text, markdown)",
+        "            .into_iter()",
+        "            .filter(|r| r.kind == ReferenceKind::Term)"
       ]
     },
     {
       "file": "src/authoring/access.rs",
-      "line_start": 569,
-      "line_end": 579,
+      "line_start": 284,
+      "line_end": 290,
       "text": [
-        "",
-        "    // {test}`requirements.authoring.credentials`",
-        "    // {test}`requirements.configuration.evidence_paths`",
-        "    // {test}`requirements.authoring.read_denial`",
+        "fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {",
+        "    let mut has_git_marker = false;",
+        "    for directory in root.ancestors() {",
+        "        match fs::symlink_metadata(directory.join(\".git\")) {",
+        "            Ok(_) => {",
+        "                has_git_marker = true;",
+        "                break;"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 484,
+      "line_end": 490,
+      "text": [
+        "        fs::write(root.path().join(\"source.txt\"), \"source\\n\").unwrap();",
+        "        git(root.path(), &[\"init\", \"--quiet\"]);",
+        "        git(root.path(), &[\"add\", \".\"]);",
+        "        fs::write(root.path().join(\".git/index\"), \"invalid index\\n\").unwrap();",
+        "        let error = SourceAccess::load(root.path()).err().unwrap();",
+        "        assert!(",
+        "            error.to_string().contains(\"cannot read Git index\"),"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 496,
+      "line_end": 502,
+      "text": [
         "    #[test]",
-        "    fn workspace_credentials_are_excluded_unless_explicitly_allowed() {",
+        "    fn empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree() {",
+        "        let parent = tempfile::tempdir().unwrap();",
+        "        fs::create_dir(parent.path().join(\".git\")).unwrap();",
+        "        let root = parent.path().join(\"project\");",
+        "        fs::create_dir(&root).unwrap();",
+        "        fs::write(root.join(\"source.txt\"), \"source\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "line_start": 512,
+      "line_end": 518,
+      "text": [
+        "    fn invalid_git_configuration_does_not_fall_back_to_untracked_access() {",
         "        let root = tempfile::tempdir().unwrap();",
-        "        let config = \"version = 1\\n[authoring.configs.local]\\nbackend = 'ollama'\\nmodel = 'fixture'\\napi_key = 'TEST_KEY'\\n\";",
-        "        fs::write(root.path().join(\"habeas.toml\"), config).unwrap();",
-        "        let access = SourceAccess::load(root.path()).unwrap();",
-        "        let error = access"
+        "        git(root.path(), &[\"init\", \"--quiet\"]);",
+        "        fs::write(root.path().join(\".git/config\"), \"[invalid config\\n\").unwrap();",
+        "        let error = SourceAccess::load(root.path()).err().unwrap();",
+        "        assert!(",
+        "            error.to_string().contains(\"cannot discover Git worktree\"),"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 505,
-      "line_end": 515,
+      "line_start": 43,
+      "line_end": 49,
       "text": [
-        "",
-        "    // {test}`requirements.authoring.source_tools`",
-        "    // {test}`requirements.authoring.file_discovery`",
-        "    // {test}`requirements.authoring.text_search`",
-        "    #[test]",
-        "    fn generated_evidence_is_excluded_from_reads_search_and_discovery() {",
-        "        let root = project();",
-        "        fs::create_dir(root.path().join(\"evidence\")).unwrap();",
-        "        fs::create_dir(root.path().join(\"src/evidence\")).unwrap();",
-        "        fs::write(",
-        "            root.path().join(\"evidence/old.json\"),"
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"default\":\".\"}},\"additionalProperties\":false}",
+        "        }),",
+        "        json!({",
+        "            \"name\":\"ripgrep\", \"description\":\"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged, recorded as file-range evidence, and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when Git ignores them. Workspace disallow rules win; denied explicit requests abort the assessment.\",",
+        "            \"parameters\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"default\":\".\"},\"context\":{\"type\":\"integer\",\"minimum\":0,\"default\":5}},\"required\":[\"pattern\"],\"additionalProperties\":false}",
+        "        }),",
+        "        json!({"
       ]
     },
     {
       "file": "src/authoring/tools.rs",
-      "line_start": 632,
-      "line_end": 642,
+      "line_start": 326,
+      "line_end": 334,
       "text": [
-        "    // {test}`requirements.authoring.source_tools`",
-        "    // {test}`requirements.authoring.file_discovery`",
-        "    // {test}`requirements.authoring.text_search`",
-        "    #[cfg(unix)]",
-        "    #[test]",
-        "    fn outside_symlinks_are_excluded_from_reads_search_and_discovery() {",
+        "        walker",
+        "            .hidden(!include_ignored)",
+        "            .ignore(!include_ignored)",
+        "            .git_ignore(!include_ignored)",
+        "            .git_global(!include_ignored)",
+        "            .git_exclude(!include_ignored)",
+        "            .parents(!include_ignored)",
+        "            .add_custom_ignore_filename(\".rgignore\");",
+        "        walker.build_parallel().run(|| {"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 579,
+      "line_end": 585,
+      "text": [
+        "    fn search_merges_context_windows_and_respects_ignore_rules() {",
         "        let root = project();",
-        "        let outside = tempfile::tempdir().unwrap();",
-        "        fs::write(outside.path().join(\"secret.rs\"), \"fn outside_needle() {}\\n\").unwrap();",
-        "        std::os::unix::fs::symlink(outside.path(), root.path().join(\"outside\")).unwrap();",
-        "        std::os::unix::fs::symlink("
+        "        git(root.path(), &[\"init\", \"--quiet\"]);",
+        "        fs::write(root.path().join(\".gitignore\"), \"ignored.txt\\n\").unwrap();",
+        "        fs::write(root.path().join(\"ignored.txt\"), \"needle\\n\").unwrap();",
+        "        fs::write(root.path().join(\".hidden.txt\"), \"needle\\n\").unwrap();",
+        "        let lines = (1..=20)"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 949,
+      "line_end": 955,
+      "text": [
+        "        )",
+        "        .unwrap();",
+        "        fs::write(external.path().join(\"outside.txt\"), \"needle external\\n\").unwrap();",
+        "        fs::write(root.path().join(\".gitignore\"), \"generated/\\n\").unwrap();",
+        "        git(root.path(), &[\"init\", \"--quiet\"]);",
+        "        git(root.path(), &[\"add\", \".\"]);",
+        "        let external_toml = toml::Value::String(external.path().display().to_string());"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1021,
+      "line_end": 1027,
+      "text": [
+        "            \"version = 4\\n\\n[[package]]\\nname = 'fixture'\\nversion = '0.1.0'\\n\",",
+        "        )",
+        "        .unwrap();",
+        "        fs::write(root.path().join(\".gitignore\"), \"target/\\n\").unwrap();",
+        "        git(root.path(), &[\"init\", \"--quiet\"]);",
+        "        git(root.path(), &[\"add\", \".\"]);",
+        "        let unbuilt = AssessmentSources::prepare(root.path(), \"requirements.ready\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "line_start": 1033,
+      "line_end": 1039,
+      "text": [
+        "            )",
+        "            .is_ok()",
+        "        );",
+        "        assert!(!root.path().join(\"target\").exists());",
+        "        let out = root.path().join(\"target/debug/build/fixture-hash/out\");",
+        "        fs::create_dir_all(&out).unwrap();",
+        "        fs::write(out.join(\"generated.rs\"), \"pub fn generated_needle() {}\\n\").unwrap();"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 207,
+      "line_end": 213,
+      "text": [
+        "    let source = match fs::read_to_string(&path) {",
+        "        Ok(content) => match content.parse::<DocumentMut>() {",
+        "            Ok(book) => {",
+        "                let table = match book.get(\"book\") {",
+        "                    Some(item) => match item.as_table_like() {",
+        "                        Some(table) => Some(table),",
+        "                        None => {"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "line_start": 1072,
+      "line_end": 1078,
+      "text": [
+        "                let excluded = directory == root",
+        "                    && matches!(",
+        "                        entry.file_name().to_str(),",
+        "                        Some(\".git\" | \"target\" | \"book\" | \"evidence\")",
+        "                    );",
+        "                if !excluded {",
+        "                    stack.push(path);"
+      ]
+    },
+    {
+      "file": "src/index.rs",
+      "line_start": 37,
+      "line_end": 43,
+      "text": [
+        "    // {impl}`requirements.index.source_links`",
+        "    fn from_config(config: &Config) -> io::Result<Option<Self>> {",
+        "        let repository = config",
+        "            .get::<String>(\"output.html.git-repository-url\")",
+        "            .map_err(io::Error::other)?;",
+        "        let edit_template = config",
+        "            .get::<String>(\"output.html.edit-url-template\")"
+      ]
+    },
+    {
+      "file": "src/main.rs",
+      "line_start": 59,
+      "line_end": 65,
+      "text": [
+        "        command: HookCommand,",
+        "    },",
+        "    #[command(",
+        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\"])),",
+        "        group(ArgGroup::new(\"mode\").required(true).multiple(false).args([\"file_range\", \"rust_item\", \"requirements\"]))",
+        "    )]",
+        "    AddInput {"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 311,
+      "line_end": 319,
+      "text": [
+        "            };",
+        "            if kind.is_dir() {",
+        "                let name = entry.file_name();",
+        "                if !matches!(name.to_str(), Some(\".git\" | \"target\"))",
+        "                    && !(directory == root",
+        "                        && matches!(name.to_str(), Some(\"book\" | \"evidence\" | \"vendor\")))",
+        "                {",
+        "                    stack.push(path);",
+        "                }"
+      ]
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "line_start": 540,
+      "line_end": 546,
+      "text": [
+        "        fs::create_dir_all(project.path().join(\"src\")).unwrap();",
+        "        fs::create_dir_all(project.path().join(\"src/evidence\")).unwrap();",
+        "        fs::create_dir_all(project.path().join(\"tests\")).unwrap();",
+        "        fs::create_dir_all(project.path().join(\"target\")).unwrap();",
+        "        fs::create_dir_all(project.path().join(\"evidence\")).unwrap();",
+        "        fs::write(project.path().join(\"src/lib.rs\"), \"fn uncited() {}\\n\").unwrap();",
+        "        fs::write("
+      ]
+    },
+    {
+      "file": "src/setup.rs",
+      "line_start": 36,
+      "line_end": 42,
+      "text": [
+        "// {impl}`requirements.integration.symposium_setup_hook`",
+        "fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {",
+        "    let table = book",
+        "        .get(\"book\")",
+        "        .map(|item| item.as_table_like().ok_or(\"book must be a table\"))",
+        "        .transpose()?;",
+        "    match table.and_then(|table| table.get(\"src\")) {"
       ]
     }
   ]

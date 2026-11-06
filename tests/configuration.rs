@@ -265,6 +265,7 @@ model = "explicit:tag"
 }
 
 // {test}`requirements.configuration.loading`
+// {test}`requirements.authoring.configuration_serialization`
 // {test}`requirements.authoring.configuration_storage`
 #[test]
 fn invalid_schema_and_feature_values_report_the_configuration_path() {
@@ -292,6 +293,7 @@ fn invalid_schema_and_feature_values_report_the_configuration_path() {
 }
 
 // {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.credentials`
 // {test}`requirements.configuration.serialization`
 #[test]
 fn ollama_authentication_resolves_separately_and_rejects_missing_values() {
@@ -319,6 +321,8 @@ fn ollama_authentication_resolves_separately_and_rejects_missing_values() {
 }
 
 // {test}`requirements.configuration.workspace_location`
+// {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.configuration.workspace_structure`
 // {test}`requirements.configuration.loading`
 // {test}`requirements.configuration.serialization`
@@ -414,6 +418,7 @@ fn evidence_configuration_ignores_unused_authoring_settings_and_detects_credenti
 }
 
 // {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.authoring.configuration`
 // {test}`requirements.authoring.configuration_precedence`
 // {test}`requirements.authoring.configuration_storage`
 // {test}`requirements.configuration.serialization`
@@ -524,6 +529,7 @@ fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
 // {test}`requirements.authoring.configuration_serialization`
 // {test}`requirements.configuration.serialization`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.authoring.configuration_structure`
 #[test]
 fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
     let path = Path::new("habeas.toml");

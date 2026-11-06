@@ -195,6 +195,7 @@ fn fixme_fixture() -> TempDir {
 }
 
 // {test}`requirements.configuration.workspace_location`
+// {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.configuration.workspace_structure`
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.deterministic_validation`
@@ -422,7 +423,6 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
 
 // {test}`requirements.cli.status`
 // {test}`requirements.references.rust_function_coverage`
-// {test}`requirements.references.rust_function_attestations`
 // {test}`requirements.references.definition_globs`
 #[test]
 fn status_preserves_repository_wide_rust_findings_in_every_form() {
@@ -451,10 +451,7 @@ fn status_preserves_repository_wide_rust_findings_in_every_form() {
                 ),
                 "{args:?}: {text}"
             );
-            assert!(
-                text.contains("src/main.rs:1 fn[main]: missing Rust function attestation file"),
-                "{args:?}: {text}"
-            );
+            assert!(!text.contains("attestation"), "{args:?}: {text}");
         }
     }
 }
@@ -630,6 +627,7 @@ fn status_tables_align_each_column_to_its_widest_cell() {
 }
 
 // {test}`requirements.cli.add_input`
+// {test}`requirements.ci.input_containment`
 // {test}`requirements.cli.add_input_file_range`
 // {test}`requirements.cli.add_input_rust_item`
 // {test}`requirements.configuration.evidence_paths`
@@ -698,55 +696,83 @@ fn add_input_external_sources_respect_allow_and_disallow() {
     }
 }
 
-// {test}`requirements.cli.add_input`
-// {test}`requirements.references.rust_function_attestations`
-// {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.cli.status`
+// {test}`requirements.cli.info`
+// {test}`requirements.cli.definition_glob_search`
 #[test]
-fn add_input_rejects_external_function_targets_without_creating_sidecars() {
+fn status_and_info_accept_a_definition_selection() {
     let temp = fixture();
-    let external = TempDir::new().unwrap();
-    let source = external.path().join("source.rs");
-    fs::write(&source, "pub fn external() {}\n").unwrap();
-    let allowed = toml::Value::String(external.path().display().to_string());
-    fs::write(
-        temp.path().join("habeas.toml"),
-        format!("version = 1\n[evidence]\nallow = [{allowed}]\n"),
-    )
-    .unwrap();
-    let mut targets = vec![source.clone()];
-    #[cfg(unix)]
-    {
-        let alias = temp.path().join("external.rs");
-        std::os::unix::fs::symlink(&source, &alias).unwrap();
-        targets.push(alias);
-    }
-    for target in targets {
-        let output = habeas(
-            temp.path(),
-            &[
-                "add-input",
-                "--for-rust-item",
-                target.to_str().unwrap(),
-                "fn[external]",
-                "--requirements",
-                "requirements.absent",
-            ],
-        );
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        let error = String::from_utf8_lossy(&output.stderr);
+    for (command, usage) in [("status", "[SELECTION]"), ("info", "<SELECTION>")] {
+        let help = habeas(temp.path(), &[command, "--help"]);
+        assert!(help.status.success(), "{help:?}");
+        let help = String::from_utf8(help.stdout).unwrap();
+        assert!(help.contains(usage), "{help}");
         assert!(
-            error.contains("function attestation target must be inside the repository"),
-            "{error}"
+            help.contains("A full requirement or example name, or a definition glob"),
+            "{help}"
         );
-        assert!(error.contains(target.to_str().unwrap()), "{error}");
-        assert!(!error.contains("panicked"), "{error}");
     }
-    assert!(!temp.path().join("evidence/rust").exists());
-    assert!(!source.with_extension("rs.json").exists());
-    assert_eq!(fs::read_dir(external.path()).unwrap().count(), 1);
+    let status = habeas(temp.path(), &["status", "requirements.c*", "--all"]);
+    assert!(status.status.success(), "{status:?}");
+    let status = String::from_utf8(status.stdout).unwrap();
+    assert!(
+        status.contains("| `requirements.case` (example)"),
+        "{status}"
+    );
+    assert!(!status.contains("| `requirements.ready`"), "{status}");
+    let info = habeas(temp.path(), &["info", "requirements.case"]);
+    assert!(info.status.success(), "{info:?}");
+    let info = String::from_utf8(info.stdout).unwrap();
+    assert!(info.starts_with("# `requirements.case`\n"), "{info}");
+    assert!(!info.contains("# `requirements.ready`"), "{info}");
 }
 
 // {test}`requirements.cli.add_input`
+#[test]
+fn add_input_rejects_function_targets_without_creating_evidence() {
+    let temp = fixture();
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "// IMPL`requirements.ready`\npub fn run() {}\n".replace("IMPL", "{impl}"),
+    )
+    .unwrap();
+    let before = fs::read_dir(temp.path().join("evidence"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<std::collections::BTreeSet<_>>();
+    let output = habeas(
+        temp.path(),
+        &[
+            "add-input",
+            "--for-rust-item",
+            "src/lib.rs",
+            "fn[run]",
+            "--requirements",
+            "requirements.ready",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("--for-rust-item"), "{error}");
+    assert!(!error.contains("panicked"), "{error}");
+    let after = fs::read_dir(temp.path().join("evidence"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(before, after);
+    assert!(!temp.path().join("evidence/rust").exists());
+
+    let help = habeas(temp.path(), &["add-input", "--help"]);
+    assert!(help.status.success(), "{help:?}");
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(!help.contains("--for-rust-item"), "{help}");
+    assert!(help.contains("--for-requirement"), "{help}");
+    assert!(help.contains("--for-example"), "{help}");
+    assert!(help.contains("--requirements <selection>"), "{help}");
+}
+
+// {test}`requirements.cli.add_input`
+// {test}`requirements.cli.info`
 // {test}`requirements.cli.add_input_file_range`
 // {test}`requirements.cli.add_input_rust_item`
 // {test}`requirements.cli.add_input_requirements`
@@ -858,54 +884,19 @@ fn add_input_modes_capture_raw_sources_and_refresh_idempotently() {
         ],
     );
     assert!(output.status.success(), "{output:?}");
-
-    let output = habeas(
-        temp.path(),
-        &[
-            "add-input",
-            "--for-rust-item",
-            "src/main.rs",
-            "fn[main]",
-            "--requirements",
-            "rules.*",
-        ],
-    );
-    assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("rules.case, rules.ready"), "{stdout}");
-    assert!(stdout.contains("remains pending"), "{stdout}");
-    let output = habeas(
-        temp.path(),
-        &[
-            "add-input",
-            "--for-rust-item",
-            "src/main.rs",
-            "fn[main]",
-            "--rust-item",
-            "src/main.rs:4",
-        ],
-    );
-    assert!(output.status.success(), "{output:?}");
-    let attestation: serde_json::Value = serde_json::from_slice(
-        &fs::read(temp.path().join("evidence/rust/src/main.rs.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(attestation["functions"][0]["determination"], false);
-    assert_eq!(
-        attestation["functions"][0]["citations"],
-        json!([{"role": "impl", "name": "rules.ready"}])
-    );
-    assert_eq!(
-        attestation["functions"][0]["inputs"]
-            .as_array()
+    let requirement: serde_json::Value =
+        serde_json::from_slice(&fs::read(&requirement_path).unwrap()).unwrap();
+    assert_eq!(requirement["determination"], false);
+    assert!(
+        requirement["rationale"]
+            .as_str()
             .unwrap()
-            .len(),
-        3
+            .contains("Review pending"),
+        "{requirement}"
     );
-    assert_eq!(
-        attestation["functions"][0]["inputs"][0]["matches"],
-        json!(["rules.case", "rules.ready"])
-    );
+    assert!(!temp.path().join("evidence/rust").exists());
     let detail = habeas(temp.path(), &["info", "rules.ready"]);
     assert!(detail.status.success(), "{detail:?}");
     let detail = String::from_utf8(detail.stdout).unwrap();

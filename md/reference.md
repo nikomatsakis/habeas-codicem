@@ -16,18 +16,18 @@ The chapter path is part of the requirement's name, so this one is `requirements
 
 ## Examples
 
-An example is a separate named definition for a concrete case. State the situation, action, and expected result, and cite the requirement it illustrates. This book contains a working example:
+An example is a separate named definition for a concrete case. State the situation, action, and expected result, and reference the requirement it illustrates: `{cite}` makes the requirement context for the example's own assessment, while `{test}` makes the example part of the requirement's assessment. An example may use both. This book contains a working example:
 
 :::{example} cli.unknown_command
 Running `habeas unknown` fails with a nonzero exit status and prints a usage message. {cite}`requirements.cli.invocation`
 :::
 
-Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The authoring harness records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the citations are current; the rationale explains why the tests are adequate.
+Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_with_usage` integration test targets it with `{test}` followed by the backtick-delimited full name. The authoring harness records `evidence/reference.cli.unknown_command.json`, including the example's exact body, test source lines, and a rationale explaining how the test covers the case. A passing validation check confirms the references are current; the rationale explains why the tests are adequate.
 
 ## Evidence
 
-Run `habeas author --all` to create and refresh evidence for requirements, examples,
-and Rust function attestations. The harness writes `evidence/requirements.check.json`
+Run `habeas author --all` to create and refresh evidence for requirements and
+examples. The harness writes `evidence/requirements.check.json`
 for the requirement above and `evidence/reference.cli.unknown_command.json` for the
 example. Each requirement or example evidence file records four fields:
 
@@ -36,10 +36,16 @@ example. Each requirement or example evidence file records four fields:
 | `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |
 | `determination` | `true`, `false`, or `{"FIXME": ["#125"]}` for explicitly documented gaps. |
 | `rationale` | A Markdown explanation of that judgment. |
-| `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or glob of definitions. |
+| `inputs` | Source snapshots supporting it. Inputs may select a file range, Rust item, or definition selection. |
 
-For a requirement, the model reviews whether the cited code implements its stated obligations
-and whether tests cover the interesting design cases. If there are no tests,
+For a requirement, the model reviews whether the code marked `{impl}` implements its
+stated obligations completely and exactly, and whether tests cover the interesting
+design cases. It also checks that the implementation is marked completely: code
+that implements part of the requirement without `{impl}`, including code that only
+cites it, is a gap, as is behavior in the `{impl}` code that neither this nor
+another definition implemented there specifies. When another requirement
+implements part of the subject, the review checks only that its text carries out
+that part; that requirement is assessed separately. If there are no tests,
 its rationale explains why the logic is simple enough to need none or testing is impractical.
 For an example, the model reviews whether tests cover its scenario and expected outcomes;
 a true judgment requires a covered `{test}` reference. The assessment concerns
@@ -74,22 +80,24 @@ determination false until the authoring harness reassesses it.
 ```sh
 habeas add-input --for-requirement requirements.ci.inputs --file-range src/evidence.rs:1-20
 habeas add-input --for-example reference.cli.unknown_command --rust-item tests/cli.rs:26
-habeas add-input --for-rust-item src/evidence.rs 'fn[validate_repository]' --requirements 'requirements.ci.*'
+habeas add-input --for-requirement requirements.ci.inputs --requirements 'requirements.ci.*'
 ```
 
-The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements glob includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`
+The `--rust-item <file>:<line>` mode selects all explicit Rust items declared on that line. A named item is declared where its name appears; an unnamed item is declared where its keyword appears. Rust-item snapshots include attached comments, doc comments, and attributes. Moving unchanged lines earlier or later in the file does not stale the snapshot. A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_file_range` {cite}`requirements.cli.add_input_rust_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.rust_item_inputs` {cite}`requirements.ci.requirements_inputs`
 
-Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference.
+Habeas checks that every requirement and example has evidence, that every evidence file names a definition, and that recorded text and input lines still match the repository. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`
 
 ## Authoring evidence with a model
 
-`habeas author --all` fills in missing or stale evidence and reassesses invalid or
-false records. It includes requirements, examples, and Rust function attestations,
-preserving current accepted evidence, including FIXME judgments. Each assessment
+`habeas author --all` fills in missing, stale, or invalid evidence for
+requirements and named examples. It preserves current records, including FIXME
+judgments and current false judgments. A false judgment is reassessed when its
+subject or inputs change, or when you name it with `habeas author <full-name>`.
+Each assessment
 gets its own conversation and usage record. Successful results are kept if
 another assessment fails; the command reports failures and exits unsuccessfully.
 A completed false judgment is saved and remains a validation failure.
-{cite}`requirements.authoring.batch` {cite}`requirements.authoring.function_attestations`
+{cite}`requirements.authoring.batch`
 
 In a terminal, inspection shows a progress bar for each phase once its amount of
 work is known, with a phase label and completed/total checks. Discovery uses a
@@ -122,11 +130,16 @@ because waiting cannot make that request fit. {cite}`requirements.authoring.prov
 
 `habeas author <full-name>` assesses one requirement or example, records the
 source inputs delivered to the model, and writes its judgment to the usual
-evidence file. `author-evidence` remains an alias. Install `rg` (ripgrep) on your PATH for the model's search tool.
+evidence file. `author-evidence` remains an alias. The model can read sources
+with `habeas`, list files, search them with ripgrep (built in; no `rg` executable
+is needed), and use `references` to list definition names or every `{impl}`,
+`{cite}`, and `{test}` site for a definition selection. Listings, searches, and
+reference lookups are not recorded as evidence.
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
 {cite}`requirements.authoring.text_search`
+{cite}`requirements.authoring.reference_index`
 
 In a Git worktree, stage new source files with `git add` before authoring. The
 model can read unstaged edits to tracked files. By default, reads exclude untracked files,
@@ -178,7 +191,7 @@ Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
 relative. On Windows, use `%APPDATA%/habeas/config.toml`. This file is user-local
 and is not part of the project. Here is a complete configuration with two choices:
 {cite}`requirements.configuration.user_location`
-{cite}`requirements.authoring.configuration_documentation`
+{impl}`requirements.authoring.configuration_documentation`
 
 ```toml
 version = 1
@@ -259,7 +272,7 @@ inference options go under `[authoring.configs.<name>.options]`; supported keys
 depend on the provider, and cannot replace the model, prompt, or tools. See the
 [configuration reference](requirements/authoring.md#configuration) for the full
 format. {cite}`requirements.authoring.configuration_storage`
-{cite}`requirements.authoring.configuration_documentation`
+{impl}`requirements.authoring.configuration_documentation`
 
 Bedrock runs assessments concurrently by default, using the available logical CPU
 count. Ollama runs one at a time. Override either default with a positive
@@ -344,19 +357,24 @@ Source files and book chapters can mark lines as implementing, citing, or testin
 {test}`reference.cli.unknown_command`
 ```
 
-Each reference must name an existing requirement or example. Its evidence must include an input covering the line with the reference. In the book, references and definitions become linked badges.
+Each reference must name an existing requirement or example and is a directed edge between its source and that definition. Choose the role by what the source does:
 
-For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example cites a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit project requirement such as `internal-detail` and provide evidence explaining why it adds no otherwise unspecified user-visible behavior.
+- `{impl}`: the source implements part of the definition. It makes a decision, performs a check, produces an output, or handles a case the definition specifies. Calling code that implements a definition, or producing a result a caller uses to meet it, is not implementing it. A requirement that refines another requirement's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.
+- `{test}`: the source is designed to verify behavior the definition specifies, either a test through its scenario and assertions, or a named example through its concrete case.
+- `{cite}`: the source relies on, supports, or refers to the definition without implementing or testing it.
+
+Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.
+{cite}`requirements.references.targets` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
+
+For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_function_coverage` {cite}`requirements.cli.internal_detail_guidance`
 
 Rust-item selectors use syntactic ancestry within one repository-relative file. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `fn[outer]/fn[inner]`, and positional `use#1`. Duplicate sibling names gain `#1`, `#2`, and so on. Delimiter characters and whitespace within names or impl types use percent-encoded UTF-8 bytes, so spelling can be recovered without resolving modules across files. {cite}`requirements.references.rust_item_selectors`
 
-Each Rust function also needs an attestation in `evidence/rust/<rust_file>.json`, with a `rust_file` field and a `functions` array. Every entry has `rust_item`, a `citations` array of `{ "role": "impl", "name": "requirements.some_name" }` objects, a boolean `determination`, `rationale`, and `inputs`. This determination assesses citation coverage; FIXME applies to requirement and example judgments. It needs one Rust-item input for that function and at least one requirements input covering every cited definition. The agent must review the whole function and relevant definitions, then explain why its citations include *every applicable* requirement or named example and how those texts account for its behavior together. A matching snapshot alone is insufficient. {cite}`requirements.references.rust_function_attestations` {cite}`requirements.cli.function_attestation_guidance`
-
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered references, and uncited Rust functions. Validation accepts true and FIXME judgments for requirements and examples when all other evidence checks pass; Rust function attestations still require true. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
-Run `habeas status [<glob>]` from within the project to list requirements and named
+Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are
 summarized by issue, for example:
 
@@ -376,10 +394,10 @@ URLs are also recognized. Groups with the most affected judgments come first.
 Use `--verbose` to list the actual judgments in each group, with their full names,
 kinds, and recorded FIXME strings. `--all` shows every matching definition and its
 evidence state. Stale or invalid FIXME evidence still reports its validation
-findings. Use `habeas info <glob>` to print matching detail pages as Markdown,
+findings. Use `habeas info <selection>` to print matching detail pages as Markdown,
 including current texts, rationales, inputs, FIXME references, and findings. Both
-commands match whole full names; `*` can span any number of characters, including
-dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`
+commands take a definition selection: a full name selects exactly that definition,
+and in a glob `*` can span any number of characters, including dots. {cite}`requirements.cli.status` {cite}`requirements.cli.info`
 {cite}`requirements.references.definition_globs`
 
 ```sh
@@ -439,10 +457,10 @@ Evidence includes each referenced definition as a separate input:
 `habeas add-input` automatically captures definitions referenced by the target's
 requirement or example text and its reviewed inputs. It follows references between
 definitions until no new definitions are found; cycles are allowed, and each
-definition appears once. Existing requirements globs still select only requirements
-and examples. Their referenced definitions are captured regardless of name.
+definition appears once. A requirements input's selection still selects only
+requirements and examples. Their referenced definitions are captured regardless of name.
 
 Changing a definition's phrase or body invalidates its snapshots. Refreshing inputs
 leaves the evidence pending reassessment. Validation reports missing or stale
 snapshots without modifying them. A term link does not replace a function's required
-requirement or example citations.
+requirement or example reference.

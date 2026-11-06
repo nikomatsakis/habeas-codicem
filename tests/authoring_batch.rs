@@ -105,7 +105,6 @@ impl Drop for Server {
 
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
-// {test}`requirements.authoring.function_attestations`
 // {test}`requirements.authoring.read_denial`
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.reporting`
@@ -258,7 +257,6 @@ struct Fixture {
 
 impl Fixture {
     // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.function_attestations`
     // {test}`requirements.authoring.concurrency`
     fn new(endpoint: &str, concurrency: Option<usize>) -> Self {
         let temp = tempfile::tempdir().unwrap();
@@ -283,8 +281,8 @@ impl Fixture {
             "# Summary\n\n- [Requirements](requirements.md)\n",
         )
         .unwrap();
-        fs::write(project.join("md/requirements.md"), ":::{req} alpha\nalpha MUST return one.\n:::\n\n:::{req} beta\nbeta MUST return two.\n:::\n\n:::{example} alpha_case\nCalling alpha returns one. CITE`requirements.alpha`\n:::\n".replace("CITE", "{cite}")).unwrap();
-        fs::write(project.join("src/lib.rs"), "// IMPL`requirements.alpha`\npub fn alpha() -> u8 { 1 }\n\n// IMPL`requirements.beta`\npub fn beta() -> u8 { 2 }\n\n// TEST`requirements.alpha_case`\n#[test]\nfn alpha_case() { assert_eq!(alpha(), 1); }\n".replace("IMPL", "{impl}").replace("TEST", "{test}")).unwrap();
+        fs::write(project.join("md/requirements.md"), ":::{req} alpha\nalpha MUST return one.\n:::\n\n:::{req} beta\nbeta MUST return two.\n:::\n\n:::{example} alpha_case\nCalling alpha returns one. CITE`requirements.alpha`\n:::\n\n:::{req} delta\ndelta MUST return four.\n:::\n\n:::{req} gamma\ngamma MUST return three.\n:::\n\n:::{example} gamma_case\nCalling gamma returns three. CITE`requirements.gamma`\n:::\n".replace("CITE", "{cite}")).unwrap();
+        fs::write(project.join("src/lib.rs"), "// IMPL`requirements.alpha`\npub fn alpha() -> u8 { 1 }\n\n// IMPL`requirements.beta`\npub fn beta() -> u8 { 2 }\n\n// TEST`requirements.alpha_case`\n#[test]\nfn alpha_case() { assert_eq!(alpha(), 1); }\n\n// IMPL`requirements.gamma`\npub fn gamma() -> u8 { 3 }\n\n// IMPL`requirements.delta`\npub fn delta() -> u8 { 4 }\n\n// TEST`requirements.gamma_case`\n#[test]\nfn gamma_case() { assert_eq!(gamma(), 3); }\n".replace("IMPL", "{impl}").replace("TEST", "{test}")).unwrap();
         let mut config_text = format!(
             "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\nbackend = 'ollama'\nmodel = 'fixture-model'\nendpoint = '{endpoint}'\n"
         );
@@ -412,23 +410,11 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
     }
 
     // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.function_attestations`
     fn evidence(&self, name: &str) -> Value {
         serde_json::from_slice(
             &fs::read(self.project.join(format!("evidence/{name}.json"))).unwrap(),
         )
         .unwrap()
-    }
-
-    // {test}`requirements.authoring.function_attestations`
-    fn function(&self, selector: &str) -> Value {
-        self.evidence("rust/src/lib.rs")["functions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["rust_item"] == selector)
-            .expect("function attestation")
-            .clone()
     }
 
     // {test}`requirements.authoring.usage_storage`
@@ -447,7 +433,6 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
 }
 
 // {test}`requirements.authoring.batch`
-// {test}`requirements.authoring.function_attestations`
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.ci.determination`
@@ -474,8 +459,7 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     assert_eq!(server.subjects().len(), 6);
     let report = habeas::validate_repository(&fixture.project).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    let entries = fixture.evidence("rust/src/lib.rs");
-    assert_eq!(entries["functions"].as_array().unwrap().len(), 3);
+    assert!(!fixture.project.join("evidence/rust").exists());
     let mut beta = fixture.evidence("requirements.beta");
     beta["determination"] = json!({"FIXME":["#123"]});
     beta["rationale"] = "The source explicitly acknowledges the missing beta test.".into();
@@ -485,8 +469,8 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     )
     .unwrap();
     let example = fixture.evidence("requirements.alpha_case");
-    let beta_function = fixture.function("fn[beta]");
-    let test_function = fixture.function("fn[alpha_case]");
+    let gamma = fixture.evidence("requirements.gamma");
+    let gamma_case = fixture.evidence("requirements.gamma_case");
     let usage = fixture.usage();
     assert_eq!(usage.len(), 6);
     assert!(
@@ -548,12 +532,20 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
         "{}",
         String::from_utf8_lossy(&updated.stderr)
     );
-    assert_eq!(server.subjects().len(), 8);
-    assert_eq!(fixture.usage().len(), 8);
+    assert_eq!(server.subjects().len(), 7);
+    assert_eq!(
+        server.subjects().last().unwrap(),
+        "requirement requirements.alpha"
+    );
+    assert_eq!(fixture.usage().len(), 7);
+    assert_eq!(
+        String::from_utf8_lossy(&updated.stdout).trim(),
+        "1 authored; 5 unchanged; 0 failed"
+    );
     assert_eq!(fixture.evidence("requirements.beta"), beta);
     assert_eq!(fixture.evidence("requirements.alpha_case"), example);
-    assert_eq!(fixture.function("fn[beta]"), beta_function);
-    assert_eq!(fixture.function("fn[alpha_case]"), test_function);
+    assert_eq!(fixture.evidence("requirements.gamma"), gamma);
+    assert_eq!(fixture.evidence("requirements.gamma_case"), gamma_case);
     let report = habeas::validate_repository(&fixture.project).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
@@ -575,6 +567,7 @@ fn ollama_batches_are_serial_by_default() {
 }
 
 // {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.reporting`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.progress`
 #[test]
@@ -598,11 +591,8 @@ fn failed_assessment_keeps_other_results_and_reports_failure() {
         true
     );
     assert_eq!(
-        fixture.evidence("rust/src/lib.rs")["functions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        fixture.evidence("requirements.gamma")["determination"],
+        true
     );
     let usage = fixture.usage();
     assert_eq!(usage.len(), 6);
@@ -633,6 +623,7 @@ fn failed_assessment_keeps_other_results_and_reports_failure() {
 }
 
 // {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.reporting`
 #[cfg(unix)]
@@ -739,7 +730,7 @@ fn batch_reports_false_rationales_only_when_verbose() {
             "{diagnostics}"
         );
         assert!(!diagnostics.contains("pub fn alpha()"), "{diagnostics}");
-        let true_rationale = fixture.function("fn[alpha]")["rationale"]
+        let true_rationale = fixture.evidence("requirements.gamma")["rationale"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -803,6 +794,7 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
 }
 
 // {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
 #[cfg(unix)]
@@ -875,11 +867,8 @@ fn denied_read_aborts_only_its_assessment_and_runs_queued_assessments() {
     );
     assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
     assert_eq!(
-        fixture.evidence("rust/src/lib.rs")["functions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        fixture.evidence("requirements.gamma")["determination"],
+        true
     );
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostic.contains("evidence/private.txt"), "{diagnostic}");
@@ -978,11 +967,8 @@ fn denied_read_preserves_in_flight_assessments_and_their_evidence() {
     );
     assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
     assert_eq!(
-        fixture.evidence("rust/src/lib.rs")["functions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        fixture.evidence("requirements.gamma")["determination"],
+        true
     );
     let usage = fixture.usage();
     assert_eq!(usage.len(), 6);
@@ -1011,6 +997,81 @@ fn denied_read_preserves_in_flight_assessments_and_their_evidence() {
             .all(|run| run["requests"][0]["outcome"] == "completed")
     );
     assert!(usage.iter().all(|run| !run["end_time_ms"].is_null()));
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.ci.determination`
+#[test]
+fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6);
+    let mark_false = |name: &str| {
+        let path = fixture.project.join(format!("evidence/{name}.json"));
+        let mut record = fixture.evidence(name);
+        record["determination"] = json!(false);
+        record["rationale"] = json!("The implementation omits a boundary case.");
+        fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        fs::read(path).unwrap()
+    };
+    let alpha = mark_false("requirements.alpha");
+    mark_false("requirements.gamma");
+
+    let current = fixture.run(&["author", "--all"]);
+    assert!(
+        current.status.success(),
+        "{}",
+        String::from_utf8_lossy(&current.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6, "{:?}", server.subjects());
+    assert_eq!(
+        String::from_utf8_lossy(&current.stdout).trim(),
+        "0 authored; 6 unchanged; 0 failed"
+    );
+    assert_eq!(
+        fs::read(fixture.project.join("evidence/requirements.alpha.json")).unwrap(),
+        alpha
+    );
+    assert_eq!(
+        fixture.evidence("requirements.gamma")["determination"],
+        false
+    );
+
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("-> u8 { 3 }", "-> u8 { 3_u8 }"),
+    )
+    .unwrap();
+    let stale = fixture.run(&["author", "--all"]);
+    assert!(
+        stale.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    let subjects = server.subjects();
+    assert_eq!(subjects.len(), 7, "{subjects:?}");
+    assert_eq!(subjects[6], "requirement requirements.gamma");
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stdout).trim(),
+        "1 authored; 5 unchanged; 0 failed"
+    );
+    assert_eq!(
+        fixture.evidence("requirements.gamma")["determination"],
+        true
+    );
+    assert_eq!(
+        fs::read(fixture.project.join("evidence/requirements.alpha.json")).unwrap(),
+        alpha
+    );
 }
 
 // {test}`requirements.authoring.batch`

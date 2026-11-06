@@ -1,7 +1,7 @@
 {
   "requirement": "For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project depending on `habeas` MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** I found no gaps that the sources acknowledge, and the one gap I noticed is minor. I did not run the tests; this judgment rests on reading the code and test sources.\n\n**Implementation**\n\n- **Hook declaration.** `Cargo.toml` lines 31-37 declare a `[[package.metadata.symposium.hooks]]` entry named `habeas-setup-check`. It uses event `SessionStart`, format `symposium`, and runs `habeas hook session-start`. This is how an enabled plugin delivers the hook to supported agent sessions.\n- **Dispatch.** `main.rs` routes `Command::Hook { SessionStart }` to `hook::session_start()`.\n- **Hook logic.** `hook::session_start_response` in `src/hook.rs`:\n  - It finds the project root with `setup::find_project_root`, which looks for an ancestor containing both `Cargo.toml` and `book.toml`.\n  - It uses the `cwd` from the event, or the process directory as a fallback.\n  - It returns an empty `{\"SessionStart\": {}}` when there is no applicable project, when the project does not depend on habeas, or when setup is complete.\n  - Otherwise it returns only an `additionalContext` string. The string says \"Habeas Codicem is not fully configured in …. Run `habeas setup` …\". This is nonblocking agent context that suggests `habeas setup`.\n- **Setup check.** `setup::is_configured` checks everything `habeas setup` creates:\n  - the habeas dev-dependency;\n  - a valid `book.src`, with a relative path, no parent components, and an existing `SUMMARY.md`;\n  - the `preprocessor.habeas` entry with command `habeas mdbook` and renderers `[\"html\"]`;\n  - the stylesheet listed in `additional-css`;\n  - the content of `habeas.css`;\n  - the content of `tests/habeas.rs`.\n  \n  It shares helpers (`book_source`, `css_relative`, `has_habeas_dev_dependency`, `find_project_root`) with `setup::run`, so the two agree on what \"present and compatible\" means.\n- **No modification.** The hook path uses only `fs::read_to_string`, parsing, and printing. It never writes files and never runs setup.\n\n**Tests**\n\n- `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` runs the real binary through the `session_start` helper, feeding a `SessionStart` JSON payload on stdin. It covers:\n  - a project without habeas gets an empty response;\n  - a fully set-up project gets an empty response, including when `cwd` is a nested directory;\n  - a missing stylesheet gets an advisory containing \"Habeas Codicem is not fully configured\" and \"habeas setup\";\n  - after that call, the stylesheet is still absent and `book.toml` is unchanged, so the hook modified nothing;\n  - an incompatible preprocessor (`wrong-preprocessor`) gets an advisory;\n  - a missing `book.toml` means no applicable project, so the response is empty.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` checks an empty response after setup with default `src`, and an advisory when `book.src` is invalid.\n- `tests/symposium_hook_smoke.py` is an end-to-end test through a real Symposium (`cargo-agents`) consumer:\n  - the plugin is enabled and the hook is registered;\n  - the advisory reaches the agent output when the project is incomplete;\n  - the advisory stops after `habeas setup` runs.\n\n**Gaps**\n\n- The hook checks only `[dev-dependencies]` for habeas. A project that depends on habeas some other way (for example in `[dependencies]`) gets no advisory.\n- Missing or differing `tests/habeas.rs`, and a missing dev-dependency in an otherwise configured book project, are checked by the code but not directly exercised by tests.\n- The Python smoke test is not a `cargo test` target, so it needs `cargo-agents` installed to run.\n\nNone of these defeats the requirement's behavior, and none is marked FIXME.",
+  "rationale": "**Verdict:** the requirement is satisfied. Two small caveats are listed at the end. I read the supplied inputs and did not run the tests.\n\n**Hook delivery.**\n- `Cargo.toml` lines 31–37 declare a `package.metadata.symposium.hooks` entry. It is a `SessionStart` hook in `symposium` format that runs `habeas hook session-start`. The entry is marked `{impl}`.\n- The `Command::Hook { SessionStart }` arm in `src/main.rs` calls `hook::session_start()`. That arm is also marked `{impl}`.\n- Together these make an enabled Habeas plugin receive a Symposium `SessionStart` hook.\n\n**Setup check.**\n- `src/hook.rs` `session_start_response` finds the project root with `setup::find_project_root`. That function walks the ancestors of the session `cwd` looking for a directory with both `Cargo.toml` and `book.toml`.\n- It returns the empty response `{\"SessionStart\": {}}` when any of these holds:\n  - no root is found;\n  - the project does not depend on habeas (`project_depends_on_habeas`);\n  - `setup::is_configured` returns true.\n- `is_configured` checks everything `requirements.cli.setup` requires:\n  - the habeas dev-dependency;\n  - a valid `book.src` with `SUMMARY.md`;\n  - the `habeas mdbook` preprocessor, with the `html` renderer only;\n  - the stylesheet listed in `additional-css`;\n  - `habeas.css` present with the expected content;\n  - `tests/habeas.rs` present with the expected content.\n- Differing file contents count as \"incompatible\", so the hook advises setup in that case.\n- Otherwise the hook returns `additionalContext` that begins \"Habeas Codicem is not fully configured in …\" and suggests `habeas setup`. The context is advisory only, so it does not block the session.\n- The hook is read-only: it only reads files and writes JSON to stdout. It never writes project files or invokes setup.\n\n**Impl marking.** Every helper the hook uses carries `{impl}` for this requirement: `css_relative`, `has_habeas_dev_dependency`, `book_source`, `project_depends_on_habeas`, `find_project_root` and `is_configured`. The `is_configured` references to the setup requirements are `{cite}`, which is appropriate for context. I found no unmarked code that implements part of the requirement.\n\n**Tests.**\n- `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` runs the real binary and covers:\n  - no advisory for a project without habeas;\n  - no advisory when setup is complete, including from a nested cwd;\n  - an advisory naming \"not fully configured\" and `habeas setup` after the stylesheet is deleted;\n  - the hook not recreating the stylesheet and not changing `book.toml`;\n  - an advisory for an incompatible preprocessor;\n  - no advisory when `book.toml` is gone, so no applicable project is found.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` covers the default `src` source path and an invalid `book.src` type.\n- `tests/symposium_hook_smoke.py` is an end-to-end test through a real Symposium (`cargo-agents`). It checks that Symposium registers the hook, that the advisory is delivered for an unconfigured project, and that it stops after `habeas setup`.\n\n**Caveats, neither serious enough to fail the requirement.**\n- \"Depending on `habeas`\" is detected only through `[dev-dependencies]`. That matches what setup installs, but a regular or build dependency would get no advisory.\n- `main` loads workspace evidence configuration before dispatching `hook session-start`. An invalid configuration file could therefore make the hook exit with an error instead of returning an empty response. The requirement does not address this case.",
   "inputs": [
     {
       "requirements": "requirements.integration.symposium_setup_hook",
@@ -17,7 +17,7 @@
     {
       "file": "Cargo.toml",
       "line_start": 1,
-      "line_end": 63,
+      "line_end": 66,
       "text": [
         "[package]",
         "name = \"habeas\"",
@@ -63,7 +63,10 @@
         "clap = { version = \"4.6.7\", features = [\"derive\"] }",
         "console = \"0.16.6\"",
         "fastrand = \"2.5.0\"",
+        "grep-regex = \"0.1.14\"",
+        "grep-searcher = \"0.1.17\"",
         "httpdate = \"1.0.3\"",
+        "ignore = \"0.4.34\"",
         "indicatif = \"0.18.4\"",
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
@@ -172,20 +175,24 @@
         "        Command::Setup { path } => setup::run(path.as_deref()),",
         "        // {impl}`requirements.cli.status`",
         "        // {impl}`requirements.cli.fixme_summary`",
-        "        Command::Status { all, glob, verbose } => {",
+        "        Command::Status {",
+        "            all,",
+        "            selection,",
+        "            verbose,",
+        "        } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout().lock().write_all(",
-        "                habeas::status_markdown_with_options(&root, all, glob.as_deref(), verbose)?",
+        "                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?",
         "                    .as_bytes(),",
         "            )?;",
         "            Ok(())",
         "        }",
         "        // {impl}`requirements.cli.info`",
-        "        Command::Info { selector } => {",
+        "        Command::Info { selection } => {",
         "            let root = setup::project_root()?;",
         "            io::stdout()",
         "                .lock()",
-        "                .write_all(habeas::info_markdown(&root, &selector)?.as_bytes())?;",
+        "                .write_all(habeas::info_markdown(&root, &selection)?.as_bytes())?;",
         "            Ok(())",
         "        }",
         "        // {impl}`requirements.authoring.invocation`",
@@ -268,7 +275,6 @@
         "        Command::AddInput {",
         "            for_requirement,",
         "            for_example,",
-        "            for_rust_item,",
         "            file_range,",
         "            rust_item,",
         "            requirements,",
@@ -276,14 +282,8 @@
         "            let root = setup::project_root()?;",
         "            let target = if let Some(name) = for_requirement {",
         "                habeas::InputTarget::Requirement(name)",
-        "            } else if let Some(name) = for_example {",
-        "                habeas::InputTarget::Example(name)",
         "            } else {",
-        "                let parts = for_rust_item.expect(\"clap requires a target\");",
-        "                habeas::InputTarget::RustFunction {",
-        "                    rust_file: parts[0].clone(),",
-        "                    rust_item: parts[1].clone(),",
-        "                }",
+        "                habeas::InputTarget::Example(for_example.expect(\"clap requires a target\"))",
         "            };",
         "            let mode = if let Some(specification) = file_range {",
         "                habeas::InputMode::FileRange(specification)",
@@ -884,6 +884,76 @@
     {
       "file": "Cargo.toml",
       "line_start": 1,
+      "line_end": 63,
+      "text": [
+        "[package]",
+        "name = \"habeas\"",
+        "version = \"0.2.0\"",
+        "authors = [\"Niko Matsakis\"]",
+        "edition = \"2024\"",
+        "description = \"Requirement evidence for mdBook and Cargo projects\"",
+        "license = \"MIT OR Apache-2.0\"",
+        "repository = \"https://github.com/nikomatsakis/habeas-codicem\"",
+        "readme = \"README.md\"",
+        "keywords = [\"requirements\", \"traceability\", \"evidence\", \"mdbook\"]",
+        "categories = [\"development-tools\", \"command-line-utilities\"]",
+        "",
+        "# {impl}`requirements.integration.symposium`",
+        "[package.metadata.symposium]",
+        "name = \"habeas\"",
+        "",
+        "[package.metadata.symposium.defaults]",
+        "skills = false",
+        "",
+        "[[package.metadata.symposium.skills]]",
+        "source.path = \"assets/skills\"",
+        "",
+        "# {impl}`requirements.integration.symposium_cli`",
+        "[[package.metadata.symposium.installations]]",
+        "name = \"habeas\"",
+        "source = \"cargo\"",
+        "crate = \"habeas\"",
+        "executable = \"habeas\"",
+        "global = true",
+        "",
+        "# {impl}`requirements.integration.symposium_setup_hook`",
+        "[[package.metadata.symposium.hooks]]",
+        "name = \"habeas-setup-check\"",
+        "event = \"SessionStart\"",
+        "format = \"symposium\"",
+        "command = \"habeas\"",
+        "args = [\"hook\", \"session-start\"]",
+        "",
+        "[dependencies]",
+        "aws-config = \"=1.8.13\"",
+        "aws-sdk-bedrockruntime = \"1.153\"",
+        "clap = { version = \"4.6.7\", features = [\"derive\"] }",
+        "console = \"0.16.6\"",
+        "fastrand = \"2.5.0\"",
+        "grep-regex = \"0.1.14\"",
+        "grep-searcher = \"0.1.17\"",
+        "httpdate = \"1.0.3\"",
+        "ignore = \"0.4.34\"",
+        "indicatif = \"0.18.4\"",
+        "mdbook-preprocessor = \"=0.5.3\"",
+        "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
+        "pulldown-cmark = \"=0.11.3\"",
+        "regex = \"1.13.1\"",
+        "rig-bedrock = \"0.44\"",
+        "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
+        "serde = { version = \"1.0.229\", features = [\"derive\"] }",
+        "serde_json = \"1\"",
+        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
+        "tempfile = \"3.27.0\"",
+        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\", \"time\"] }",
+        "toml = \"1.2.0\"",
+        "toml_edit = \"0.25.17\"",
+        ""
+      ]
+    },
+    {
+      "file": "Cargo.toml",
+      "line_start": 1,
       "line_end": 60,
       "text": [
         "[package]",
@@ -930,7 +1000,10 @@
         "clap = { version = \"4.6.7\", features = [\"derive\"] }",
         "console = \"0.16.6\"",
         "fastrand = \"2.5.0\"",
+        "grep-regex = \"0.1.14\"",
+        "grep-searcher = \"0.1.17\"",
         "httpdate = \"1.0.3\"",
+        "ignore = \"0.4.34\"",
         "indicatif = \"0.18.4\"",
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
@@ -942,10 +1015,7 @@
         "serde_json = \"1\"",
         "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
         "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\", \"time\"] }",
-        "toml = \"1.2.0\"",
-        "toml_edit = \"0.25.17\"",
-        ""
+        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\", \"time\"] }"
       ]
     },
     {
@@ -997,7 +1067,10 @@
         "clap = { version = \"4.6.7\", features = [\"derive\"] }",
         "console = \"0.16.6\"",
         "fastrand = \"2.5.0\"",
+        "grep-regex = \"0.1.14\"",
+        "grep-searcher = \"0.1.17\"",
         "httpdate = \"1.0.3\"",
+        "ignore = \"0.4.34\"",
         "indicatif = \"0.18.4\"",
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
@@ -1007,10 +1080,7 @@
         "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
         "serde = { version = \"1.0.229\", features = [\"derive\"] }",
         "serde_json = \"1\"",
-        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
-        "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\", \"time\"] }",
-        "toml = \"1.2.0\""
+        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }"
       ]
     },
     {
@@ -1062,7 +1132,10 @@
         "clap = { version = \"4.6.7\", features = [\"derive\"] }",
         "console = \"0.16.6\"",
         "fastrand = \"2.5.0\"",
+        "grep-regex = \"0.1.14\"",
+        "grep-searcher = \"0.1.17\"",
         "httpdate = \"1.0.3\"",
+        "ignore = \"0.4.34\"",
         "indicatif = \"0.18.4\"",
         "mdbook-preprocessor = \"=0.5.3\"",
         "proc-macro2 = { version = \"1.0.107\", features = [\"span-locations\"] }",
@@ -1071,10 +1144,7 @@
         "rig-bedrock = \"0.44\"",
         "rig-core = { version = \"0.44\", features = [\"reqwest\"] }",
         "serde = { version = \"1.0.229\", features = [\"derive\"] }",
-        "serde_json = \"1\"",
-        "syn = { version = \"2.0.119\", features = [\"full\", \"visit\"] }",
-        "tempfile = \"3.27.0\"",
-        "tokio = { version = \"1.54.1\", features = [\"rt-multi-thread\", \"signal\", \"macros\", \"sync\", \"time\"] }"
+        "serde_json = \"1\""
       ]
     },
     {
@@ -1147,10 +1217,10 @@
       "line_start": 158,
       "line_end": 161,
       "text": [
-        "                    config.as_deref(),",
-        "                    habeas::authoring::AuthoringOptions { verbose },",
-        "                ))?;",
-        "                println!("
+        "            let runtime = tokio::runtime::Runtime::new()?;",
+        "            if all {",
+        "                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(",
+        "                    &root,"
       ]
     },
     {
@@ -1158,19 +1228,19 @@
       "line_start": 62,
       "line_end": 76,
       "text": [
+        "        group(ArgGroup::new(\"target\").required(true).multiple(false).args([\"for_requirement\", \"for_example\"])),",
+        "        group(ArgGroup::new(\"mode\").required(true).multiple(false).args([\"file_range\", \"rust_item\", \"requirements\"]))",
         "    )]",
         "    AddInput {",
         "        #[arg(long)]",
         "        for_requirement: Option<String>,",
         "        #[arg(long)]",
         "        for_example: Option<String>,",
-        "        #[arg(long, num_args = 2, value_names = [\"rust_file\", \"rust_item\"])]",
-        "        for_rust_item: Option<Vec<String>>,",
         "        #[arg(long)]",
         "        file_range: Option<String>,",
         "        #[arg(long)]",
         "        rust_item: Option<String>,",
-        "        #[arg(long)]",
+        "        #[arg(long, value_name = \"selection\")]",
         "        requirements: Option<String>,",
         "    },"
       ]
@@ -1543,11 +1613,11 @@
       "line_start": 180,
       "line_end": 184,
       "text": [
-        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(",
-        "                &root,",
-        "                &subject.expect(\"clap requires a subject or --all\"),",
-        "                config.as_deref(),",
-        "                output,"
+        "                habeas::authoring::EvidenceOutput::Stdout",
+        "            } else {",
+        "                habeas::authoring::EvidenceOutput::File",
+        "            };",
+        "            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output("
       ]
     },
     {
@@ -1807,9 +1877,9 @@
       "line_start": 392,
       "line_end": 394,
       "text": [
-        "    };",
-        "    Ok(template",
-        "        .replace(\"{{subject_kind}}\", sources.subject_kind.noun())"
+        "    Ok((judgment, rationale.to_owned()))",
+        "}",
+        ""
       ]
     },
     {
@@ -1817,9 +1887,9 @@
       "line_start": 571,
       "line_end": 573,
       "text": [
-        "                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));",
-        "                }",
-        "            }"
+        "        // {test}`requirements.authoring.usage_requests`",
+        "        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {",
+        "            self.requests"
       ]
     },
     {
@@ -1887,9 +1957,9 @@
       "line_start": 504,
       "line_end": 506,
       "text": [
-        "    if !detail_evidence.fixme_entries.is_empty() {",
-        "        content.push_str(\"\\n\\n## FIXME references\\n\\n<pre><code>\");",
-        "        content.push_str(&escape_html(&detail_evidence.fixme_entries.join(\"\\n\")));"
+        "        Some(rationale) if !rationale.trim().is_empty() => content.push_str(rationale.trim()),",
+        "        _ => content.push_str(\"No rationale recorded.\"),",
+        "    }"
       ]
     },
     {
@@ -1961,6 +2031,9 @@
       "line_start": 614,
       "line_end": 694,
       "text": [
+        "        io::Error::new(",
+        "            io::ErrorKind::NotFound,",
+        "            format!(\"cannot determine Habeas directory: {name} must be an absolute, nonempty path\"),",
         "        )",
         "    })",
         "}",
@@ -1980,6 +2053,7 @@
         "",
         "// {impl}`requirements.configuration.workspace_location`",
         "// {impl}`requirements.configuration.loading`",
+        "// {impl}`requirements.configuration.workspace_structure`",
         "pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {",
         "    let Some((path, table)) = workspace_document(root)? else {",
         "        return Ok(None);",
@@ -2037,11 +2111,7 @@
         "    let root = fs::canonicalize(root)?;",
         "    let start = std::env::current_dir()",
         "        .and_then(fs::canonicalize)",
-        "        .ok()",
-        "        .filter(|cwd| cwd.starts_with(&root))",
-        "        .unwrap_or(root);",
-        "    for directory in start.ancestors() {",
-        "        let path = directory.join(\"habeas.toml\");"
+        "        .ok()"
       ]
     },
     {
