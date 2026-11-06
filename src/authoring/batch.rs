@@ -92,7 +92,17 @@ pub async fn author_all_with_options(
     let mut subjects = subjects.into_iter();
     let mut tasks = JoinSet::new();
     let (cancel, cancellation) = watch::channel(None::<&'static str>);
+    // The batch listens for interruption itself, so a signal arriving while no
+    // assessment is waiting (between tasks, or while a record is written)
+    // still stops the batch. Poll once now to register the listener before
+    // any assessment starts; registered signals are kept until polled again.
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let mut listening = true;
+    observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
     loop {
+        // A signal received while the batch was busy stops further launches.
+        observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
         while cancellation.borrow().is_none() && tasks.len() < concurrency {
             let Some(subject) = subjects.next() else {
                 break;
@@ -110,7 +120,18 @@ pub async fn author_all_with_options(
             });
         }
         progress.refresh(tasks.len(), subjects.len());
-        let Some(result) = tasks.join_next().await else {
+        let joined = tokio::select! {
+            biased;
+            signal = &mut interrupt, if listening => {
+                listening = false;
+                if signal.is_ok() {
+                    stop(&cancel);
+                }
+                continue;
+            }
+            joined = tasks.join_next() => joined,
+        };
+        let Some(result) = joined else {
             break;
         };
         let (label, result) = match result {
@@ -123,6 +144,8 @@ pub async fn author_all_with_options(
                 continue;
             }
         };
+        // ...and discards a judgment not yet written when it arrived.
+        observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
         let result = result.and_then(|pending| {
             // Serialize the stop signal with persistence: a write already in
             // progress finishes before the signal; later completions are discarded.
@@ -162,9 +185,37 @@ pub async fn author_all_with_options(
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.read_denial`
 fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Error) {
-    if error.kind() != io::ErrorKind::Interrupted {
+    if error.kind() == io::ErrorKind::Interrupted {
+        stop(cancel);
+    }
+}
+
+/// Records an interruption that has already arrived, without waiting. The
+/// first poll registers the listener.
+// {impl}`requirements.authoring.batch`
+async fn observe_interrupt(
+    interrupt: std::pin::Pin<&mut impl std::future::Future<Output = io::Result<()>>>,
+    listening: &mut bool,
+    cancel: &watch::Sender<Option<&'static str>>,
+) {
+    if !*listening {
         return;
     }
+    tokio::select! {
+        biased;
+        signal = interrupt => {
+            *listening = false;
+            if signal.is_ok() {
+                stop(cancel);
+            }
+        }
+        () = std::future::ready(()) => {}
+    }
+}
+
+/// Signals every assessment and the launcher that the batch is stopping.
+// {impl}`requirements.authoring.batch`
+fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     cancel.send_if_modified(|current| {
         if current.is_none() {
             *current = Some("evidence authoring cancelled");

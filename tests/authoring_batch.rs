@@ -800,8 +800,18 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
 #[cfg(unix)]
 #[test]
 fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
-    let server = Server::start_with(true, Behavior::WaitAfterFirst);
-    let fixture = Fixture::new(&server.endpoint, Some(2));
+    // Concurrency one is the Ollama default: only one assessment is running.
+    for (overlap, concurrency) in [(true, 2), (false, 1)] {
+        assert_interruption_stops_the_batch(overlap, concurrency);
+    }
+}
+
+// {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.batch`
+#[cfg(unix)]
+fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
+    let server = Server::start_with(overlap, Behavior::WaitAfterFirst);
+    let fixture = Fixture::new(&server.endpoint, Some(concurrency));
     let output = fixture.run_in_pty(true, "xterm-256color");
     assert!(!output.status.success(), "{output:?}");
     let terminal = String::from_utf8_lossy(&output.stderr);
@@ -1151,4 +1161,110 @@ fn unreadable_reference_sources_fail_the_batch_before_inference() {
     assert!(!stderr.contains("no authoring configuration"), "{stderr}");
     assert!(!fixture.state.exists());
     assert!(!fixture.project.join("evidence").exists());
+}
+
+/// Replays terminal output onto a screen, handling the carriage returns,
+/// line clears, and cursor movement that progress displays use.
+// {test}`requirements.authoring.progress`
+#[cfg(unix)]
+fn final_screen(output: &[u8]) -> String {
+    let text = String::from_utf8_lossy(output);
+    let mut lines = vec![String::new()];
+    let (mut row, mut column) = (0usize, 0usize);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => column = 0,
+            '\n' => {
+                row += 1;
+                column = 0;
+                if lines.len() <= row {
+                    lines.push(String::new());
+                }
+            }
+            '\x1b' if chars.peek() == Some(&'[') => {
+                chars.next();
+                let mut parameters = String::new();
+                let mut command = ' ';
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        command = next;
+                        break;
+                    }
+                    parameters.push(next);
+                }
+                let count = parameters.parse::<usize>().unwrap_or(1);
+                match command {
+                    'A' => row = row.saturating_sub(count),
+                    'B' => row += count,
+                    'K' if parameters == "2" => lines[row].clear(),
+                    'K' => lines[row] = lines[row].chars().take(column).collect(),
+                    'J' => {
+                        lines[row] = lines[row].chars().take(column).collect();
+                        lines.truncate(row + 1);
+                    }
+                    _ => {}
+                }
+                while lines.len() <= row {
+                    lines.push(String::new());
+                }
+            }
+            c if !c.is_control() => {
+                let mut cells = lines[row].chars().collect::<Vec<_>>();
+                cells.resize(cells.len().max(column), ' ');
+                if column < cells.len() {
+                    cells[column] = c;
+                } else {
+                    cells.push(c);
+                }
+                lines[row] = cells.into_iter().collect();
+                column += 1;
+            }
+            _ => {}
+        }
+    }
+    lines
+        .iter()
+        .map(|line| line.trim_end())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// {test}`requirements.authoring.progress`
+#[cfg(unix)]
+#[test]
+fn empty_batches_and_early_errors_clear_the_terminal_display() {
+    for case in ["empty", "configuration error", "discovery error"] {
+        let fixture = Fixture::new("http://127.0.0.1:9", Some(1));
+        match case {
+            "empty" => {
+                fs::write(fixture.project.join("md/requirements.md"), "").unwrap();
+                fs::write(fixture.project.join("src/lib.rs"), "").unwrap();
+            }
+            "configuration error" => fs::write(&fixture.config, "invalid TOML [").unwrap(),
+            _ => fs::write(fixture.project.join("src/lib.rs"), "fn broken(").unwrap(),
+        }
+        let output = fixture.run_in_pty(false, "xterm-256color");
+        assert_eq!(
+            output.status.success(),
+            case == "empty",
+            "{case}: {output:?}"
+        );
+        let raw = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            raw.contains("Phase:"),
+            "{case}: inspection was displayed: {raw:?}"
+        );
+        let screen = final_screen(&output.stderr);
+        for transient in ["Phase:", "Inspecting", "finished"] {
+            assert!(
+                !screen.contains(transient),
+                "{case}: {transient} left on screen:\n{screen}\nraw: {raw:?}"
+            );
+        }
+        if case != "empty" {
+            assert!(!screen.is_empty(), "{case}: the error remains visible");
+        }
+    }
 }
