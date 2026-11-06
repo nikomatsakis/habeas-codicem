@@ -262,6 +262,17 @@ model = "explicit:tag"
             .to_string()
             .contains("no authoring configuration")
     );
+    // Configurations exist, but no name, project entry, or default selects one.
+    let unselected = UserConfig::parse(
+        "version = 1\n[authoring.configs.only]\nbackend = 'ollama'\nmodel = 'm:tag'\n",
+        &config_path,
+    )
+    .unwrap();
+    let error = resolve_authoring_from(&config_path, Some(&unselected), &root, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no configuration selected"), "{error}");
+    assert!(error.contains("editing-the-file"), "{error}");
 }
 
 // {test}`requirements.configuration.loading`

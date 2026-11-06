@@ -780,6 +780,69 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
 }
 
 // {test}`requirements.authoring.usage_storage`
+#[cfg(unix)]
+#[test]
+fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":true,"rationale":"covered"}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    server.finish();
+    let directory = fixture.state.join("habeas/authoring/usage");
+    let files = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 1);
+    let usage: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
+    let run_id = usage["run_id"].as_str().unwrap();
+    assert!(!run_id.is_empty());
+    assert_eq!(
+        files[0].file_name().unwrap().to_str().unwrap(),
+        format!("{run_id}.json"),
+        "the record is named after its run"
+    );
+    assert_eq!(usage["version"], 1);
+    assert_eq!(
+        usage["project_root"],
+        fixture.project.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(usage["subject"], SUBJECT);
+    assert_eq!(usage["subject_kind"], "requirement");
+    assert_eq!(usage["backend"], "ollama");
+    assert_eq!(usage["model"], MODEL);
+    assert_eq!(usage["evidence_output"], "file");
+    let start = usage["start_time_ms"].as_u64().unwrap();
+    let end = usage["end_time_ms"].as_u64().unwrap();
+    assert!(start > 0 && start <= end, "{usage}");
+
+    // A state location that cannot be determined or created is reported
+    // before any model request, and no evidence is written.
+    let blocker = fixture.temp.path().join("not-a-directory");
+    fs::write(&blocker, "").unwrap();
+    for (variable, value) in [
+        ("XDG_STATE_HOME", Some(blocker.as_os_str())),
+        ("XDG_STATE_HOME", None),
+    ] {
+        let mut command = fixture.command();
+        match value {
+            Some(value) => command.env(variable, value),
+            None => command.env_remove(variable).env_remove("HOME"),
+        };
+        let output = command.args(["author", SUBJECT]).output().unwrap();
+        assert!(!output.status.success(), "{value:?}: {output:?}");
+        assert!(!output.stderr.is_empty(), "{value:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{value:?}: {output:?}");
+    }
+    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    assert_eq!(evidence["rationale"], "covered", "only the first run wrote");
+}
+
+// {test}`requirements.authoring.usage_storage`
 #[test]
 fn usage_state_inside_the_project_is_refused_before_creating_it() {
     let fixture = Fixture::new("http://127.0.0.1:1");

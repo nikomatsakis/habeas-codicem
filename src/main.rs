@@ -41,6 +41,8 @@ enum Command {
     // The single-subject syntax, its alias, and the `--all` exclusions.
     // {impl}`requirements.authoring.invocation`
     // {impl}`requirements.authoring.batch`
+    // `--config <name>` selects a configuration for this invocation.
+    // {impl}`requirements.authoring.configuration_precedence`
     #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
     Author {
         subject: Option<String>,
@@ -152,6 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // {impl}`requirements.authoring.concurrency`
         // {impl}`requirements.authoring.reporting`
         // {impl}`requirements.authoring.read_denial`
+        // {impl}`requirements.authoring.configuration_precedence`
         Command::Author {
             subject,
             all,

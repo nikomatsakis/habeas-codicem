@@ -22,6 +22,7 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.authoring.outline_tool`
+// {impl}`requirements.authoring.reference_index`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
@@ -61,6 +62,7 @@ pub(crate) fn definitions() -> Vec<Value> {
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
 // {impl}`requirements.authoring.outline_tool`
+// {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.read_denial`
 pub(crate) fn dispatch(
     sources: &AssessmentSources,
@@ -576,6 +578,32 @@ mod tests {
         let listing = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
         assert_eq!(listing.result, json!([{"path":"src/lib.rs","kind":"file"}]));
         assert!(listing.inputs.is_empty());
+        // Searching the Rust file returns the innermost item containing the match.
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"path":"src/lib.rs","pattern":"work","context":0}),
+        )
+        .unwrap();
+        assert!(
+            search
+                .inputs
+                .iter()
+                .any(|input| input["item"] == "fn[work]" && input["kind"] == "fn"),
+            "{:#?}",
+            search.inputs
+        );
+        assert!(
+            search
+                .inputs
+                .iter()
+                .all(|input| input["file"] == "src/lib.rs" || input["definition"].is_string())
+        );
+        // Outlining it lists items without content and records nothing.
+        let outline = dispatch(&sources, "outline", &json!({"file":"src/lib.rs"})).unwrap();
+        assert!(outline.inputs.is_empty());
+        assert_eq!(outline.result[0]["item"], "fn[work]");
+        assert!(!outline.result.to_string().contains("fn work()"));
         let read = dispatch(
             &sources,
             "habeas",
@@ -1553,6 +1581,28 @@ mod tests {
             "no source text",
         ] {
             assert!(description.contains(phrase), "{description}");
+        }
+    }
+
+    // {test}`requirements.authoring.reference_index`
+    #[test]
+    fn references_tool_is_advertised_with_an_optional_selection() {
+        let definitions = definitions();
+        let references = definitions
+            .iter()
+            .find(|definition| definition["name"] == "references")
+            .expect("references tool is advertised");
+        assert_eq!(
+            references["parameters"],
+            json!({
+                "type": "object",
+                "properties": {"selection": {"type": "string"}},
+                "additionalProperties": false
+            })
+        );
+        let description = references["description"].as_str().unwrap();
+        for phrase in ["{impl}", "{cite}", "{test}", "glob", ":impl:", "null"] {
+            assert!(description.contains(phrase), "{phrase}: {description}");
         }
     }
 
