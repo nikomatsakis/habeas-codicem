@@ -154,5 +154,6 @@ pub(crate) static PROFILE: Profile = Profile {
     hashes_comment: is_doc_comment,
     comment_prose: doc_prose,
     comment_binds_to_container: is_inner_doc_comment,
+    trailing_comments_outside: false,
     attaches,
 };

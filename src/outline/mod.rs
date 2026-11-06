@@ -51,7 +51,9 @@ pub(crate) struct OutlineNode {
     pub(crate) line_end: usize,
     /// Line containing the name, or the node's first line when anonymous.
     pub(crate) declaration_line: usize,
-    /// Byte range of the grammar node itself, without attached siblings.
+    /// Byte range of the grammar node itself, without attached siblings; for
+    /// a profile with `trailing_comments_outside`, it ends at the node's last
+    /// non-comment token.
     pub(crate) byte_start: usize,
     pub(crate) byte_end: usize,
     /// SHA-256 structural hash, lowercase hex.
@@ -601,7 +603,11 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 line_end,
                 declaration_line: lines.line(draft.declaration_byte),
                 byte_start: draft.core.start_byte(),
-                byte_end: draft.core.end_byte(),
+                byte_end: if self.profile.trailing_comments_outside {
+                    content_end(draft.core)
+                } else {
+                    draft.core.end_byte()
+                },
                 structural_hash: self.hash(index, false),
                 identity_hash,
             });
@@ -749,6 +755,19 @@ fn trailing_owner(
             None => return current,
         }
     }
+}
+
+/// The end of a node's last non-comment token, so trailing comments that a
+/// grammar folds into the node do not count as inside it.
+// {impl}`requirements.references.outline_comments`
+fn content_end(node: Node<'_>) -> usize {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+    children
+        .iter()
+        .rev()
+        .find(|child| !child.is_extra())
+        .map_or(node.end_byte(), |child| content_end(*child))
 }
 
 /// The owner of a comment run spanning `bytes` that does not follow code on

@@ -72,6 +72,10 @@ pub(crate) struct Profile {
     /// Whether a comment always belongs to the node enclosing it, such as a
     /// Rust inner doc comment.
     pub(crate) comment_binds_to_container: fn(Node<'_>, &str) -> bool,
+    /// Whether comments a grammar folds into the end of a node lie outside it,
+    /// as in YAML, where a comment before a key at the same indentation
+    /// trails the previous key's node.
+    pub(crate) trailing_comments_outside: bool,
     /// Whether a preceding grammar sibling attaches to the next outline node.
     pub(crate) attaches: fn(Node<'_>, &str) -> bool,
 }

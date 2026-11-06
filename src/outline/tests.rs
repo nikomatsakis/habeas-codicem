@@ -968,3 +968,13 @@ mod local { other! {} }
         "macros inside a function body are expressions, not nodes: {selectors:?}"
     );
 }
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn yaml_comments_before_a_key_belong_to_that_key_not_the_previous_one() {
+    let source = "jobs:\n  first:\n    steps:\n      - run: a\n  # note for second\n  second:\n    steps:\n      - run: b\n";
+    let outline = parse(std::path::Path::new("ci.yml"), source).unwrap();
+    let owners = outline.comment_owners_at_line(5);
+    assert_eq!(owners.len(), 1, "{owners:?}");
+    assert_eq!(outline.nodes[owners[0]].selector, "pair[jobs]/pair[second]");
+}

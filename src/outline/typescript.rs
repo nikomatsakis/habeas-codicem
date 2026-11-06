@@ -47,6 +47,7 @@ const TYPESCRIPT: Profile = Profile {
     hashes_comment: never,
     comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
+    trailing_comments_outside: false,
     attaches: never,
 };
 

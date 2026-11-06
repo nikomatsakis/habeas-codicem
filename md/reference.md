@@ -509,7 +509,7 @@ Profile details:
 - TypeScript: `.tsx` files use the TSX grammar with the same table. An `export` wrapper is transparent.
 - CSS: `/* */` comments are not hashed.
 - Markdown: sections nest by heading level. An HTML comment block (`<!-- ... -->`) is a comment and is not hashed.
-- TOML and YAML: `#` comments are not hashed. Quoted keys keep their quotes in names.
+- TOML and YAML: `#` comments are not hashed. Quoted keys keep their quotes in names. In YAML, a comment before a key belongs to that key, even though the grammar places it at the end of the previous key's node; in TOML, a comment after a table's last pair stays in that table.
 
 Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or changing a profile can change selectors and hashes, so it is a deliberate change. {cite}`requirements.references.outlines`
 
