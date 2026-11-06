@@ -1228,3 +1228,52 @@ fn commands_without_evidence_inputs_ignore_an_invalid_workspace_file() {
     assert!(!status.status.success());
     assert!(stderr.contains("evidence.allow"), "{stderr}");
 }
+
+// {test}`requirements.configuration.documentation`
+#[test]
+fn documented_configuration_examples_name_the_file_to_edit() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for document in [
+        "md/reference.md",
+        "md/requirements/configuration.md",
+        "md/requirements/authoring.md",
+    ] {
+        let text = fs::read_to_string(root.join(document)).unwrap();
+        let mut pieces = text.split("```toml\n");
+        let mut before = pieces.next().unwrap();
+        for block in pieces {
+            let (source, after) = block.split_once("\n```").unwrap();
+            // The prose paragraph introducing the example, ignoring reference
+            // role lines between it and the fence.
+            let intro = before
+                .trim_end()
+                .rsplit("\n\n")
+                .find(|paragraph| {
+                    !paragraph
+                        .lines()
+                        .all(|line| line.starts_with('{') || line.trim().is_empty())
+                })
+                .unwrap_or_default();
+            let user = intro.contains("config.toml`");
+            let workspace = intro.contains("habeas.toml`");
+            assert!(
+                user || workspace,
+                "{document}: example does not name its file:\n{intro}\n{source}"
+            );
+            let path = Path::new(document);
+            if user {
+                UserConfig::parse(source, path)
+                    .unwrap_or_else(|error| panic!("{document}: user file: {error}\n{source}"));
+            }
+            if workspace {
+                WorkspaceConfig::parse(source, path).unwrap_or_else(|error| {
+                    panic!("{document}: workspace file: {error}\n{source}")
+                });
+            }
+            checked += 1;
+            before = after;
+        }
+    }
+    assert!(checked >= 8, "{checked}");
+}

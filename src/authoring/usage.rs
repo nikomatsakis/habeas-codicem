@@ -254,6 +254,7 @@ impl UsageLog {
     }
 
     // {impl}`requirements.authoring.usage_storage`
+    // {impl}`requirements.configuration.state_location`
     // {impl}`requirements.authoring.usage_requests`
     pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {
         if let Some((index, started)) = self.active_request.take() {
@@ -271,6 +272,7 @@ impl UsageLog {
     }
 
     // {impl}`requirements.authoring.usage_storage`
+    // {impl}`requirements.configuration.state_location`
     pub(super) fn save(&self) -> io::Result<()> {
         let mut file = OpenOptions::new()
             .write(true)

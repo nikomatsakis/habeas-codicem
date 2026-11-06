@@ -127,3 +127,97 @@ fn issue_references(entries: &[String]) -> BTreeSet<String> {
     }
     issues
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.cli.fixme_summary`
+    fn strings(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|entry| (*entry).to_owned()).collect()
+    }
+
+    /// The judgment names listed under each verbose `###` heading.
+    // {test}`requirements.cli.fixme_summary`
+    fn verbose_groups(output: &str) -> Vec<(String, Vec<String>)> {
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        for line in output.lines() {
+            if let Some(heading) = line.strip_prefix("### ") {
+                groups.push((heading.to_owned(), Vec::new()));
+            } else if let Some(item) = line.strip_prefix("- `")
+                && let Some((_, names)) = groups.last_mut()
+                && let Some((name, _)) = item.split_once('`')
+            {
+                names.push(name.to_owned());
+            }
+        }
+        groups
+    }
+
+    // {test}`requirements.cli.fixme_summary`
+    #[test]
+    fn a_github_issue_url_alone_identifies_the_qualified_issue() {
+        assert_eq!(
+            issue_references(&strings(&[
+                "See https://github.com/owner/repo/issues/0042 for details"
+            ])),
+            BTreeSet::from(["owner/repo#42".to_owned()])
+        );
+        let mut summary = FixmeSummary::default();
+        summary.add(
+            "rules.url",
+            "requirement",
+            &strings(&["https://github.com/owner/repo/issues/7"]),
+        );
+        summary.add("rules.short", "example", &strings(&["FIXME(owner/repo#7)"]));
+        summary.add("rules.unqualified", "requirement", &strings(&["#7"]));
+        let output = summary.render(false);
+        assert!(
+            output.contains("- `owner/repo#7` — affects 2 judgments\n"),
+            "{output}"
+        );
+        assert!(output.contains("- `#7` — affects 1 judgment\n"), "{output}");
+        assert!(!output.contains("without an issue"), "{output}");
+    }
+
+    // {test}`requirements.cli.fixme_summary`
+    #[test]
+    fn verbose_output_lists_each_judgment_under_every_group_it_belongs_to() {
+        let mut summary = FixmeSummary::default();
+        summary.add(
+            "rules.both",
+            "requirement",
+            &strings(&["FIXME(#1) and FIXME(#2)", "#1 again"]),
+        );
+        summary.add("rules.one", "example", &strings(&["FIXME(#1)"]));
+        summary.add("rules.none", "requirement", &strings(&["no issue yet"]));
+        summary.add("rules.also_none", "example", &strings(&["#0 is not one"]));
+        let output = summary.render(true);
+        assert_eq!(
+            verbose_groups(&output),
+            [
+                ("`#1`".to_owned(), strings(&["rules.both", "rules.one"])),
+                ("`#2`".to_owned(), strings(&["rules.both"])),
+                (
+                    "FIXME without an issue".to_owned(),
+                    strings(&["rules.none", "rules.also_none"])
+                ),
+            ],
+            "{output}"
+        );
+        for line in [
+            "- `rules.both` (requirement)",
+            "- `rules.one` (example)",
+            "- `rules.also_none` (example)",
+            "<pre><code>FIXME(#1) and FIXME(#2)\n#1 again</code></pre>",
+        ] {
+            assert!(output.contains(line), "{output}");
+        }
+        assert!(
+            output.contains("- 2 judgments are marked FIXME without an issue\n"),
+            "{output}"
+        );
+        // Without --verbose, only the counts appear.
+        assert!(!summary.render(false).contains("rules.both"));
+    }
+}

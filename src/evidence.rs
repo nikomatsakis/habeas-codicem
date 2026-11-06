@@ -501,7 +501,11 @@ fn collect_definitions(
     definitions
 }
 
+/// Lists every file with `extension` under `dir` at any depth. A symlink to a
+/// file counts as a file; symlinked directories are not followed, so a cycle
+/// cannot repeat the walk.
 // {impl}`requirements.ci.coverage`
+// {impl}`requirements.ci.orphans`
 fn files_with_extension(
     root: &Path,
     dir: &Path,
@@ -544,9 +548,11 @@ fn files_with_extension(
                     continue;
                 }
             };
+            let is_file = kind.is_file()
+                || (kind.is_symlink() && fs::metadata(&path).is_ok_and(|target| target.is_file()));
             if kind.is_dir() {
                 stack.push(path);
-            } else if kind.is_file() && path.extension().is_some_and(|value| value == extension) {
+            } else if is_file && path.extension().is_some_and(|value| value == extension) {
                 files.push(path);
             }
         }

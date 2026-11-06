@@ -696,7 +696,7 @@ by hand. It MUST explain backend-specific options and credential-source referenc
 
 Create the user file at the [shared configuration location](configuration.md#locations-and-scope).
 For workspace settings, create `habeas.toml` in the directory whose descendants
-should use them. The nearest enclosing file wins. This complete workspace file
+should use them. The nearest enclosing file wins. This complete workspace `habeas.toml`
 selects the user's saved `cloud` configuration and makes a generated source
 directory readable while excluding its private subtree:
 {impl}`requirements.configuration.documentation`
@@ -719,8 +719,9 @@ records as a whole. A user's explicit project selection takes precedence over a
 workspace default; `--config` takes precedence over both. Remove the workspace
 default or configuration table to fall back to the user settings.
 
-For Ollama, this is a complete minimal file; replace `MODEL_TAG` with a model
-identifier available on the local server:
+For Ollama, this is a complete minimal user `config.toml`; it can also serve as
+a workspace `habeas.toml`. Replace `MODEL_TAG` with a model identifier available
+on the local server:
 
 ```toml
 version = 1
@@ -733,7 +734,8 @@ backend = "ollama"
 model = "MODEL_TAG"
 ```
 
-For Bedrock, this is a complete minimal file. Replace `MODEL_ID` with an available
+For Bedrock, this is a complete minimal user `config.toml`; it can also serve as
+a workspace `habeas.toml`. Replace `MODEL_ID` with an available
 model or inference-profile identifier, `research` with your AWS profile name,
 and `us-east-1` with your region:
 
@@ -750,7 +752,9 @@ aws_profile = "research"
 region = "us-east-1"
 ```
 
-This complete file combines Bedrock, local Ollama, and remote Ollama. Replace
+This complete user `config.toml` combines Bedrock, local Ollama, and remote
+Ollama. Its `[authoring.projects]` table is valid only in the user file, never
+in a workspace file. Replace
 `MODEL_ID` with an available Bedrock model or inference-profile identifier,
 `research` with your AWS profile name, `us-east-1` with your region, `MODEL_TAG`
 with an Ollama model identifier, `workstation` in the URL with your server, and

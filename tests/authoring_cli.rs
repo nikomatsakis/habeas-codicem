@@ -782,6 +782,51 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
     }
 }
 
+// {test}`requirements.cli.internal_detail_guidance`
+#[test]
+fn bundled_skills_direct_scoped_internal_requirements_instead_of_waivers() {
+    for (name, skill) in [
+        (
+            "habeas-requirements",
+            include_str!("../assets/skills/habeas-requirements/SKILL.md"),
+        ),
+        (
+            "habeas-evidence",
+            include_str!("../assets/skills/habeas-evidence/SKILL.md"),
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
+        ),
+    ] {
+        // Collapse line wrapping so phrases can be matched across lines.
+        let text = skill.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            text.contains("no uncited-function waiver")
+                || text.contains("no waiver for an uncited function"),
+            "{name}: {text}"
+        );
+        for phrase in [
+            "scoped to that area of internal code",
+            "`internal.config_parsing`",
+            "rather than one catch-all",
+            "get the user's agreement",
+            "with `{impl}`",
+            "run `habeas author --all` so the harness assesses that requirement's evidence",
+            "explains each implementing function",
+            "Do not use an internal-detail requirement to justify otherwise unspecified end-user-observable behavior",
+        ] {
+            assert!(text.contains(phrase), "{name} lacks {phrase:?}");
+        }
+        for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
+            assert!(
+                !text.to_lowercase().contains(waiver),
+                "{name} offers a waiver"
+            );
+        }
+    }
+}
+
 // {test}`requirements.authoring.usage_storage`
 #[cfg(unix)]
 #[test]
@@ -1648,6 +1693,30 @@ fn undeterminable_unwritable_or_project_state_fails_before_a_model_request() {
         fs::read_to_string(&fixture.evidence).unwrap(),
         fixture.original
     );
+}
+
+// {test}`requirements.configuration.state_location`
+#[cfg(unix)]
+#[test]
+fn state_reaching_the_project_through_a_symlink_is_refused() {
+    let server = Server::start(Vec::new());
+    let fixture = Fixture::new(&server.endpoint);
+    // A state root that is itself a symlink into the project, and one whose
+    // nearest existing ancestor is such a symlink.
+    let alias = fixture.temp.path().join("state-alias");
+    std::os::unix::fs::symlink(&fixture.project, &alias).unwrap();
+    for state in [alias.clone(), alias.join("not/yet/created")] {
+        let output = fixture
+            .command()
+            .env("XDG_STATE_HOME", &state)
+            .args(["author", SUBJECT, "--config", "mock"])
+            .output()
+            .unwrap();
+        assert_unrecorded_failure(&output, "must be outside the project repository");
+        assert!(!fixture.project.join("habeas").exists());
+        assert!(!fixture.project.join("not").exists());
+    }
+    assert!(server.finish().is_empty());
 }
 
 // {test}`requirements.configuration.state_location`

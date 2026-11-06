@@ -96,6 +96,7 @@ Habeas's bundled agent skills MUST direct agents reviewing code against requirem
 :::{req} internal_detail_guidance
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
+:impl: assets/skills/habeas-evidence/SKILL.md
 Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement scoped to one area of internal code, such as `internal.config_parsing`, rather than one catch-all requirement, obtain the user's agreement, mark the function with `{impl}`, and run `habeas author --all` for the harness to assess that requirement's evidence. That assessment MUST account for whether the requirement explains each implementing function's behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.
 :::
 

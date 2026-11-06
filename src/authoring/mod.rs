@@ -210,6 +210,7 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
 /// Resolves symlinks in the nearest existing ancestor of `path`, keeping the
 /// components that do not exist yet.
 // {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.configuration.state_location`
 fn resolved_location(path: &Path) -> io::Result<PathBuf> {
     let path = std::path::absolute(path)?;
     let existing = path

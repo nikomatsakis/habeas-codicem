@@ -73,6 +73,101 @@ fn session_start(project: &Path, cwd: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// Every `habeas` entry in the manifest's dependency tables.
+// {test}`requirements.cli.setup_local_path`
+fn habeas_dependencies(project: &Path) -> Vec<(String, toml_edit::Item)> {
+    let manifest: toml_edit::DocumentMut = fs::read_to_string(project.join("Cargo.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    ["dependencies", "dev-dependencies", "build-dependencies"]
+        .into_iter()
+        .filter_map(|table| {
+            let item = manifest.get(table)?.get("habeas")?.clone();
+            Some((table.to_owned(), item))
+        })
+        .collect()
+}
+
+// {test}`requirements.cli.setup_local_path`
+#[test]
+fn local_path_setup_adds_exactly_that_crate_once() {
+    let local_crate = fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temp = fixture();
+    let project = temp.path();
+    // A relative `--path` is resolved from the invocation directory.
+    let relative: std::path::PathBuf = if cfg!(unix) {
+        let up: std::path::PathBuf = project
+            .canonicalize()
+            .unwrap()
+            .components()
+            .skip(1)
+            .map(|_| "..")
+            .collect();
+        up.join(local_crate.strip_prefix("/").unwrap())
+    } else {
+        local_crate.clone()
+    };
+    assert!(cfg!(not(unix)) || relative.is_relative());
+    run(project, &["setup", "--path", relative.to_str().unwrap()]);
+    let first = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    let dependencies = habeas_dependencies(project);
+    assert_eq!(dependencies.len(), 1, "{first}");
+    let (table, item) = &dependencies[0];
+    assert_eq!(table, "dev-dependencies", "{first}");
+    let path = item
+        .get("path")
+        .and_then(|path| path.as_str())
+        .unwrap_or_else(|| panic!("habeas has a path: {first}"));
+    assert_eq!(
+        fs::canonicalize(project.join(path)).unwrap(),
+        local_crate,
+        "{first}"
+    );
+
+    // Repeating setup leaves the manifest exactly as it was.
+    run(project, &["setup", "--path", local_crate.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(project.join("Cargo.toml")).unwrap(),
+        first
+    );
+}
+
+// {test}`requirements.cli.setup_local_path`
+#[test]
+fn local_path_setup_keeps_an_existing_habeas_dev_dependency() {
+    let temp = fixture();
+    let project = temp.path();
+    let mut manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    manifest.push_str("\n[dev-dependencies]\nhabeas = \"0.1\"\n");
+    fs::write(project.join("Cargo.toml"), &manifest).unwrap();
+    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert_eq!(
+        fs::read_to_string(project.join("Cargo.toml")).unwrap(),
+        manifest
+    );
+}
+
+// {test}`requirements.cli.setup_local_path`
+#[test]
+fn local_path_setup_rejects_a_missing_crate_directory() {
+    let temp = fixture();
+    let project = temp.path();
+    let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["setup", "--path", "no-such-crate"])
+        .current_dir(project)
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("Cargo.toml")).unwrap(),
+        manifest
+    );
+    assert!(habeas_dependencies(project).is_empty());
+}
+
 // {test}`requirements.cli.setup`
 // {test}`requirements.cli.setup_css`
 // {test}`requirements.cli.setup_local_path`

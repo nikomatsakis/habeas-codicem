@@ -139,7 +139,7 @@ checks the recorded inputs' existence and contents. Loading path policy MUST NOT
 resolve credentials or validate unused authoring settings.
 :::
 
-For example, this is a complete user file with no feature settings:
+For example, this is a complete user `config.toml` with no feature settings:
 
 ```toml
 version = 1
@@ -149,8 +149,8 @@ Evidence authoring adds `[authoring]` and its subtables to both files. Complete
 examples and the definitions of their authoring structures appear in
 [Authoring evidence](authoring.md#serialized-configuration-data-model).
 
-A workspace file can select a model configuration saved in the user file and
-permit generated sources while excluding one subtree:
+A complete workspace `habeas.toml` can select a model configuration saved in the
+user file and permit generated sources while excluding one subtree:
 
 ```toml
 version = 1

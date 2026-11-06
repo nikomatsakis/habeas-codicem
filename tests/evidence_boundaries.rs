@@ -299,6 +299,71 @@ fn nested_evidence_files_are_reported() {
     }
 }
 
+// {test}`requirements.ci.orphans`
+#[test]
+fn evidence_named_for_terms_or_nothing_is_reported_at_the_top_level() {
+    let temp = fixture();
+    let root = temp.path().join("project");
+    fs::write(
+        root.join("md/rules.md"),
+        ":::{req} ready\nRead the data.\n:::\n\n:::{definition} datum\n:phrase: datum\n\nA datum.\n:::\n",
+    )
+    .unwrap();
+    assert!(validate_repository(&root).unwrap().errors.is_empty());
+    let record = fs::read(root.join("evidence/rules.ready.json")).unwrap();
+    for name in ["rules.datum", "rules.ghost"] {
+        fs::write(root.join(format!("evidence/{name}.json")), &record).unwrap();
+    }
+    let errors = validate_repository(&root).unwrap().errors;
+    let orphans: Vec<_> = errors
+        .iter()
+        .filter(|error| error.ends_with(": no matching requirement or example"))
+        .collect();
+    assert_eq!(
+        orphans,
+        [
+            "evidence/rules.datum.json: no matching requirement or example",
+            "evidence/rules.ghost.json: no matching requirement or example",
+        ],
+        "{errors:?}"
+    );
+    // Other files under evidence/ are not evidence JSON files.
+    fs::remove_file(root.join("evidence/rules.datum.json")).unwrap();
+    fs::remove_file(root.join("evidence/rules.ghost.json")).unwrap();
+    fs::write(root.join("evidence/notes.txt"), "not evidence").unwrap();
+    assert!(validate_repository(&root).unwrap().errors.is_empty());
+}
+
+// {test}`requirements.ci.orphans`
+#[cfg(unix)]
+#[test]
+fn symlinked_evidence_json_files_are_checked_like_other_files() {
+    let temp = fixture();
+    let root = temp.path().join("project");
+    let outside = temp.path().join("outside.json");
+    fs::copy(root.join("evidence/rules.ready.json"), &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("evidence/rules.ghost.json")).unwrap();
+    fs::create_dir(root.join("evidence/nested")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("evidence/nested/rules.ready.json")).unwrap();
+    let errors = validate_repository(&root).unwrap().errors.join("\n");
+    for label in [
+        "evidence/rules.ghost.json",
+        "evidence/nested/rules.ready.json",
+    ] {
+        assert!(
+            errors.contains(&format!("{label}: no matching requirement or example")),
+            "{errors}"
+        );
+    }
+    // A symlink with the expected name is accepted as that definition's file.
+    fs::remove_file(root.join("evidence/rules.ghost.json")).unwrap();
+    fs::remove_dir_all(root.join("evidence/nested")).unwrap();
+    fs::remove_file(root.join("evidence/rules.ready.json")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("evidence/rules.ready.json")).unwrap();
+    let report = validate_repository(&root).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.ci.input_containment`
 // {test}`requirements.ci.outline_inputs`

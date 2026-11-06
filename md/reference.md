@@ -254,7 +254,7 @@ Replace `MODEL_ID` with your available Bedrock model or inference-profile ID,
 `http://localhost:11434`; add `endpoint = "http://workstation:11434"` to its table
 for a remote server, replacing `workstation` with that server's host name. For
 authentication, add `api_key_env = "OLLAMA_API_KEY"` and set that variable outside
-the file. This complete user file uses a remote, authenticated Ollama server;
+the file. This complete user `config.toml` uses a remote, authenticated Ollama server;
 replace `MODEL_TAG`, `workstation`, and `OLLAMA_API_KEY` as above:
 
 ```toml
@@ -313,7 +313,7 @@ whether the write succeeded.
 
 Change `authoring.default` in the user file to switch the default, or add a
 per-project selection using its canonical absolute path. In this complete user
-file, replace `/absolute/path/to/project` with that path and `MODEL_TAG` as above:
+`config.toml`, replace `/absolute/path/to/project` with that path and `MODEL_TAG` as above:
 
 ```toml
 version = 1
@@ -339,7 +339,7 @@ format. {cite}`requirements.authoring.configuration_storage`
 Bedrock runs assessments concurrently by default, using the available logical CPU
 count. Ollama runs one at a time. Override either default with a positive
 `concurrency` value alongside `backend` and `model` in its configuration table.
-In this complete user file, replace `MODEL_ID` as above; delete `concurrency` to
+In this complete user `config.toml`, replace `MODEL_ID` as above; delete `concurrency` to
 restore the default:
 
 ```toml
@@ -361,7 +361,7 @@ For Bedrock, put the Converse names `temperature`, `maxTokens`, `topP`, and
 `stopSequences` directly in that options table. Habeas maps them to Converse's
 `inferenceConfig`; other keys become model-specific `additionalModelRequestFields`.
 Use these flat keys without an `inferenceConfig` wrapper. For example, in this
-complete user file (replace `MODEL_ID` as above):
+complete user `config.toml` (replace `MODEL_ID` as above):
 
 ```toml
 version = 1

@@ -73,9 +73,15 @@ reference does not cover its functions. Mark code `{impl}` where it implements
 part of a definition and tests `{test}` where they are designed to verify it; use
 `{cite}` only for related code that does neither. A requirement can `{impl}`
 another requirement it refines, and an example can `{test}` or `{cite}` a
-requirement. When no existing
+requirement. There is no waiver for an uncited function. When no existing
 requirement explains behavior, propose an appropriate requirement rather than
-waiving the function or inventing evidence.
+inventing evidence. If the function is only an internal implementation detail,
+propose an explicit requirement scoped to that area of internal code, such as
+`internal.config_parsing`, rather than one catch-all, get the user's agreement,
+mark the function with `{impl}`, and run `habeas author --all` so the harness
+assesses that requirement's evidence; that review checks that the requirement
+explains each implementing function. Do not use an internal-detail requirement
+to justify otherwise unspecified end-user-observable behavior.
 Missing evidence or a truthful false judgment is expected while implementation
 is pending; do not write placeholder evidence yourself.
 
