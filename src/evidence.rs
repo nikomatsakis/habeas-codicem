@@ -482,14 +482,7 @@ fn collect_definitions(
 
     for (name, definition) in &definitions {
         if definition.kind == DefinitionKind::Example
-            && !reference_roles(&definition.text, true)
-                .into_iter()
-                .any(|reference| {
-                    matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)
-                        && definitions
-                            .get(reference.name)
-                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)
-                })
+            && !example_references_requirement(definition, &definitions)
         {
             errors.push(format!(
                 "{}: example {name} must reference at least one requirement with {{cite}} or {{test}}",
@@ -499,6 +492,24 @@ fn collect_definitions(
     }
 
     definitions
+}
+
+/// Whether an example's text has a valid `{cite}` or `{test}` reference to a
+/// requirement.
+// {impl}`requirements.examples.definition`
+// {impl}`requirements.references.rust_item_coverage`
+pub(crate) fn example_references_requirement(
+    example: &Declaration,
+    definitions: &BTreeMap<String, Declaration>,
+) -> bool {
+    reference_roles(&example.text, true)
+        .into_iter()
+        .any(|reference| {
+            matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)
+                && definitions
+                    .get(reference.name)
+                    .is_some_and(|target| target.kind == DefinitionKind::Requirement)
+        })
 }
 
 /// Lists every file with `extension` under `dir` at any depth. A symlink to a

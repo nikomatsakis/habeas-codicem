@@ -142,9 +142,15 @@ fn missing_function_references(
             .iter()
             .any(|role| {
                 role.kind != crate::ReferenceKind::Term
-                    && definitions
-                        .get(role.name)
-                        .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
+                    && definitions.get(role.name).is_some_and(|d| match d.kind {
+                        crate::DefinitionKind::Requirement => true,
+                        // An example counts only when it traces to a
+                        // requirement itself.
+                        crate::DefinitionKind::Example => {
+                            crate::evidence::example_references_requirement(d, definitions)
+                        }
+                        crate::DefinitionKind::Term => false,
+                    })
             })
         {
             cited[comment.owner] = true;
@@ -490,6 +496,71 @@ fn test_helper() {}
                 .map(|(_, _, name)| name)
                 .collect::<Vec<_>>(),
             ["uncited_trait_method", "outer", "test_helper"]
+        );
+    }
+
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn an_example_counts_only_when_it_references_a_requirement() {
+        let mut definitions = definitions();
+        let example = |text: &str| Declaration {
+            kind: DefinitionKind::Example,
+            text: text.replace("CITE", "{cite}").replace("TEST", "{test}"),
+            source: "md/requirements.md:9".to_owned(),
+            file: "md/requirements.md".to_owned(),
+            line_start: 9,
+            line_end: 9,
+            raw_lines: vec![],
+            anchors: vec![],
+        };
+        definitions.insert(
+            "requirements.tested".to_owned(),
+            example("A tested case. TEST`requirements.example`"),
+        );
+        definitions.insert("requirements.orphan".to_owned(), example("No requirement."));
+        definitions.insert(
+            "requirements.chained".to_owned(),
+            example("Only another example. CITE`requirements.case`"),
+        );
+        definitions.insert(
+            "terms.word".to_owned(),
+            Declaration {
+                kind: DefinitionKind::Term,
+                ..example("A word.")
+            },
+        );
+        definitions.insert(
+            "requirements.termed".to_owned(),
+            example("Only a term. CITE`terms.word`"),
+        );
+        let source = r#"
+// @test@`requirements.case`
+fn cites_example() {}
+// @test@`requirements.tested`
+fn tests_example() {}
+// @test@`requirements.orphan`
+fn orphan_example() {}
+// @test@`requirements.chained`
+fn chained_example() {}
+// @test@`requirements.termed`
+fn termed_example() {}
+// @impl@`terms.word`
+fn names_a_term() {}
+"#
+        .replace("@impl@", "{impl}")
+        .replace("@test@", "{test}");
+        let missing = missing_function_references(&source, &definitions).unwrap();
+        assert_eq!(
+            missing
+                .into_iter()
+                .map(|(_, _, name)| name)
+                .collect::<Vec<_>>(),
+            [
+                "orphan_example",
+                "chained_example",
+                "termed_example",
+                "names_a_term"
+            ]
         );
     }
 
