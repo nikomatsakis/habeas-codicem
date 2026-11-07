@@ -1,8 +1,8 @@
 {
   "requirement": "Each documented profile defines which grammar nodes are comments; the Markdown\nprofile's comments are HTML comment blocks, so an inline HTML comment within a\nparagraph is text of its section. In every supported language, comments on consecutive lines with no other source\nbetween them MUST form one comment run. A comment that follows other source on\nthe same line, including another comment, MUST form a run by itself and MUST belong to the innermost outline node\ncontaining that line. Any other run MUST belong to the next outline node that\nstarts after it within the smallest node containing it; when that container has\nno such node, the run MUST belong to the container, which is the root node at top\nlevel. A profile MAY bind a comment kind to its container\ninstead: such a run MUST belong to the smallest node containing it. The Rust\nprofile MUST bind inner doc comments (`//!`, `/*!`) to their container, so a\nfile-level inner doc comment belongs to the root node. A reference in a comment MUST count for the node its run belongs to under\n{cite}`requirements.references.rust_item_coverage` and\n{cite}`requirements.references.authoring_inputs`.",
   "determination": true,
-  "rationale": "**Judgment: the sources satisfy `requirements.references.outline_comments`.** I read the code and tests against each obligation and found no gap that needs a FIXME. The one rough edge (item 5 below) is minor.\n\n**Implementation**\n\n- **Profiles define comments.**\n  - `Profile::is_comment` is set per language: Rust (`line_comment`/`block_comment`), Python, TOML, YAML and TypeScript/TSX via `kind_is_comment`, and CSS via `is_comment`, which adds `js_comment`.\n  - Markdown's `is_comment` (`src/outline/markdown.rs`) accepts only an `html_block` that starts with `<!--` and ends with `-->`. An inline HTML comment therefore stays paragraph text of its section.\n  - Every profile static carries the `{impl}` marker.\n- **Runs.** `assign_comments` (`src/outline/mod.rs`) groups comments into runs. A comment joins the previous one only if all of these hold:\n  - The two have the same container binding.\n  - Neither follows code on its line (`trails_code`).\n  - The gap between them is whitespace.\n  - The next comment starts on the line after the previous one ends, or the same line.\n  \n  This gives \"consecutive lines, no other source between\" as one run. A comment that follows code, including another comment, is its own run.\n- **Trailing comments.** `trailing_owner` assigns the innermost node whose pre-widening line range covers the line, and the root when none does. This matches the requirement.\n- **Other runs.** `run_owner` finds the smallest node whose byte range contains the run. It returns the first child starting at or after the run's end, otherwise the container. The container is the root at top level.\n- **Container binding.** The Rust profile's `comment_binds_to_container` is `is_inner_doc_comment`, covering `//!` and `/*!`. Such a run belongs to the smallest containing node, which is the root at file level. Other profiles use `never`.\n- **References count for the owning node.**\n  - `rust_coverage::missing_function_references` credits a reference to `comment.owner`, which carries out the `rust_item_coverage` half.\n  - For `authoring_inputs`, `reference_selector` uses `owner_at_line`, which prefers the comment owner. The `references` tool and `reference_set_digest` do the same.\n  - `nodes_for_lines` and `nodes_for_range` select comment owners when asked.\n- **Extra behaviour.** Widening an owner's line range to cover its comments, and YAML's `trailing_comments_outside`, are not stated in this requirement. They are consistent with the outline requirements and the `selector_raw_lines` example, so I do not count them as gaps.\n- **Judgment call on run splitting.** Runs split when the container binding differs, so `//! x` followed by `// y` on the next line form two runs. The requirement does not say how mixed runs resolve, and this reading is consistent with the \"MAY bind a comment kind\" clause.\n- **Minor edge.** `owner_at_line` takes the first owner when several comments with different owners touch one line, such as `/* a */ /* {impl}… */`. This is a rare case.\n\n**Tests** (`src/outline/tests.rs` and others)\n\n- `comment_runs_belong_to_the_next_node_or_their_container` covers:\n  - file-level `//!` going to the root\n  - a run before a node\n  - a trailing comment\n  - a comment inside a function\n  - a floating run going to the next node (`mod[m]`)\n  - module `//!`\n  - the tail of a module going to the module\n  - a top-level tail going to the root\n  - line-range widening\n- `comment_between_two_fns_belongs_to_the_next`, `trailing_comment_after_last_fn_in_mod_belongs_to_the_mod` and `top_level_comment_with_nothing_after_belongs_to_the_root` cover single-case boundaries.\n- `comment_after_code_on_a_line_belongs_to_that_lines_node` covers nested trailing cases.\n- `a_comment_after_another_comment_on_its_line_forms_its_own_run` covers a comment following another comment.\n- `file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root` covers both `//!` and `/*! */`.\n- `comment_runs_follow_the_same_rules_in_every_language` covers Python, TS, TSX, CSS, TOML, YAML and Markdown.\n- `markdown_comments_are_html_comment_blocks_not_inline_comments` covers the Markdown profile rule.\n- The YAML tests, including `workflow_job_marks_belong_to_the_job_that_follows`, cover the grammar-specific trailing-comment case.\n- The consumers are tested too:\n  - `references_contribute_their_owning_outline_nodes` checks authoring inputs.\n  - `search_returns_innermost_nodes_and_comment_owners` checks search.\n  - `reference_set_digest_tracks_impl_and_test_edges_by_node` checks the digest.\n\nTests cover the main boundaries and failure cases.",
-  "references": "dd4976c5a95a14353b652e29c835089204bf2937354b97c11c02516907811352",
+  "rationale": "## Judgment\n\nThe sources satisfy `requirements.references.outline_comments`. The `{impl}` marking is complete and the tests cover the design space. I found no gaps, and there are no FIXME acknowledgements.\n\n## Implementation\n\n**Profiles define comments.**\n- `Profile.is_comment` (`src/outline/profile.rs`) is set per profile.\n- Rust uses `line_comment` and `block_comment`.\n- CSS uses `comment` or `js_comment`.\n- Python, TOML, TypeScript/TSX and YAML use the shared `kind_is_comment`.\n- Markdown uses `src/outline/markdown.rs::is_comment`, which accepts only `html_block` nodes that start with `<!--` and end with `-->`. An inline HTML comment is therefore never a comment and stays paragraph text of its section.\n\n**Runs.**\n- `assign_comments` (`src/outline/mod.rs`) joins comments into one run only when four conditions hold:\n  - neither comment follows code on its line (`trails_code`);\n  - the gap between them is whitespace only;\n  - the next comment starts on the previous comment's end line or the line after;\n  - both have the same container-binding.\n- A comment that follows code, including one that follows another comment on the same line, therefore forms a run alone.\n- Trailing runs go to `trailing_owner`, which descends to the innermost node whose line range covers the line.\n- Other runs go to `run_owner`. It finds the smallest node containing the run and returns the first child starting after the run, or the container itself (the root at top level) when there is none.\n\n**Container binding.**\n- `comment_binds_to_container` is wired through `DraftComment` and `record_comment`.\n- Rust sets it to `is_inner_doc_comment` (`//!`, `/*!`). Every other profile sets it to `never`.\n- `run_owner` returns the smallest containing node for such runs, so a file-level inner doc comment belongs to the root.\n- Because the binding flag is part of the join condition, an adjacent `//!` line and `//` line form separate runs. A strict reading of the first sentence (\"consecutive lines … MUST form one comment run\") could object. The requirement's own \"such a run\" wording and the container-binding rule need this split, and the tests assert it for `mod m { //! Module docs. // above inner fn inner() }`.\n\n**References count for the owning node.**\n- `Outline::owner_at_line` returns the comment owner on the line, otherwise the smallest innermost node covering it.\n- It is used by `reference_selector` (`src/authoring/inputs.rs`), `citation_items` (`src/citations.rs`) and `reference_set_digest` (`src/evidence.rs`).\n- `comment_fences` (`src/fenced.rs`) carries each run's owner into `SourceFence.owner`. `src/rust_coverage.rs` consumes it under `rust_item_coverage`, which is named in the requirement and carries its own `{impl}`.\n- Every function that implements part of the rule is marked `{impl}` for this requirement: the profile statics, `Profile`, the comment helpers, `assign_comments`, `trailing_owner`, `run_owner`, `content_end`, the `Outline` query methods and the consumers listed above.\n- `src/authoring/tools.rs::references` also calls `owner_at_line`, but only to report an item. It is not marked for this requirement. I did not count that as a gap: the requirement's reference-counting sentence names only `rust_item_coverage` and `authoring_inputs`, and `reference_index` carries its own `{cite}` of this requirement for the owner selector it reports.\n\n## Tests\n\nThe `{test}` references are in `src/outline/tests.rs`, `src/fenced.rs`, `src/evidence.rs`, `src/authoring/inputs.rs` and `src/authoring/tools.rs`. They cover these cases:\n\n- **Next-node, container and root ownership:** `comment_runs_belong_to_the_next_node_or_their_container`, `comment_between_two_fns_belongs_to_the_next`, `trailing_comment_after_last_fn_in_mod_belongs_to_the_mod` and `top_level_comment_with_nothing_after_belongs_to_the_root`. Together they cover a run before a node, a run after the container's last node, the root at top level, and blank-line separation of runs.\n- **Trailing comments:** `comment_after_code_on_a_line_belongs_to_that_lines_node` and `a_comment_after_another_comment_on_its_line_forms_its_own_run` (`/* first */ /* second */` gives the root).\n- **Inner doc comments:** `file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root`, for `//!` and `/*!`, plus the `//!`-in-`mod` case above.\n- **Every language:** `comment_runs_follow_the_same_rules_in_every_language` runs Python, TS, TSX, CSS, TOML, YAML and Markdown through the same rules. The YAML-specific tests (`yaml_comments_before_a_key…` and `workflow_job_marks_belong_to_the_job_that_follows`) cover the `trailing_comments_outside` quirk.\n- **Markdown:** `markdown_comments_are_html_comment_blocks_not_inline_comments` asserts that an inline HTML comment is not a comment and is text of its section.\n- **References counting for the owning node:** `reference_set_digest_tracks_impl_and_test_edges_by_node` and `references_contribute_their_owning_outline_nodes`, plus `comment_fences_close_within_one_comment_run` for run-scoped fences and owners.\n\nThe tests cover the interesting boundaries and the failure-adjacent cases (unclosed fence in a separate run, comment with nothing after it).",
+  "references": "ae7b18abc9cbaf8011854d8da13bfeac79482275290eecd88160761f4d995f2b",
   "inputs": [
     {
       "requirements": "requirements.references.outline_comments",
@@ -35,7 +35,7 @@
       ],
       "text": [
         ":::{req} rust_item_coverage",
-        "During repository validation, Habeas MUST parse every first-party Rust source file in the project: every `.rs` file except those under `.git` or `target` directories at any depth or under the project-root `book`, `evidence`, or `vendor` directories. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
+        "During repository validation, Habeas MUST parse every first-party Rust source file in the project: every `.rs` file except those under `.git` or `target` directories at any depth or under the project-root `book`, `evidence`, or `vendor` directories. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
         ":::"
       ]
     },
@@ -73,7 +73,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "fn[reference_selector]",
-      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
+      "hash": "75fcd50d474e901c1fad0e540f035103e29f98a664b9329b70a5843917c9723f"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -86,14 +86,29 @@
       "hash": "3ccf9af34dbd89804259953f2034d4d0108fc3522e3a28bc4792632d72ac5865"
     },
     {
+      "file": "src/citations.rs",
+      "item": "fn[citation_items]",
+      "hash": "1f07b2d4daadae106de045c08f9e30b309986ce3d0350a7a8c6bca4a16dbe064"
+    },
+    {
       "file": "src/evidence.rs",
       "item": "fn[reference_set_digest]",
-      "hash": "ec478c2139c990c709c04d3ca855e4e33533d491f91f179c45c402ccc790a509"
+      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
       "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[comment_fences]",
+      "hash": "b40eb7fb19f2399a96f3bb1821a848d32d36e3d6f6a49e3b872d83ea765950ba"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]/fn[comment_fences_close_within_one_comment_run]",
+      "hash": "e358905008efd2bb774ea1d5c6d0db75c748a70db2a40a0516aaeb5cba4ef1bc"
     },
     {
       "file": "src/inputs.rs",
@@ -123,7 +138,7 @@
     {
       "file": "src/outline/mod.rs",
       "item": "struct[OutlineComment]",
-      "hash": "a759ad0ae28972043bf872664d33978c70598bbb0a7dbfd850bace1efbbe9d1d"
+      "hash": "706f6dc870633f6ee2c87012796d954a116a72df0481f68107b12b970646b041"
     },
     {
       "file": "src/outline/mod.rs",
@@ -158,7 +173,7 @@
     {
       "file": "src/outline/mod.rs",
       "item": "fn[assign_comments]",
-      "hash": "9c002ba5be7ea1e4ef5a8e13cd64abb4f579be8bf8cd487f591a07dbbdfa0fa7"
+      "hash": "581f3667d708d7150e6673dc5866f435b08597e57cfdcf10e5aa3dc412c047c1"
     },
     {
       "file": "src/outline/mod.rs",
@@ -321,6 +336,11 @@
       "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
     },
     {
+      "file": "src/fenced.rs",
+      "item": "fn[source_fences]",
+      "hash": "1186144bd1200de2e8b0665a8af6e252fb87847a435f110e00f4f44518133f7a"
+    },
+    {
       "file": "src/inputs.rs",
       "item": "fn[outline_inputs_for_lines]",
       "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
@@ -343,22 +363,95 @@
     {
       "file": "src/rust_coverage.rs",
       "item": "fn[missing_function_references]",
-      "hash": "d4b988e82c7d1e3abc42602ad05d26d1bdb8eff836fd3e308d2ea1fb1e0c1bd4"
+      "hash": "bcab391793125a9f9a372c28d1755bfc6439d01ba47ac9d452f6e51b9f35ac0e"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "4e923f36ec03f20ddff16615ed24e35890c05b685815359ad20bbb6380f7eb26"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
-      "hash": "80f0e04a167277add8bf139cf1fb69dfb86907523e39504ef7455791f0e31e63"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "f0871425d59d45d4602323d4ecac3a1335967a6301c2a7c8ebbf171f9ec7c89f"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]/section[References%20as%20authoring%20inputs]",
-      "hash": "129b55e097d757c1290d72bb678ff4f026ad559804142069bb7500986fe3cc22"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[without_confirm_or_after_a_false_judgment_one_assessment_is_recorded]",
+      "hash": "111841924669073135352a536615c9c79e3309ec17ea46b2b68695cb3890866a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[disagreeing_assessments_verify_the_less_favorable_one]",
+      "hash": "2b254bc63ad57042331efec878d5911b8ff5771b6c86f9c2af913f983065dfc1"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
+      "hash": "093c6a6a626fb34de7209772edeb2ff1c84d48398b03bfcd04b863245a6ad272"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[search]",
+      "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]",
+      "hash": "effa7e378d3894b50e1d7961873579a030801077ba1d1e500d6d0c2d768b3b9d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]",
+      "hash": "ca4c66b03ccee76bdf4e29484650d1f71de21c2c45eac7b944a537aaddd2a39c"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "struct[OutlineNode]",
+      "hash": "c10086f95a02f34d4f22a348493481554c532e469e621fa5e790d1a85090beea"
+    },
+    {
+      "file": "src/outline/plain.rs",
+      "item": "static[PROFILE]",
+      "hash": "c7ee59cc7a0c87ae0f4ab527834e28bff8159e38b46769ca16d59b5c5bb19052"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Look%20up%20definitions%20and%20references:%20`references`]",
+      "hash": "c56469500f8c5dc38ef1136050d09962f32e90b81c4c24dd146965d83874d1d9"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Submit%20the%20result:%20`submit_judgment`]",
+      "hash": "96de4010eedd501d7e11518ad922ab6c705bbf961a3aaff5cc3477b95d4011c8"
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     }
   ]
 }

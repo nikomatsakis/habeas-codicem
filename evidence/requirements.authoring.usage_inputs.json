@@ -1,8 +1,8 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
-  "determination": false,
-  "rationale": "**Verdict: false.** The behavior looks sound and well tested. The gap is that one piece of the implementation has no `{impl}` marker for this requirement.\n\n**What is implemented correctly**\n- `UsageLog::prepared` (`src/authoring/usage.rs`) records one `InputUsage` per prepared input.\n  - Each record carries an origin (`mandatory`, or the tool name such as `habeas` or `ripgrep`) and a kind (`outline`, `requirements`, `definition`, or `builtin`).\n  - It stores UTF-8 bytes (summed `str::len` plus newlines) and lines (the length of the text array).\n  - It stores `components`, which is the number of matched declarations for a requirements input and 1 otherwise.\n  - It stores `unique`, which is false when an identical input was already seen, so repeated reads are distinguished.\n- Prepared versus sent is tracked with `submitted_in_request` (set in `begin_request`) and `sent_in_request` (set in `end_request` only when the response carried usage). A failed or retried request therefore does not mark inputs as sent.\n- `UsageLog::tool`, `skipped_tool` and the `tool_failures` map count successful and failed tool calls, including `list_files`.\n- `list_files`, `outline` and `references` return `inputs: Vec::new()` in `src/authoring/tools.rs`. Directory listings therefore count as tool calls but never become inputs in the usage log or the evidence.\n- Additional inputs from `habeas` and `ripgrep` are recorded through `converse`, which calls `usage.prepared(call.function.name, &delivery.inputs)`.\n- The follow-up conversations record their own mandatory inputs via `followup_sources`, which is marked.\n\n**Tests**\n- The unit test `input_metadata_counts_components_and_reads_without_persisting_source` covers kind, bytes (including a multibyte character), lines, components, unique versus repeated, origin, and the null → submitted → sent progression.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` covers a failed request, so the input is submitted but not sent, followed by a successful retry.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` covers `list_files` counted as a tool call with no inputs, and failed versus skipped calls.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` covers retries.\n- The CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` covers an end-to-end repeated `habeas` read (`unique == false`, `sent_in_request == 1`), a failed read, `list_files` counted in `tool_call_count`, no `.` or `absent.txt` in the evidence, and mandatory definition inputs with bytes > 0.\n- Minor coverage thinness: the CLI test does not assert directly that the usage inputs omit the `list_files` listing, and it does not check `ripgrep`-origin usage inputs. The unit tests and the code structure cover both points.\n\n**Gap**\n- `assess_subject` (`src/authoring/mod.rs`, lines 462–538) contains the call that records the first conversation's mandatory inputs: `usage.prepared(\"mandatory\", sources.mandatory_inputs())`.\n- Its marker block lists `confirmation`, `usage_storage` and `mandatory_inputs`, but not `usage_inputs`.\n- `configured_record` does carry `{impl}` for `usage_inputs`, but it only prepares sources and calls `assess_subject`. It does not record usage.\n- The code that implements part of this requirement is therefore not marked as implementing it.\n- Under the assessment rule, unmarked implementing code is a gap. Nothing in the sources acknowledges it with a FIXME.\n- `tool_name`, which feeds the tool-call counts that the file-discovery obligation depends on, is marked only for `usage_requests` and `usage_storage`. This is a smaller omission.",
-  "references": "3fc6c86a78c0f7d2f7405cefcb10a220d2f2fbdbac9dcbcb8125505ff922dbd9",
+  "determination": true,
+  "rationale": "**Judgment: requirements.authoring.usage_inputs is satisfied.** The implementation covers every obligation and the tests exercise the interesting cases. I have two minor reservations about marking and aggregation, set out at the end.\n\n**Implementation**\n- **Mandatory inputs, sizes and kinds.**\n  - `UsageLog::prepared` (`src/authoring/usage.rs`) pushes one `InputUsage` per input, with `origin`, `kind`, `bytes`, `lines`, `components`, `unique`, `submitted_in_request` and `sent_in_request`.\n  - `kind` is one of `outline`, `requirements`, `builtin` or `definition`.\n  - `bytes` is the sum of `str::len` over the text lines plus the newline separators, so it counts UTF-8 bytes. `lines` is the length of the text array.\n  - `components` is `matches.len()`, which gives the number of matched declarations for a requirements input.\n  - The first request's mandatory inputs are recorded by `assess_subject` with `usage.prepared(\"mandatory\", …)`.\n  - Follow-up conversations (second assessment, verification) record theirs in `followup_sources`.\n- **Additional inputs.** `converse` calls `usage.prepared(<tool name>, &delivery.inputs)` for every successful tool delivery. Inputs from `habeas` and `ripgrep`, including the terminology they add, get the same size, kind and line records, with the tool name as `origin`.\n- **Unique versus repeated reads.** `unique` comes from `self.seen.insert(input.to_string())`, so any repeat of an identical input is flagged `unique: false`. That includes a repeat of a mandatory input.\n- **Successful versus failed reads.** `UsageLog::tool(name, failed)` increments `tool_calls` and, on failure, `tool_failures`. Unknown tool names are folded into \"unknown\" by `tool_name`. `converse` marks `dispatch` errors as failed. Failed reads add no input record.\n- **Prepared versus sent.** `begin_request` stamps `submitted_in_request` on all prepared inputs. `end_request` stamps `sent_in_request` only when the provider returned usage, so a failed request leaves inputs unsent. Retries then set the later index.\n- **File discovery.** `list_files` returns `inputs: Vec::new()` (`tools.rs`), so nothing is recorded as an input. `converse` still calls `usage.tool(\"list_files\", …)`, so it counts as a tool call.\n\n**Tests**\n- **`input_metadata_counts_components_and_reads_without_persisting_source`** covers:\n  - kind;\n  - UTF-8 byte count (using \"λ\");\n  - line count;\n  - `components == 2` for a requirements input;\n  - repeated reads (`unique` true, then false);\n  - the `submitted_in_request` and `sent_in_request` transitions;\n  - no source content in the stored usage.\n- **`failed_submission_can_be_confirmed_on_a_later_attempt`** checks that a failed request leaves `sent_in_request` null until the retry succeeds.\n- **`throttled_requests_retry_unchanged_and_record_every_attempt`** checks that the retry request is the sent one (submitted in request 0, sent in request 8).\n- **`tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text`** covers tool call, failure and skip counts.\n- **The CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free`** goes end to end:\n  - `list_files` is counted as a tool call with no `list_files` input;\n  - `ripgrep` and `habeas` inputs have bytes and lines greater than zero;\n  - there is a unique `habeas` input and a repeated one (`unique == false`, `sent_in_request == 1`);\n  - a failed `habeas` read shows up in `tool_failures`;\n  - a mandatory definition input has bytes greater than zero;\n  - no source text leaks into the usage record.\n- **Tool-level tests** assert that `list_files`, `outline` and `references` deliver no inputs.\n\n**Reservations (not enough to fail)**\n- Counts \"by evidence kind\" are stored as per-input records with a `kind` field, not as pre-aggregated totals. They are trivially derivable, and I treat that as satisfying the requirement.\n- The `seen` field and the `inputs` field in `UsageLog` and `UsageRecord` carry only `usage_storage` or `usage_requests` markers, not `usage_inputs`. The behavior is implemented in the marked `prepared`, `begin_request` and `end_request`, so I treat this as a minor marking omission.\n- The `builtin` kind is an extra category beyond evidence kinds. It is harmless and is justified by the mandatory-inputs handling of built-ins.",
+  "references": "dc43fb7d9d6f3d57673af4f00f38c1477c5deda399f79d1bccb7a3770e5c7190",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -25,6 +25,11 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
       "hash": "3b8b3aec7e741614c5864597673dbddd5718e23f570ee74f3213e9e5f317c1ec"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess_subject]",
+      "hash": "450b832f896651df6036bab9a4ef65b5df73ff2c153a94d5e212d6c8eb31eb17"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -73,6 +78,11 @@
     },
     {
       "file": "src/authoring/usage.rs",
+      "item": "fn[tool_name]",
+      "hash": "a13e77cf2b4fcda720345a3552362174c591a96353af831fc2caa7fec8762b9f"
+    },
+    {
+      "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
       "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
     },
@@ -89,7 +99,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+      "hash": "f76c94b0daa3865870b0c221dc99175a60089e7cf63d62019b890c7d893235e0"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -178,8 +188,23 @@
     },
     {
       "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
+      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
+      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[record_inputs]",
       "hash": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_selector]",
+      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -197,44 +222,39 @@
       "hash": "54d9a173878107f95099d460a21bc217892ddadd5bab92477695cfd3f3b84496"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess_subject]",
-      "hash": "450b832f896651df6036bab9a4ef65b5df73ff2c153a94d5e212d6c8eb31eb17"
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
+      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[retry_fixture]",
-      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation]",
+      "hash": "a9f72f30b27102cfaa5697448cc58df1881aa7110ef023ca06f1d13c731c7b5e"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[citation_review_inputs_combine_item_declarations_terms_and_built_ins_once]",
+      "hash": "7e76d21e1bb882377df47473d9711573efb30a24787c42b38c6ed4419982e291"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
-      "hash": "413dff91bf45e397d15633786dc062696532dd4661cd4c9599f1ecc06f3edaa8"
+      "hash": "093c6a6a626fb34de7209772edeb2ff1c84d48398b03bfcd04b863245a6ad272"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch]",
-      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
+      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
+      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[mandatory_inputs_outside_the_project_still_abort]",
+      "hash": "7f6e8d8f4b7dbb70bf1f566d57271d75b7cb1080fbb3d1c67eede7faf39f6b64"
     },
     {
       "file": "src/builtins.rs",
-      "item": "struct[Builtin]",
-      "hash": "22e00fca7c0e2fc764750ae3cdce2d61d13c16c5ddf76550c43a7a2eb99a343b"
-    },
-    {
-      "file": "src/builtins.rs",
-      "item": "const[BUILTINS]",
-      "hash": "8ce47d9d1452becf82888d66cfd9bb33a1c94cd89bb54b3d6d52fa2ee7ffe7a4"
-    },
-    {
-      "file": "src/builtins.rs",
-      "item": "fn[is_builtin_name]",
-      "hash": "765b9731b9e6db61899066f2ae07498584d648c07c0446c620b8f7c5b16969a1"
-    },
-    {
-      "file": "src/builtins.rs",
-      "item": "fn[builtin]",
-      "hash": "4ecb002a357c7b377fdecf6b1056cdab5b8c1e5151574807405bf6eab414924f"
+      "item": "",
+      "hash": "793d8731e21158a4aa3c3fc137f90baea7103b84a5c7f212d867def8e0799933"
     },
     {
       "file": "src/builtins.rs",
@@ -243,28 +263,18 @@
     },
     {
       "file": "src/builtins.rs",
-      "item": "impl[Builtin]/fn[check]",
-      "hash": "842ca245150e80b3900c5e5cc8efe6563362e234fe448cae824179956f8a6d4c"
-    },
-    {
-      "file": "src/builtins.rs",
       "item": "fn[quoted_text]",
       "hash": "247faf1f4874a5833b63b2dfc93150341e7c83c02eccab826b96a4253defd3fa"
     },
     {
       "file": "src/builtins.rs",
-      "item": "mod[tests]/use@a0259f98c77e",
-      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
-    },
-    {
-      "file": "src/builtins.rs",
-      "item": "mod[tests]/fn[habeas_none_has_its_approved_text_and_only_permits_fenced_citations]",
-      "hash": "7e661b1cddb8a038b0fed92ada1d76c2d162108260d563a5b23727405da3cb28"
-    },
-    {
-      "file": "src/builtins.rs",
       "item": "mod[tests]",
       "hash": "7282a6cc9aeb789b7b14ef0aa82719da6e737039aaa92f3c1c023fc674d54a65"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[subject_label]",
+      "hash": "0abbd6728a2408075d16023804ce91e12c8bedf8882ae963120da502f3997535"
     },
     {
       "file": "src/citations.rs",
@@ -278,6 +288,11 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "fn[collect_definitions]",
       "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
     },
@@ -288,8 +303,48 @@
     },
     {
       "file": "src/fenced.rs",
+      "item": "struct[SourceFence]",
+      "hash": "10dc43ee2aabc3b91e68f84e93a24934da0069193a4d0de91cc229befcf9858f"
+    },
+    {
+      "file": "src/fenced.rs",
       "item": "fn[opening_fence]",
       "hash": "93c466042065e60b4601f541d47367193425fdc3d57edc3a8c09d4b473b190a2"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[closes]",
+      "hash": "be64eb76428f338fed4e9ff7eda886247385c0672a65e719902f34b4f38bcbe6"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[source_fences]",
+      "hash": "1186144bd1200de2e8b0665a8af6e252fb87847a435f110e00f4f44518133f7a"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]",
+      "hash": "a625029e6cfbde2d4ca91cef9ae28b4e871e2f6f19977073f3a0e17698267af4"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@db40086bd51e",
+      "hash": "db40086bd51eefdb0a29038e981ff139126c3445cdc5fe2023c09a5d71fe2469"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@b9fce3e500fd",
+      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@d588b8bc294c",
+      "hash": "d588b8bc294c8ef60dbaf342b9a87fbc310fb5a428e7543a471eafb549c12f12"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "use@93013b067bff",
+      "hash": "93013b067bff50c284178a25b3ddd82e8ff9784d50a7bca6914ac30934a29dd6"
     },
     {
       "file": "src/lib.rs",
@@ -323,6 +378,36 @@
     },
     {
       "file": "src/lib.rs",
+      "item": "mod[evidence]",
+      "hash": "93be5a2d8c24e2da5d4ac927cbae2301fdefeeade8ae36cc767791ba69499ac0"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[fenced]",
+      "hash": "1185935227c03bfddcc856894e1aa79ccabb986dfe147af8c9de5ef5035f4762"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[fixme]",
+      "hash": "28599fddc50c0ec33af1519bcac3fdd4819c5674e1516e175be90be3ef0120b3"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[index]",
+      "hash": "343817dd94e48f40d40f84652eaf665187c33adea0e0db284f40fb80ed2d9d29"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[inputs]",
+      "hash": "2424b8d775149239e8712afc2f7a1bab3763b0f0eb901e2f6c91779c5b073ef3"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_definitions]",
+      "hash": "d6f8128ea3f877ee9614d552540b6574455baf37a11dd435f271ade95650ba00"
+    },
+    {
+      "file": "src/lib.rs",
       "item": "fn[replace_references]",
       "hash": "236568b2fd4f8a76f4b2514fca54606e83de5ee398b43e978104462f3b519e54"
     },
@@ -335,6 +420,11 @@
       "file": "src/lib.rs",
       "item": "fn[definition_blocks]",
       "hash": "2b0bdec0c2df2d264c66f04e02823f8678591d3528764db7aad61bfdde467717"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[overlaps_protected]",
+      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
     },
     {
       "file": "src/lib.rs",
@@ -352,9 +442,29 @@
       "hash": "601fca0ab91d44900d17428dcb0453ac84221ab6cae3518c4d3297409e3288da"
     },
     {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[badge_stylesheet_keeps_visited_links_legible_and_shows_focus]",
+      "hash": "3bf639b34e6ab92ac64bd22976ea576de6183d74ac2bd52ec75163db908874ed"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[comments]",
+      "hash": "600a55f0822af75ae6b91ea65bba44227e75d102d13910f0cc2dd293ec067796"
+    },
+    {
       "file": "src/rust_coverage.rs",
       "item": "fn[missing_function_references]",
       "hash": "bcab391793125a9f9a372c28d1755bfc6439d01ba47ac9d452f6e51b9f35ac0e"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@420a7d4fdb66",
+      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -398,6 +508,16 @@
     },
     {
       "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+    },
+    {
+      "file": "src/authoring/tools.rs",
       "item": "fn[outline]",
       "hash": "151c20d5b37092813567720eafdd02d281a0720b261fd626ee9491c7d93507d9"
     },
@@ -422,9 +542,59 @@
       "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
     },
     {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[optional_path]",
+      "hash": "de2e7874adc2941687a0d48a28262b7b63d7b9a4f8f8ce9c40c84c4fea5c0750"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[project_path]",
+      "hash": "e406a07f376df81c7ac469398fa5821e601355d1d7db20819318fe99be7f5bb6"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[relative_path]",
+      "hash": "d11bb66e10aa0c2adb18a9611df876050061c2e445729f63c04b260bb89f7c00"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]",
+      "hash": "4cae0fd62aa61d67d37720138b65cc46e60e30257ad920efa8ef49f7ed2a68f0"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
+      "hash": "1549d324033cfafeb2ecb0b02619327b33856c95477886a13a0185a8000a47da"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]",
+      "hash": "3ccf9af34dbd89804259953f2034d4d0108fc3522e3a28bc4792632d72ac5865"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
+      "hash": "e790b3d7c7430f6b8465159541f7048ff733c4872f04b86eca9dbb17f2cfee8e"
+    },
+    {
       "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
+      "item": "fn[author_evidence_with_options]",
+      "hash": "28acce1cbd95a9295b6e918f5827dd962b2e28e7d4d1e2448737c179e0d08b3d"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "91b8abb2d031aba706e9031e447e3ca72800f3c04627a959a0c9f32f7b32d946"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -433,53 +603,48 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[finish_followup]",
-      "hash": "e511ed2ad2038d1b5294cd00a513feea2aa1c42bc972fffd9128d7ca6f02c28c"
+      "item": "mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]",
+      "hash": "37e48cc1515b97a14a38ca10ba6cbcbc9388841b3da9abc899d1466ae928e302"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[verify]",
-      "hash": "699e7e136f69cef891a9e225c99c196d1e5a93976488f5ea99526b53e77debba"
+      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
+      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_read_through_a_symlink_leaving_the_project_aborts_the_assessment]",
+      "hash": "1df670f93bf1d9b07a6ea4db60253668d18da22620b7b75721c79ebb02623066"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[retry_fixture]",
+      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_submission_finishes_the_assessment_wherever_it_arrives]",
+      "hash": "b5421960bc2d3e3308482c6e72a92d6841fc033381537dcc7f11caf641d7f357"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[confirmed]",
+      "hash": "6f9debaffb229698e3a6807256655b99cc458eacdcf2a53f4ba497732feb245b"
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[start]",
-      "hash": "cd20e8dedb70eb0dcd2819c9047ae13cd38bce7f08b9f3f1f7959bb1a9a165cf"
+      "item": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]",
+      "hash": "effa7e378d3894b50e1d7961873579a030801077ba1d1e500d6d0c2d768b3b9d"
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[finish]",
-      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
+      "item": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]",
+      "hash": "ca4c66b03ccee76bdf4e29484650d1f71de21c2c45eac7b944a537aaddd2a39c"
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "impl[TokenCounts]",
-      "hash": "28ad3197404ef55ddad58da22007328feb6b47ffd483b15a7018a00fd34e37d8"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "fn[tool_name]",
-      "hash": "a13e77cf2b4fcda720345a3552362174c591a96353af831fc2caa7fec8762b9f"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "fn[timestamp]",
-      "hash": "8d0368ffdb114254659644baf14666d13a8329fa838df00ac45aa73bd88edfdb"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/use@944727b459e2",
-      "hash": "944727b459e2ea08a7586f8fcc5fdab323588c75dd91da10f0d0655cabae4082"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/use@6708b8882ff4",
-      "hash": "6708b8882ff4edbfbd863ef39843ffd73153ade71543c5e7fac9a17d459679fb"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[persisted]",
-      "hash": "d0caafefaaa93e51e0657841bd7d4abb7c8ac441d6ae928209760b9378831d82"
+      "item": "mod[tests]/fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]",
+      "hash": "2c080f3d1db000b36fa9454392742bf9efc9775d599eb54cee3ebd87e7c99977"
     },
     {
       "file": "src/authoring/usage.rs",
