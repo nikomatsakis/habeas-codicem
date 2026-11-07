@@ -27,6 +27,7 @@ fn fixture() -> TempDir {
 }
 
 // {test}`requirements.ci.schema`
+// {test}`requirements.ci.reference_set`
 fn write_inputs(root: &Path, inputs: Vec<Value>) {
     fs::write(
         root.join("evidence/rules.ready.json"),
@@ -34,6 +35,10 @@ fn write_inputs(root: &Path, inputs: Vec<Value>) {
             "requirement": "Read the data.",
             "determination": true,
             "rationale": "The fixture records the data being checked.",
+            // An unreadable source makes the reference set unknowable; such
+            // fixtures are invalid regardless.
+            "references": habeas::reference_set_digest_for(root, "rules.ready")
+                .unwrap_or_else(|_| "0".repeat(64)),
             "inputs": inputs,
         })
         .to_string(),

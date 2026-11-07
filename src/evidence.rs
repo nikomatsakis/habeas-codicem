@@ -622,10 +622,26 @@ fn validate_evidence_file(
     let text_field = kind.noun();
     check_keys(
         object,
-        &[text_field, "determination", "rationale", "inputs"],
+        &[
+            text_field,
+            "determination",
+            "rationale",
+            "references",
+            "inputs",
+        ],
         &label,
         errors,
     );
+    // The digest is compared with the current reference set during reference
+    // validation.
+    // {impl}`requirements.ci.reference_set`
+    if let Some(references) = string_field(object, "references", &label, errors)
+        && !is_sha256_hex(references)
+    {
+        errors.push(format!(
+            "{label}: references must be a lowercase hexadecimal SHA-256 digest"
+        ));
+    }
 
     // {impl}`requirements.ci.requirement_text`
     if let Some(text) = string_field(object, text_field, &label, errors) {
@@ -801,11 +817,7 @@ fn validate_outline_input(
     });
     let item = string_field(object, "item", label, errors);
     let hash = string_field(object, "hash", label, errors).and_then(|hash| {
-        if hash.len() == 64
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if is_sha256_hex(hash) {
             Some(hash)
         } else {
             errors.push(format!(
@@ -1036,6 +1048,131 @@ pub(crate) struct SourceReference {
     pub(crate) line: usize,
 }
 
+/// One edge of a definition's reference set: its origin (an in-source
+/// reference or a declaration anchor), role, file, and outline selector.
+// {impl}`requirements.ci.reference_set`
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReferenceSetEntry {
+    origin: &'static str,
+    role: &'static str,
+    file: String,
+    item: String,
+}
+
+/// The reference-set digest of a definition: SHA-256 over a length-prefixed
+/// encoding of its sorted incoming `{impl}` and `{test}` edges. A reference
+/// contributes the selector of the outline node its comment or text belongs
+/// to (the root node for plain-text files), so moving it within that node
+/// leaves the digest unchanged; an anchor contributes its file and selector
+/// as written. `{cite}` references do not contribute. `root` must be
+/// canonical, as reference discovery records canonical paths.
+// {impl}`requirements.ci.reference_set`
+// {impl}`requirements.references.outline_comments`
+pub(crate) fn reference_set_digest<'a>(
+    root: &Path,
+    outlines: &OutlineCache,
+    name: &str,
+    definition: &Declaration,
+    references: impl IntoIterator<Item = &'a SourceReference>,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut entries = Vec::new();
+    for reference in references {
+        if reference.name != name
+            || !matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
+        {
+            continue;
+        }
+        let file = display_path(root, &reference.file);
+        let parsed = outlines.parse(root, &file);
+        let item = match parsed.as_ref() {
+            Ok(parsed) if parsed.outline.profile.language.is_some() => {
+                let index = parsed.outline.owner_at_line(reference.line);
+                parsed.outline.nodes[index].selector.clone()
+            }
+            // Plain-text files have only a root node; a source that cannot be
+            // outlined is reported elsewhere and contributes its whole file.
+            _ => String::new(),
+        };
+        entries.push(ReferenceSetEntry {
+            origin: "reference",
+            role: reference.kind.label(),
+            file,
+            item,
+        });
+    }
+    for anchor in &definition.anchors {
+        entries.push(ReferenceSetEntry {
+            origin: "anchor",
+            role: anchor.kind.label(),
+            file: anchor.file.clone(),
+            item: anchor.item.clone(),
+        });
+    }
+    entries.sort();
+
+    let mut hasher = Sha256::new();
+    let mut field = |bytes: &[u8]| {
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    field(&(entries.len() as u64).to_le_bytes());
+    for entry in &entries {
+        field(entry.origin.as_bytes());
+        field(entry.role.as_bytes());
+        field(entry.file.as_bytes());
+        field(entry.item.as_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The current reference-set digest of a requirement or named example, as
+/// recorded in its evidence's `references` field.
+// {impl}`requirements.ci.reference_set`
+pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
+    let root = fs::canonicalize(root)?;
+    // Errors in other declarations are validation errors; they do not change
+    // this definition's reference set.
+    let mut errors = Vec::new();
+    let md_root = book_source_dir(&root, &mut errors);
+    let definitions = collect_definitions(&root, &md_root, &mut errors);
+    let definition = definitions
+        .get(name)
+        .filter(|definition| definition.kind != DefinitionKind::Term)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{name}: no matching requirement or named example"),
+            )
+        })?;
+    let mut errors = Vec::new();
+    let references = collect_references(&root, &mut errors);
+    if !errors.is_empty() {
+        return Err(io::Error::other(errors.join("\n")));
+    }
+    Ok(reference_set_digest(
+        &root,
+        &OutlineCache::default(),
+        name,
+        definition,
+        &references,
+    ))
+}
+
+/// Whether a string is a lowercase hexadecimal SHA-256 digest.
+// {impl}`requirements.ci.schema`
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 // {impl}`requirements.references.evidence_coverage`
 // {impl}`requirements.references.anchors`
 struct InputRange {
@@ -1052,6 +1189,7 @@ struct InputRange {
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.ci.reference_set`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -1119,6 +1257,32 @@ fn validate_references(
             errors.push(format!(
                 "{}: example {name} has a true determination but no {{test}} reference",
                 display_path(root, &evidence_file)
+            ));
+        }
+        // {impl}`requirements.ci.reference_set`
+        if let Some(recorded) = fs::read_to_string(&evidence_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+            .and_then(|value| {
+                value
+                    .get("references")
+                    .and_then(Value::as_str)
+                    .filter(|digest| is_sha256_hex(digest))
+                    .map(str::to_owned)
+            })
+            && recorded
+                != reference_set_digest(
+                    root,
+                    outlines,
+                    name,
+                    definition,
+                    references.iter().copied(),
+                )
+        {
+            errors.push(format!(
+                "{}: reference set changed: {{impl}} or {{test}} references or anchors of {} {name} were added, removed, or moved to another node",
+                display_path(root, &evidence_file),
+                definition.kind.noun()
             ));
         }
         let inputs = evidence_input_ranges(root, &evidence_file, definitions, outlines);
@@ -1332,13 +1496,55 @@ fn evidence_input_ranges(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
+    use std::path::Path;
 
     use serde_json::{Value, json};
     use tempfile::TempDir;
 
-    use super::validate_repository;
+    /// Records the current reference-set digest in every evidence record for
+    /// a defined requirement or example that has none, so fixtures that
+    /// write records by hand need not compute it.
+    // {test}`requirements.ci.reference_set`
+    pub(crate) fn stamp_reference_sets(root: &Path) {
+        let Ok(entries) = fs::read_dir(root.join("evidence")) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let Some(Value::Object(mut record)) = fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| serde_json::from_str(&content).ok())
+            else {
+                continue;
+            };
+            if record.contains_key("references") {
+                continue;
+            }
+            let Ok(digest) = super::reference_set_digest_for(root, name) else {
+                continue;
+            };
+            record.insert("references".to_owned(), Value::String(digest));
+            fs::write(&path, Value::Object(record).to_string()).unwrap();
+        }
+    }
+
+    /// Validates after stamping hand-written records with their current
+    /// reference-set digests.
+    // {test}`requirements.integration.report_api`
+    // {test}`requirements.ci.reference_set`
+    fn validate_repository(root: &Path) -> std::io::Result<super::EvidenceReport> {
+        stamp_reference_sets(root);
+        super::validate_repository(root)
+    }
 
     /// The recorded outline input for `item` in `file`.
     // {test}`requirements.ci.outline_inputs`
@@ -1392,6 +1598,7 @@ mod tests {
                 fs::write(root.join("src/lib.rs"), "fn retained() {}\n").unwrap();
                 fs::write(root.join("src/binary.dat"), [0xff]).unwrap();
             }
+            stamp_reference_sets(root);
             let expected = super::inspect_repository(root).unwrap();
             let mut updates = Vec::new();
             let inspected =
@@ -2689,5 +2896,213 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.text, ready.raw_lines);
+    }
+
+    // {test}`requirements.ci.reference_set`
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn reference_set_digest_tracks_impl_and_test_edges_by_node() {
+        let temp = fixture();
+        let root = temp.path();
+        let role = |kind: &str| format!("{{{kind}}}`requirements.ready`");
+        let declaration = |options: &str| {
+            format!(
+                ":::{{req}} ready\n{options}Ready MUST hold.\n:::\n\n:::{{req}} other\nOther MUST hold.\n:::\n"
+            )
+        };
+        fs::write(root.join("md/requirements.md"), declaration("")).unwrap();
+        let digest = |lib: &str, notes: &str, guide: &str| {
+            fs::write(root.join("src/lib.rs"), lib).unwrap();
+            fs::write(root.join("notes.txt"), notes).unwrap();
+            fs::write(root.join("md/guide.md"), guide).unwrap();
+            super::reference_set_digest_for(root, "requirements.ready").unwrap()
+        };
+        let lib = format!(
+            "// {}\nfn run() {{\n    work();\n}}\n\nfn other() {{}}\n",
+            role("impl")
+        );
+        let notes = format!("{}\n", role("test"));
+        let guide = format!("# Guide\n\nIntro.\n\n## Usage\n\nSee {}.\n", role("impl"));
+        let base = digest(&lib, &notes, &guide);
+        assert_eq!(base.len(), 64);
+        assert!(super::is_sha256_hex(&base));
+        assert_eq!(
+            digest(&lib, &notes, &guide),
+            base,
+            "the digest is deterministic"
+        );
+
+        // Line moves within the reference's node, unrelated lines, and
+        // `{cite}` references leave the digest unchanged.
+        for (lib, notes, guide) in [
+            (
+                format!("// unrelated\n\n{lib}"),
+                notes.clone(),
+                guide.clone(),
+            ),
+            (
+                format!(
+                    "fn run() {{\n    // {}\n    work();\n}}\n\nfn other() {{}}\n",
+                    role("impl")
+                ),
+                notes.clone(),
+                guide.clone(),
+            ),
+            (
+                lib.clone(),
+                format!("first\n\nsecond\n{notes}"),
+                guide.clone(),
+            ),
+            (
+                lib.clone(),
+                notes.clone(),
+                guide.replace("See ", "Intro line.\n\nSee "),
+            ),
+            (
+                format!("{lib}// {}\nfn cited() {{}}\n", role("cite")),
+                format!("{notes}{}\n", role("cite")),
+                guide.clone(),
+            ),
+        ] {
+            assert_eq!(
+                digest(&lib, &notes, &guide),
+                base,
+                "{lib}\n{notes}\n{guide}"
+            );
+        }
+
+        // Adding, removing, re-roling, or moving a reference to another node
+        // changes it.
+        let mut seen = std::collections::BTreeSet::from([base.clone()]);
+        for (lib, notes, guide) in [
+            (
+                format!("{lib}// {}\nfn more() {{}}\n", role("impl")),
+                notes.clone(),
+                guide.clone(),
+            ),
+            (
+                format!(
+                    "fn run() {{\n    // {}\n    // {}\n    work();\n}}\n\nfn other() {{}}\n",
+                    role("impl"),
+                    role("impl")
+                ),
+                notes.clone(),
+                guide.clone(),
+            ),
+            (
+                lib.replace(&role("impl"), "removed"),
+                notes.clone(),
+                guide.clone(),
+            ),
+            (lib.replace("impl", "test"), notes.clone(), guide.clone()),
+            (
+                format!(
+                    "fn run() {{\n    work();\n}}\n\n// {}\nfn other() {{}}\n",
+                    role("impl")
+                ),
+                notes.clone(),
+                guide.clone(),
+            ),
+            (lib.clone(), String::new(), guide.clone()),
+            (
+                lib.clone(),
+                notes.clone(),
+                guide.replace("Intro.", &format!("Intro {}.", role("impl"))),
+            ),
+        ] {
+            let changed = digest(&lib, &notes, &guide);
+            assert!(seen.insert(changed), "{lib}\n{notes}\n{guide}");
+        }
+
+        // Adding an anchor changes it, as does changing the anchored node.
+        digest(&lib, &notes, &guide);
+        for options in [
+            ":impl: notes.txt\n",
+            ":test: notes.txt\n",
+            ":impl: src/lib.rs#fn[run]\n",
+        ] {
+            fs::write(root.join("md/requirements.md"), declaration(options)).unwrap();
+            let changed = super::reference_set_digest_for(root, "requirements.ready").unwrap();
+            assert!(seen.insert(changed), "{options}");
+        }
+    }
+
+    // {test}`requirements.ci.reference_set`
+    // {test}`requirements.ci.schema`
+    #[test]
+    fn validation_requires_a_current_reference_set_digest() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\nReady MUST hold.\n:::\n",
+        )
+        .unwrap();
+        let impl_role = "IMPL`requirements.ready`".replace("IMPL", "{impl}");
+        let cite_role = "CITE`requirements.ready`".replace("CITE", "{cite}");
+        fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "// {impl_role}\nfn run() {{}}\n\n// {cite_role}\nfn other() {{\n    work();\n}}\n"
+            ),
+        )
+        .unwrap();
+        let path = root.join("evidence/requirements.ready.json");
+        let write = |references: Option<Value>| {
+            let mut record = json!({
+                "requirement": "Ready MUST hold.",
+                "determination": true,
+                "rationale": "Checked.",
+                "inputs": [outline(root, "src/lib.rs", "")],
+            });
+            if let Some(references) = references {
+                record["references"] = references;
+            }
+            fs::write(&path, record.to_string()).unwrap();
+        };
+        let errors = || super::validate_repository(root).unwrap().errors;
+
+        let current = super::reference_set_digest_for(root, "requirements.ready").unwrap();
+        write(Some(json!(current)));
+        assert!(errors().is_empty(), "{:?}", errors());
+
+        for (references, expected) in [
+            (
+                None,
+                "evidence/requirements.ready.json: missing field \"references\"",
+            ),
+            (
+                Some(json!(7)),
+                "evidence/requirements.ready.json: references must be a string",
+            ),
+            (
+                Some(json!(current.to_uppercase())),
+                "evidence/requirements.ready.json: references must be a lowercase hexadecimal SHA-256 digest",
+            ),
+            (
+                Some(json!(&current[1..])),
+                "evidence/requirements.ready.json: references must be a lowercase hexadecimal SHA-256 digest",
+            ),
+        ] {
+            write(references);
+            assert_eq!(errors(), [expected]);
+        }
+
+        // A new reference inside a node the inputs already cover changes no
+        // recorded hash, but makes the evidence stale.
+        write(Some(json!(current)));
+        fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "// {impl_role}\nfn run() {{}}\n\n// {cite_role}\nfn other() {{\n    // {impl_role}\n    work();\n}}\n"
+            ),
+        )
+        .unwrap();
+        let reported = errors();
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(
+            reported[0].starts_with("evidence/requirements.ready.json: reference set changed"),
+            "{reported:?}"
+        );
     }
 }

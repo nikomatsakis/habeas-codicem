@@ -1101,6 +1101,74 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     );
 }
 
+/// A new reference inside a node already among a record's inputs changes no
+/// recorded hash, but changes the reference set, so the record is stale.
+// {test}`requirements.authoring.batch`
+// {test}`requirements.ci.reference_set`
+#[test]
+fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6);
+    for name in ["requirements.alpha", "requirements.delta"] {
+        assert_eq!(
+            fixture.evidence(name)["references"],
+            habeas::reference_set_digest_for(&fixture.project, name).unwrap()
+        );
+    }
+    let path = fixture.project.join("evidence/requirements.delta.json");
+    let mut record = fixture.evidence("requirements.delta");
+    record["determination"] = json!(false);
+    record["rationale"] = json!("The behavior has no {test} reference.");
+    fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "pub fn delta() -> u8 { 4 }",
+            &"pub fn delta() -> u8 {\n    // TEST`requirements.delta`\n    4\n}"
+                .replace("TEST", "{test}"),
+        ),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(&fixture.project)
+        .unwrap()
+        .errors;
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors[0].starts_with("evidence/requirements.delta.json: determination is false")
+            && errors[1].starts_with("evidence/requirements.delta.json: reference set changed"),
+        "{errors:?}"
+    );
+
+    let stale = fixture.run(&["author", "--all"]);
+    assert!(
+        stale.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    let subjects = server.subjects();
+    assert_eq!(subjects.len(), 7, "{subjects:?}");
+    assert_eq!(subjects[6], "requirement requirements.delta");
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stdout).trim(),
+        "1 authored; 5 unchanged; 0 failed"
+    );
+    assert_eq!(
+        fixture.evidence("requirements.delta")["references"],
+        habeas::reference_set_digest_for(&fixture.project, "requirements.delta").unwrap()
+    );
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
 // {test}`requirements.authoring.batch`
 #[test]
 fn batch_stdout_is_rejected_before_authoring() {

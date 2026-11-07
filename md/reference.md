@@ -29,13 +29,14 @@ Its full name is `reference.cli.unknown_command`. The `unknown_command_fails_wit
 Run `habeas author --all` to create and refresh evidence for requirements and
 examples. The harness writes `evidence/requirements.check.json`
 for the requirement above and `evidence/reference.cli.unknown_command.json` for the
-example. Each requirement or example evidence file records four fields:
+example. Each requirement or example evidence file records five fields:
 
 | Field | Meaning |
 | --- | --- |
 | `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |
 | `determination` | `true`, `false`, or `{"FIXME": ["#125"]}` for explicitly documented gaps. |
 | `rationale` | A Markdown explanation of that judgment. |
+| `references` | A SHA-256 digest of the definition's reference set: each incoming `{impl}` or `{test}` reference's role, file, and the outline node it belongs to, plus its `:impl:` and `:test:` anchors. `{cite}` references do not contribute. Adding, removing, or re-roling a reference or anchor, or moving a reference to another node, makes the evidence stale even when no input changed; moving one within its node does not. {cite}`requirements.ci.reference_set` |
 | `inputs` | Sources supporting it. Inputs select an outline node of a file, a definition selection, or a terminology definition. |
 
 For a requirement, the model reviews whether the code marked `{impl}` implements its
@@ -515,7 +516,7 @@ Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or chan
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
 Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are

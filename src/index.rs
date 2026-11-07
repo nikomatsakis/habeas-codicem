@@ -1104,6 +1104,7 @@ mod tests {
         );
         index_chapter.number = Some(SectionNumber::new(vec![4]));
         book.push_item(index_chapter);
+        crate::evidence::tests::stamp_reference_sets(temp.path());
         preprocess_book(&mut book, temp.path()).unwrap();
 
         let definition = book.chapters().next().unwrap();
@@ -1568,6 +1569,7 @@ mod tests {
             "requirements-index.md",
             Vec::new(),
         ));
+        crate::evidence::tests::stamp_reference_sets(root);
         preprocess_book(&mut book, root).unwrap();
         let index = book
             .chapters()
@@ -1665,6 +1667,7 @@ mod tests {
             "requirements-index.md",
             Vec::new(),
         ));
+        crate::evidence::tests::stamp_reference_sets(root);
         preprocess_book(&mut book, root).unwrap();
         let index = book
             .chapters()

@@ -35,6 +35,8 @@ pub(crate) struct AssessmentSources {
     pub(crate) subject_text: String,
     /// Parsed outlines, cached for this assessment.
     pub(crate) outlines: OutlineCache,
+    /// Digest of the subject's reference set, recorded with the judgment.
+    pub(crate) reference_set: String,
     mandatory: Vec<Value>,
     recorded: Vec<Value>,
 }
@@ -50,6 +52,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.references.anchors`
+    // {impl}`requirements.ci.reference_set`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
@@ -98,6 +101,14 @@ impl AssessmentSources {
         if !errors.is_empty() {
             return Err(io::Error::other(errors.join("\n")));
         }
+        // The same edges determine the reference contributions below.
+        let reference_set = crate::evidence::reference_set_digest(
+            &root,
+            &outlines,
+            subject_name,
+            subject,
+            &references,
+        );
         // `{impl}` and `{test}` point from the subject to their sources; `{cite}`
         // sites point into the subject and are discoverable with `references`.
         for reference in references.iter().filter(|reference| {
@@ -176,6 +187,7 @@ impl AssessmentSources {
             subject_kind: AssessmentKind::Definition(subject.kind),
             subject_text: subject.text.clone(),
             outlines,
+            reference_set,
             mandatory,
             recorded: Vec::new(),
         })
@@ -486,6 +498,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.definitions.authoring_inputs`
     // {test}`requirements.ci.authoring_inputs`
+    // {test}`requirements.ci.reference_set`
     #[test]
     fn bundle_combines_direct_references_terms_and_current_existing_selectors() {
         let root = project();
@@ -517,6 +530,11 @@ pub(super) mod tests {
         )
         .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        // The recorded digest covers the same `{impl}` and `{test}` edges.
+        assert_eq!(
+            sources.reference_set,
+            crate::evidence::reference_set_digest_for(root.path(), "requirements.ready").unwrap()
+        );
         let inputs = sources.mandatory_inputs();
         assert!(sources.recorded_inputs().is_empty());
         assert!(

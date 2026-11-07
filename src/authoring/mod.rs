@@ -464,6 +464,7 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.definitions.authoring_inputs`
+// {impl}`requirements.ci.reference_set`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -536,7 +537,8 @@ async fn assess(
             usage.save()?;
             let AssessmentKind::Definition(kind) = &sources.subject_kind;
             let evidence = json!({kind.noun(): sources.subject_text,
-                "determination": judgment.to_value(), "rationale": rationale, "inputs": sources.recorded_inputs()});
+                "determination": judgment.to_value(), "rationale": rationale,
+                "references": sources.reference_set, "inputs": sources.recorded_inputs()});
             return Ok((judgment, evidence));
         }
         if calls.is_empty() {
@@ -851,6 +853,7 @@ mod tests {
     // {test}`requirements.authoring.provider_backoff`
     // {test}`requirements.authoring.usage_requests`
     // {test}`requirements.authoring.usage_inputs`
+    // {test}`requirements.ci.reference_set`
     #[tokio::test(start_paused = true)]
     async fn throttled_requests_retry_unchanged_and_record_every_attempt() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
@@ -867,6 +870,7 @@ mod tests {
         assert_eq!(requests.len(), 9);
         assert!(requests.iter().all(|request| request == &requests[0]));
         assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
+        assert_eq!(record["references"], json!(sources.reference_set));
 
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(log["request_count"], 9);

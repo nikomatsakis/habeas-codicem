@@ -63,7 +63,12 @@ fn fixture() -> TempDir {
 }
 
 // {test}`requirements.ci.schema`
-fn write_record(root: &Path, name: &str, value: Value) {
+// {test}`requirements.ci.reference_set`
+fn write_record(root: &Path, name: &str, mut value: Value) {
+    if value.get("references").is_none() {
+        value["references"] =
+            json!(habeas::reference_set_digest_for(root, &format!("requirements.{name}")).unwrap());
+    }
     fs::write(
         root.join(format!("evidence/requirements.{name}.json")),
         serde_json::to_string_pretty(&value).unwrap(),

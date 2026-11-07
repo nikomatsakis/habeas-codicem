@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::DefinitionKind;
-use crate::evidence::{Declaration, inspect_repository};
+use crate::evidence::{Declaration, SourceReference, inspect_repository};
 use crate::inputs::{InputSelector, OutlineCache};
 
 // {impl}`requirements.cli.add_input`
@@ -43,24 +43,19 @@ pub fn add_input(root: &Path, target: InputTarget, mode: InputMode) -> io::Resul
         ));
     }
 
-    match target {
-        InputTarget::Requirement(name) => add_definition_inputs(
-            &root,
-            definitions,
-            &outlines,
-            &name,
-            DefinitionKind::Requirement,
-            inputs,
-        ),
-        InputTarget::Example(name) => add_definition_inputs(
-            &root,
-            definitions,
-            &outlines,
-            &name,
-            DefinitionKind::Example,
-            inputs,
-        ),
-    }
+    let (name, kind) = match target {
+        InputTarget::Requirement(name) => (name, DefinitionKind::Requirement),
+        InputTarget::Example(name) => (name, DefinitionKind::Example),
+    };
+    add_definition_inputs(
+        &root,
+        &inspection.references,
+        definitions,
+        &outlines,
+        &name,
+        kind,
+        inputs,
+    )
 }
 
 // {impl}`requirements.cli.add_input`
@@ -113,8 +108,10 @@ fn selectors_for_mode(
 
 // {impl}`requirements.cli.add_input`
 // {impl}`requirements.definitions.capture`
+// {impl}`requirements.ci.reference_set`
 fn add_definition_inputs(
     root: &Path,
+    references: &[SourceReference],
     definitions: &BTreeMap<String, Declaration>,
     outlines: &OutlineCache,
     name: &str,
@@ -135,12 +132,15 @@ fn add_definition_inputs(
         )));
     }
     let path = root.join("evidence").join(format!("{name}.json"));
+    let reference_set =
+        crate::evidence::reference_set_digest(root, outlines, name, definition, references);
     let mut record = read_or_new(
         &path,
         json!({
             kind.noun(): definition.text,
             "determination": false,
             "rationale": "Review pending: inspect the definition, behavior, and supporting inputs.",
+            "references": reference_set,
             "inputs": [],
         }),
     )?;
@@ -151,6 +151,7 @@ fn add_definition_inputs(
         definitions,
         outlines,
         Some(&definition.text),
+        &reference_set,
     )?;
     if output.1 {
         fs::create_dir_all(root.join("evidence"))?;
@@ -168,6 +169,7 @@ fn add_definition_inputs(
 // {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.cli.add_input_item`
+// {impl}`requirements.ci.reference_set`
 fn update_inputs(
     record: &mut Value,
     inputs: Vec<(InputSelector, Value, Vec<String>)>,
@@ -175,6 +177,7 @@ fn update_inputs(
     definitions: &BTreeMap<String, Declaration>,
     outlines: &OutlineCache,
     subject: Option<&str>,
+    reference_set: &str,
 ) -> io::Result<(String, bool)> {
     let Some(object) = record.as_object_mut() else {
         return Err(invalid_input("evidence record must be a JSON object"));
@@ -237,6 +240,16 @@ fn update_inputs(
             changed = true;
             output.push_str(&format!("- captured: definition {definition}\n"));
         }
+    }
+    // A changed reference set is recorded, and like a changed input requires
+    // reassessment.
+    if object.get("references").and_then(Value::as_str) != Some(reference_set) {
+        object.insert(
+            "references".to_owned(),
+            Value::String(reference_set.to_owned()),
+        );
+        changed = true;
+        output.push_str("- recorded: reference set\n");
     }
     if changed {
         object.insert("determination".to_owned(), Value::Bool(false));

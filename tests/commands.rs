@@ -86,6 +86,11 @@ fn fixture() -> TempDir {
                 "requirement": text,
                 "determination": determination,
                 "rationale": format!("**{name}** was inspected."),
+                "references": habeas::reference_set_digest_for(
+                    temp.path(),
+                    &format!("requirements.{name}")
+                )
+                .unwrap(),
                 "inputs": inputs
             })
             .to_string(),
@@ -175,6 +180,11 @@ fn fixme_fixture() -> TempDir {
                 subject_key: text,
                 "determination": {"FIXME": references},
                 "rationale": "The fixture records acknowledged implementation gaps.",
+                "references": habeas::reference_set_digest_for(
+                    temp.path(),
+                    &format!("rules.{name}")
+                )
+                .unwrap(),
                 "inputs": [input]
             })
             .to_string(),
@@ -929,6 +939,7 @@ fn add_input_modes_capture_outline_nodes_and_refresh_idempotently() {
 // {test}`requirements.cli.add_input_item`
 // {test}`requirements.cli.add_input_requirements`
 // {test}`requirements.cli.clap`
+// {test}`requirements.ci.reference_set`
 #[test]
 fn add_input_requires_one_target_and_mode_and_resets_changed_records() {
     let temp = TempDir::new().unwrap();
@@ -1032,6 +1043,10 @@ fn add_input_requires_one_target_and_mode_and_resets_changed_records() {
     assert_eq!(
         record["inputs"],
         json!([{"requirements": "rules.ready", "matches": ["rules.ready"], "text": [":::{req} ready", "Ready.", ":::"]}])
+    );
+    assert_eq!(
+        record["references"],
+        habeas::reference_set_digest_for(root, "rules.ready").unwrap()
     );
 
     // A glob stores matches in full-name order, separated by a blank line,
@@ -1164,6 +1179,34 @@ fn add_input_requires_one_target_and_mode_and_resets_changed_records() {
             );
         }
     }
+
+    // A changed reference set is recorded and resets review even when every
+    // input is unchanged.
+    let approved = approve();
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    // IMPL`rules.ready`\n    let _ = 1;\n}\n".replace("IMPL", "{impl}"),
+    )
+    .unwrap();
+    let output = run(&[
+        "--for-requirement",
+        "rules.ready",
+        "--item",
+        "src/main.rs:1",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("- unchanged: ") && stdout.contains("- recorded: reference set"),
+        "{stdout}"
+    );
+    assert_ne!(fs::read(&path).unwrap(), approved);
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(record["determination"], false);
+    assert_eq!(
+        record["references"],
+        habeas::reference_set_digest_for(root, "rules.ready").unwrap()
+    );
 }
 
 // {test}`requirements.cli.definition_glob_search`
@@ -1191,6 +1234,7 @@ fn definition_glob_lists_a_requirement_and_an_example_in_info_and_status() {
             "requirement": "Ready MUST work.",
             "determination": false,
             "rationale": "Not yet.",
+            "references": habeas::reference_set_digest_for(root, "foo.ready").unwrap(),
             "inputs": []
         })
         .to_string(),

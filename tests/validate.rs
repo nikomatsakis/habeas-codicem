@@ -101,6 +101,7 @@ fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
             "requirement": "Ready.",
             "determination": true,
             "rationale": "Reviewed.",
+            "references": habeas::reference_set_digest_for(&root, "rules.ready").unwrap(),
             "inputs": []
         })
         .to_string(),

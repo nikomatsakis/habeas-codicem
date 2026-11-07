@@ -20,7 +20,7 @@ mod rust_coverage;
 mod terms;
 
 pub use add_input::{InputMode, InputTarget, add_input};
-pub use evidence::{EvidenceReport, validate_repository};
+pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
 pub use inputs::{outline_input, outline_inputs_for_lines};
 
 /// Validate the current Cargo and mdBook project for use in a Cargo test.
