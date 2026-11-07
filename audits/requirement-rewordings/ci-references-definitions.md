@@ -253,3 +253,11 @@ Code was changed instead of the requirement in these cases:
 **New:** "Repository validation MUST check that every requirement defined by a fenced `{req}` directive … has an evidence file named `evidence/<full-requirement-name>.json`, and MUST report each requirement whose evidence file is missing. …" (the "apply this rule to its own requirements" sentence was removed).
 
 **Reason:** the old text described repository state, so reviewers tried to list `evidence/`, which authoring excludes, and the assessment aborted. The obligation is now on the validation code that enforces the rule. Requested by the user.
+
+## requirements.references.rust_item_coverage — accept habeas:none
+
+**Old:** "…MUST have a valid `\{impl}`, `\{cite}`, or `\{test}` reference to a defined requirement or named example in a Rust comment…"
+
+**New:** "…MUST have a valid `\{impl}`, `\{cite}`, or `\{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under …no_requirement, in a Rust comment…"
+
+**Reason:** step 4 of the reference procedure (commit 8153b92, agreed with the user) directs items that no definition fits to cite `habeas:none`; the coverage rule still required a project definition. The implementation already accepts it.
