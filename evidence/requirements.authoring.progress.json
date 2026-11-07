@@ -1,7 +1,8 @@
 {
   "requirement": "When stderr is an interactive terminal, `habeas author --all` MUST display an\nupdating progress bar with elapsed time, percentage, finished and total assessment\ncounts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,\nand authoring errors. The total MUST count only subjects selected for assessment;\ncurrent accepted records remain in the unchanged count. A finished assessment\nMUST advance progress whether it writes a judgment or reports an authoring error.\nProgress measures completed work, not satisfaction of requirements.\n\nInspection MUST also show a progress bar for each phase with a known amount of\nwork, including evidence files, reference source files and coverage, Rust\nfunction coverage, and assessment selection. The display MUST label the current phase\nand show its completed and total checks; its percentage measures that phase's\nchecks, not estimated time or overall inspection completion. Discovery and other\nphases whose totals are not yet known MUST use an indeterminate activity display.\nInspection progress MUST NOT change validation results or invoke inference.\nEnabled reports MUST remain readable alongside progress. An\ninterrupted batch MUST retain its actual progress without counting unstarted\nassessments as finished. Empty batches and early errors MUST clear the temporary\ndisplay. When stderr is redirected or `TERM=dumb`, the command MUST retain its\nplain line-oriented reports without terminal control sequences. `NO_COLOR` MUST\ndisable color without disabling progress on a supported terminal. The existing\nstdout completion summary and exit-status rules MUST remain unchanged.\n{cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.reporting`",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** I read the supplied code and tests only. I did not run them.\n\n**Batch progress bar** (`src/authoring/progress.rs`, `src/authoring/batch.rs`)\n- `BatchProgress::new` draws the bar only when stderr is a terminal and `TERM` is not `dumb`. Otherwise `bar` is `None` and `println` falls back to plain `eprintln!`, so redirected output stays line-oriented with no control sequences.\n- `start` and `refresh` build the batch display with these parts:\n  - elapsed time;\n  - a percentage that reserves 100% for completion, via `write_percentage`;\n  - `pos/len finished`;\n  - active and queued counts;\n  - separate `true`, `false`, `FIXME` and `errors` counts.\n- The total is `subjects.len()`, which holds only the subjects selected for assessment. Current records go into `unchanged` and are excluded from the total.\n- Position is the sum of the four outcome counters. A written judgment and an authoring error both advance it, through `completed` and `failed`.\n- `finish(interrupted, …)` calls `abandon()` on interruption and sets the prefix to \"Stopped\", so unstarted work is not counted as finished. A normal finish calls `finish()`.\n- `Drop` runs `finish_and_clear` on an unfinished bar. This clears the display for an empty batch (early return) and for discovery or configuration errors.\n- `progress_style` strips the color specs when `NO_COLOR` is set. The terminal decision is independent of color, so `NO_COLOR` keeps progress on a supported terminal.\n- `println` goes through `bar.println`, so reports stay readable above the bar.\n- `main.rs` is unchanged: the stdout summary and the nonzero exit on failures stay as before.\n\n**Inspection phases**\n- `inspect_repository_with_progress`, `collect_references_with_progress`, `validate_references`, `validate_rust_functions` and the \"selecting assessments\" loop in `author_all_with_options` all emit `InspectionProgress`. The phases are evidence files, reference source files, reference coverage, Rust function coverage and assessment selection.\n- Discovery phases emit `total: None`. `BatchProgress::inspect` draws those as an indeterminate spinner and labels the current phase with `Phase: …`.\n- Known-total phases draw a bar with `percent pos/len` that measures that phase only.\n- The progress callback only reports counts. It does not alter validation or call a model.\n\n**Tests**\n- Unit tests in `src/authoring/progress.rs` cover:\n  - a phase that moves from indeterminate to counted, using a recording terminal;\n  - the percentage rounding boundary (199/200 gives 99, 200/200 gives 100).\n- `src/evidence.rs` tests check that validation results are identical with and without progress, including invalid inputs. They also check that each counted phase reports `0..=total` and that empty phases report 0/0.\n- A `src/rust_coverage.rs` test checks per-file counted updates for Rust function coverage.\n- PTY integration tests in `tests/authoring_batch.rs` cover:\n  - terminal progress with inspection counts, `6/6 finished`, and the true/false/FIXME/errors, active and queued counts;\n  - no SGR color under `NO_COLOR` with `CLICOLOR_FORCE` set;\n  - false and FIXME lines and error text visible, with true lines suppressed;\n  - verbose rationale readable above the bar;\n  - `TERM=dumb` with no escape codes and no counter;\n  - interruption showing \"Stopped\", not 100%, and not `6/6 finished`, run at concurrency 2 and 1;\n  - empty batch, configuration error and discovery error leaving no transient display;\n  - the no-op batch run on a terminal not showing `0/0 finished`;\n  - redirected stderr having no `\\x1b` or `\\r`;\n  - stdout summary assertions throughout.\n\n**Marking**\n- All behavior-bearing functions carry `{impl}`.\n- The only cite-only items are the data structs `BatchProgress` and `InspectionProgress`. They hold state and implement no behavior, so I do not count that as a gap.\n- I found no unspecified behavior in the implementation beyond display details such as spinner and prefix text.\n\nThere are no FIXME acknowledgments and I found no gaps.",
+  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers every obligation, it is marked with `{impl}`, and the tests cover the main points and boundaries. I read the code and tests but did not run them.\n\n**Batch progress (`src/authoring/progress.rs`, `src/authoring/batch.rs`)**\n- `BatchProgress::new` enables the bar only when stderr is a terminal and `TERM` is not `dumb`. Otherwise `println` falls back to plain `eprintln!`, so redirected or dumb output has no control sequences.\n- `start` and `refresh` render elapsed time, a percentage, `pos/len finished`, `N active · M queued`, and separate `true`, `false`, `FIXME` and `errors` counts.\n- The bar total is `subjects.len()`, which holds only subjects selected for assessment. Current accepted records go to `unchanged` and are never counted.\n- `refresh` sets the position from `positive + negative + fixme + errors`. `completed` and `failed` both feed it, so a finished assessment advances progress whether it wrote a judgment or reported an error.\n- `write_percentage` never rounds unfinished work up to 100%.\n- Reports go through `bar.println`, so false-judgment lines, FIXME notices and authoring errors stay readable above the bar.\n- `finish` calls `abandon()` and sets the prefix to \"Stopped\" when interrupted, so unstarted assessments are not counted as finished. A normal finish calls `finish()`.\n- The `Drop` impl calls `finish_and_clear()` when the bar is unfinished. Empty batches and early errors (discovery or configuration, via `?` or the early `return`) therefore clear the display.\n- `progress_style` strips the colour specifiers when `NO_COLOR` is set. The bar stays enabled, so colour is disabled without disabling progress.\n- The stdout summary and exit status are untouched. Progress only affects stderr.\n\n**Inspection progress (`src/evidence.rs`, `src/rust_coverage.rs`)**\n- `inspect_repository_with_progress`, `collect_references_with_progress`, `validate_references` and `validate_rust_functions` emit `InspectionProgress` updates.\n- Counted phases are \"evidence files\", \"reference source files\", \"reference coverage\", \"Rust function coverage\", and \"selecting assessments\" (emitted in `author_all_with_options`).\n- Discovery phases (\"discovering requirements\", \"discovering source references\") and the discovery step inside Rust function coverage report `total: None`.\n- `BatchProgress::inspect` labels the phase with \"Phase: …\", shows `{percent}% {pos}/{len}` when the total is known, and uses an indeterminate spinner style otherwise. The percentage measures the phase's own checks.\n- The progress callback does not change validation results, and no inference call is made during inspection.\n\n**Marking.** The `{impl}` markers cover the batch driver, every `BatchProgress` method, the style and percentage helpers, `Drop`, and the inspection functions. The `InspectionProgress` struct and the `BatchProgress` struct carry only `{cite}`. They are pure data holders, so I do not count that as a gap. I found no behaviour in the `{impl}` code that other requirements do not specify.\n\n**Tests**\n- Unit tests in `src/authoring/progress.rs`:\n  - A phase moving from indeterminate to counted (\"50% 2/4\").\n  - Percentage boundaries (199/200 gives 99, 200/200 gives 100).\n- `src/evidence.rs`:\n  - Progress-instrumented inspection returns the same validation results as plain inspection, both for a clean repository and for one with invalid JSON and a Rust parse error.\n  - Each counted phase reports `0..=total` exactly, and indeterminate updates occur.\n  - Empty phases report `0/0`.\n- `src/rust_coverage.rs`: per-file counted progress is reported.\n- PTY integration tests in `tests/authoring_batch.rs`:\n  - Mixed true, false, FIXME and error outcomes give the counts `true 3`, `false 1`, `FIXME 1`, `errors 1`, `0 active`, `0 queued` and `6/6 finished`.\n  - `NO_COLOR` set together with `CLICOLOR_FORCE` produces no SGR colour codes, yet the bar still redraws.\n  - Inspection shows counted progress with a percentage.\n  - A verbose rationale is readable alongside the bar, and the stdout summary is unchanged.\n  - `TERM=dumb` gives plain output with no escapes and no progress bar.\n  - A redirected run has no `\\x1b` or `\\r`.\n  - An interrupted run shows \"Stopped\", does not show `6/6 finished` or `100%`, and reports \"assessments not started\". It runs at concurrency 2 and 1, and only the finished assessment's evidence is written.\n  - Empty, configuration-error and discovery-error runs leave no \"Phase:\", \"Inspecting\" or \"finished\" text on the final screen. `final_screen` replays the terminal output to check this.\n  - A no-op batch in a PTY does not show \"0/0 finished\".\n\nI found no acknowledged FIXMEs or other gaps.",
+  "references": "02a2da37a156d54ae3ffcb0b9eb993bbf534bdcd6951249bf6feefba5b4b35b9",
   "inputs": [
     {
       "requirements": "requirements.authoring.progress",
@@ -238,7 +239,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
-      "hash": "076485ddc24a5171d3101983c9b7622ba8a6552d84863c42e3eaf8843ce838fc"
+      "hash": "7489dd27e1333f83abd297027be13bee765f5c1d634606c6f12c14a0d9c1ed3d"
     },
     {
       "file": "src/evidence.rs",
@@ -248,7 +249,7 @@
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
-      "hash": "3a95e96496e59dc43099c9706020e030bcea1e25af3006c617f702a65cdf5ae6"
+      "hash": "d786929a98bd067cf7e7d36e66e5d96d07a71ad18adb5c1ed8ef357d446685ad"
     },
     {
       "file": "src/evidence.rs",
@@ -336,34 +337,29 @@
       "hash": "2d71d38782fa0a7a19ff40b32128a9d2701a84167329df4d63572a8033076dac"
     },
     {
+      "file": "Cargo.lock",
+      "item": "line@e86196f103e1",
+      "hash": "e86196f103e1c62907ba134fa32736c399dd261431e2a1ff3ab472fec9727565"
+    },
+    {
+      "file": "Cargo.lock",
+      "item": "line@94cc9e99a2da",
+      "hash": "94cc9e99a2da1f3c020feac16e82025e259369114f2715ae19064b22cbc26415"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[indicatif]",
+      "hash": "6bbcdd2e887b55ef4a8e27dcc826a8a1247574d2479b4be0fa9fcbff45a2d766"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "use@34072261f783",
+      "hash": "34072261f783e90507393611161d8db1b3cd112e85ee5e22459dbc9005b52048"
+    },
+    {
       "file": "src/authoring/batch.rs",
       "item": "use@932d0226c309",
       "hash": "932d0226c3090d47855b9b026b4ffa716d7872a488e9d7a83f7a6b05fb955dbc"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "use@699a40c6ec6a",
-      "hash": "699a40c6ec6a447abf626396186de8476f03f5595005e7677faa0e2360c52327"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[InspectionProgress]",
-      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "use@268b8c71bb50",
-      "hash": "268b8c71bb5050ddd290f4bdd6fafb91138e956d5c23ce6136ca758cfa16ab5a"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "use@cc045c12f29c",
-      "hash": "cc045c12f29cff303afc23d71c46cbfe872a352ad249f2434bd4c7afbcf42a26"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "use@6708b8882ff4",
-      "hash": "6708b8882ff4edbfbd863ef39843ffd73153ade71543c5e7fac9a17d459679fb"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -372,13 +368,8 @@
     },
     {
       "file": "src/authoring/progress.rs",
-      "item": "use@89168547ebb0",
-      "hash": "89168547ebb05411b3f3af744378e5942a505238a22acc21d672c921dabcd301"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "use@18a4bb66fc2c",
-      "hash": "18a4bb66fc2c16a5afc36c64f161f7e40625c5fd41178a0cf9c2e534bcf53309"
+      "item": "use@699a40c6ec6a",
+      "hash": "699a40c6ec6a447abf626396186de8476f03f5595005e7677faa0e2360c52327"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -391,9 +382,24 @@
       "hash": "65f6e2c698e4ecc5ac0c62154dfb0e66de8523b06aea74f27987fae7ad7aa950"
     },
     {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress/Drop]",
+      "hash": "a03946d2333bb37b9bb9d604b44e48708b0a6a2ce17fae6749e379dd30394d6d"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/impl[RecordingTerm/indicatif::TermLike]",
+      "hash": "9b97af9f0dc97443f0985454dd7417def96e20c957efa3be0f1bfac906acaa30"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[InspectionProgress]",
+      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "use@268b8c71bb50",
+      "hash": "268b8c71bb5050ddd290f4bdd6fafb91138e956d5c23ce6136ca758cfa16ab5a"
     }
   ]
 }

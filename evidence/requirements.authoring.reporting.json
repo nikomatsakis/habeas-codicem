@@ -1,7 +1,8 @@
 {
   "requirement": "By default, authoring MUST suppress per-subject `true` judgment lines and show\neach `false` judgment's subject and outcome on stderr, on both terminals and\nredirected output. Existing progress counters and completion summaries MUST remain\navailable; FIXME notices and authoring errors MUST remain visible. Single-subject\nauthoring MUST retain its subject, backend, model, evidence destination, and\nusage-record metadata.\n\n`-v` and `--verbose` MUST additionally show each false judgment's recorded Markdown\nrationale on stderr; rationales MUST be omitted by default. This applies to\nsingle-subject and batch authoring. It MUST\nNOT print true rationales or append recorded\ninput snapshots. Reporting MUST use the completed assessment's existing result,\nwithout additional inference. In `--stdout` mode, stdout MUST remain only the\nevidence JSON; verbose rationale and other diagnostics MUST go to stderr.\nVerbosity MUST NOT change persistence, validation, or exit-status rules.\n{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.batch`",
   "determination": true,
-  "rationale": "## Judgment\n\nThe sources satisfy `requirements.authoring.reporting`. I found no unacknowledged gaps. Each obligation is implemented in code marked `{impl}` and covered by tests. I have not run the tests; the assessment rests on reading the code and the test assertions.\n\n## Implementation\n\n**Batch (`--all`)**\n- `BatchProgress::completed` in `src/authoring/progress.rs` prints nothing for a `true` judgment and only increments the counter.\n- For `false` it prints `\"<subject>: false (usage: …)\"`. Under verbose it appends `assessment.rationale`, which is the stored result, so no extra inference occurs.\n- FIXME judgments print `\"<subject>: FIXME …\"`.\n- `failed` prints every authoring error.\n- `println` routes through the progress bar when stderr is a terminal and through `eprintln!` otherwise. This covers both terminals and redirected output, and all of it goes to stderr.\n- The counters and the completion summary (`\"N authored; M unchanged; K failed\"`) are untouched. The summary goes to stdout, as before.\n- `author_all_with_options` builds `BatchProgress::new(options.verbose)`, and the `-v`/`--verbose` flag is parsed by clap in `Command::Author`.\n\n**Single subject (`src/main.rs`)**\n- A `false` judgment prints `\"<subject>: false\"` to stderr. With `verbose` it also prints the recorded rationale to stderr.\n- `true` produces no judgment line and no rationale.\n- The `subject: backend / model` summary is retained. It adds ` — FIXME` for FIXME judgments, and `Evidence:` and `Usage:` lines follow.\n- In `--stdout` mode the summary, `Evidence: stdout` and `Usage:` go to stderr. Stdout carries only the evidence JSON.\n- Verbosity affects only what is printed. Persistence, validation and the exit status (the failure-based `Err` return in batch) are unchanged.\n- No input snapshots are printed, because only `outcome.rationale` is used.\n\n**Minor point:** `AuthoringOptions` (`src/authoring/mod.rs`) is only `{cite}`d. It is a plain data carrier for the `verbose` flag, and the behaviour lives in code marked `{impl}`, so I don't count it as a gap.\n\n## Tests\n\n- **Batch, redirected output** — `batch_reports_false_rationales_only_when_verbose` runs with and without `--verbose`. It checks that:\n  - the `false` line is present;\n  - the `true` line is absent;\n  - the rationale appears only when verbose;\n  - the FIXME notice and the authoring error are still shown;\n  - source input text and `true` rationales are never printed;\n  - stdout holds only the summary;\n  - the exit status is nonzero in both runs.\n- **Batch, PTY** — `terminal_progress_distinguishes_judgments_from_authoring_errors` and `verbose_false_rationale_is_readable_above_terminal_progress` use a real PTY. They check the counters (`true 3 · false 1 · FIXME 1 · errors 1`), the `N/N finished` text and the completion summary. They check that the `false` line, the FIXME notice and the error are visible, and that `true` lines and non-verbose rationales are absent. The verbose test also checks that the rationale is readable above the progress display.\n- **Authoring errors in a batch** — `failed_assessment_keeps_other_results_and_reports_failure`.\n- **Single subject, default** — `false_is_a_completed_assessment` checks the `<subject>: false` line on stderr, the absence of that line on stdout, and no rationale by default.\n- **Single subject, verbose** — `verbose_single_author_reports_only_false_rationale_without_source_inputs` covers `-v` and `--verbose` with a `false` judgment and `-v` with a `true` judgment. It checks that the rationale appears only for `false`, that no `true` lines or source or requirement text appear, and that the `Evidence:` and `Usage:` lines remain.\n- **`--stdout`** — `stdout_emits_only_evidence_json_without_changing_project_files` covers true, false, FIXME, a missing evidence directory, and verbose with false and true. It checks that stdout is pure JSON, that diagnostics, the rationale (verbose and `false` only), `Evidence: stdout` and the usage path go to stderr, and that project files are unchanged.\n\nThe tests cover the main points in the design space: default versus verbose, `true`/`false`/FIXME/error, terminal versus redirected output, single versus batch, and stdout mode.",
+  "rationale": "## Judgment: `requirements.authoring.reporting` is satisfied\n\n### Implementation\n\n**Batch (`--all`)**\n- `BatchProgress::completed` (`src/authoring/progress.rs`, lines 94–121) counts each judgment for the progress counters.\n  - A `true` judgment prints no per-subject line.\n  - A `false` judgment prints `<subject>: false (usage: …)`.\n  - The recorded Markdown rationale is appended only when `self.verbose` is set.\n  - A FIXME judgment prints its notice.\n- `BatchProgress::failed` and `println` route authoring errors and false lines through `bar.println` on a terminal, or `eprintln!` when redirected. So output goes to stderr in both modes.\n- The progress bar, the counters (true/false/FIXME/errors) and the final `N authored; M unchanged; K failed` summary in `main` are all kept.\n- `author_all_with_options` (`src/authoring/batch.rs`) passes `options.verbose` into `BatchProgress`. It reports from the already-completed `AuthoringOutcome`, so no further inference happens.\n- Verbosity does not touch the persistence, validation or exit-status logic.\n\n**Single subject** (`main`, `src/main.rs`)\n- `-v` is declared as `#[arg(short, long)] verbose`. This is the `-v|--verbose` flag that the invocation requirement specifies.\n- A `false` outcome prints `<subject>: false` to stderr. The rationale is printed only under `verbose`.\n- `true` outcomes get no judgment line. The metadata line (`subject: backend / model`, plus `— FIXME` when applicable) is kept. So are the `Evidence:` and `Usage:` lines. In file mode these go to stdout. In `--stdout` mode they go to stderr, with `Evidence: stdout`, so stdout holds only the evidence JSON.\n- True rationales and input snapshots are never printed.\n- Exit status and persistence are unaffected by the flag.\n\n### Tests\n- `tests/authoring_batch.rs`\n  - `batch_reports_false_rationales_only_when_verbose` runs both verbosity settings. In both it checks:\n    - no `: true (usage:` line;\n    - the false line is present;\n    - the FIXME notice and the error are present;\n    - no source text and no true rationale appear;\n    - the exit status is the same;\n    - stdout holds only the summary.\n  - It also checks that the rationale appears only when verbose.\n  - `terminal_progress_distinguishes_judgments_from_authoring_errors` uses a PTY. It checks the counters and summary, that false and FIXME lines appear, that true lines and rationales do not, and that evidence is persisted.\n  - `verbose_false_rationale_is_readable_above_terminal_progress` uses a PTY with `-v`. It checks that the rationale is readable alongside the progress display.\n  - `failed_assessment_keeps_other_results_and_reports_failure` covers visible errors and a nonzero exit status.\n- `tests/authoring_cli.rs`\n  - `false_is_a_completed_assessment` checks that the false line is on stderr, not stdout, and that the rationale is hidden by default.\n  - `verbose_single_author_reports_only_false_rationale_without_source_inputs` covers `-v` and `--verbose` with false, and `-v` with true. It checks that the rationale appears only for false, that no requirement or source text leaks, that `Evidence:` and `Usage:` are retained, and that the evidence is persisted.\n  - `stdout_emits_only_evidence_json_without_changing_project_files` covers true, false and FIXME, each with and without `--verbose`. It checks that stdout is pure JSON, that diagnostics and metadata go to stderr, that no true line appears, that the rationale appears only for verbose false, and that persistence and usage records are unchanged.\n\n### Remaining observations\n- `AuthoringOptions` (`src/authoring/mod.rs`) is marked `{cite}` only, but it is a one-bool plumbing struct. The behaviour lives in code that carries `{impl}`.\n- The `(usage: …)` suffix on batch false and FIXME lines is minor extra detail. It is consistent with the usage-record reporting in the authoring requirements.\n\nI found no unacknowledged gaps and no FIXME markers.",
+  "references": "a9947585988663ae9a747695342da6c93ca9ba472d5019e3aeb9690aa6ff9bb0",
   "inputs": [
     {
       "requirements": "requirements.authoring.reporting",
@@ -164,11 +165,6 @@
       "hash": "e387abae06c0138869367127118181ff502c16b7e7733d73d4e2ea43adc602f7"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "enum[AuthoringSubject]",
-      "hash": "a904ca62130c1864b69c7b953815fbfabad40971bf6c38911d01d6d71accc0ed"
-    },
-    {
       "file": "src/authoring/progress.rs",
       "item": "struct[BatchProgress]",
       "hash": "4f886d7efa57409f30bed65cb7d2ad5e80c982c61a057b30a3c4ddea3de72605"
@@ -195,33 +191,28 @@
     },
     {
       "file": "src/fixme.rs",
-      "item": "impl[FixmeSummary]/fn[add]",
-      "hash": "60511acf3a5fd02f8d220559be8fcc258715e89d87792d1af4331efe039106cd"
+      "item": "impl[FixmeSummary]/fn[render]",
+      "hash": "00c57ac6eff00ba6181349d768dfdb8c96b93e0fbba63039aeba705430242268"
     },
     {
       "file": "src/fixme.rs",
-      "item": "impl[FixmeSummary]/fn[render]",
-      "hash": "00c57ac6eff00ba6181349d768dfdb8c96b93e0fbba63039aeba705430242268"
+      "item": "mod[tests]/fn[strings]",
+      "hash": "f919b2b31dfc954aa970d26013ba00e7a43ba2cb3e35621502f7dfcb865b3222"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "mod[tests]/fn[verbose_groups]",
+      "hash": "6d6b22200cae6ce84618b4a88a14fbd4e40763cf2db444cca57fee8b9bfc41fc"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "mod[tests]/fn[verbose_output_lists_each_judgment_under_every_group_it_belongs_to]",
+      "hash": "a8a7d4b2fd68ce8c8efce71b94a56c390abb3676423724c29b536e2ff3515c59"
     },
     {
       "file": "src/main.rs",
       "item": "enum[Command]",
       "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@18dc39a869d7",
-      "hash": "18dc39a869d79efeb360785e63c656bdc3fa8ff5bc7365b86167012bfa4d4014"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all]",
-      "hash": "04085915b6e2a6c34a2f30d39b22a3bb7286cc3beae8edbf5062489ae157f017"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[finish]",
-      "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
     }
   ]
 }

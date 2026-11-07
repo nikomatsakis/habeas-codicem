@@ -1,7 +1,8 @@
 {
   "requirement": "An operation MUST load user configuration only when its requirements call for\nuser settings. A missing user file MUST represent absent user configuration;\nwhether the operation can proceed MUST be defined by the feature. Loading MUST\nNOT create a file, repair malformed input, or supply an undocumented selection.\n\nWhen loading configuration, Habeas MUST report unreadable files, invalid TOML,\nunsupported user-file versions, unknown common keys, and invalid common field\ntypes. It MUST validate the feature sections used by that operation and report\ninvalid feature settings with the file and setting identified. Unknown keys in\nan explicitly documented provider-owned options map MUST follow that feature's\nvalidation rules.\n\nAn operation MUST NOT require or semantically validate configuration for a\nfeature it does not use. This isolation MUST NOT suppress TOML syntax errors in\na shared file that the operation otherwise needs to parse. In particular,\nordinary validation still requires a parseable `book.toml` while remaining\nindependent of authoring settings and the user configuration file. It MUST apply\nthe selected workspace's evidence path policy without loading its model clients\nor credentials.",
   "determination": true,
-  "rationale": "**Judgment: requirements.configuration.loading is satisfied.** The implementation covers every obligation and the tests exercise the main boundaries and failure cases. I did not run the tests; this judgment rests on reading the marked sources.\n\n**Implementation**\n\n- **Missing user file.** `load_user_config` (src/config.rs:674) returns `Ok(None)` on `NotFound` and never creates or rewrites the file. Other read errors are reported with the path. `UserConfig::parse` and `validate` reject invalid TOML, a non-1 or non-integer `version`, unknown fields, and wrongly typed fields. `parse_document` and `decode` add the file, the setting and a line/column position, and they redact secrets.\n- **Workspace file.** `workspace_document` reads the nearest `habeas.toml` and reports I/O and parse errors with the path; the `unreadable_configuration_files...` test covers a directory named `habeas.toml`, and a non-UTF-8 file is covered too. `validate_workspace_common` checks the version and unknown top-level keys without touching feature sections.\n- **Feature isolation.**\n  - `load_workspace_evidence` decodes only the `[evidence]` table and validates only that. It never decodes authoring settings, so no model client or credential is loaded. It only flags whether credentials are present.\n  - `load_workspace_config` and `resolve_authoring*` validate authoring settings only when an authoring operation runs.\n  - `BackendConfig::validate` and `UserAuthoringConfig::validate` report the file and setting. They also apply feature rules to the provider-owned `options` maps: NaN and inf are rejected, and reserved model, prompt and tool keys are rejected.\n  - `main` loads only the evidence policy for commands that resolve evidence inputs. It skips setup, the hook and `mdbook supports`.\n- **Validation and `book.toml`.** `inspect_repository_with_progress` uses `load_workspace_evidence` and `book_source_dir`. `book_source_dir` still reports an unreadable or invalid-TOML `book.toml`, and it never reads authoring settings or the user file. `PathPolicy::load` and `resolve_evidence_file` apply the evidence path policy without loading credentials.\n- **Marking.** The implementing functions I found carry `{impl}` markers: the config loaders and validators, the authoring entry points, the inspection functions and `main`. I found no unmarked code that adds behaviour beyond the requirement. `user_config_path` implements a different requirement (`user_location`). The authoring selection logic follows the documented precedence, so it supplies no undocumented selection.\n\n**Tests**\n\n- **Missing and absent files.** tests/configuration.rs `absent_and_minimal_configuration_are_distinct_and_read_only` covers a missing user file as `None`, no file creation, and the file left byte-identical.\n- **Unreadable files.** `unreadable_configuration_files_are_reported_instead_of_skipped` covers directories and non-UTF-8 content.\n- **Schema errors.** `invalid_schema_and_feature_values_report_the_configuration_path` covers a bad version, a wrong version type, unknown keys and an empty file. `workspace_diagnostics_identify_the_file_and_setting` checks that the setting is named.\n- **Feature rules.** `storage_rules_reject_each_invalid_field_with_its_setting` covers names, project keys, empty model IDs, `api_key_env`, NaN/inf values and reserved option keys. `authoring_concurrency_defaults_overrides_and_invalid_values` covers invalid concurrency values. `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers redaction of credential values in errors.\n- **Isolation.**\n  - `ordinary_status_ignores_invalid_user_authoring_configuration` runs `status` with a malformed user file.\n  - The batch no-op test runs `author --all` with an invalid and then a missing user file, with nothing to author.\n  - `status_loads_nearest_workspace_file_without_validating_authoring` and `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` show unused authoring content is not validated, while bad versions and bad syntax are still reported.\n  - `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` does the same for validation.\n  - `commands_without_evidence_inputs_ignore_an_invalid_workspace_file` shows the hook, setup and `mdbook supports` ignore an invalid `habeas.toml`.\n- **`book.toml`.** Unit tests in src/evidence.rs (`book_source_defaults_only_when_absent_and_reports_invalid_configuration`, and `configuration_and_dependency_failures_do_not_stop_later_checks`) cover an invalid or unreadable `book.toml`. They are tagged to other requirements (`ci.book_source`, `ci.errors`) rather than this one, a minor marking gap, but they do exercise this behaviour.\n\nNo acknowledged FIXMEs or unacknowledged gaps remain.",
+  "rationale": "**Judgment:** the sources satisfy `requirements.configuration.loading`.\n\n**Implementation**\n\n- **Loading only when needed.**\n  - `author_all_with_options` (`src/authoring/batch.rs`) resolves authoring configuration only after it finds subjects that need work. A fully current batch therefore never reads the user file.\n  - `main` (`src/main.rs`) loads only the evidence section of the workspace file. It skips even that for `setup`, `hook` and `mdbook supports`.\n  - `status` and other non-authoring commands never touch the user file.\n- **Missing user file.** `load_user_config` (`src/config.rs`) maps `NotFound` to `Ok(None)` and never writes. The feature code decides what absence means: `resolve_authoring_with_workspace_from` reports \"no authoring configuration\" or \"no configuration selected\", and its search order contains no undocumented default.\n- **No repair.** `parse_document`, `decode` and `UserConfig::parse` return errors only. Nothing rewrites input.\n- **Required reports.**\n  - Unreadable files: `load_user_config` and `workspace_document` return errors that name the path.\n  - Invalid TOML: `parse_document` reports the file and the line and column.\n  - Unsupported versions and unknown common keys: `UserConfig::validate`, `validate_workspace_common`, and the strict decoding in `decode` and `decoded_setting`.\n  - Invalid common field types: the same strict decoding and `decoded_setting` report these with the file and the setting.\n- **Feature sections.**\n  - `WorkspaceConfig::validate`, `UserAuthoringConfig::validate`, `BackendConfig::validate` and `EvidenceConfig::validate` all return errors through `invalid`, which names the file and the setting.\n  - `BackendConfig::validate` rejects option keys that replace the model, prompt or tools, and rejects non-finite option values. That is the provider-owned options rule.\n- **Isolation.**\n  - `load_workspace_evidence` decodes only `[evidence]`. It still runs `validate_workspace_common` through `workspace_document`, so TOML syntax errors, the version and unknown top-level keys are reported even when the authoring section is unused.\n  - `book_source_dir` requires a parseable `book.toml`.\n  - `inspect_repository_with_progress` does not read the user file or load credentials. `PathPolicy::load` and `resolve_evidence_file` apply the evidence path policy and only note whether the config file contains credentials.\n- **Marking.** Every function that loads or validates configuration that I could find carries the `{impl}` marker. `user_config_path` is marked only for `user_location`, which is appropriate because it does not load anything.\n\n**Tests**\n\n- `absent_and_minimal_configuration_are_distinct_and_read_only` covers an absent file, a file that stays unmodified, and a missing file that is not created.\n- `invalid_schema_and_feature_values_report_the_configuration_path` and `storage_rules_reject_each_invalid_field_with_its_setting` cover bad versions, unknown keys, bad types, invalid feature values, option-key rejection, and the file and setting named in each error.\n- `workspace_diagnostics_identify_the_file_and_setting` and `unreadable_configuration_files_are_reported_instead_of_skipped` cover syntax errors with position, non-UTF-8 files, directories where a file is expected, and a clean directory left untouched.\n- `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials`, `status_loads_nearest_workspace_file_without_validating_authoring` and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` cover unused authoring settings being ignored while common-file errors are still reported.\n- `commands_without_evidence_inputs_ignore_an_invalid_workspace_file`, `ordinary_status_ignores_invalid_user_authoring_configuration` and `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` cover commands that need no configuration, ordinary status and validation ignoring an invalid user file, and a no-op batch run with an invalid or absent user file.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers diagnostics that do not leak credentials.\n\nI found no unacknowledged gaps and no unmarked implementing code.",
+  "references": "18acef0d986e172dad2a8121eb997672f868e597e5814b14e914492321497586",
   "inputs": [
     {
       "requirements": "requirements.configuration.loading",
@@ -243,124 +244,9 @@
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[project]",
-      "hash": "fe2cd844de1cb0683bc9efd3c89dbc2d56b8880a80f3235a5dbb4b36ce6c5c80"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
-      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
-      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[fixture]",
-      "hash": "61c07880cbe6294572e0fbb36f305866e58a558759bd71f7cf2d238fb4c10f56"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
-      "hash": "01beeb1f859a67450bf04cf20e2aba05971ee91df7a46ff76eab1315fa5035d7"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[book_source_defaults_only_when_absent_and_reports_invalid_configuration]",
-      "hash": "94b9c215d71325dd5702a2b7b12b1f360af99f2fd60aca395af6187990c7b118"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
-      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DetailPlan]/fn[populate]",
-      "hash": "bea2cf30b818cd531bb4b522ec60e216bade0ae39472b104a99df7db21df787b"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
-      "hash": "7c8d01bf4965121af7b3b98692c5407a0a47611448986c92edfce95d33bf5c59"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
-      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[common_input_extensions_select_highlighting_languages]",
-      "hash": "0aa970689b9c3680b597a49dd946891fa06fd1aaa03858e2d4b56731e5df98a7"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[findings_make_false_and_fixme_records_invalid]",
-      "hash": "a004e4b148aa0dd5473012ef0bec678d14efc5d0daa13c8abb33b95791eddca4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_and_detail_pages_show_each_example_evidence_state]",
-      "hash": "29b7376c0e4ed997bb852812f78157ecd3816252e369a16d350af34e073c4a38"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
-      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
-      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[validate]",
-      "hash": "650422c1e693574d5cdc7e44922f551e17eb4279fa1ac35aab4f8ef59911d806"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[book_root]",
-      "hash": "d3f3bc4ab6a8cf07d968b7b0ee95b6a64ebded467e9f792221b1b3fa6038a5ea"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[find_project_root]",
-      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[project_root]",
-      "hash": "c0707987d208670061b30eb531a4c5a6640c2f948a3a1ea81dceca0fecc42807"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[run]",
-      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[is_configured]",
-      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]",
-      "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "3cbf909ef188ad797d961bb616d0f75643b592e1115e1fa24e951f6c977dc916"
     },
     {
       "file": "src/config.rs",
@@ -379,13 +265,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "fn[state_root]",
-      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root_from]",
-      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
+      "item": "fn[required_directory]",
+      "hash": "7fd086d548e3f55c4cd745817f63b4e4a11a1706958da3fa786d8de1c9499a72"
     }
   ]
 }

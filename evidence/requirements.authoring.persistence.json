@@ -1,7 +1,8 @@
 {
   "requirement": "After one valid judgment, the harness MUST write the subject text, submitted\ndetermination and rationale, and recorded inputs using the existing evidence\nschema. {cite}`requirements.ci.schema`\nBy default, it MUST write the subject's evidence file. With `--stdout`, it MUST\nemit a single evidence JSON object followed by a newline to stdout and MUST NOT\ncreate or change evidence files or directories. All three outcomes MUST be\nwritten to the selected destination as completed assessments; their validation\nstatus MUST follow {cite}`requirements.ci.determination`.",
   "determination": true,
-  "rationale": "**Judgment: the persistence requirement is met.** The marked implementation covers every obligation, and the tests cover the interesting cases. The one gap I found, a cite-only struct, is minor.\n\n**Implementation**\n- **Record contents.** `assess` (`src/authoring/mod.rs`, lines 450–580) builds the evidence object only after one valid `submit_judgment`. It contains the subject text under the `requirement` or `example` key, `determination` (from `Judgment::to_value`), `rationale`, and `inputs` (from `sources.recorded_inputs()`).\n  - `Judgment::to_value` (`src/judgment.rs`) emits `true`, `false`, or `{\"FIXME\":[…]}`, which are the three outcomes of the evidence schema.\n  - The submission check rejects empty rationales. Outline inputs carry only file, item, and hash.\n  - Multiple or invalid submissions never reach persistence.\n- **Default destination.** `configured_assessment` (`src/authoring/mod.rs`, lines 300–350) does the following:\n  - It creates `evidence/` and writes `evidence/<subject>.json` with a trailing newline.\n  - It sets `evidence_written` only after the write succeeds.\n  - A failed write returns an error, and the usage log stays `failed` with `evidence_written: false`.\n- **`--stdout`.** The same function takes the `EvidenceOutput::Stdout` branch, which writes one pretty-printed JSON object plus a newline to stdout and flushes. That branch never calls `create_dir_all`, `fs::write`, or any other project-file operation. Usage state is forced outside the project in `usage_state_root`, so evidence files and directories are untouched.\n- **Batch mode.** `write_record` (`src/authoring/batch.rs`) writes the same record to the same path. It uses a temp file plus `persist`, which is justified by the batch requirement's concurrent readers, not by this one. `PendingAssessment::persisted` marks the usage as written and completed.\n- **Outcomes and validation.** All three outcomes take the same write path, so false and FIXME are written as completed assessments, not errors. Validation status follows `requirements.ci.determination`; that rule is applied by the validator and cited, not reimplemented in the authoring code.\n- **Cite-only marking.** `PendingAssessment` (`src/authoring/mod.rs`, line 65) carries only a `{cite}`. It is a plain data holder with no behavior, and the behavior that persists it is marked `{impl}`. I do not count this as a real gap.\n\n**Tests**\n- **Default write for false.** `false_is_a_completed_assessment` checks that:\n  - the existing evidence file is replaced;\n  - the `false` determination and rationale are stored;\n  - inputs are non-empty and hold outline form (`item` and `hash`) without source text;\n  - usage is `completed`.\n- **Stdout.** `stdout_emits_only_evidence_json_without_changing_project_files` runs these cases:\n  - true, false, and FIXME with existing evidence;\n  - true with no `evidence/` directory, which asserts the directory is not created;\n  - verbose variants.\n\n  For each it asserts that:\n  - stdout parses as a single JSON object ending in a newline;\n  - the fields and the requirements, definition, and outline inputs are present;\n  - the existing evidence file is byte-identical.\n- **Write failure.** `failed_evidence_write_keeps_the_accepted_judgment_in_usage` replaces the evidence file with a directory. It asserts the command fails, `evidence_written` is false, and the accepted FIXME is retained in usage.\n- **No write on denial.** `explicit_untracked_reads_abort_without_another_request_or_evidence_write` asserts that no evidence is written when an assessment aborts.\n- **Batch.**\n  - The batch tests check that true, false, and FIXME records are written, and that aborted assessments leave no file while in-flight ones are preserved.\n  - The batch test `batch_fills_evidence_…` validates the written evidence through `validate_repository`.\n  - `negative_assessment_records_additional_reads_and_fails_validation` shows a false record is persisted and then reported by validation.\n- **Live provider.** `live_bedrock_authoring` exercises stdout persistence end to end. It is skipped when `CI` is set or credentials are missing.",
+  "rationale": "## Judgment\n\nThe implementation covers every obligation in `requirements.authoring.persistence`. The tests cover the main cases and the boundaries and failure cases that matter. I found no unmarked implementation code and no unspecified behaviour.\n\n## Implementation\n\n- **Evidence content.** `assess` (`src/authoring/mod.rs`) runs only after a valid `submission`. It builds the evidence object with exactly these keys: the subject-kind noun (`requirement` or `example`) holding the subject text, `determination`, `rationale`, `references` (the reference-set digest), and `inputs` (recorded outline, requirements and definition inputs). `Judgment::to_value` (`src/judgment.rs`) serializes all three outcomes: `true`, `false` and `{\"FIXME\":[…]}`. Outline inputs carry only file, item and hash, so no source text is stored. This matches `requirements.ci.schema`.\n- **Default destination.** `configured_assessment` creates `evidence/<subject>.json` (pretty-printed, newline-terminated) for `EvidenceOutput::File`. For `author --all`, `write_record` (`src/authoring/batch.rs`) replaces the file atomically through a temp file. `PendingAssessment::persisted` then marks the evidence as written and the run as completed.\n- **`--stdout`.** `configured_assessment` writes `to_string_pretty(evidence) + \"\\n\"` to stdout and returns `evidence_path: None`. This path never calls `create_dir_all` or `fs::write` on evidence. The usage log is written to the state directory, which is outside the evidence tree and outside this requirement.\n- **All three outcomes are completed assessments.** No outcome is rejected or treated as an error at write time. `false` and `FIXME` are written and the usage outcome is `completed`. Validation status is left to the validator under `requirements.ci.determination`, which I did not reassess. `tests/authoring_batch.rs` also checks the interaction: a false record produces a \"determination is false\" validation error, and a re-authored record validates cleanly.\n- **Marking.** `write_record`, `persisted`, `configured_assessment`, `assess` and `to_value` carry `{impl}` references. `PendingAssessment` is a data struct with only a `{cite}`. `prepare_assessment` and `configured_record` only produce the record and do not write evidence.\n\n## Tests\n\n- **`stdout_emits_only_evidence_json_without_changing_project_files`** covers `true`, `false` and `FIXME` through `--stdout`, and covers the evidence directory both existing and missing.\n  - It parses stdout as a single JSON value and checks that it ends with a newline.\n  - It checks the requirement text, determination, rationale and the three input forms.\n  - It checks that the existing evidence file is byte-identical, or that the `evidence` directory still does not exist.\n  - It checks usage `evidence_output` is `stdout`.\n- **`explicit_untracked_reads_abort_without_another_request_or_evidence_write`** checks the failure case with `--stdout`: stdout is empty and the evidence file is unchanged.\n- **`ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free`** and **`false_is_a_completed_assessment`** cover default-destination writes for FIXME and false. They check that the keys and inputs are stored as selectors and hashes, with no source text. They also check that usage is `completed` with the right determination.\n- **`verbose_single_author_reports_only_false_rationale_without_source_inputs`** covers file output for `true` and `false`.\n- **`failed_evidence_write_keeps_the_accepted_judgment_in_usage`** covers a write failure: the run fails, the usage determination is kept, and `evidence_written` is false.\n- **The batch tests** (`tests/authoring_batch.rs`) cover batch persistence, including examples and denied reads that leave no evidence file. `batch_reauthors_a_false_judgment_when_its_reference_set_changes` checks that the stored `references` equals the digest and that the written records validate.\n\nMinor remaining gaps:\n- No test asserts the exact key set of the evidence object (the `references` key is checked only in the batch tests).\n- Single-author file writes use plain `fs::write` rather than an atomic replace.\n\nNeither gap contradicts the requirement text.",
+  "references": "9c3222b86009f0ddc45d3d47d37c33b1547175f1c410c942f1a9cccf5521ac4b",
   "inputs": [
     {
       "requirements": "requirements.authoring.persistence",
@@ -28,7 +29,7 @@
       ],
       "text": [
         ":::{req} schema",
-        "A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, and `inputs`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input MUST have exactly one of three forms: an outline input with `file`, `item`, and `hash`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. `matches` MUST be an array of distinct full definition names, `hash` MUST be a lowercase hexadecimal SHA-256 digest, and `text` MUST be a nonempty array of strings. Evidence MUST NOT store source text for outline inputs.",
+        "A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, `references`, and `inputs`. `references` MUST be the reference-set digest defined by {cite}`requirements.ci.reference_set`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input MUST have exactly one of three forms: an outline input with `file`, `item`, and `hash`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. `matches` MUST be an array of distinct full definition names, `hash` MUST be a lowercase hexadecimal SHA-256 digest, and `text` MUST be a nonempty array of strings. Evidence MUST NOT store source text for outline inputs.",
         ":::"
       ]
     },
@@ -61,7 +62,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "f8340e9a96b5dad7f636316ee5cc43e0ba60b76f46521d79b3bdc6e253306d04"
+      "hash": "df71eface1ebf0b38f8b756edd91c75c101101bfb2d86bfa5dcc6f08f25b765f"
     },
     {
       "file": "src/judgment.rs",
@@ -124,124 +125,9 @@
       "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[nested_project_uses_only_its_part_of_the_git_index]",
-      "hash": "dea11d109c0202e1b5b6a7f89fc5e0b4864ee3a773393d4d2cb7f52f55a48595"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
-      "hash": "04e0bb3382ec1ba0982960e6e5a2254e7cacc9ce324a0d46442a9271c9c9e5d8"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree]",
-      "hash": "db8bdfdbb6c83a98321c48f79a8adb3c376b8e26b0df2e9b5fba12f8e3f46d83"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
-      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]",
-      "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
-    },
-    {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
       "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[project]",
-      "hash": "fe2cd844de1cb0683bc9efd3c89dbc2d56b8880a80f3235a5dbb4b36ce6c5c80"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "c5f93abfb582c7098cf58194a473c254b89ec7f20d40120444822c4d946517cf"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
-      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation]",
-      "hash": "a9f72f30b27102cfaa5697448cc58df1881aa7110ef023ca06f1d13c731c7b5e"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
-      "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
-      "hash": "5c0a6d854b289c25861e9d98f77e5f13ec5bd7583cfb574ca9c25ecd7ab82410"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
-      "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "dcf7e54a23dcebb99ce3fc2313f72289801e3f03afde66f9e24e01ea8e632d13"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
-      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[generated_evidence_references_are_omitted_by_default]",
-      "hash": "ea1f47438ed79131e5835a50a8dbb99ce9a857b91958a6629036e6bf78fd3687"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -259,156 +145,6 @@
       "hash": "2c294b97b6a7e838ded5a2a97db354bdf4d44df35308268574585d88d3c9a11e"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[usage_state_root]",
-      "hash": "b721c9327b86eaabc87f13eca86692c5d6bb6e961cefb6cafb21610f45554bf7"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]",
-      "hash": "37e48cc1515b97a14a38ca10ba6cbcbc9388841b3da9abc899d1466ae928e302"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
-      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[a_read_through_a_symlink_leaving_the_project_aborts_the_assessment]",
-      "hash": "1df670f93bf1d9b07a6ea4db60253668d18da22620b7b75721c79ebb02623066"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
-      "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[a_submission_finishes_the_assessment_wherever_it_arrives]",
-      "hash": "b5421960bc2d3e3308482c6e72a92d6841fc033381537dcc7f11caf641d7f357"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]",
-      "hash": "05c1c7513ee5965d344dc95c768b6628cb6104927918fe28c889b659d02b820e"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
-      "hash": "1549d324033cfafeb2ecb0b02619327b33856c95477886a13a0185a8000a47da"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
-      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[requirements_reads_select_requirements_and_examples_but_not_definitions]",
-      "hash": "c3f94d4d5c2450f48fc8d520e85b25688406bd6f765dc7cfc84bc29182931041"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
-      "hash": "2fa8051cca2d46d6337e91a9309b9dfa14423c3c4a83ad4f363cf70d035f5977"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
-      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]",
-      "hash": "491a76e9184d5955c505c8a55b2593392f8966cf5be5755fab8149ef214fca71"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[operating_system_permission_failures_are_ordinary_read_failures]",
-      "hash": "04c90934cac22abafe16c61ddf6e80ce32e927aa1d565952b234e0121df2e3e1"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[untracked_diagnostics_name_git_add_and_an_allow_rule]",
-      "hash": "2676befc3221e3f4f737d578b1d19399bc5cff7888c411be92d8627359b73e0e"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[requests_through_symlinks_leaving_the_project_are_denials]",
-      "hash": "dbbce2b40958f4627e7ee64bb6fbca934f818daae21d35bb92b31e37f0ae0694"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
-      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
-      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
-      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
-      "hash": "204a1e1b56a975bbf449d5e38f893f680bc0563c1b4ffcd65c9544c0461b1eff"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]",
-      "hash": "c30a886f200ac79ea68db7926a082b6faa0aab61153d92fbf07e12c6e0de75a5"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "7c91da83f7607a87fcd5eb61ba7c80008806f4052d704d4616e891001bd70e43"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[parallel_search_orders_results_by_path_and_line]",
-      "hash": "7c4b2836cfc2b22f56e6d8a23e39c7c1e9588ae66d23b22716397464baa7077d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
-      "hash": "bd29c2fa110ed2c54197782e38fb1b9cf3db78f2a5e482aa35f907939882ae45"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
-      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[mandatory_inputs_outside_the_project_still_abort]",
-      "hash": "7f6e8d8f4b7dbb70bf1f566d57271d75b7cb1080fbb3d1c67eede7faf39f6b64"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
-      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]",
-      "hash": "3ccf9af34dbd89804259953f2034d4d0108fc3522e3a28bc4792632d72ac5865"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
-      "hash": "e790b3d7c7430f6b8465159541f7048ff733c4872f04b86eca9dbb17f2cfee8e"
-    },
-    {
       "file": "src/authoring/usage.rs",
       "item": "struct[UsageRecord]",
       "hash": "62f87e958bce86f096870fd381f6412988268344de7eb23c5762ff6c72309137"
@@ -424,9 +160,109 @@
       "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "enum[AuthoringSubject]",
-      "hash": "a904ca62130c1864b69c7b953815fbfabad40971bf6c38911d01d6d71accc0ed"
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_reauthors_a_false_judgment_when_its_reference_set_changes]",
+      "hash": "38cce00514890ab0fa69595e8a046395aa08a09ed3d85bf4f6886c27d1c55d07"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template]",
+      "hash": "f4999174fdabc687a8a04f3a46735a38d6702c276fa730ec0a8f7b930a7245f4"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
+      "hash": "7d198562a62e845ab189a2249979c3593b0c0b4692d2caee238c95b74eb32d8a"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[fixture]",
+      "hash": "df56baa38c6ac539bdbed7f2173606a08210d5feb6e286be26cb612265eacdba"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[fixme_fixture]",
+      "hash": "7ca18f3011c16cc7eb24a24b73ef26f61f10c2d71e861998687519974b83a339"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups]",
+      "hash": "20a73b3a131bb18757d4d4fd6d2ab8fd533e94a06cd21a9e93e8de542288e84e"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
+      "hash": "80ca3b46648359ab84fccedb9c2ef70e7e0cd4b7f8df90810a93e7d1aa577fde"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[definition_glob_lists_a_requirement_and_an_example_in_info_and_status]",
+      "hash": "25c2ca7929faa0157d323d4c6d891fc340bdab557d82c2c93d9405412ceb1c89"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[write_inputs]",
+      "hash": "2547e78cdd14f14ce3ede00e4fbbaecce6cd120e12fef0b2a4cc9ca2f70e3c77"
+    },
+    {
+      "file": "tests/habeas.rs",
+      "item": "fn[habeas]",
+      "hash": "cab257411adc9ec3d870039e66abea643677801029f3b90b554fc39084ed0a40"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[fixture]",
+      "hash": "9126c5ef449db339cb7032a660385f33f6f1ba29a49775015de69022683b8ec2"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[write_record]",
+      "hash": "674724c69adfae929c34fed7afc2586280266a035ca5fc26c8b0a0a7bb56b7e0"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[valid_fixme_remains_visible_in_status_info_and_book]",
+      "hash": "6ffad3ae12ca5ea946aec039bfd1f3f4e28fb1fd9bc88d710ca83bac435d020b"
+    },
+    {
+      "file": "tests/setup.rs",
+      "item": "fn[setup_is_repeatable]",
+      "hash": "30a39e682c0610b494ff35376499b4be11ce769333c8f3bebdbb82b06e232bab"
+    },
+    {
+      "file": "tests/validate.rs",
+      "item": "",
+      "hash": "0236488ab4a6c6d43e81757d5732b7b3d9e1f34ebe5ed1de943ac4da8b97408c"
+    },
+    {
+      "file": "tests/validate.rs",
+      "item": "const[CHILD]",
+      "hash": "e4a05188f29c571042a64054206bcf1bc75806dd8535047a22b2333afb92e2fe"
+    },
+    {
+      "file": "tests/validate.rs",
+      "item": "fn[validate_child]",
+      "hash": "4b163a8f0596ad7538dcb457620204e50c1d2fd6e79e7c2a2b93c099e8818651"
+    },
+    {
+      "file": "tests/validate.rs",
+      "item": "fn[validate_fails_the_test_with_every_error_and_authoring_instructions]",
+      "hash": "42454a4eea9e36854bc30920cc1a77ee03f089d2a038499b77940d80c4b0a38c"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -442,6 +278,21 @@
       "file": "src/authoring/mod.rs",
       "item": "impl[PendingAssessment]",
       "hash": "58eca1f55681587adbff8cf82af2f46a8a8a08c6f6b69db82422cc4520dfdc16"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[usage_state_root]",
+      "hash": "b721c9327b86eaabc87f13eca86692c5d6bb6e961cefb6cafb21610f45554bf7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "7df9ece7fa03e57d807863c24d05bb6631f7c046ee7b3d5928f6763a30745df9"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -462,21 +313,6 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[tool_definitions]",
       "hash": "efeb4711f2d0c81747ea3ee44d97631d0b56e061cb6f659f443818706bc6e2ef"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[negative_assessment_records_additional_reads_and_fails_validation]",
-      "hash": "0ac40fef47ad1b9b7d7799c819d2dd60a2ee6881ef2431ceb57025d79cce44b5"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[missing_or_stale_evidence_fails_validation_without_contacting_the_provider]",
-      "hash": "b05c07277f2b02f222be659b05866b2786659e462442fc8bfba546644fb4d71b"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
     }
   ]
 }

@@ -1,7 +1,8 @@
 {
   "requirement": "When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.\n\nRepeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.",
   "determination": true,
-  "rationale": "**Judgment: requirements.definitions.capture is met by the implementation and its tests.**\n\n**Implementation**\n\n- `add_definition_inputs` and `update_inputs` in `src/add_input.rs` carry `{impl}` markers for `requirements.definitions.capture`. The dependency helpers in `src/terms.rs` (`dependencies`, `direct_references`, `close_dependencies`) are marked for `requirements.definitions.dependencies` and `requirements.definitions.selection`, not for capture. I assess them only as the mechanism that capture uses.\n- **Required definitions.** `add_definition_inputs` passes the subject definition's text as `subject`. `update_inputs` then calls `terms::dependencies(root, definitions, outlines, object, subject)` after the requested inputs have been added or refreshed.\n  - That call collects `{term}` references from the subject text and from every input in the resulting record: Markdown, Rust comments, requirements-input bodies, and existing definition inputs.\n  - It expands them to a fixed point with a visited set, so cycles terminate.\n- **Capture and refresh.** For each required definition, `update_inputs` builds a fresh snapshot with `InputSelector::Definition{..}.resolve`/`to_input`.\n- **No duplicates.** If there is not exactly one existing input for that definition, or the one that exists differs from the snapshot, `update_inputs` removes all inputs for that definition and pushes a single new one. Duplicates are therefore repaired and never created. Cycles and repeated references yield one input per definition.\n- **Determination false.** Whenever `changed` is set, `update_inputs` sets `determination` to false and writes a nonempty \"Review pending\" rationale. This applies to added, refreshed and captured inputs alike.\n- **Unchanged record.** `add_definition_inputs` writes the file only when `output.1` (changed) is true. An unchanged input or snapshot leaves the file byte-identical, and a previously approved record keeps its determination.\n- I found no behavior in the `{impl}` code beyond what this requirement and the related `cli.add_input*` and `definitions.*` requirements specify. The error paths (unknown definition, kind mismatch, invalid JSON) are `cli.add_input` concerns and are marked as such.\n\n**Tests** (`tests/definitions.rs`)\n\n- `cyclic_dependencies_are_captured_once_and_changes_require_review` covers these cases:\n  - It captures a cyclic A↔B dependency set and checks exactly 3 inputs.\n  - It approves the record, re-runs `add-input`, and asserts the file bytes are identical.\n  - It changes a definition's phrase and a transitive definition's body, then checks that validation reports the stale input without modifying the file.\n  - It re-runs capture and asserts `determination == false` with 3 inputs, then re-approves.\n  - It removes a definition input and then duplicates one. Validation reports each (\"found 0\", \"found 2\"). Capture repairs the record to 3 inputs.\n- `example_subject_and_definition_display_use_the_same_dependencies` shows that definitions referenced by an example's subject text and by its reviewed inputs are captured: 3 inputs, with the right definitions displayed.\n- The `capture` and `approve` helpers are marked `{test}`; they support the tests above.\n\n**Minor gaps, not failures.** There is no explicit test that the duplicate repair resets `determination` to false; the refresh path does assert it. There is no add-input-level test of term dependencies reached through Rust-comment outline inputs. The shared code path handles them uniformly, and I judge these gaps non-blocking.",
+  "rationale": "**Verdict:** the requirement is implemented completely and tested. I found no unacknowledged gaps.\n\n**Implementation**\n\n`add_definition_inputs` and `update_inputs` in `src/add_input.rs` carry `{impl}` markers for `requirements.definitions.capture`. Their behavior against each obligation:\n\n- **Captures required definitions.**\n  - `update_inputs` first adds or refreshes the requested inputs. It then calls `terms::dependencies`, passing the subject text and the record, which now includes those inputs.\n  - `direct_references` in `src/terms.rs` scans the subject text and every input's text. For Rust outline inputs it scans only comments. For Markdown and plain text it scans the whole text. For requirements inputs it scans the definition bodies.\n  - `close_dependencies` expands the terms transitively to a fixed point. It handles cycles through a `visited` set and reports unresolvable terms as errors. Those errors surface through `invalid_input`.\n  - Each required term becomes a `Definition` input via `selector.resolve` and `to_input`. That covers dependencies of the subject text and of all reviewed inputs.\n- **No duplicates.**\n  - The code counts existing inputs whose `definition` equals the term.\n  - If the count is not exactly one, or the stored input differs from the freshly resolved one, it removes all matches and pushes a single fresh input.\n  - This collapses duplicates and refreshes stale snapshots.\n  - `validate_dependencies` independently requires exactly one definition input per required term.\n- **A change leaves the determination false.**\n  - Any added or refreshed input, any captured or refreshed definition, or a changed reference set sets `changed`.\n  - When `changed` is set, `determination` is set to `false` and the rationale is reset to \"Review pending…\".\n- **No change leaves the record unchanged.**\n  - When nothing differs, `changed` stays false and `add_definition_inputs` skips the write (`if output.1`).\n  - An unchanged-record run therefore leaves the file byte-identical.\n- **Other behavior.** The reference-set recording is also marked `{impl}` for `requirements.ci.reference_set`, so it is specified elsewhere. The helper functions in `src/terms.rs` are marked for `dependencies` and `selection`.\n\n**Tests** (`tests/definitions.rs`)\n\n`cyclic_dependencies_are_captured_once_and_changes_require_review` covers these cases:\n- It captures a requirement that references mutually cyclic terms `a` and `b`, and asserts exactly 3 inputs.\n- It approves the record, then re-runs the capture and asserts the file is byte-identical, which covers the no-change case.\n- It changes the term phrase and a nested dependency's text. Validation then reports \"input text changed\".\n- It re-captures after the change and asserts `determination == false` with 3 inputs, so refresh works and the determination is reset.\n- It deletes a definition input and adds a duplicate. Validation reports \"found 0\" and \"found 2\" respectively.\n- It re-captures and asserts the record is repaired to exactly 3 inputs.\n\n`example_subject_and_definition_display_use_the_same_dependencies` covers dependencies drawn from the subject text of an example. It asserts 3 inputs, including a term reached transitively.\n\nThe `capture` and `approve` helpers are also marked as tests. Together the tests cover the creation, refresh, idempotence, duplicate, cycle, and determination-reset cases.\n\n**Minor observations (not gaps)**\n\n- Definition inputs that are no longer required are not pruned. The requirement does not call for pruning.\n- A refreshed definition input is moved to the end of the `inputs` array. This is harmless.",
+  "references": "42b13f60db58e7bfe8bb0114fe72e89e8ba3419a7c5cc1f99efeaafef0e67870",
   "inputs": [
     {
       "requirements": "requirements.definitions.capture",
@@ -19,12 +20,12 @@
     {
       "file": "src/add_input.rs",
       "item": "fn[add_definition_inputs]",
-      "hash": "6bb48b108821fa5a7e69bfc11db67f51a55bab9622a6979b2eb34d9f1ab8dfa3"
+      "hash": "33aa1e4cace467d8d1511df506c97eaeb407f8bc776d6a4f843dd3fb56f38d89"
     },
     {
       "file": "src/add_input.rs",
       "item": "fn[update_inputs]",
-      "hash": "b7ef0060d2ffa22cef008e764ff74687b6677260ef3fffdb29e9bc5d09b422ca"
+      "hash": "f52292ad7119fd0e7af60048f3e28ae8aa74fab808d14ea01bcd431923df7622"
     },
     {
       "file": "tests/definitions.rs",
@@ -78,8 +79,8 @@
     },
     {
       "file": "src/add_input.rs",
-      "item": "use@7125e65f50d7",
-      "hash": "7125e65f50d7d2245442f1bcdc5fe5aec850ea8e0ebfd3c8dbdcdcc22e21c23c"
+      "item": "use@1e6c996ce3b5",
+      "hash": "1e6c996ce3b5a1a37b1c02d42fcad498847947b78f7955660bef7aadfca30a2c"
     },
     {
       "file": "src/add_input.rs",
@@ -99,35 +100,12 @@
     {
       "file": "src/add_input.rs",
       "item": "fn[add_input]",
-      "hash": "53748de2ef693e65783041c222841d9f4e6835784eca07c5d5df648481396d13"
+      "hash": "9cc12d878739427b06776d5746c85e1ce6166526a9105238f416571df68bc1bd"
     },
     {
       "file": "src/add_input.rs",
       "item": "fn[selectors_for_mode]",
       "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
-    },
-    {
-      "file": "md/requirements/definitions.md",
-      "item": "section[Named%20definitions]",
-      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[dependencies]",
-      "hash": "2b96ffc0104a7cae1a9be5aea04d79199d7524031c262ab97c1bb5d712e6d49b"
     },
     {
       "file": "src/terms.rs",
@@ -171,6 +149,11 @@
     },
     {
       "file": "src/terms.rs",
+      "item": "fn[dependencies]",
+      "hash": "2b96ffc0104a7cae1a9be5aea04d79199d7524031c262ab97c1bb5d712e6d49b"
+    },
+    {
+      "file": "src/terms.rs",
       "item": "fn[direct_references]",
       "hash": "98ea11a7e7fa5ffc06d25053633f2e9e32a04916216708d865d62bd6ed744df9"
     },
@@ -190,19 +173,39 @@
       "hash": "57b2b69d44ee4dc8e909bd34eda3be6db51c381c7a68ad4bb24703592e31a3ea"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "fn[read_or_new]",
-      "hash": "9d1e50043e22fd9cc22879a0d3ede2522ff12c2e30d86343e960c5fec3208ccc"
+      "file": "tests/definitions.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "fn[invalid_input]",
-      "hash": "582fb198488206442ab67a61a2d6e834ca5cdeadbaa379eec3234156ac08f40c"
+      "file": "tests/definitions.rs",
+      "item": "use@e843693d3cbe",
+      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
     },
     {
-      "file": "md/requirements/cli.md",
-      "item": "section[Command-line%20interface]",
-      "hash": "80f465c0983d9cacb39ace172219d697ecf44d8178e17e8a3c745838840b7106"
+      "file": "tests/definitions.rs",
+      "item": "use@36f23d77be5e",
+      "hash": "36f23d77be5ea4f1c566b7948bf1997b09a7bd47de9c294e15410b5805a4b15a"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "use@40f517aa6573",
+      "hash": "40f517aa6573fa5a6de363e46dba0920172519cc7335413c653adc0e7c0bcb33"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "use@727a0a270d8a",
+      "hash": "727a0a270d8a2c7e83b62bb0afa524214301ccf32188029a001382c2937eca32"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[fixture]",
+      "hash": "cf3a1ca69d526c80993146d2df62c3de65c2237e886a1e07f8e5dee78c0d7e46"
     }
   ]
 }
