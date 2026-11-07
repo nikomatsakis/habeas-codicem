@@ -125,6 +125,7 @@ fn direct_references(
 /// definitions and one problem per unresolvable term, continuing past each
 /// problem so every one is found.
 // {impl}`requirements.definitions.dependencies`
+// {impl}`requirements.ci.errors`
 fn close_dependencies(
     declarations: &BTreeMap<String, Declaration>,
     mut pending: BTreeSet<String>,
@@ -154,6 +155,7 @@ fn close_dependencies(
 
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.definitions.dependencies`
+// {impl}`requirements.ci.errors`
 pub(crate) fn validate_dependencies(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,

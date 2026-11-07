@@ -107,12 +107,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     // {impl}`requirements.authoring.deterministic_validation`
     // Only commands that resolve evidence inputs use the workspace evidence
     // path policy; setup, the session-start hook, and support queries do not.
+    // `status` and `info` render the validation report, which records an
+    // invalid workspace file as one finding and still runs the other checks,
+    // so they must not stop here.
+    // {impl}`requirements.ci.errors`
     if !matches!(
         cli.command,
         Command::Mdbook {
             command: Some(MdbookCommand::Supports { .. })
         } | Command::Setup { .. }
             | Command::Hook { .. }
+            | Command::Status { .. }
+            | Command::Info { .. }
     ) {
         habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;
     }

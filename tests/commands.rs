@@ -202,6 +202,7 @@ fn fixme_fixture() -> TempDir {
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.deterministic_validation`
 // {test}`requirements.cli.status`
+// {test}`requirements.ci.errors`
 #[test]
 fn status_loads_nearest_workspace_file_without_validating_authoring() {
     let temp = fixture();
@@ -215,22 +216,31 @@ fn status_loads_nearest_workspace_file_without_validating_authoring() {
     let output = habeas(&nested, &["status"]);
     assert!(output.status.success(), "{output:?}");
 
-    let output = habeas(temp.path(), &["status"]);
-    assert!(!output.status.success(), "{output:?}");
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("habeas.toml") && error.contains("version"),
-        "{error}"
-    );
+    // An invalid workspace file is one validation finding: `status` and
+    // `info` still run and report the checks that do not depend on it.
+    for args in [["status"].as_slice(), ["info", "requirements.*"].as_slice()] {
+        let output = habeas(temp.path(), args);
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.contains("habeas.toml: version: expected version = 1"),
+            "{args:?}: {text}"
+        );
+        assert!(
+            text.contains("evidence/requirements.malformed.json: invalid JSON"),
+            "{args:?}: {text}"
+        );
+    }
 
     fs::write(temp.path().join("habeas.toml"), "version = 1\n").unwrap();
     fs::write(nested.join("habeas.toml"), "version = [\n").unwrap();
     let output = habeas(&nested, &["status"]);
-    assert!(!output.status.success(), "{output:?}");
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains(&nested.join("habeas.toml").display().to_string()),
-        "{output:?}"
+        text.contains(&nested.join("habeas.toml").display().to_string())
+            && text.contains("evidence/requirements.malformed.json: invalid JSON"),
+        "{text}"
     );
 }
 

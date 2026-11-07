@@ -465,6 +465,7 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.ci.reference_set`
+// {impl}`requirements.ci.schema`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1084,6 +1085,56 @@ mod tests {
             json!({"determination": true, "rationale": 7}),
         ] {
             assert!(submission(&arguments).is_err(), "accepted {arguments}");
+        }
+    }
+
+    // {test}`requirements.ci.outcomes`
+    #[test]
+    fn submit_judgment_advertises_exactly_the_three_outcome_shapes() {
+        let definitions = serde_json::to_value(tool_definitions().unwrap()).unwrap();
+        let submit = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "submit_judgment")
+            .expect("submit_judgment is advertised");
+        // `true` or `false`, or an object holding exactly `FIXME` with a
+        // nonempty array of nonempty strings.
+        assert_eq!(
+            submit["parameters"]["properties"]["determination"],
+            json!({"oneOf": [
+                {"type": "boolean"},
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["FIXME"],
+                    "properties": {"FIXME": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "minLength": 1}
+                    }}
+                }
+            ]})
+        );
+    }
+
+    // {test}`requirements.ci.outcomes`
+    #[test]
+    fn initial_prompt_conveys_when_to_choose_each_outcome() {
+        let project = inputs::tests::project();
+        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let prompt = initial_prompt(&sources).unwrap();
+        for guidance in [
+            "Choose true when the subject meets these criteria.",
+            "Choose {\"FIXME\": [\"...\"]} when\nthe remaining gaps are explicitly acknowledged in source comments or tests;\nlist their issue references or other identifying content.",
+            "The usual convention\nis FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
+            "Choose false for other gaps or insufficient evidence.",
+            "including any acknowledged gaps",
+        ] {
+            assert!(
+                prompt.contains(guidance),
+                "missing {guidance:?} in:\n{prompt}"
+            );
         }
     }
 

@@ -1223,9 +1223,16 @@ fn commands_without_evidence_inputs_ignore_an_invalid_workspace_file() {
     assert!(!stderr.contains("habeas.toml"), "{stderr}");
     assert!(run(&["mdbook", "supports", "html"]).status.success());
     // Commands that resolve evidence inputs still report the invalid file.
-    let status = run(&["status"]);
-    let stderr = String::from_utf8_lossy(&status.stderr);
-    assert!(!status.status.success());
+    // (`status` and `info` report it as a validation finding instead.)
+    let add_input = run(&[
+        "add-input",
+        "--for-requirement",
+        "requirements.x",
+        "--requirements",
+        "requirements.y",
+    ]);
+    let stderr = String::from_utf8_lossy(&add_input.stderr);
+    assert!(!add_input.status.success());
     assert!(stderr.contains("evidence.allow"), "{stderr}");
 }
 

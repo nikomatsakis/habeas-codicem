@@ -303,6 +303,9 @@ pub(crate) fn inspect_repository_with_progress(
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.ci.diagnostics`
+// A malformed `book.toml` is one failed check: fall back to `md` so
+// definition collection and the checks after it still run.
+// {impl}`requirements.ci.errors`
 fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
     let path = root.join("book.toml");
     let source = match fs::read_to_string(&path) {
@@ -359,6 +362,7 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.requirements_inputs`
+// {impl}`requirements.ci.errors`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -524,6 +528,7 @@ pub(crate) fn example_references_requirement(
 /// cannot repeat the walk.
 // {impl}`requirements.ci.coverage`
 // {impl}`requirements.ci.orphans`
+// {impl}`requirements.ci.errors`
 fn files_with_extension(
     root: &Path,
     dir: &Path,
@@ -583,6 +588,9 @@ fn files_with_extension(
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.ci.diagnostics`
+// A malformed evidence file is one failed check reporting its first parse
+// problem; every well-formed record reports each failed field check.
+// {impl}`requirements.ci.errors`
 fn validate_evidence_file(
     root: &Path,
     path: &Path,
@@ -2119,9 +2127,24 @@ pub(crate) mod tests {
         let temp = fixture();
         fs::write(
             temp.path().join("md/rules.md"),
-            "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n",
+            "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} blank\nBlank.\n:::\n\n:::{req} listed\nListed.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n",
         )
         .unwrap();
+        // A whitespace-only definition text and a top-level value that is not
+        // an object are each rejected.
+        fs::write(
+            temp.path().join("evidence/rules.blank.json"),
+            json!({
+                "requirement": " \n",
+                "determination": true,
+                "rationale": "Examined.",
+                "references": "0".repeat(64),
+                "inputs": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(temp.path().join("evidence/rules.listed.json"), "[]").unwrap();
         let term = [
             ":::{definition} term",
             ":phrase: term",
@@ -2145,7 +2168,10 @@ pub(crate) mod tests {
                     "src/main.rs",
                     {"file": "src/main.rs", "item": "", "hash": "a".repeat(63)},
                     {"file": "src/main.rs", "item": "", "hash": "g".repeat(64)},
-                    {"file": "src/main.rs", "item": "", "hash": "0".repeat(64), "text": ["// first line"]}
+                    {"file": "src/main.rs", "item": "", "hash": "0".repeat(64), "text": ["// first line"]},
+                    {"matches": ["rules.ready"], "text": ["x"]},
+                    {"requirements": "rules.ready", "text": ["x"]},
+                    {"requirements": "rules.ready", "matches": "rules.ready", "text": ["x"]}
                 ]
             })
             .to_string(),
@@ -2165,6 +2191,11 @@ pub(crate) mod tests {
             format!("{label}: inputs[7]: hash must be a lowercase hexadecimal SHA-256 digest"),
             format!("{label}: inputs[8]: hash must be a lowercase hexadecimal SHA-256 digest"),
             format!("{label}: inputs[9]: unexpected field \"text\""),
+            format!("{label}: inputs[10]: missing field \"requirements\""),
+            format!("{label}: inputs[11]: missing field \"matches\""),
+            format!("{label}: inputs[12]: matches must be an array"),
+            "evidence/rules.blank.json: requirement must not be empty".to_owned(),
+            "evidence/rules.listed.json: expected a JSON object".to_owned(),
         ] {
             assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
         }

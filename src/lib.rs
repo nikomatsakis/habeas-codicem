@@ -474,6 +474,8 @@ fn shield_path_component(value: &str) -> String {
 }
 
 // {impl}`requirements.index.navigation`
+// Relative chapter links, including `../` from nested chapters.
+// {impl}`requirements.references.book_badges`
 pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) -> String {
     let current_dir = current
         .parent()

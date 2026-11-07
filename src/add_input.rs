@@ -109,6 +109,7 @@ fn selectors_for_mode(
 // {impl}`requirements.cli.add_input`
 // {impl}`requirements.definitions.capture`
 // {impl}`requirements.ci.reference_set`
+// {impl}`requirements.ci.schema`
 fn add_definition_inputs(
     root: &Path,
     references: &[SourceReference],
@@ -170,6 +171,7 @@ fn add_definition_inputs(
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.cli.add_input_item`
 // {impl}`requirements.ci.reference_set`
+// {impl}`requirements.ci.schema`
 fn update_inputs(
     record: &mut Value,
     inputs: Vec<(InputSelector, Value, Vec<String>)>,
