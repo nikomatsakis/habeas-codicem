@@ -1,13 +1,88 @@
 # References and Rust items
 
 :::{req} targets
-Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references: discovery MUST skip `.git` and `target` directories at any depth and the project-root `book` and `evidence` directories.
+Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references: discovery MUST skip `.git` and `target` directories at any depth and the project-root `book` and `evidence` directories.
+
+A source item MUST choose its references for each candidate definition by this
+procedure, and MAY carry several:
+
+1. If the item is a test or test helper designed to verify the definition, it
+   MUST use `{test}`.
+2. Otherwise, if fulfilling the definition depends on the item, it MUST use
+   `{impl}`. For code, this means it makes a decision, performs a check,
+   produces an output, or handles a case the definition specifies. For a type,
+   this means the definition constrains its shape: fields, variants, serialized
+   form, or validation.
+3. Otherwise, if the item should be re-checked or kept in sync when the
+   definition changes, it MUST use `{cite}`.
+4. If the item carries no reference after applying steps 1 to 3 to every
+   definition, it MUST cite the built-in `habeas:none` under
+   {cite}`requirements.references.no_requirement`, justifying why the item
+   exists.
 
 ```text
 {impl}`requirements.references.targets`
 {cite}`requirements.references.targets`
 {test}`requirements.references.targets`
 ```
+:::
+
+:::{req} builtin_definitions
+Habeas MUST provide built-in definitions named `habeas:<name>`, available in
+every project without a declaration. Each built-in MUST have fixed text, which
+states its obligations and is documented in Habeas's reference documentation, and
+MUST state which reference roles may use it. References MUST resolve built-in
+names alongside project definitions. So that every book stands alone, the book
+MUST render a reference to a built-in as a badge without a link whose hover text
+gives the built-in's full text. Built-ins MUST NOT require or permit evidence
+files and MUST NOT appear in the requirements index, `habeas status`, or the
+missing-evidence check of {cite}`requirements.ci.coverage`. A project definition
+MUST NOT use a full name beginning with `habeas:`; validation MUST report one,
+and the `:` character already makes such names invalid under
+{cite}`requirements.ci.identifiers`. Validation MUST report a reference to a
+built-in in a role the built-in does not permit, or that breaks the built-in's
+stated form.
+:::
+
+:::{req} no_requirement
+Habeas MUST provide the built-in `habeas:none` under
+{cite}`requirements.references.builtin_definitions`, with this text:
+
+> Cite this only when no requirement or example applies to the item under the
+> reference procedure. The citation MUST use the fenced form, and its body MUST
+> justify why the item exists. An item with an invariant worth checking, such as
+> a cache that must not change results, needs a requirement stating that
+> invariant instead. An item citing this MUST NOT implement end-user-observable
+> behavior that no requirement specifies.
+
+Only `{cite}` MAY reference it. Validation MUST report an inline citation of it
+or a fenced citation whose body, without comment delimiters and other
+references, is empty. Whether the justification holds MUST be assessed under
+{cite}`requirements.references.citation_review`. `habeas status --all` MUST list
+each `habeas:none` citation with its item and justification.
+:::
+
+:::{req} citation_review
+Every source item outside the book that carries at least one `{cite}` reference
+MUST have a citation review: an assessment of that item's citations, recorded at
+`evidence/citations/<file>/<selector>.json`, where `<file>` is the item's
+project-relative path, `<selector>` is its outline selector with every `/` and
+`%` percent-encoded, and the root node uses `_root`. The review MUST use the
+prompt defined by {cite}`requirements.authoring.citation_prompt`. The reviewer MUST assess, for each citation,
+whether the item should be re-checked or kept in sync when the cited definition
+changes, and whether the reference procedure of
+{cite}`requirements.references.targets` calls for `{impl}` or `{test}` instead;
+for `habeas:none`, whether its justification is true, no definition applies, and
+the item implements no unspecified end-user-observable behavior. Mandatory inputs
+MUST be the item's outline node, each cited declaration or built-in text, and
+the citations' commentary. The record MUST contain the item's file and selector,
+its citations by role, name, and commentary, `determination`, `rationale`, and
+`inputs`, with determinations under {cite}`requirements.ci.outcomes`. Validation
+MUST require a current, accepted review for every such item and report stale,
+missing, or orphaned reviews; a review MUST become stale when the item's hash,
+a cited declaration, or its citations or their commentary change. Authoring with
+`--all` MUST include citation reviews. A citation in a requirement or example
+declaration is reviewed as part of that definition's own assessment instead.
 :::
 
 :::{req} anchors
@@ -37,7 +112,7 @@ definition. Habeas's bundled agent skills MUST give this direction.
 
 :::{req} book_badges
 :impl: md/habeas.css
-In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. These badges use the syntax defined by {cite}`requirements.references.targets`.
+In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline or fenced, MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. A fenced reference MUST render its badge followed by its body as Markdown. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. These badges use the syntax defined by {cite}`requirements.references.targets`.
 :::
 
 :::{req} evidence_coverage

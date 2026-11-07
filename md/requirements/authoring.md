@@ -53,6 +53,81 @@ changing requirements, source citations, implementation, or tests.
 {cite}`requirements.authoring.persistence`
 :::
 
+:::{req} confirmation
+`habeas author [<full-name> | --all] --confirm` MUST assess each selected subject
+in an independent second conversation whenever the first assessment's
+determination is `true` or FIXME. The assessments agree when their outcomes are
+the same kind; then the first assessment MUST be recorded. When they disagree,
+the harness MUST verify the less favorable assessment, where `false` is less
+favorable than FIXME and FIXME than `true`, in a third independent conversation.
+The verifier MUST receive the subject, the mandatory inputs, that assessment's
+rationale, the same source tools, and a `submit_verification` tool accepting
+exactly `{ confirmed: Boolean, rationale: String }` in place of
+`submit_judgment`, with this prompt:
+
+```text
+Another reviewer judged {{subject_kind}} {{subject_name}} as {{determination}} for these reasons:
+
+{{rationale}}
+
+Verify only whether that determination is correct for the reasons given: whether
+the gaps it describes are real, and whether their acknowledgment by FIXME
+comments or tests is as the determination states. Use the tools to read the
+sources you need. Call submit_verification exactly once with confirmed set to
+true if the determination is correct, and false otherwise, and a Markdown
+rationale explaining what you checked.
+
+Mandatory inputs:
+{{mandatory_inputs}}
+```
+
+If the verifier confirms, the less favorable assessment MUST be recorded;
+otherwise the more favorable one MUST be. The recorded rationale MUST state that
+the assessments disagreed and what the verification concluded, so the
+disagreement remains visible for review under
+{cite}`requirements.cli.flip_guidance`. Each conversation MUST have its own usage
+record. Without `--confirm`, authoring MUST remain a single assessment per
+subject.
+:::
+
+:::{req} citation_prompt
+A citation review under {cite}`requirements.references.citation_review` MUST use
+the same tools and exactly-once submission rule as other assessments and this
+prompt, replacing `{{item_file}}`, `{{item_selector}}`, `{{citations}}` (the
+citations as JSON with role, name, and commentary), and `{{mandatory_inputs}}`:
+
+```text
+Bring your expert judgment to the task of reviewing a source item's citations.
+
+Subject: {{item_file}} {{item_selector}}
+Citations: {{citations}}
+
+Read the item and the cited declarations below. A citation means the item should
+be re-checked or kept in sync when the cited definition changes. For each
+citation, judge whether that holds, and whether the item instead implements part
+of the definition, which calls for {impl}: it makes a decision, performs a check,
+produces an output, or handles a case the definition specifies, or the definition
+constrains a type's shape. Judge also whether it is a test designed to verify the
+definition, which calls for {test}. For a habeas:none citation, judge whether its
+justification is true, whether any requirement or example applies, and whether
+the item implements end-user-observable behavior that no requirement specifies.
+
+Use habeas, outline, list_files, ripgrep, and references as needed. The harness
+records source inputs for you; listings and reference lookups are not evidence.
+
+Choose true when every citation is sensible. Choose {"FIXME": ["..."]} when the
+remaining problems are explicitly acknowledged in source comments, listing their
+issue references or other identifying content. Choose false otherwise. Explain
+your judgment in a Markdown rationale with source locations.
+
+Call submit_judgment exactly once with determination and rationale. That tool
+call is your final answer.
+
+Mandatory inputs:
+{{mandatory_inputs}}
+```
+:::
+
 :::{req} progress
 When stderr is an interactive terminal, `habeas author --all` MUST display an
 updating progress bar with elapsed time, percentage, finished and total assessment

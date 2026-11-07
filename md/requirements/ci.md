@@ -79,14 +79,16 @@ A definition's reference set MUST consist of its current incoming `{impl}` and
 {cite}`requirements.references.anchors`: for each edge, its role and the file and
 outline selector of the node the reference belongs to under
 {cite}`requirements.references.outline_comments`, or of the anchored file or
-node. `{cite}` references MUST NOT contribute. The reference-set digest MUST be
+node, and, for a fenced reference in a source outside the book, the words of
+its body under the word rule of {cite}`requirements.references.structural_hash`.
+`{cite}` references MUST NOT contribute. The reference-set digest MUST be
 the SHA-256 digest of an unambiguous encoding of those entries in sorted order,
 so it does not depend on line numbers or on the order references are found.
 Authoring MUST record the digest of the reference set it supplied, and
 validation MUST recompute it and report a changed reference set as stale
 evidence. Adding or removing an `{impl}` or `{test}` reference or anchor,
-changing its role, or moving it to a different node MUST therefore make the
-evidence stale even when no recorded input changed; moving a reference within
+changing its role, editing its commentary, or moving it to a different node
+MUST therefore make the evidence stale even when no recorded input changed; moving a reference within
 the node it belongs to MUST NOT.
 :::
 

@@ -85,7 +85,7 @@ Habeas MUST bundle a skill for deriving initial requirements from an existing co
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.
+The bundled requirements skill MUST direct agents adding or changing user-visible behavior in a Habeas project to draft stable requirement IDs and exact text, obtain the user's agreement, and install the agreed requirements in the mdBook before writing implementation or test code. It MUST suggest reaching that agreement by reviewing each new or changed requirement with the user in turn: presenting its exact text, identifying ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements, and proposing specific improvements for the user to accept, revise, or reject, then applying the user's decisions before moving on. Drafts MAY be uncommitted edits to the book, but MUST NOT be committed or implemented before agreement. It MUST direct agents to review substantive changes to agreed obligations with the user. The bootstrap skill MUST require user review of requirements inferred from existing code before installing them, and MUST suggest the same review in turn. The evidence skill MUST accept missing evidence or truthful false judgments from the harness while implementation is pending; it MUST NOT direct the supervising agent to write placeholder evidence itself.
 :::
 
 :::{req} behavior_review_guidance
@@ -99,9 +99,29 @@ Habeas's bundled agent skills MUST direct agents reviewing code against requirem
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-Habeas's bundled agent skills MUST NOT offer a waiver for an uncited first-party Rust function. When a function serves only as an internal implementation detail and no existing requirement explains it, Habeas's bundled agent skills MUST direct agents to propose an explicit project requirement scoped to one area of internal code, such as `internal.config_parsing`, rather than one catch-all requirement, obtain the user's agreement, mark the function with `{impl}`, and run `habeas author --all` for the harness to assess that requirement's evidence. That assessment MUST account for whether the requirement explains each implementing function's behavior. An internal-detail requirement MUST NOT justify an otherwise unspecified end-user-observable behavior.
+Habeas's bundled agent skills MUST direct agents to choose references by the
+procedure in {cite}`requirements.references.targets`. For internal code, they
+MUST direct agents to state any invariant worth checking as an ordinary
+requirement and implement it, and otherwise to cite the built-in `habeas:none` in the fenced form, with a
+body justifying why the item exists, under {cite}`requirements.references.no_requirement`. They MUST
+NOT suggest grouping requirements, such as `internal.config_parsing`, that state
+no checkable obligation.
 :::
 
+:::{req} flip_guidance
+:impl: assets/skills/habeas-evidence/SKILL.md
+:impl: assets/skills/habeas-requirements/SKILL.md
+Habeas's bundled agent skills MUST tell agents that assessments of the same
+subject that disagree are findings. They MUST direct agents to read both
+rationales and decide whether one assessment found a real gap or the requirement
+text admits more than one reading, then fix the source or tests, or tighten the
+requirement text, rather than re-running an assessment to obtain a different
+determination. Substantive requirement changes MUST be reviewed with the user
+under {cite}`requirements.cli.requirements_review_skill`. When agents reword a
+requirement for precision, the skills MUST direct them to record the old text,
+new text, reason, and the rationale that prompted the change in the project's
+audit log, such as `audits/requirement-rewordings/`.
+:::
 :::{req} invocation
 `habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.
 :::
