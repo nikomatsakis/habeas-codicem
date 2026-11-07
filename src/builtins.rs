@@ -136,6 +136,12 @@ mod tests {
                 .unwrap_err()
                 .contains("empty justification")
         );
+        // The reference documentation quotes the same text.
+        let documented = quoted_text(
+            include_str!("../md/reference.md"),
+            "There is one built-in, `habeas:none`.",
+        );
+        assert_eq!(documented, none.text());
         assert!(builtin("habeas:other").is_none());
         assert!(is_builtin_name("habeas:other"));
         assert!(!is_builtin_name("habeas:"));
