@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::Path;
 
+use mdbook_preprocessor::book::{Book, Chapter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -86,6 +87,68 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     ));
     // Built-ins need no evidence.
     assert!(!has(&errors, "evidence/habeas:none"), "{errors:#?}");
+}
+
+// {test}`requirements.references.builtin_definitions`
+// {test}`requirements.references.no_requirement`
+#[test]
+fn built_ins_have_no_evidence_index_entry_or_status_and_are_validated_in_the_book() {
+    let temp = project();
+    let root = temp.path();
+    let cr = role("cite");
+    let chapter = format!(
+        "# Rules\n\n:::{{req}} ready\nReady.\n:::\n\nSee {cr}`habeas:none`.\n\n:::{im} habeas:none\nWrong role.\n:::\n\n:::{cr} habeas:none\nJustified.\n:::\n\n# Index\n\n:::{{requirements-index}}\n:::\n",
+        im = role("impl"),
+    );
+    fs::write(root.join("md/rules.md"), &chapter).unwrap();
+    // An evidence file for a built-in is not permitted: it is an orphan.
+    fs::write(
+        root.join("evidence/habeas:none.json"),
+        json!({"requirement": "x", "determination": true, "rationale": "x", "inputs": []})
+            .to_string(),
+    )
+    .unwrap();
+    let errors = errors(root);
+    for expected in [
+        "md/rules.md:7: built-in habeas:none must be cited in fenced form",
+        "md/rules.md:9: built-in habeas:none may only be referenced with {impl}",
+    ] {
+        let expected = expected.replace("{impl}", &role("cite"));
+        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+    }
+    assert!(
+        has(&errors, "evidence/habeas:none.json"),
+        "an evidence file for a built-in must be reported: {errors:#?}"
+    );
+    // The justified fenced citation in the book is valid, and no built-in
+    // needs evidence.
+    assert!(!has(&errors, "md/rules.md:13"), "{errors:#?}");
+    assert!(
+        !has(&errors, "missing evidence for habeas:none"),
+        "{errors:#?}"
+    );
+
+    // Built-ins are not definitions in status or the requirements index.
+    let status = habeas::status_markdown(root, true).unwrap();
+    let table = &status[..status.find("## ").unwrap()];
+    assert!(table.contains("`rules.ready` (requirement)"), "{status}");
+    assert!(!table.contains("habeas:"), "{status}");
+    assert!(!status.contains("### `habeas:"), "{status}");
+    let mut book = Book::new();
+    book.push_item(Chapter::new("Rules", chapter, "rules.md", Vec::new()));
+    habeas::preprocess_book(&mut book, root).unwrap();
+    let rendered = book
+        .chapters()
+        .map(|chapter| (chapter.name.clone(), chapter.content.clone()))
+        .collect::<Vec<_>>();
+    assert!(
+        !rendered.iter().any(|(name, _)| name.contains("habeas:")),
+        "no detail page for a built-in: {rendered:#?}"
+    );
+    let (_, content) = &rendered[0];
+    let index = &content[content.find("# Index").unwrap()..];
+    assert!(index.contains("rules.ready"), "{index}");
+    assert!(!index.contains("habeas:none"), "{index}");
 }
 
 // {test}`requirements.references.builtin_definitions`

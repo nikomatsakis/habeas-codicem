@@ -349,6 +349,7 @@ impl TokenCounts {
 
 // {impl}`requirements.authoring.usage_requests`
 // {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.authoring.usage_inputs`
 fn tool_name(name: &str) -> &str {
     match name {
         "habeas" | "ripgrep" | "list_files" | "outline" | "references" | "submit_judgment" => name,

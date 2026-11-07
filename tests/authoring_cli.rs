@@ -392,6 +392,28 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(usage["tool_call_count"], 6);
     assert_eq!(usage["tool_calls"]["habeas"], 3);
     assert_eq!(usage["tool_failures"]["habeas"], 1);
+    // The directory listing counts as a tool call but is not an input.
+    assert_eq!(usage["tool_calls"]["list_files"], 1);
+    assert_eq!(usage["tool_calls"]["ripgrep"], 1);
+    let usage_inputs = usage["inputs"].as_array().unwrap();
+    assert!(
+        !usage_inputs
+            .iter()
+            .any(|input| input["origin"] == "list_files"),
+        "{usage_inputs:?}"
+    );
+    assert!(
+        usage_inputs.iter().any(|input| input["origin"] == "ripgrep"
+            && input["bytes"].as_u64().unwrap() > 0
+            && input["lines"].as_u64().unwrap() > 0),
+        "{usage_inputs:?}"
+    );
+    assert!(
+        usage_inputs
+            .iter()
+            .any(|input| input["origin"] == "habeas" && input["unique"] == true),
+        "{usage_inputs:?}"
+    );
     assert_eq!(usage["tokens"]["input"], 22);
     assert_eq!(usage["tokens"]["output"], 14);
     assert_eq!(usage["tokens"]["complete"], true);
@@ -857,7 +879,11 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
 // {test}`requirements.cli.flip_guidance`
 #[test]
 fn bundled_skills_treat_disagreeing_assessments_as_findings() {
-    for name in ["habeas-requirements", "habeas-evidence"] {
+    for name in [
+        "habeas-requirements",
+        "habeas-evidence",
+        "habeas-bootstrap-requirements",
+    ] {
         let text = bundled_skill(name);
         let goal = text
             .find("The goal is that independent assessments of the same subject reach the same determination, because the requirement, code, and tests leave no gap a careful reviewer could find and no reading a careful reviewer could take differently")

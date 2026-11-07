@@ -25,7 +25,7 @@ use tree_sitter::{Node, Parser, Tree};
 
 use hash::Encoder;
 use profile::{NameRule, text};
-pub(crate) use profile::{Profile, profile_for_path};
+pub(crate) use profile::{Profile, is_markdown_path, profile_for_path};
 pub(crate) use rust::PROFILE as RUST_PROFILE;
 pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 

@@ -121,7 +121,11 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
     Ok(inspect_repository(root)?.report)
 }
 
-// {cite}`requirements.authoring.batch`
+// :::{impl} requirements.authoring.batch
+// `discovery_errors` keeps discovery, read, scan, and parse failures apart from
+// evidence validation errors, so a batch reports them instead of treating a
+// partial scan as an empty batch.
+// :::
 pub(crate) struct RepositoryInspection {
     /// The canonical project root.
     pub(crate) root: PathBuf,
@@ -518,8 +522,9 @@ fn collect_definitions(
 }
 
 /// Whether an example's text has a valid `{cite}` or `{test}` reference to a
-/// requirement, as Rust item coverage requires of a cited example. Definition
-/// collection reports such examples itself.
+/// requirement. Definition collection reports an example without one, and
+/// Rust item coverage counts a reference to an example only when it has one.
+// {impl}`requirements.examples.definition`
 // {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn example_references_requirement(
     example: &Declaration,
@@ -1519,7 +1524,7 @@ fn collect_references_with_progress(
         if content.contains('\0') {
             continue;
         }
-        let markdown = file.extension().is_some_and(|extension| extension == "md");
+        let markdown = crate::outline::is_markdown_path(file);
         let in_book = file.starts_with(&md_root);
         let first = references.len();
         for role in reference_roles(&content, markdown) {
@@ -2020,6 +2025,41 @@ pub(crate) mod tests {
 
         let errors = without_citation_reviews(validate_repository(temp.path()).unwrap().errors);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    // {test}`requirements.references.targets`
+    // {test}`requirements.references.markdown_literals`
+    #[test]
+    fn every_markdown_extension_keeps_escaped_and_code_roles_literal() {
+        let temp = fixture();
+        let role = ["{", "cite}`code.role`"].concat();
+        let fence = [":::", "{cite} fenced.role\nBody.\n:::"].concat();
+        let notes = format!(
+            "`{role}` and \\{role}\n\n```text\n{role}\n{fence}\n```\n\n<span title=\"{role}\"></span>\n"
+        );
+        fs::create_dir_all(temp.path().join("docs")).unwrap();
+        for file in [
+            "docs/a.md",
+            "docs/b.markdown",
+            "docs/C.MD",
+            "docs/d.Markdown",
+        ] {
+            fs::write(temp.path().join(file), &notes).unwrap();
+        }
+        // The same text in a plain-text file is not Markdown.
+        fs::write(temp.path().join("docs/e.txt"), &notes).unwrap();
+        let mut errors = Vec::new();
+        let references = super::collect_references(temp.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let files = references
+            .iter()
+            .map(|reference| super::display_path(temp.path(), &reference.file))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            files.into_iter().collect::<Vec<_>>(),
+            ["docs/e.txt"],
+            "{references:#?}"
+        );
     }
 
     // {test}`requirements.references.targets`
@@ -2815,9 +2855,10 @@ pub(crate) mod tests {
     #[test]
     fn examples_may_reference_their_requirement_with_cite_or_test() {
         let temp = fixture();
-        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. TEST`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. CITE`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. CITE`rules.tested`\n:::\n"
+        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. TEST`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. CITE`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. CITE`rules.tested`\n:::\n\n:::{example} implemented\nGiven ready. IMPL`rules.ready`\n:::\n\n:::{example} literal\nGiven ready. `CITE`rules.ready`` and \\CITE`rules.ready`\n:::\n\n:::{example} unknown\nGiven ready. CITE`rules.absent`\n:::\n"
             .replace("CITE", "{cite}")
-            .replace("TEST", "{test}");
+            .replace("TEST", "{test}")
+            .replace("IMPL", "{impl}");
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
@@ -2834,6 +2875,15 @@ pub(crate) mod tests {
             ),
             "{errors}"
         );
+        // Only `{cite}` or `{test}` counts, and only as a valid reference.
+        for name in ["implemented", "literal", "unknown"] {
+            assert!(
+                errors.contains(&format!(
+                    "example rules.{name} must reference at least one requirement with {{cite}} or {{test}}"
+                )),
+                "{name}: {errors}"
+            );
+        }
     }
 
     // {test}`requirements.references.anchors`

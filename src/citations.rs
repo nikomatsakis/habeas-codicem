@@ -99,6 +99,7 @@ pub(crate) fn subject_label(file: &str, item: &str) -> String {
 /// reference validation and are not reviewed.
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.builtin_definitions`
 pub(crate) fn citation_items(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,

@@ -157,3 +157,11 @@ pub(crate) fn profile_for_path(path: &std::path::Path) -> &'static Profile {
         .find(|profile| profile.extensions.contains(&extension.as_str()))
         .unwrap_or(&super::plain::PROFILE)
 }
+
+/// Whether a path is Markdown: it selects the Markdown profile, so inline
+/// roles and fences in it follow the same Markdown literal rules.
+// {impl}`requirements.references.targets`
+// {impl}`requirements.references.markdown_literals`
+pub(crate) fn is_markdown_path(path: &std::path::Path) -> bool {
+    profile_for_path(path).name == "markdown"
+}

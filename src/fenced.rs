@@ -49,6 +49,8 @@ pub(crate) struct SourceFence {
 // {impl}`requirements.references.targets`
 // {impl}`requirements.ci.span`
 // {impl}`requirements.ci.fence_lengths`
+// {impl}`requirements.ci.identifiers`
+// {impl}`requirements.references.builtin_definitions`
 pub(crate) fn opening_fence(line: &str) -> Option<(ReferenceKind, &str, usize)> {
     let (suffix, length) = colon_fence(line)?;
     let (kind, rest) = if let Some(rest) = suffix.strip_prefix("{impl}") {
@@ -297,12 +299,12 @@ pub(crate) fn source_fences(path: &std::path::Path, content: &str) -> Vec<Source
     if !content.contains(":::") {
         return Vec::new();
     }
+    if crate::outline::is_markdown_path(path) {
+        return text_fences(content, true);
+    }
     let profile = crate::outline::profile_for_path(path);
     if profile.language.is_none() {
         return text_fences(content, false);
-    }
-    if profile.name == "markdown" {
-        return text_fences(content, true);
     }
     crate::outline::parse_with(profile, content)
         .map(|outline| comment_fences(content, &outline))
@@ -314,6 +316,8 @@ mod tests {
     use super::*;
 
     // {test}`requirements.references.targets`
+    // {test}`requirements.ci.identifiers`
+    // {test}`requirements.references.builtin_definitions`
     #[test]
     fn opening_fences_take_a_role_and_one_valid_or_built_in_name() {
         let role = |name: &str| format!(":::{{{name}}}");
@@ -325,6 +329,12 @@ mod tests {
             opening_fence("::::{cite} habeas:none"),
             Some((ReferenceKind::Cite, "habeas:none", 4))
         );
+        // A syntactically built-in name is recognized so validation can report
+        // an unknown built-in rather than leaving it literal.
+        assert_eq!(
+            opening_fence(&format!("{} habeas:unknown", role("impl"))),
+            Some((ReferenceKind::Impl, "habeas:unknown", 3))
+        );
         assert_eq!(
             opening_fence(&format!("   {} a.b", role("test"))),
             Some((ReferenceKind::Test, "a.b", 3))
@@ -334,6 +344,10 @@ mod tests {
             format!("{}a.b", role("cite")),
             format!("{} a b", role("cite")),
             format!("{} a..b", role("cite")),
+            format!("{} .a", role("cite")),
+            format!("{} a.", role("cite")),
+            format!("{} a/b", role("impl")),
+            format!("{} caf\u{e9}.b", role("impl")),
             format!("{} other:none", role("cite")),
             format!("{} a.b", role("term")),
             "::{cite} a.b".to_owned(),

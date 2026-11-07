@@ -111,6 +111,7 @@ no checkable obligation.
 :::{req} flip_guidance
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 Habeas's bundled agent skills MUST state the goal that independent assessments
 of the same subject reach the same determination, because the requirement, code,
 and tests leave no gap a careful reviewer could find and no reading a careful

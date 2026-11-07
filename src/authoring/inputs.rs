@@ -58,6 +58,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.references.anchors`
     // {impl}`requirements.ci.reference_set`
+    // {impl}`requirements.references.builtin_definitions`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
@@ -211,6 +212,7 @@ impl AssessmentSources {
     // {impl}`requirements.references.citation_review`
     // {impl}`requirements.authoring.citation_prompt`
     // {impl}`requirements.authoring.read_denial`
+    // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn prepare_citation(root: &Path, file: &str, item: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
@@ -472,6 +474,7 @@ fn source_input(
 /// The model-facing input carrying a built-in's fixed text.
 // {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.authoring.mandatory_inputs`
 pub(crate) fn builtin_input(name: &str) -> Value {
     let text = crate::builtins::builtin(name).map_or("", |builtin| builtin.text());
     json!({ "builtin": name, "text": [text] })
@@ -502,10 +505,7 @@ fn reference_selector(
         .to_str()
         .ok_or_else(|| io::Error::other("reference path is not UTF-8"))?
         .to_owned();
-    if reference
-        .file
-        .extension()
-        .is_some_and(|extension| extension == "md")
+    if crate::outline::is_markdown_path(&reference.file)
         && let Some((name, declaration)) = definitions
             .iter()
             .filter(|(_, declaration)| {
@@ -856,6 +856,71 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("md/requirements.md"), "{error}");
+    }
+
+    // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.references.citation_review`
+    #[test]
+    fn citation_review_inputs_combine_item_declarations_terms_and_built_ins_once() {
+        let root = project();
+        fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\nReady uses {}.\n:::\n\n:::{{req}} other\nOther uses {}.\n:::\n",
+                role("term", "terms.unit"),
+                role("term", "terms.unit")
+            ),
+        )
+        .unwrap();
+        let none = ["// :::", "{cite} habeas:none\n// Glue.\n// :::\n"].concat();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\n// {}\n// {}\n{none}{none}fn helper() {{}}\n",
+                role("cite", "requirements.ready"),
+                role("cite", "requirements.ready"),
+                role("cite", "requirements.other"),
+            ),
+        )
+        .unwrap();
+        let sources =
+            AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]").unwrap();
+        let inputs = sources.mandatory_inputs();
+        // The item, each cited declaration once, the shared term once, and the
+        // built-in text once.
+        assert_eq!(inputs[0]["item"], "fn[helper]");
+        let count =
+            |key: &str, value: &str| inputs.iter().filter(|input| input[key] == value).count();
+        assert_eq!(
+            count("requirements", "requirements.ready"),
+            1,
+            "{inputs:#?}"
+        );
+        assert_eq!(
+            count("requirements", "requirements.other"),
+            1,
+            "{inputs:#?}"
+        );
+        assert_eq!(count("definition", "terms.unit"), 1, "{inputs:#?}");
+        assert_eq!(count("builtin", "habeas:none"), 1, "{inputs:#?}");
+        assert_eq!(inputs.len(), 5, "{inputs:#?}");
+
+        // An unresolvable mandatory input aborts preparation.
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['md/terms.md']\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]")
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("md/terms.md"), "{error}");
     }
 
     // {test}`requirements.references.authoring_inputs`

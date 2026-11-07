@@ -50,7 +50,10 @@ pub struct AuthoringOptions {
     pub confirm: bool,
 }
 
-// {cite}`requirements.authoring.invocation`
+// :::{impl} requirements.authoring.invocation
+// The `Definition` variant is the one requirement or named example given on the
+// command line: the subject the command assesses and reports.
+// :::
 // {impl}`requirements.references.citation_review`
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
@@ -466,6 +469,7 @@ async fn configured_record(
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.authoring.usage_inputs`
 async fn assess_subject(
     provider: &impl CompletionProvider,
     root: &Path,
@@ -1979,6 +1983,7 @@ mod tests {
 
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.references.citation_review`
+    // {test}`requirements.authoring.mandatory_inputs`
     #[tokio::test]
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
@@ -2028,6 +2033,13 @@ mod tests {
             prompt.contains("Formats output for the caller."),
             "{prompt}"
         );
+        // The initial request carries the complete mandatory set.
+        assert!(
+            prompt.contains(mandatory[0]["hash"].as_str().unwrap()),
+            "{prompt}"
+        );
+        assert!(prompt.contains("The project MUST be ready."), "{prompt}");
+        assert!(prompt.contains("Cite this only when"), "{prompt}");
         assert!(!prompt.contains("{{"), "{prompt}");
 
         let citations = json!([

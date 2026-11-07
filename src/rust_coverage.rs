@@ -132,6 +132,7 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
 // {impl}`requirements.references.rust_item_coverage`
 // {impl}`requirements.references.no_requirement`
 // {impl}`requirements.definitions.references`
+// {impl}`requirements.references.builtin_definitions`
 fn missing_function_references(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,

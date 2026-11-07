@@ -604,6 +604,7 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.ci.fence_lengths`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.references.builtin_definitions`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     let code_ranges = Parser::new(content)
         .into_offset_iter()
@@ -765,6 +766,7 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.references.builtin_definitions`
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
     let protected = if markdown {
         let mut ranges = protected_ranges(content);
@@ -1291,6 +1293,79 @@ mod tests {
         );
         assert!(!guide.content.contains("\"q\""), "{}", guide.content);
         assert!(!guide.content.contains("<x>"), "{}", guide.content);
+    }
+
+    /// The shipped stylesheet's rules, as selector lists and declarations.
+    // {test}`requirements.references.book_badges`
+    fn stylesheet_rules() -> Vec<(Vec<String>, Vec<String>)> {
+        include_str!("../md/habeas.css")
+            .split('}')
+            .filter(|rule| !rule.trim().is_empty())
+            .map(|rule| {
+                let (selectors, body) = rule.split_once('{').unwrap();
+                let selectors = selectors
+                    .split(',')
+                    .map(|selector| selector.trim().to_owned())
+                    .collect();
+                let declarations = body
+                    .split(';')
+                    .map(|declaration| declaration.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|declaration| !declaration.is_empty())
+                    .collect();
+                (selectors, declarations)
+            })
+            .collect()
+    }
+
+    // {test}`requirements.references.book_badges`
+    #[test]
+    fn badge_stylesheet_keeps_visited_links_legible_and_shows_focus() {
+        let rules = stylesheet_rules();
+        let declarations = |selector: &str| {
+            rules
+                .iter()
+                .filter(|(selectors, _)| selectors.iter().any(|candidate| candidate == selector))
+                .flat_map(|(_, declarations)| declarations.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+        };
+        // A visited badge link looks exactly like an unvisited one.
+        assert_eq!(
+            declarations("a.habeas-req-badge:visited"),
+            declarations("a.habeas-req-badge")
+        );
+        assert!(declarations("a.habeas-req-badge").contains(&"color: inherit"));
+        // Keyboard focus shows an outline.
+        let focus = declarations("a.habeas-req-badge:focus-visible");
+        assert!(
+            focus
+                .iter()
+                .any(|declaration| declaration.starts_with("outline:")
+                    && !declaration.contains("none")
+                    && !declaration.contains(" 0 ")),
+            "{focus:?}"
+        );
+        // Hover only brightens.
+        assert_eq!(
+            declarations("a.habeas-req-badge:hover"),
+            ["filter: brightness(1.08)"]
+        );
+        // Every rule styles a Habeas badge or fenced reference; nothing else in
+        // the book is restyled.
+        let specified = [
+            ".habeas-req-badge",
+            ".habeas-shield",
+            "a.habeas-req-badge",
+            "a.habeas-req-badge:visited",
+            "a.habeas-req-badge:hover",
+            "a.habeas-req-badge:focus-visible",
+            ".habeas-builtin",
+            ".habeas-fenced-ref",
+        ];
+        for (selectors, _) in &rules {
+            for selector in selectors {
+                assert!(specified.contains(&selector.as_str()), "{selector}");
+            }
+        }
     }
 
     // {test}`requirements.references.book_badges`

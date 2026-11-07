@@ -94,7 +94,10 @@ fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
         .map(|deadline| deadline.duration_since(now).unwrap_or_default())
 }
 
-// {cite}`requirements.authoring.provider`
+// :::{impl} requirements.authoring.provider
+// Holds one backend-erased Rig model, so Bedrock and Ollama share this provider
+// type; `bedrock` and `options` are the only backend-specific state.
+// :::
 pub(super) struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,
