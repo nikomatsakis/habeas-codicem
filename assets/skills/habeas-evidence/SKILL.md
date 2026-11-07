@@ -73,15 +73,26 @@ reference does not cover its functions. Mark code `{impl}` where it implements
 part of a definition and tests `{test}` where they are designed to verify it; use
 `{cite}` only for related code that does neither. A requirement can `{impl}`
 another requirement it refines, and an example can `{test}` or `{cite}` a
-requirement. There is no waiver for an uncited function. When no existing
-requirement explains behavior, propose an appropriate requirement rather than
-inventing evidence. If the function is only an internal implementation detail,
-propose an explicit requirement scoped to that area of internal code, such as
-`internal.config_parsing`, rather than one catch-all, get the user's agreement,
-mark the function with `{impl}`, and run `habeas author --all` so the harness
-assesses that requirement's evidence; that review checks that the requirement
-explains each implementing function. Do not use an internal-detail requirement
-to justify otherwise unspecified end-user-observable behavior.
+requirement. There is no waiver for an uncited function. Choose references by
+Habeas's reference procedure, applied to each definition an item could
+reference: `{test}` for a test or test helper designed to verify it; otherwise
+`{impl}` when fulfilling it depends on the item, including a type whose fields,
+variants, serialized form, or validation it constrains; otherwise `{cite}` when
+the item should be re-checked or kept in sync when it changes. When no
+existing requirement explains behavior, propose an appropriate requirement
+rather than inventing evidence. For internal code, state any invariant worth
+checking as an ordinary requirement and implement it; otherwise cite the
+built-in `habeas:none` in fenced form, with a body justifying why the item
+exists. Do not propose grouping requirements that state no checkable
+obligation. An item citing `habeas:none` must not implement
+end-user-observable behavior that no requirement specifies.
+
+Every source item outside the book with a `{cite}` reference needs a citation
+review at `evidence/citations/<file>/<selector>.json`, which `habeas author --all`
+authors. It assesses whether each citation is sensible or should be `{impl}` or
+`{test}`, and whether each `habeas:none` justification holds. Reassess one with
+`habeas author citations:<file>#<selector>`. A false citation review is fixed by
+changing the references or the item, not by rewriting the review.
 Missing evidence or a truthful false judgment is expected while implementation
 is pending; do not write placeholder evidence yourself.
 
@@ -105,6 +116,27 @@ judgment to make validation pass. CI accepts true and FIXME only when all schema
 freshness, and coverage checks also pass. Each determination stands alone: a
 false judgment does not fail the definitions its subject implements, tests, or
 cites.
+
+## Disagreeing assessments
+
+The goal is that independent assessments of the same subject reach the same
+determination, because the requirement, code, and tests leave no gap a careful
+reviewer could find and no reading a careful reviewer could take differently.
+Assessments of the same subject that disagree are findings against that goal:
+for example, when `habeas author --confirm` reports that its assessments
+disagreed, or a determination flips between runs. Read both rationales and
+decide whether one assessment found a real gap or the requirement text admits
+more than one reading. Then fix the source or tests, or tighten the requirement
+text, rather than re-running an assessment to obtain a different determination.
+Review substantive requirement changes with the user before changing the text.
+When you reword a requirement for precision, record the old text, new text,
+reason, and the rationale that prompted the change in the project's audit log,
+such as `audits/requirement-rewordings/`; escape quoted roles there, as in
+`\{cite}`, so the log does not add references.
+
+`habeas author --confirm`, with a full name or `--all`, checks each `true` or
+FIXME result with an independent second assessment and verifies the less
+favorable result when they disagree.
 
 After source or requirement fixes, rerun `habeas author --all`, then
 `cargo test --workspace`. Authoring preserves completed writes when another

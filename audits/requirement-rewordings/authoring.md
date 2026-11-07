@@ -8,12 +8,12 @@ resolving false evidence, with the evidence rationale that prompted it.
 **Old text** (after the read-denial sentence, nothing about interruption):
 
 > An access-policy denial MUST abort only the affected assessment under
-> {cite}`requirements.authoring.read_denial`.
+> \{cite}`requirements.authoring.read_denial`.
 
 **New text:**
 
 > An access-policy denial MUST abort only the affected assessment under
-> {cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the
+> \{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the
 > whole batch: queued assessments MUST NOT start, running assessments MUST be
 > cancelled, and an assessment whose evidence has not been written when the
 > interruption arrives MUST NOT write it. Evidence already written MUST be
@@ -108,7 +108,7 @@ aborted with a read_denial error after the model asked to read
 **New text:**
 
 > Access-policy denials MUST abort
-> except where {cite}`requirements.authoring.read_denial` makes them ordinary read
+> except where \{cite}`requirements.authoring.read_denial` makes them ordinary read
 > failures; other failed reads MUST return an explanatory tool error.
 
 **Reason.** Keeps this requirement consistent with the read_denial exception
@@ -120,19 +120,19 @@ above, so the two requirements do not contradict each other.
 
 **Old text:**
 - outline_tool: "Explicitly requesting an excluded file MUST abort under
-  {cite}`requirements.authoring.read_denial`."
+  \{cite}`requirements.authoring.read_denial`."
 - file_discovery: "…unless access was denied, which MUST abort under
-  {cite}`requirements.authoring.read_denial`."
+  \{cite}`requirements.authoring.read_denial`."
 - text_search: "…explicitly requesting an excluded path MUST abort under
-  {cite}`requirements.authoring.read_denial`."
+  \{cite}`requirements.authoring.read_denial`."
 
 **New text:**
 - outline_tool: "…MUST be handled as a denial under
-  {cite}`requirements.authoring.read_denial`."
+  \{cite}`requirements.authoring.read_denial`."
 - file_discovery: "…which MUST be handled under
-  {cite}`requirements.authoring.read_denial`."
+  \{cite}`requirements.authoring.read_denial`."
 - text_search: "…MUST be handled as a denial under
-  {cite}`requirements.authoring.read_denial`."
+  \{cite}`requirements.authoring.read_denial`."
 
 **Reason.** Each of these restated "abort", which would contradict the new
 read_denial exception for unpermitted paths outside the project. They now defer
@@ -145,7 +145,7 @@ denial.
 
 **Old text:**
 
-> Its review guidance MUST follow {cite}`requirements.ci.review_criteria`,
+> Its review guidance MUST follow \{cite}`requirements.ci.review_criteria`,
 
 > completely and exactly as stated, and that tests cover the interesting points in the design space.
 
@@ -155,7 +155,7 @@ denial.
 
 **New text:**
 
-> Its review guidance MUST follow {impl}`requirements.ci.review_criteria`,
+> Its review guidance MUST follow \{impl}`requirements.ci.review_criteria`,
 
 > completely and exactly as stated, and that tests cover the interesting points in
 > the design space, including relevant boundaries and failure cases.
@@ -203,8 +203,8 @@ locations'", and "`requirements.authoring.initial_prompt` only `{cite}`s
 **New text:**
 
 > directory readable while excluding its private subtree:
-> {impl}`requirements.configuration.documentation`
-> {impl}`requirements.authoring.configuration_documentation`
+> \{impl}`requirements.configuration.documentation`
+> \{impl}`requirements.authoring.configuration_documentation`
 
 > Set `concurrency` alongside `backend`
 > and `model` to override the provider's default number of simultaneous assessments.
@@ -247,23 +247,23 @@ edit."
 
 > Authoring MUST use the `[authoring]` sections of the shared user configuration
 > and the selected workspace's `habeas.toml`.
-> {cite}`requirements.configuration.user_location`
-> {cite}`requirements.configuration.structure`
-> {cite}`requirements.configuration.feature_sections`
+> \{cite}`requirements.configuration.user_location`
+> \{cite}`requirements.configuration.structure`
+> \{cite}`requirements.configuration.feature_sections`
 > It MUST support named configurations, …
 
 **New text:**
 
 > Authoring MUST use the `[authoring]` sections of the shared user configuration
 > and the selected workspace's `habeas.toml`, refining
-> {impl}`requirements.configuration.feature_sections` for the authoring feature.
-> {cite}`requirements.configuration.user_location`
-> {cite}`requirements.configuration.structure`
+> \{impl}`requirements.configuration.feature_sections` for the authoring feature.
+> \{cite}`requirements.configuration.user_location`
+> \{cite}`requirements.configuration.structure`
 > Assessing a subject with `habeas author`, singly or in a batch that needs at
 > least one assessment, MUST require an `[authoring]` section in at least one of
 > these files; either section MAY be absent. No other operation requires the
 > section, including a batch with no assessments needed and the operations in
-> {cite}`requirements.authoring.deterministic_validation`.
+> \{cite}`requirements.authoring.deterministic_validation`.
 > It MUST support named configurations, …
 
 **Reason.** The authoring configuration requirements define the authoring
@@ -293,7 +293,7 @@ this explicitly."
 
 > Transient provider failures, including throttling, MUST be
 > retried within the affected assessment under
-> {cite}`requirements.authoring.provider_backoff`; every other provider error MUST
+> \{cite}`requirements.authoring.provider_backoff`; every other provider error MUST
 > be reported through the ordinary assessment-failure path.
 
 **Reason.** The old sentence contradicted `provider_backoff`, which requires

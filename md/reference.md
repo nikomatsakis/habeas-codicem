@@ -36,7 +36,7 @@ example. Each requirement or example evidence file records five fields:
 | `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |
 | `determination` | `true`, `false`, or `{"FIXME": ["#125"]}` for explicitly documented gaps. |
 | `rationale` | A Markdown explanation of that judgment. |
-| `references` | A SHA-256 digest of the definition's reference set: each incoming `{impl}` or `{test}` reference's role, file, and the outline node it belongs to, plus its `:impl:` and `:test:` anchors. `{cite}` references do not contribute. Adding, removing, or re-roling a reference or anchor, or moving a reference to another node, makes the evidence stale even when no input changed; moving one within its node does not. {cite}`requirements.ci.reference_set` |
+| `references` | A SHA-256 digest of the definition's reference set: each incoming `{impl}` or `{test}` reference's role, file, and the outline node it belongs to, with the words of a fenced reference's commentary in a source outside the book, plus its `:impl:` and `:test:` anchors. `{cite}` references do not contribute. Adding, removing, or re-roling a reference or anchor, editing its commentary, or moving a reference to another node makes the evidence stale even when no input changed; moving one within its node does not. {cite}`requirements.ci.reference_set` |
 | `inputs` | Sources supporting it. Inputs select an outline node of a file, a definition selection, or a terminology definition. |
 
 For a requirement, the model reviews whether the code marked `{impl}` implements its
@@ -393,6 +393,33 @@ book rendering remain deterministic and do not require model configuration or
 credentials. {cite}`requirements.authoring.usage_storage`
 {cite}`requirements.authoring.deterministic_validation`
 
+### Confirming assessments
+
+Add `--confirm` to `habeas author <full-name>` or `habeas author --all` to check
+each `true` or FIXME result with an independent second assessment. When both
+assessments reach the same kind of outcome, the first is recorded. When they
+disagree, a third conversation verifies the less favorable one, where `false` is
+less favorable than FIXME and FIXME than `true`: the verifier receives the
+subject, its mandatory inputs, that assessment's rationale, and the source
+tools, and answers with `submit_verification`, `{"confirmed": true}` or
+`false` with a rationale. A confirmed result is recorded; otherwise the more
+favorable one is. Either way, the recorded rationale ends with a confirmation
+note stating that the assessments disagreed and what the verification
+concluded. Each conversation has its own usage record, whose subject names the
+second assessment or the verification. Without `--confirm`, each subject gets
+one assessment.
+
+```sh
+habeas author --all --confirm
+habeas author requirements.check --confirm
+```
+
+A disagreement is a finding, not noise to retry away: the requirement, code, or
+tests leave a gap one reviewer found or a reading the reviewers took
+differently. Close the gap, or tighten the requirement text, rather than
+rerunning for a different determination.
+{cite}`requirements.authoring.confirmation` {cite}`requirements.cli.flip_guidance`
+
 ### Live Bedrock tests
 
 `cargo test` includes a live Bedrock integration test. It skips with a visible
@@ -433,7 +460,7 @@ Source files and book chapters can mark lines as implementing, citing, or testin
 {test}`reference.cli.unknown_command`
 ```
 
-Each reference must name an existing requirement or example and is a directed edge between its source and that definition. Choose the role by what the source does:
+Each reference must name an existing requirement or example, or a built-in definition, and is a directed edge between its source and that definition. Choose the role by what the source does:
 
 - `{impl}`: the source implements part of the definition. It makes a decision, performs a check, produces an output, or handles a case the definition specifies. Calling code that implements a definition, or producing a result a caller uses to meet it, is not implementing it. A requirement that refines another requirement's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.
 - `{test}`: the source is designed to verify behavior the definition specifies, either a test through its scenario and assertions, or a named example through its concrete case.
@@ -441,6 +468,97 @@ Each reference must name an existing requirement or example and is a directed ed
 
 Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.
 {cite}`requirements.references.targets` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
+
+### Choosing references
+
+For each definition a source item could reference, choose by this procedure. An item may carry several references.
+
+1. If the item is a test or test helper designed to verify the definition, use `{test}`.
+2. Otherwise, if fulfilling the definition depends on the item, use `{impl}`. For code, this means it makes a decision, performs a check, produces an output, or handles a case the definition specifies. For a type, it means the definition constrains its shape: its fields, variants, serialized form, or validation.
+3. Otherwise, if the item should be re-checked or kept in sync when the definition changes, use `{cite}`.
+4. If the item has no reference after applying steps 1 to 3 to every definition, cite the built-in `habeas:none`, justifying why the item exists.
+
+For internal code, state any invariant worth checking, such as a cache that must not change results, as an ordinary requirement and implement it. Otherwise cite `habeas:none`. Do not write grouping requirements that state no checkable obligation just to give internal helpers something to reference.
+{cite}`requirements.references.targets` {cite}`requirements.cli.internal_detail_guidance`
+
+### Fenced references and commentary
+
+Any reference can instead be written in fenced form to attach commentary: an opening line of three or more colons followed by the role and the name, the commentary, and a closing line of at least as many colons. The edge is the same as the inline form's. In Markdown, the commentary is Markdown, and the book renders the badge followed by it:
+
+```text
+:::{impl} requirements.check
+Reports every invalid argument, not only the first.
+:::
+```
+
+In a source comment, Habeas recognizes the fence lines after removing each line's comment delimiters, such as `//`, `///`, `#`, or a block comment's leading `*`. Both fences must lie in one comment run: consecutive comment lines with no other source between them. A fence that does not close within its comment run, or before the end of a Markdown or plain-text file, is a validation error. The reference belongs to the node its comment run belongs to.
+
+```rust
+// :::{cite} requirements.check
+// The parser here must keep accepting what the check reports as valid.
+// :::
+fn parse_arguments() {}
+```
+
+A fenced reference inside a `{req}` or `{example}` closes at the first colon-only line with as many colons, which would also close a directive opened with the same number. Give the outer directive a longer fence:
+
+```text
+::::{req} check
+The CLI MUST report invalid arguments.
+
+:::{cite} requirements.cli.invocation
+Usage errors use the same report.
+:::
+::::
+```
+
+For an `{impl}` or `{test}` reference in a source outside the book, the words of its commentary are part of the definition's reference set, so editing them makes that definition's evidence stale; reflowing them does not. In the book, commentary is part of the declaration text instead.
+{cite}`requirements.references.targets` {cite}`requirements.ci.reference_set` {cite}`requirements.references.book_badges`
+
+### Built-in definitions
+
+Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
+
+There is one built-in, `habeas:none`. Its text is:
+
+> Cite this only when no requirement or example applies to the item under the
+> reference procedure. The citation MUST use the fenced form, and its body MUST
+> justify why the item exists. An item with an invariant worth checking, such as
+> a cache that must not change results, needs a requirement stating that
+> invariant instead. An item citing this MUST NOT implement end-user-observable
+> behavior that no requirement specifies.
+
+Only `{cite}` may reference it, and only in fenced form whose body, without comment delimiters and other references, justifies the item:
+
+```rust
+// :::{cite} habeas:none
+// Splits lines for the outline builders; no requirement concerns how.
+// :::
+fn split_lines(text: &str) -> Vec<&str> {
+    text.lines().collect()
+}
+```
+
+A justified `habeas:none` citation counts as a reference for Rust item coverage. `habeas status --all` lists every `habeas:none` citation with its item and justification.
+{cite}`requirements.references.builtin_definitions` {cite}`requirements.references.no_requirement`
+
+### Citation reviews
+
+Every source item outside the book that carries a `{cite}` reference, inline or fenced, needs a citation review. The item is the outline node its reference belongs to, or the whole file for a plain-text source. The review assesses whether each citation is sensible, meaning the item should be re-checked or kept in sync when the cited definition changes, and whether the procedure above calls for `{impl}` or `{test}` instead. For `habeas:none`, it assesses whether the justification is true, whether any definition applies, and whether the item implements end-user-observable behavior that no requirement specifies. A citation in a requirement or example declaration is reviewed as part of that definition's own assessment instead.
+
+The review of an item at `src/lib.rs` with selector `impl[Thing]/fn[run]` is recorded at `evidence/citations/src/lib.rs/impl[Thing]%2Ffn[run].json`: the file's project-relative path, then the selector with every `/` and `%` percent-encoded, or `_root` for the root node. It has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `file`, `item` | The item's project-relative path and outline selector. |
+| `citations` | Its `{cite}` references in source order, each with `role`, `name`, and `commentary`, which is empty for an inline reference. |
+| `determination`, `rationale` | The judgment and its Markdown explanation, with the same outcomes as other evidence. |
+| `inputs` | The sources supporting it, including the item's outline node and each cited declaration. |
+
+Validation reports a missing, false, or orphaned review, and a stale one: its item's hash changed, a cited declaration changed, or the citations or the words of their commentary changed. `habeas author --all` authors reviews that need attention, and `habeas author citations:<file>#<selector>` names one, such as `habeas author citations:src/lib.rs#fn[run]`; omit the selector for the root node.
+{cite}`requirements.references.citation_review` {cite}`requirements.authoring.citation_prompt`
+
+### Anchors
 
 Some sources cannot or should not carry a reference themselves, such as a shipped agent skill. A requirement can anchor such a file with `:impl:` or `:test:` option lines immediately after its opening fence; an example can use `:test:`. Each anchor is an edge to the complete file, or with `path#selector` to one outline node in it, such as `src/lib.rs#fn[run]`. The requirement's evidence must contain an outline input selecting the anchored node or one of its ancestors (the empty selector selects the whole file), so changing it makes the evidence stale. Option lines are not part of the requirement text. Prefer a precise in-source reference whenever one is possible.
 {cite}`requirements.references.anchors`
@@ -452,7 +570,9 @@ The bundled skill MUST explain how to author evidence.
 :::
 ```
 
-For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper with no behavior-specific requirement, agree on an explicit internal-detail requirement scoped to one area, such as `internal.config_parsing`, rather than one catch-all, and mark the helper with `{impl}`. That requirement's review checks that it explains each implementing function's behavior; it cannot justify otherwise unspecified user-visible behavior. {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
+### Rust items
+
+For Rust, Habeas parses first-party source files and requires every explicit function or method, including trait methods and test helpers, to have a requirement or named example reference in an attached comment or its body. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not cover the function. A Rust source file that cannot be parsed is reported as an error. For a helper no requirement or example applies to, cite `habeas:none` in fenced form with a justification, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
 
 Rust selectors use syntactic ancestry within one repository-relative file, under the Rust outline profile below. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `extern[C]/fn[puts]`, and `fn[outer]/fn[inner]`. An impl is named by its self type and optional trait as written, so `impl<T> Trait for Wrapper<T>` is `impl[Wrapper<T>/Trait]`. `use` declarations and item-position macro invocations are anonymous, such as `use@3f2a9c01b7de`. Modules are never resolved across files. {cite}`requirements.references.rust_item_selectors`
 
@@ -516,7 +636,7 @@ Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or chan
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{impl}` and `{test}` references, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{impl}` and `{test}` references, missing or stale citation reviews, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
 Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are
@@ -537,7 +657,8 @@ URLs are also recognized. Groups with the most affected judgments come first.
 
 Use `--verbose` to list the actual judgments in each group, with their full names,
 kinds, and recorded FIXME strings. `--all` shows every matching definition and its
-evidence state. Stale or invalid FIXME evidence still reports its validation
+evidence state, and lists every `habeas:none` citation with its item and
+justification. Stale or invalid FIXME evidence still reports its validation
 findings. Use `habeas info <selection>` to print matching detail pages as Markdown,
 including current texts, rationales, inputs, FIXME references, and findings. Both
 commands take a definition selection: a full name selects exactly that definition,

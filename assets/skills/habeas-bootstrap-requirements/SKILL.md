@@ -14,13 +14,28 @@ Keep two working inventories:
 
 Exclude generated and third-party code from the inventories. If a candidate looks user-facing but its purpose is unclear, keep it on the gap list until resolved.
 
-Treat requirements inferred from existing code as proposals. Show the user their proposed full IDs and exact text, along with uncertainty about whether observed behavior is intended or a bug. Obtain agreement on the proposals before installing them in the mdBook; prior explicit agreement to the same requirements counts.
+Treat requirements inferred from existing code as proposals. Show the user their proposed full IDs and exact text, along with uncertainty about whether observed behavior is intended or a bug. Obtain agreement on the proposals before installing them in the mdBook; prior explicit agreement to the same requirements counts. Review the proposals with the user in turn: for each one, present its exact text; identify ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements; propose specific improvements for the user to accept, revise, or reject; and apply the user's decisions before moving on.
 
 Create or reuse the agreed, stable, chapter-qualified `{req}` requirements in the mdBook. State observable obligations with BCP 14 terms. Group tests that check the same behavior under one requirement; several tests MAY share an ID. For tests of internal invariants, write a requirement for the invariant they actually check rather than inventing a user-facing promise. Distinguish intended behavior from a possible bug or incidental implementation detail.
 
 Put at least one `{test}` reference with a full requirement or example name on each test definition or individual case, naming the definitions the test is designed to verify rather than ones it exercises incidentally. A parameterized test can carry a reference at its case source or generating declaration when that is the only editable source. Add multiple references when a test checks multiple definitions. Do not use one file-level tag to stand in for unrelated tests.
 
-Add a requirement or example reference in a Rust comment attached to each inventoried function or method or within its body. Use `{impl}` where the function itself implements part of a definition: it makes a decision, performs a check, produces an output, or handles a case the definition specifies. Calling code that implements a definition does not count. Use `{cite}` only for code that relies on or refers to a definition without implementing or testing it; the cited requirement's review treats cite-only implementing code as a gap. An example must reference a requirement with `{test}` or `{cite}`, so an example reference still traces the function to a requirement. A reference on an enclosing module or `impl` does not cover its functions. There is no waiver for an uncited function. If no behavior-specific requirement explains an internal helper, propose an explicit requirement scoped to that area of internal code, such as `internal.config_parsing`, rather than one catch-all, get the user's agreement, mark the helper with `{impl}`, and run `habeas author --all` so the harness assesses that requirement's evidence; that review checks that the requirement explains each implementing function. Do not use an internal-detail requirement to justify otherwise unspecified end-user-observable behavior.
+Add a requirement or example reference in a Rust comment attached to each inventoried function or method or within its body. Choose references by Habeas's reference procedure, applied to each definition the item could reference; an item may carry several:
+
+1. A test or test helper designed to verify the definition uses `{test}`.
+2. Otherwise, if fulfilling the definition depends on the item, use `{impl}`: code that makes a decision, performs a check, produces an output, or handles a case the definition specifies, or a type whose fields, variants, serialized form, or validation the definition constrains. Calling code that implements a definition does not count.
+3. Otherwise, if the item should be re-checked or kept in sync when the definition changes, use `{cite}`; the cited requirement's review treats cite-only implementing code as a gap.
+4. If no step gives the item a reference, cite the built-in `habeas:none` in fenced form, with a body justifying why the item exists.
+
+An example must reference a requirement with `{test}` or `{cite}`, so an example reference still traces the function to a requirement. A reference on an enclosing module or `impl` does not cover its functions. There is no waiver for an uncited function. For internal code, state any invariant worth checking as an ordinary requirement, propose it to the user, and implement it with `{impl}`; otherwise cite `habeas:none`:
+
+```text
+// :::{cite} habeas:none
+// Converts between the parser's offsets and line numbers; no requirement concerns how.
+// :::
+```
+
+Do not propose grouping requirements that state no checkable obligation, such as one requirement covering an area's internal helpers. An item citing `habeas:none` must not implement end-user-observable behavior that no requirement specifies. Every source item with a `{cite}` gets a citation review from `habeas author --all` that checks these choices.
 
 Run `habeas author --all` to create requirement and example evidence. Each assessment has its own model conversation. Each requirement's review receives the sources marked `{impl}` or `{test}` for it and can look up every source that references it, so it can find implementing code that is unmarked or only cited. It records delivered source inputs and writes judgments and rationales. The supervising agent must not compose or refresh evidence JSON, determinations, rationales, or snapshots itself, or delegate manual evidence writing to another agent. If authoring configuration or credentials are unavailable, report the blocker instead of substituting hand-written evidence.
 

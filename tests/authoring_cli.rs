@@ -793,7 +793,7 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
 
 // {test}`requirements.cli.internal_detail_guidance`
 #[test]
-fn bundled_skills_direct_scoped_internal_requirements_instead_of_waivers() {
+fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waivers() {
     for (name, skill) in [
         (
             "habeas-requirements",
@@ -816,16 +816,30 @@ fn bundled_skills_direct_scoped_internal_requirements_instead_of_waivers() {
             "{name}: {text}"
         );
         for phrase in [
-            "scoped to that area of internal code",
-            "`internal.config_parsing`",
-            "rather than one catch-all",
-            "get the user's agreement",
-            "with `{impl}`",
-            "run `habeas author --all` so the harness assesses that requirement's evidence",
-            "explains each implementing function",
-            "Do not use an internal-detail requirement to justify otherwise unspecified end-user-observable behavior",
+            "Habeas's reference procedure, applied to each definition",
+            "designed to verify",
+            "fields, variants, serialized form, or validation",
+            "re-checked or kept in sync when",
+            "state any invariant worth checking as an ordinary requirement",
+            "the built-in `habeas:none` in fenced form, with a body justifying why the item exists",
+            "Do not propose grouping requirements that state no checkable obligation",
+            "must not implement end-user-observable behavior that no requirement specifies",
         ] {
             assert!(text.contains(phrase), "{name} lacks {phrase:?}");
+        }
+        // The procedure's steps come in order.
+        let steps = ["`{test}`", "`{impl}`", "`{cite}`", "`habeas:none`"];
+        let procedure = text
+            .find("Habeas's reference procedure")
+            .expect("procedure");
+        let mut from = procedure;
+        for step in steps {
+            from += text[from..]
+                .find(step)
+                .unwrap_or_else(|| panic!("{name}: {step} out of order"));
+        }
+        for grouping in ["internal.config_parsing", "catch-all", "internal-detail requirement"] {
+            assert!(!text.contains(grouping), "{name} suggests {grouping:?}");
         }
         for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
             assert!(
@@ -833,6 +847,30 @@ fn bundled_skills_direct_scoped_internal_requirements_instead_of_waivers() {
                 "{name} offers a waiver"
             );
         }
+    }
+}
+
+// {test}`requirements.cli.flip_guidance`
+#[test]
+fn bundled_skills_treat_disagreeing_assessments_as_findings() {
+    for name in ["habeas-requirements", "habeas-evidence"] {
+        let text = bundled_skill(name);
+        let goal = text
+            .find("The goal is that independent assessments of the same subject reach the same determination, because the requirement, code, and tests leave no gap a careful reviewer could find and no reading a careful reviewer could take differently")
+            .unwrap_or_else(|| panic!("{name} does not state the goal"));
+        // The goal leads; the procedure follows it.
+        let mut from = goal;
+        for phrase in [
+            "disagree are findings against that goal",
+            "Read both rationales and decide whether one assessment found a real gap or the requirement text admits more than one reading",
+            "fix the source or tests, or tighten the requirement text, rather than re-running an assessment to obtain a different determination",
+            "record the old text, new text, reason, and the rationale that prompted the change in the project's audit log, such as `audits/requirement-rewordings/`",
+        ] {
+            from += text[from..]
+                .find(phrase)
+                .unwrap_or_else(|| panic!("{name} lacks {phrase:?} after the goal"));
+        }
+        assert!(text.contains("Review substantive requirement changes with the user"), "{name}");
     }
 }
 
@@ -1962,7 +2000,9 @@ fn bundled_skills_require_agreed_requirements_before_code() {
         "draft the smallest set of observable obligations",
         "the proposed chapter location, full IDs, and exact fenced text",
         "Ask the user to agree to or revise this requirement set",
-        "Keep drafts out of the mdBook while review is pending, and do not write implementation or test code yet",
+        "Drafts may be uncommitted edits to the book, but do not commit them while review is pending, and do not write implementation or test code yet",
+        "review each new or changed requirement with the user in turn",
+        "Apply the user's decisions before moving on to the next requirement",
         "After agreement, install the approved requirements in the mdBook and confirm their names",
         "Then implement the behavior and add tests",
     ];
@@ -1994,6 +2034,9 @@ fn bundled_skills_require_agreed_requirements_before_code() {
             "Treat requirements inferred from existing code as proposals",
             "Show the user their proposed full IDs and exact text",
             "Obtain agreement on the proposals before installing them in the mdBook",
+            "Review the proposals with the user in turn",
+            "identify ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements",
+            "propose specific improvements for the user to accept, revise, or reject",
         ],
     );
     // Missing or false evidence is acceptable; no placeholder evidence.
