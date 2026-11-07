@@ -608,6 +608,15 @@ fn false_is_a_completed_assessment() {
         !diagnostics.contains("without acknowledging"),
         "{diagnostics}"
     );
+    // CI rejects the false judgment even though a FIXME acknowledges one gap.
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    let evidence_file = format!("evidence/{SUBJECT}.json");
+    let rejection = report
+        .errors
+        .iter()
+        .find(|error| error.starts_with(&evidence_file) && error.contains("determination is false"))
+        .unwrap_or_else(|| panic!("{:?}", report.errors));
+    assert!(rejection.contains("without acknowledging"), "{rejection}");
 }
 
 // {test}`requirements.authoring.negative_assessment`

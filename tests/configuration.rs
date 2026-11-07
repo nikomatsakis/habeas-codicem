@@ -1284,3 +1284,45 @@ fn documented_configuration_examples_name_the_file_to_edit() {
     }
     assert!(checked >= 8, "{checked}");
 }
+
+// {test}`requirements.configuration.user_location`
+// {test}`requirements.configuration.state_location`
+#[test]
+fn base_directories_must_be_absolute_and_nonempty() {
+    use std::ffi::OsString;
+    let only = |name: &'static str, value: &'static str| {
+        move |key: &str| (key == name).then(|| OsString::from(value))
+    };
+    for (platform, variable) in [
+        (ConfigPlatform::Unix, "HOME"),
+        (ConfigPlatform::Windows, "APPDATA"),
+    ] {
+        for value in ["", "relative/home"] {
+            let error = user_config_path_from(platform, only(variable, value)).unwrap_err();
+            assert!(error.to_string().contains(variable), "{error}");
+        }
+    }
+    for (platform, variable) in [
+        (ConfigPlatform::Unix, "HOME"),
+        (ConfigPlatform::Windows, "LOCALAPPDATA"),
+    ] {
+        for value in ["", "relative/home"] {
+            let error = state_root_from(platform, only(variable, value)).unwrap_err();
+            assert!(error.to_string().contains(variable), "{error}");
+        }
+    }
+    // A relative XDG value falls back to an absolute HOME.
+    let lookup = |key: &str| match key {
+        "XDG_CONFIG_HOME" | "XDG_STATE_HOME" => Some(OsString::from("relative")),
+        "HOME" => Some(OsString::from("/home/user")),
+        _ => None,
+    };
+    assert_eq!(
+        user_config_path_from(ConfigPlatform::Unix, lookup).unwrap(),
+        std::path::PathBuf::from("/home/user/.config/habeas/config.toml")
+    );
+    assert_eq!(
+        state_root_from(ConfigPlatform::Unix, lookup).unwrap(),
+        std::path::PathBuf::from("/home/user/.local/state/habeas")
+    );
+}
