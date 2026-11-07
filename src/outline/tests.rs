@@ -1072,3 +1072,36 @@ fn functions_in_a_separate_module_file_are_selected_within_that_file() {
             .any(|selector| selector.contains("mod[local]"))
     );
 }
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn workflow_job_marks_belong_to_the_job_that_follows() {
+    for path in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-plz.yml",
+    ] {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let source = std::fs::read_to_string(&file).unwrap();
+        let outline = parse(&file, &source).unwrap();
+        for (index, line) in source.lines().enumerate() {
+            let Some(job) = source.lines().nth(index + 1) else {
+                continue;
+            };
+            if line.trim_start().starts_with("# {")
+                && line.starts_with("  #")
+                && job.starts_with("  ")
+                && job.trim_end().ends_with(':')
+            {
+                let owners = outline.comment_owners_at_line(index + 1);
+                let name = job.trim().trim_end_matches(':');
+                assert_eq!(owners.len(), 1, "{path}:{}", index + 1);
+                assert_eq!(
+                    outline.nodes[owners[0]].selector,
+                    format!("pair[jobs]/pair[{name}]"),
+                    "{path}:{}",
+                    index + 1
+                );
+            }
+        }
+    }
+}
