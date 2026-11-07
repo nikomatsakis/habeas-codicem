@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
   "determination": true,
-  "rationale": "**Judgment: true.** The implementation covers each obligation, and the tests cover the main points and failure cases. One minor marking inconsistency is noted at the end.\n\n**Implementation**\n\nAll discovery goes through `workspace_document` in `src/config.rs`. The two loaders, `load_workspace_config` and `load_workspace_evidence`, call it. `PathPolicy::load`, `inspect_repository*` and `main` reach it through those loaders. Each of these carries an `{impl}` for this requirement.\n\n- **Nearest file, searching upward.** `workspace_document` iterates `start.ancestors()` and returns the first `habeas.toml` it finds.\n- **No merging.** It returns after the first hit. Its result feeds a single `decode` or `validate` of that one table, so ancestor files are never merged.\n- **Start directory.** It canonicalizes the given `root`. It then uses the current directory when that directory is inside the root, and the root otherwise. This matches \"search from that root unless its current directory is inside the project, in which case start there\". The CLI (`main`) passes `current_dir()` as the root, so the search starts at the invocation directory.\n- **Base for relative paths.** The result's `root` is the file's parent directory. `PathPolicy::load` joins evidence `allow` and `disallow` entries onto that directory. The Cargo and mdBook project root still comes separately from `setup::project_root` and the `root` passed to library calls. The file's location does not replace it.\n- **Missing file.** `NotFound` from `symlink_metadata` moves on to the next ancestor. If nothing is found, the result is `Ok(None)`, meaning absent settings.\n- **Unreadable candidates.** Any other `symlink_metadata` error, and any `read_to_string` failure, returns an error that names the path. It does not fall through to an ancestor. A directory, or a dangling symlink, named `habeas.toml` is therefore an error.\n- **No creation.** The loaders only read files and never write.\n\n**Tests**\n\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (`tests/configuration.rs`):\n  - It inherits an ancestor file when none is nearer.\n  - It uses the nearer file alone, with no merge of the outer `allow`.\n  - It checks that the file's `root` is its own directory and that the file text is unchanged.\n  - It checks that an invalid nearer file is an error that names it.\n  - It checks that `None` is returned once all files are removed.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (`tests/configuration.rs`):\n  - A directory named `habeas.toml` produces an error naming the path, even though a valid ancestor file exists. Both loaders are checked.\n  - Loading with no file present returns `None` and leaves the directory empty, so nothing is created.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs`) exercises the CLI from the invocation directory. A nested valid file is used while the invalid ancestor is ignored. Running from the ancestor shows the ancestor's error. A malformed nested file produces an error naming the nested path.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (`tests/authoring_cli.rs`) runs `author` from a nested directory. The nested file is used and the parent's file is not merged.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs`) shows that repository validation reports problems in the workspace file.\n\n**Minor note**\n\n`resolve_authoring` in `src/config.rs` also calls `load_workspace_config(root)`. It is not marked `{impl}` for this requirement. It only delegates to the marked loader and does no discovery itself, so I did not treat it as an unmarked implementation of the requirement.",
+  "rationale": "**Judgment: the requirement is met.** The code implements every obligation, it is marked `{impl}`, and the tests cover the main points.\n\n**Implementation**\n- `workspace_document` (src/config.rs:747) is the single discovery routine. `load_workspace_config`, `load_workspace_evidence`, `PathPolicy::load`, `inspect_repository*` and `main` all go through it, and each is marked `{impl}`.\n- **Start directory:** It canonicalizes the given root. It starts at the current directory only if that directory is inside the root; otherwise it starts at the root. This is the \"library operation given a project root\" rule.\n- **Nearest file only:** It walks `start.ancestors()` and returns the first `habeas.toml`. It never merges ancestor files.\n- **Missing file:** `NotFound` moves on to the next ancestor. If no file is found at all, the result is `Ok(None)`, meaning absent workspace settings.\n- **Unreadable files:** Any other metadata error, read error, or parse or validation error is returned with the path attached. It does not fall through to an ancestor. An existing directory named `habeas.toml` is reported, not skipped.\n- **No file creation:** The loaders only read, so loading never creates the file.\n- **Base for relative paths:** `LoadedWorkspaceConfig.root` and `WorkspaceEvidenceConfig.root` are the directory containing the selected file. `PathPolicy::load` joins evidence rules onto `config.root`.\n- **Project root unchanged:** The Cargo and mdBook project root comes from `setup::find_project_root` (the nearest directory with both `Cargo.toml` and `book.toml`). The evidence and book directories come from `inspect_repository`'s own root. Neither depends on where `habeas.toml` was found.\n- **Invocation directory:** `main` calls `load_workspace_evidence(&current_dir)`, so the CLI searches upward from the invocation directory. `status` and `info` instead record an invalid file as a validation finding, via `inspect_repository`.\n- **Marking and extra behavior:** I found no code that implements part of this requirement without an `{impl}` marker. I found no behavior in the `{impl}` code that other requirements do not specify.\n\n**Tests**\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (tests/configuration.rs:343):\n  - An ancestor file is inherited when no nearer file exists.\n  - A nearer file wins and is used alone.\n  - The reported root is the directory of the selected file.\n  - The file is not rewritten.\n  - A malformed nearest file produces an error that names the path.\n  - No file at all gives `None`.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (tests/configuration.rs:1054):\n  - A directory named `habeas.toml` inside the project, with a valid ancestor file present, is an error naming the path. The ancestor is not silently chosen.\n  - An empty directory yields `None` and still has no files afterwards, so loading creates nothing.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (tests/commands.rs:199) covers the CLI invoked from a nested directory:\n  - The nearest file is the one used, and an invalid ancestor file is ignored.\n  - The unrelated invalid authoring section is not validated.\n  - A malformed nearest file is reported by its path.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (tests/authoring_cli.rs:434) runs `author` from a nested directory and shows the nested file is used, not the parent file.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (tests/evidence_boundaries.rs:468) covers a file at the project root: invalid versions, unknown keys and malformed TOML are reported, and an unused authoring section is not validated.\n\n**Minor gap:** the library \"cwd inside the project, so start there\" branch is exercised only through the CLI tests, not by a direct library test. The \"cwd outside the project, so start at the root\" branch is exercised by the library tests. This does not leave an obligation untested.",
   "references": "246b459c3c3543d74cdcd7fda31b437e07fa4f65e14cc90a5043dc1aa72fbe2c",
   "inputs": [
     {
@@ -55,7 +55,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
+      "hash": "e3549f9dbbff2aee432420a2ce46199ffa1860d8687be924e4d97d9c57771d53"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -65,7 +65,7 @@
     {
       "file": "tests/commands.rs",
       "item": "fn[status_loads_nearest_workspace_file_without_validating_authoring]",
-      "hash": "8cd2df70c7a017a2aeb156b1379210a9d7446e39ad7e16777ffb9f4906e283d5"
+      "hash": "6fdea34aa32cce85dde294c79c50ba924c6478ed6812d2d0e04c90d806ff46ec"
     },
     {
       "file": "tests/configuration.rs",
@@ -183,9 +183,14 @@
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[allowed]",
-      "hash": "5960d03100435ec0b4494b19a912cfe60ddb53c1f34b28300122bc37ac969d5b"
+      "file": "src/setup.rs",
+      "item": "fn[book_source]",
+      "hash": "b20a9e99576cac3e942529c3a29c9fcb49f5ff2a8c566fd0025a326b55ab1849"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[project_depends_on_habeas]",
+      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
     },
     {
       "file": "src/setup.rs",
@@ -201,6 +206,11 @@
       "file": "src/setup.rs",
       "item": "fn[write_new_or_same]",
       "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[run]",
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     }
   ]
 }

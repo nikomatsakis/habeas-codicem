@@ -1,7 +1,7 @@
 {
   "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for either backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.authoring.concurrency`.\n\nI judged this from reading the supplied inputs and the reference lists. I did not run the tests.\n\n**Implementation**\n- **Configuration field:** `AuthoringConfig.concurrency` in `src/config.rs` is an `Option<NonZeroUsize>`. Zero, negative, fractional and string values fail parsing for both user and workspace config. This happens in `UserConfig::parse`, `WorkspaceConfig::parse` and `load_workspace_config`. `resolve_authoring_with_workspace_from` carries the value into `ResolvedAuthoringConfig`.\n- **Defaults and override:** `effective_concurrency` returns the configured value if there is one. Otherwise Bedrock gets `available_parallelism()`, falling back to 1, and Ollama gets 1.\n- **Runtime:** `main.rs` runs `author --all` on `tokio::runtime::Runtime::new()`. That is a multi-thread runtime with a fixed worker pool.\n- **Bound on running assessments:** `author_all_with_options` in `src/authoring/batch.rs` spawns assessments into a `JoinSet` only while `tasks.len() < concurrency`. It refills slots as tasks are joined, so the number running at once never exceeds the selected concurrency.\n- **Per-assessment state:** `prepare_assessment` in `src/authoring/mod.rs` creates its own `UsageLog` for each subject. Each task runs its own conversation.\n- **Errors:** an assessment error goes through the ordinary failure path. It is recorded in the usage log as `failed` or `cancelled`, pushed to `outcome.failures`, and the batch continues.\n- **Transient failures:** these are handled inside the assessment by `assess` and the providers' backoff code. Those sites are marked as `requirements.authoring.provider_backoff` implementations. The concurrency requirement only cites that requirement, and its text covers retry, no restart, no repeated tool calls, no attempt limit and cancellation.\n\n**Tests**\n- **Config defaults and override:** `authoring_concurrency_defaults_overrides_and_invalid_values` in `tests/configuration.rs` checks both backends.\n  - Defaults: Bedrock gets the CPU count (or 1), Ollama gets 1, and the default is not written back on serialization.\n  - Override: a configured 7 is used and round-trips through serialization.\n  - Invalid values: `0`, `-1`, `1.5` and `'2'` are rejected with an error naming the file and `concurrency`.\n- **Workspace config:** `workspace_configurations_accept_validate_and_override_concurrency` covers workspace override and replacement, plus the same invalid values.\n- **Peak in-flight requests:** `tests/authoring_batch.rs` runs the real binary against a mock server that tracks active and peak requests.\n  - With concurrency 2, the peak is exactly 2 and the first two assessments overlap.\n  - Ollama with no setting gives a peak of 1.\n- **Ordinary failure path:** a model 400 error becomes a `failed` usage record. The other five assessments still complete and the exit status is non-zero.\n- **Independence under failure and interruption:**\n  - After a denied read, the independent in-flight assessments finish and keep their own usage records.\n  - Interruption stops the batch at concurrency 1 and 2.\n- **Retry behavior:** unit tests in `src/authoring/mod.rs` and `providers.rs` cover it. These include throttling retries, unchanged history, success resetting backoff, permanent errors not retried, timeouts, and cancellation during the wait.\n\n**Gaps**\n- None that matter.\n- A Bedrock batch is not exercised end-to-end. Only the Bedrock default value is tested, and the shared scheduling path is tested through Ollama.\n- The fixed worker pool is used as a runtime default and has no dedicated test, which is reasonable for a one-line construction.\n- No FIXMEs apply.",
+  "rationale": "**Judgment: true.** The implementation covers every obligation in `requirements.authoring.concurrency`. The tests cover the main boundaries and failure cases. I found no unmarked implementation and no unspecified behavior attributed to this requirement.\n\n**Implementation**\n\n- **Optional positive integer.**\n  - `AuthoringConfig.concurrency: Option<NonZeroUsize>` (`src/config.rs`, `struct[AuthoringConfig]`) is skipped on serialization when absent.\n  - `NonZeroUsize` makes 0, negative, fractional and string values fail to deserialize. `UserConfig::parse`, `WorkspaceConfig::parse` and `load_workspace_config` run this validation, and the diagnostics name the file and the `concurrency` setting.\n  - `resolve_authoring_with_workspace_from` copies `config.concurrency` into `ResolvedAuthoringConfig`. A workspace record replaces the user record as a whole, including its concurrency.\n- **Defaults and override.** `ResolvedAuthoringConfig::effective_concurrency` returns the configured value if present. Otherwise it returns `available_parallelism()`, falling back to 1, for Bedrock, and 1 for Ollama. This matches the text exactly.\n- **Async tasks on a fixed worker pool.** `main` builds `tokio::runtime::Runtime::new()`, a multi-thread runtime with a fixed worker count. `author_all_with_options` (`src/authoring/batch.rs`) spawns each assessment into a `JoinSet`.\n- **Bound on running assessments.** The launch loop only spawns while `tasks.len() < concurrency`. `JoinSet::len` also counts finished tasks that have not yet been joined, so the bound is conservative and never exceeded. Persistence runs in the batch loop, not in the tasks.\n- **Own conversation and usage record.** `prepare_assessment` (`src/authoring/mod.rs`) creates a separate `UsageLog` and runs a separate `configured_record` call per subject.\n- **Transient failures.** `assess` retries inside the affected assessment through `ProviderBackoff::next_delay`, which is the implementation of `requirements.authoring.provider_backoff`. That requirement's text covers this part of the subject:\n  - It retries throttling, HTTP 500/502/503/504, the Bedrock exception codes, and the ten-minute timeout.\n  - It starts at a one-second window, doubles to a sixty-second ceiling, and uses equal jitter.\n  - It honors `Retry-After` as a minimum, keeps the prompt, history and tools, and records inputs only after success.\n  - It disables hidden SDK retries and stops retrying on cancellation.\n- **Other provider errors.** `next_delay` returns `None` for them, so `assess` returns the error. `prepare_assessment` then records it as a failed usage record, and the batch reports it as an ordinary failure.\n\nAll implementing sites carry `{impl}` markers: `author_all`, `author_all_with_options`, `prepare_assessment`, the config structs and parse functions, `effective_concurrency`, the resolve functions, and `main`.\n\n**Tests**\n\n- `tests/configuration.rs`:\n  - `authoring_concurrency_defaults_overrides_and_invalid_values` covers both backends: the omitted default (CPU count for Bedrock, 1 for Ollama), an override of 7, TOML round-trip, and rejection of `0`, `-1`, `1.5` and `'2'`.\n  - `workspace_configurations_accept_validate_and_override_concurrency` covers workspace values, whole-record override of the user config, defaults, and invalid values.\n  - `backend_configuration_round_trips_without_materializing_defaults` checks that no default is materialized on serialization.\n- `tests/authoring_batch.rs`:\n  - The server-side peak of in-flight requests is exactly 2 with `concurrency = 2` over six subjects, and the first two assessments are required to overlap.\n  - `ollama_batches_are_serial_by_default` shows a peak of 1 with no setting.\n  - `failed_assessment_keeps_other_results_and_reports_failure` returns a 400 and checks the failure path. Other assessments complete, there are six separate usage records, and exactly one is `failed`.\n  - `denied_read_preserves_in_flight_assessments_and_their_evidence` checks that separate usage records persist with concurrency 2.\n  - The interruption test runs with concurrency 2 and 1.\n- Retry behaviour is tested in `src/authoring/mod.rs` and `src/authoring/providers.rs`:\n  - Throttled requests are retried with an unchanged request and every attempt is recorded.\n  - Permanent errors are not retried.\n  - Cancellation during backoff prevents another request.\n  - Unanswered requests are abandoned and retried.\n  - A success resets the backoff.\n  - Tool calls are not repeated on retry.\n  - Hidden SDK retries are disabled.\n\n**Minor gaps, none material.** There is no end-to-end batch test with a Bedrock backend or a transient failure inside a concurrent batch. The Bedrock default is unit-tested through `effective_concurrency`, and retry is tested at the `assess` level.",
   "references": "8b53a42b3dc577ab87b66700e3b997310ef7f6af8d6201c4cde14fc6c79083cb",
   "inputs": [
     {
@@ -123,7 +123,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "2131453fa9bc4efb7f64e21cf1ed241b0736e5547f9f84a2f75bd5b0c135d03e"
+      "hash": "e3549f9dbbff2aee432420a2ce46199ffa1860d8687be924e4d97d9c57771d53"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -204,6 +204,219 @@
       "file": "tests/configuration.rs",
       "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
       "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "cb7f6e696b6ceaf0f121d39f5462a13da962cdc583aac325af9d9f52b607dd3b"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[search]",
+      "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[parse_with]",
+      "hash": "c78942451f3a6a9f5d1bd6b05e3d80b0884e352f10a15719b190429c78a96f60"
+    },
+    {
+      "file": "audits/requirement-rewordings/authoring.md",
+      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.read_denial`%20—%20requests%20outside%20the%20project]",
+      "hash": "c029e0366167e6b3e7d3c34017e8d29510bcabbe1747dbeb38a3bee6a7409cf9"
+    },
+    {
+      "file": "audits/requirement-rewordings/authoring.md",
+      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.source_tools`%20—%20consistency%20with%20read_denial]",
+      "hash": "bf384752b9ae34aa282a4ead52969d60aecd324819d5d4305d07c61bb5f0f90f"
+    },
+    {
+      "file": "audits/requirement-rewordings/authoring.md",
+      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.outline_tool`,%20`file_discovery`,%20`text_search`%20—%20defer%20to%20read_denial]",
+      "hash": "320e300931ff78e25b2773289a29109e09ae77901c9aa179e5b77546b079569b"
+    },
+    {
+      "file": "audits/requirement-rewordings/authoring.md",
+      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.concurrency`%20—%20throttling%20is%20retried,%20not%20failed]",
+      "hash": "3c30f179a610373dea2ed862c8f16fc4aad47d19cb5d174c08c4f8dbf8f48260"
+    },
+    {
+      "file": "audits/requirement-rewordings/authoring.md",
+      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.provider_backoff`%20—%20retry%20temporary%20unavailability%20and%20unanswered%20requests%20(commit%2069997e4)]",
+      "hash": "008ffb5581b132f1112527a467e9c8cd85d582134102738c5fe6a4a6fed83bf8"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "7831c5c754d1d5c4e9c4caab0d56d16c899fdc67761e9e775651a18e347274a3"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]",
+      "hash": "f169a850e4606af161eb255f8b540ce7b453ac8695f5b0a088ddb5f8196e902f"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]",
+      "hash": "7fbd1243f4fac2c55aab4bd394c137feaf6589db5edd4cee4937ac71509d0de5"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "const[REQUEST_TIMEOUT]",
+      "hash": "8a2b5ed06084d70442f4320890b2ececef5024114f5aa5eb18ca17cad82a5572"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess]",
+      "hash": "df71eface1ebf0b38f8b756edd91c75c101101bfb2d86bfa5dcc6f08f25b765f"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[ThrottledProvider]",
+      "hash": "b939d2cff6e7f5ca0ee329226794fe690cc625ffd0a9e622a272a25d9a06b546"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]/fn[complete]",
+      "hash": "4f289871c9861ae8a0cb2312b2afc8d441a0a9e290ea3e966395ee81879c59b7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[retry_fixture]",
+      "hash": "f901de38468dc328d5010229bf52ac40537ab4b9352d03320a5076a8ab5dd807"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "hash": "7449f6ef42af4fda0582a4da908f6f04f0a9f45e6606834b8a1a599a7c5bd5d9"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]",
+      "hash": "a7416fe126ef11a6028c2753c19865ec9b1ec77ac06cfe6e165aaddc4a76c63c"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]",
+      "hash": "035a746b5d4bc5ef6fadfdb528065812f0d554534df0d7103a5b312980813022"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[HangingProvider]",
+      "hash": "607bfb6be5ecfce2b13f28ae13283c4162a0fa6145c9d23a4ab99a000aaf2704"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[HangingProvider/CompletionProvider]/fn[complete]",
+      "hash": "1662d498ab7bd083412cf939033fddfeaf5ae46ca665c6121e30a8e27f785194"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]",
+      "hash": "2af79a330e536398fbf1e0d2c982568cde39eaa253e84e26b029f46bc9de9922"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/struct[ThrottledToolProvider]",
+      "hash": "7d7478f532f8ef60c3da4e501175059040b52799370a347ce6cdfbe7b8d0c7d2"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/impl[ThrottledToolProvider/CompletionProvider]/fn[complete]",
+      "hash": "9de72658ffcb46ea53a422b10166ca3cec5f29e249c266328eea3e2bbf6860b7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
+      "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "struct[ProviderBackoff]",
+      "hash": "c47de749676284131db513d04d0958e226a545276a080ec1ecb8375a298cfe94"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff/Default]/fn[default]",
+      "hash": "97cef4260065faa01281383c6c626c9f87afb8561b8ef76827146b3d8771ae9a"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff]/fn[next_delay]",
+      "hash": "dfd32d47edcc5840404c89085f12bdee688c1f34ee4b5b3a13563d837c590a29"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[provider_failure]",
+      "hash": "12241b3ea13d123e305af8735f2329f9e2e99d71dbce5f9bf5676122404cd80f"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[retry_after]",
+      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_config]",
+      "hash": "7ab162b0d655b45cb67e7829a19541bbff5e40b7e91f6943a66eb0fc37167a8e"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_loader]",
+      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[provider_error]",
+      "hash": "5812b2ded5c7b180e9974560720627437293926f691301a20b110779730751da"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[with_retry_after]",
+      "hash": "73d4f9618ef5754c6c1b02c3f472ed1b96a5faa2cd165303208a9a7321530e89"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]",
+      "hash": "77a69a577b252190942b6fa32e4ffadff6c71b2d140278224546ef560f2faa29"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]",
+      "hash": "3103173dcf8073dc788f128c8b3ee0916888de667b3e51a4d5f6ef02919570c1"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling_without_limiting_attempts]",
+      "hash": "4d430da06b420519dc4ea8bc09eabed41c82049517585923bee21bab11fc1275"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]",
+      "hash": "33d6c45dcaf0ba4afb00364d536ada490de861ad8e6affddeba0757375e7adb1"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
+      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[rig_failures_keep_their_provider_report_for_backoff]",
+      "hash": "22658c5f75ef471aeb85fde0e1bd3c534d087f262d44451d17ed4b48586e9ec2"
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     }
   ]
 }
