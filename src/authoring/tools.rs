@@ -274,6 +274,8 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     }
     found.retain(|reference| {
         reference.kind != crate::ReferenceKind::Term
+            // A fence that never closes is a validation error, not a site.
+            && reference.closed
             && crate::definition_glob::matches(selection, &reference.name)
             && definitions
                 .get(&reference.name)
@@ -1581,6 +1583,31 @@ mod tests {
         assert_eq!(sites[0]["name"], "requirements.other");
         assert_eq!(sites[0]["item"], "fn[work]");
         assert!(flattened.inputs.is_empty());
+
+        // A fenced reference in a comment run is a site of the node the run
+        // belongs to; a fence that never closes is invalid and not a site.
+        fs::write(
+            root.path().join("src/fenced.rs"),
+            format!(
+                "// :::{} requirements.other\n// Commentary.\n// :::\nfn fenced() {{}}\n\n// :::{} requirements.other\n// never closed\n\nfn open() {{}}\n",
+                "{impl}", "{cite}"
+            ),
+        )
+        .unwrap();
+        let other = dispatch(
+            &sources,
+            "references",
+            &json!({"selection": "requirements.other"}),
+        )
+        .unwrap();
+        assert_eq!(
+            other.result["sites"],
+            json!([
+                {"name": "requirements.other", "role": "impl", "file": "src/fenced.rs", "line": 1, "item": "fn[fenced]"},
+                {"name": "requirements.other", "role": "cite", "file": "src/lib.rs", "line": 3, "item": "fn[work]"},
+            ])
+        );
+        fs::remove_file(root.path().join("src/fenced.rs")).unwrap();
 
         for selection in ["requirements.missing", "bad name", ""] {
             assert!(
