@@ -219,3 +219,13 @@ authoring configurations as the checkout.
 Reason: Precision, resolving the ambiguity the reviewer raised in favour of the stronger reading. "The project's or user's selected configuration" did not say whether the workspace `habeas.toml` counted. The test now follows the product's precedence (user project selection, workspace default, user default), considers workspace configurations when falling back, and copies the checkout's workspace `[authoring]` table into the fixture project so `--config` resolves the same record. The new text states that behaviour; it adds obligations and removes none.
 
 Prompted by: evidence/requirements.integration.live_bedrock_test.json: "Project configuration may be ignored. The product's own precedence ... is the user's project selection, then the workspace `habeas.toml` default, then the user default. `selected_config` calls `resolve_authoring_from`, which passes no workspace configuration. ... The requirement text is ambiguous here, and neither the code nor any comment settles the question."
+
+## `requirements.configuration.user_location` and `requirements.configuration.state_location` — absolute base directories
+
+**Old (user_location):** "…otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST use `%APPDATA%/habeas/config.toml`. If the required base directory cannot be determined, an operation requiring user configuration MUST fail with an explanatory diagnostic."
+
+**New (user_location):** "…On Windows it MUST use `%APPDATA%/habeas/config.toml`. `HOME` and `APPDATA` MUST likewise be absolute, nonempty paths to be used. If no usable base directory can be determined, an operation requiring user configuration MUST fail with an explanatory diagnostic naming the variable."
+
+**New (state_location):** adds "`HOME` and `LOCALAPPDATA` MUST likewise be absolute, nonempty paths to be used."
+
+**Reason:** found by the stability experiment (2026-11-07): one of four assessments of `user_location` reported that the code rejects an empty or relative `HOME`/`APPDATA` while the requirement states the absolute condition only for `XDG_CONFIG_HOME`. The requirement now states the implemented behaviour; a new test covers it for both requirements.

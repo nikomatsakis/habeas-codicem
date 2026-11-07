@@ -15,9 +15,10 @@ command is not needed.
 Habeas MUST locate its per-user configuration at
 `$XDG_CONFIG_HOME/habeas/config.toml` on Unix when XDG_CONFIG_HOME is an absolute,
 nonempty path, otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST
-use `%APPDATA%/habeas/config.toml`. If the required base directory cannot be
+use `%APPDATA%/habeas/config.toml`. `HOME` and `APPDATA` MUST likewise be
+absolute, nonempty paths to be used. If no usable base directory can be
 determined, an operation requiring user configuration MUST fail with an
-explanatory diagnostic.
+explanatory diagnostic naming the variable.
 
 The same user configuration MUST be usable across projects. Its location MUST
 NOT be selected relative to the current project or changed by project settings.
@@ -46,7 +47,8 @@ Usage history belongs in the state directory described by the
 Habeas MUST store persistent per-user activity state under
 `$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,
 otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use
-`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that
+`%LOCALAPPDATA%/habeas/state`. `HOME` and `LOCALAPPDATA` MUST likewise be
+absolute, nonempty paths to be used. Features MUST use a named subdirectory under that
 state root and document their record formats and locations.
 
 State MUST persist across invocations and MUST NOT be stored in the project
