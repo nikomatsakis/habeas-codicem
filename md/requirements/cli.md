@@ -111,8 +111,11 @@ no checkable obligation.
 :::{req} flip_guidance
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
-Habeas's bundled agent skills MUST tell agents that assessments of the same
-subject that disagree are findings. They MUST direct agents to read both
+Habeas's bundled agent skills MUST state the goal that independent assessments
+of the same subject reach the same determination, because the requirement, code,
+and tests leave no gap a careful reviewer could find and no reading a careful
+reviewer could take differently. They MUST tell agents that assessments of the
+same subject that disagree are findings against that goal. They MUST direct agents to read both
 rationales and decide whether one assessment found a real gap or the requirement
 text admits more than one reading, then fix the source or tests, or tighten the
 requirement text, rather than re-running an assessment to obtain a different
