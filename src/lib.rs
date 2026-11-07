@@ -1449,6 +1449,13 @@ mod tests {
             .unwrap();
         assert_eq!(guide.content.matches(&marker).count(), 3);
         assert!(!guide.content.contains("habeas-req-ref-impl"));
+        // An escaped backslash does not escape the role.
+        let roles = reference_roles(
+            "\\\\{impl}`requirements.ready` \\\\\\{impl}`requirements.ready`",
+            true,
+        );
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].start, 2);
     }
 
     // {test}`requirements.references.markdown_literals`

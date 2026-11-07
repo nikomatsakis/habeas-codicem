@@ -282,7 +282,14 @@ pub(crate) fn inspect_repository_with_progress(
         &mut progress,
     );
     // {impl}`requirements.references.citation_review`
-    crate::citations::validate(&root, &definitions, &references, &outlines, &mut errors);
+    crate::citations::validate(
+        &root,
+        &definitions,
+        &references,
+        &outlines,
+        &mut errors,
+        &mut progress,
+    );
     // {impl}`requirements.references.rust_item_coverage`
     crate::rust_coverage::validate_rust_functions(
         &root,
@@ -1779,6 +1786,49 @@ pub(crate) mod tests {
 
     // {test}`requirements.authoring.progress`
     #[test]
+    fn citation_review_validation_reports_counted_progress() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\nReady.\n:::\n",
+        )
+        .unwrap();
+        let cite = ["{", "cite}`requirements.ready`"].concat();
+        fs::write(
+            root.join("src/main.rs"),
+            format!("// {cite}\nfn one() {{}}\n// {cite}\nfn two() {{}}\n"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("evidence/citations/src")).unwrap();
+        fs::write(root.join("evidence/citations/src/gone.json"), "{}").unwrap();
+        let mut updates = Vec::new();
+        let inspected =
+            super::inspect_repository_with_progress(root, |update| updates.push(update)).unwrap();
+        assert_eq!(
+            inspected.report.errors,
+            super::inspect_repository(root).unwrap().report.errors
+        );
+        let phase: Vec<_> = updates
+            .iter()
+            .filter(|update| update.stage == "citation reviews")
+            .map(|update| (update.completed, update.total))
+            .collect();
+        // Discovery first, then two items and one orphaned review file.
+        assert_eq!(
+            phase,
+            [
+                (0, None),
+                (0, Some(3)),
+                (1, Some(3)),
+                (2, Some(3)),
+                (3, Some(3))
+            ]
+        );
+    }
+
+    // {test}`requirements.authoring.progress`
+    #[test]
     fn inspection_progress_reports_empty_phases_as_complete() {
         let temp = TempDir::new().unwrap();
         fs::create_dir(temp.path().join("md")).unwrap();
@@ -1788,7 +1838,7 @@ pub(crate) mod tests {
             super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))
                 .unwrap();
         assert!(inspected.report.errors.is_empty());
-        for stage in ["evidence files", "reference coverage"] {
+        for stage in ["evidence files", "reference coverage", "citation reviews"] {
             assert!(
                 updates.contains(&super::InspectionProgress {
                     stage,

@@ -22,6 +22,7 @@ enum Command {
         #[command(subcommand)]
         command: Option<MdbookCommand>,
     },
+    // {impl}`requirements.cli.setup_local_path`
     Setup {
         #[arg(long, value_name = "crate-dir")]
         path: Option<PathBuf>,
@@ -147,6 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         // {impl}`requirements.cli.setup`
+        // {impl}`requirements.cli.setup_local_path`
         Command::Setup { path } => setup::run(path.as_deref()),
         // {impl}`requirements.cli.status`
         // {impl}`requirements.cli.fixme_summary`

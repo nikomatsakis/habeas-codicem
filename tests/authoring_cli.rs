@@ -351,8 +351,41 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
 
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(evidence["determination"], json!({"FIXME":["#125"]}));
+    assert_eq!(
+        evidence["rationale"],
+        "SECRET_RATIONALE: src/lib.rs:2 documents the gap."
+    );
     assert_eq!(evidence["requirement"], REQUIREMENT);
     let inputs = evidence["inputs"].as_array().unwrap();
+    // The FIXME comment reached the model and is covered by the recorded
+    // input for the function it belongs to.
+    assert!(prompt.contains("// FIXME(#125): one acknowledged gap."));
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]"),
+        "{inputs:#?}"
+    );
+    // CI accepts the FIXME judgment: its evidence has no validation error.
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    let label = format!("evidence/{SUBJECT}.json");
+    assert!(
+        !report.errors.iter().any(|error| error.contains(&label)),
+        "{:#?}",
+        report.errors
+    );
+    // The same record with a false determination is rejected.
+    let mut rejected = evidence.clone();
+    rejected["determination"] = json!(false);
+    let accepted = fs::read(&fixture.evidence).unwrap();
+    fs::write(&fixture.evidence, rejected.to_string()).unwrap();
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(
+        report.errors.iter().any(|error| error.contains(&label)),
+        "{:#?}",
+        report.errors
+    );
+    fs::write(&fixture.evidence, accepted).unwrap();
     assert!(
         inputs
             .iter()
@@ -2035,6 +2068,9 @@ fn bundled_skills_require_agreed_requirements_before_code() {
         "Ask the user to agree to or revise this requirement set",
         "Drafts may be uncommitted edits to the book, but do not commit them while review is pending, and do not write implementation or test code yet",
         "review each new or changed requirement with the user in turn",
+        "present its exact text",
+        "identify ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements",
+        "propose specific improvements for the user to accept, revise, or reject",
         "Apply the user's decisions before moving on to the next requirement",
         "After agreement, install the approved requirements in the mdBook and confirm their names",
         "Then implement the behavior and add tests",

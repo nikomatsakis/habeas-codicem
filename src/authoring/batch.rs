@@ -11,7 +11,7 @@ use super::{
 };
 use crate::DefinitionKind;
 use crate::config;
-use crate::evidence::{InspectionProgress, inspect_repository_with_progress};
+use crate::evidence::{InspectionProgress, RepositoryInspection, inspect_repository_with_progress};
 use crate::index::{EvidenceState, LoadedDetailEvidence};
 
 // {impl}`requirements.authoring.batch`
@@ -20,6 +20,10 @@ pub struct BatchOutcome {
     pub failures: Vec<(String, String)>,
     pub unchanged: usize,
 }
+
+/// The inspection phase that selects definitions and citation reviews.
+// {impl}`requirements.authoring.progress`
+const SELECTION_STAGE: &str = "selecting assessments";
 
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.concurrency`
@@ -51,58 +55,8 @@ pub async fn author_all_with_options(
     if !inspection.discovery_errors.is_empty() {
         return Err(io::Error::other(inspection.discovery_errors.join("\n")));
     }
-    let mut subjects = Vec::new();
-    let mut unchanged = 0;
-    let total = inspection.definitions.len();
-    progress.inspect(InspectionProgress {
-        stage: "selecting assessments",
-        completed: 0,
-        total: Some(total),
-    });
-    for (checked, (name, definition)) in inspection.definitions.iter().enumerate() {
-        if definition.kind != DefinitionKind::Term {
-            let evidence = LoadedDetailEvidence::load(&root, name, &inspection.report);
-            // A current false judgment stays until its subject or inputs change.
-            if matches!(
-                evidence.state(),
-                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
-            ) {
-                unchanged += 1;
-            } else {
-                subjects.push(AuthoringSubject::Definition(name.clone()));
-            }
-        }
-        progress.inspect(InspectionProgress {
-            stage: "selecting assessments",
-            completed: checked + 1,
-            total: Some(total),
-        });
-    }
-    // Every source item outside the book with citations needs a review.
-    // {impl}`requirements.references.citation_review`
-    let outlines = crate::inputs::OutlineCache::default();
-    for item in crate::citations::citation_items(
-        &root,
-        &inspection.definitions,
-        &inspection.references,
-        &outlines,
-    )
-    .into_values()
-    {
-        let evidence =
-            LoadedDetailEvidence::load_path(&root, &item.review_path(), &inspection.report);
-        if matches!(
-            evidence.state(),
-            EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
-        ) {
-            unchanged += 1;
-        } else {
-            subjects.push(AuthoringSubject::Citation {
-                file: item.file,
-                item: item.item,
-            });
-        }
-    }
+    let (subjects, unchanged) =
+        select_subjects(&root, &inspection, &mut |update| progress.inspect(update));
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
         failures: Vec::new(),
@@ -213,6 +167,79 @@ pub async fn author_all_with_options(
     Ok(outcome)
 }
 
+/// Selects the definitions and citation reviews needing assessment, counting
+/// current records as unchanged, and reports selection as one counted phase.
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.progress`
+// {impl}`requirements.references.citation_review`
+fn select_subjects(
+    root: &Path,
+    inspection: &RepositoryInspection,
+    progress: &mut dyn FnMut(InspectionProgress),
+) -> (Vec<AuthoringSubject>, usize) {
+    let mut subjects = Vec::new();
+    let mut unchanged = 0;
+    // Selection checks every definition and every item needing a citation
+    // review; finding those items comes first, with an activity display.
+    progress(InspectionProgress {
+        stage: SELECTION_STAGE,
+        completed: 0,
+        total: None,
+    });
+    // Every source item outside the book with citations needs a review.
+    // {impl}`requirements.references.citation_review`
+    let outlines = crate::inputs::OutlineCache::default();
+    let items = crate::citations::citation_items(
+        root,
+        &inspection.definitions,
+        &inspection.references,
+        &outlines,
+    );
+    let total = inspection.definitions.len() + items.len();
+    let mut checked = 0;
+    let mut advance = |progress: &mut dyn FnMut(InspectionProgress)| {
+        progress(InspectionProgress {
+            stage: SELECTION_STAGE,
+            completed: checked,
+            total: Some(total),
+        });
+        checked += 1;
+    };
+    advance(progress);
+    for (name, definition) in &inspection.definitions {
+        if definition.kind != DefinitionKind::Term {
+            let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);
+            // A current false judgment stays until its subject or inputs change.
+            if matches!(
+                evidence.state(),
+                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
+            ) {
+                unchanged += 1;
+            } else {
+                subjects.push(AuthoringSubject::Definition(name.clone()));
+            }
+        }
+        advance(progress);
+    }
+    for item in items.into_values() {
+        let evidence =
+            LoadedDetailEvidence::load_path(root, &item.review_path(), &inspection.report);
+        if matches!(
+            evidence.state(),
+            EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
+        ) {
+            unchanged += 1;
+        } else {
+            subjects.push(AuthoringSubject::Citation {
+                file: item.file,
+                item: item.item,
+            });
+        }
+        advance(progress);
+    }
+    (subjects, unchanged)
+}
+
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.read_denial`
 fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Error) {
@@ -270,4 +297,65 @@ fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf>
     writeln!(file, "{}", serde_json::to_string_pretty(&record)?)?;
     file.persist(&path).map_err(|error| error.error)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.authoring.progress`
+    // {test}`requirements.authoring.batch`
+    #[test]
+    fn selection_counts_definitions_and_citation_reviews_in_one_phase() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\nReady.\n:::\n",
+        )
+        .unwrap();
+        let cite = ["{", "cite}`requirements.ready`"].concat();
+        fs::write(
+            root.join("src/main.rs"),
+            format!("// {cite}\nfn one() {{}}\n// {cite}\nfn two() {{}}\n"),
+        )
+        .unwrap();
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        let mut updates = Vec::new();
+        let (subjects, unchanged) =
+            select_subjects(root, &inspection, &mut |update| updates.push(update));
+        assert_eq!(unchanged, 0);
+        assert_eq!(
+            subjects
+                .iter()
+                .map(AuthoringSubject::label)
+                .collect::<Vec<_>>(),
+            [
+                "requirements.ready",
+                "citations:src/main.rs#fn[one]",
+                "citations:src/main.rs#fn[two]"
+            ]
+        );
+        assert!(
+            updates
+                .iter()
+                .all(|update| update.stage == "selecting assessments")
+        );
+        assert_eq!(
+            updates
+                .iter()
+                .map(|update| (update.completed, update.total))
+                .collect::<Vec<_>>(),
+            [
+                (0, None),
+                (0, Some(3)),
+                (1, Some(3)),
+                (2, Some(3)),
+                (3, Some(3))
+            ]
+        );
+    }
 }

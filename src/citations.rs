@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 
 use crate::ReferenceKind;
 use crate::evidence::{
-    Declaration, SourceReference, array_field, check_keys, display_path, string_field,
-    validate_input,
+    Declaration, InspectionProgress, SourceReference, array_field, check_keys, display_path,
+    string_field, validate_input,
 };
 use crate::inputs::{InputSelector, OutlineCache};
 use crate::judgment::Judgment;
@@ -18,6 +18,10 @@ use crate::judgment::Judgment;
 /// The directory under `evidence/` holding citation reviews.
 // {impl}`requirements.references.citation_review`
 pub(crate) const CITATIONS_DIR: &str = "citations";
+
+/// The inspection phase that validates citation reviews.
+// {impl}`requirements.authoring.progress`
+const CITATION_STAGE: &str = "citation reviews";
 
 /// One citation of a reviewed item: its role, name, and fenced commentary,
 /// which is empty for an inline reference.
@@ -176,17 +180,43 @@ fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
 
 /// Validates citation reviews: each current item needs a current, accepted
 /// review, and every review file must belong to a current item.
+/// Reports progress as the "citation reviews" phase: an activity display
+/// while items are discovered, then one check per item and review file.
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.determination`
+// {impl}`requirements.authoring.progress`
 pub(crate) fn validate(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
     outlines: &OutlineCache,
     errors: &mut Vec<String>,
+    progress: &mut impl FnMut(InspectionProgress),
 ) {
+    progress(InspectionProgress {
+        stage: CITATION_STAGE,
+        completed: 0,
+        total: None,
+    });
     let items = citation_items(root, definitions, references, outlines);
+    let directory = root.join("evidence").join(CITATIONS_DIR);
+    let files = if directory.is_dir() {
+        crate::evidence::files_with_extension(root, &directory, "json", errors)
+    } else {
+        Vec::new()
+    };
+    let total = items.len() + files.len();
+    let mut completed = 0;
+    let mut advance = |progress: &mut dyn FnMut(InspectionProgress)| {
+        progress(InspectionProgress {
+            stage: CITATION_STAGE,
+            completed,
+            total: Some(total),
+        });
+        completed += 1;
+    };
+    advance(progress);
     let mut expected = BTreeSet::new();
     for item in items.values() {
         let path = item.review_path();
@@ -202,17 +232,16 @@ pub(crate) fn validate(
                 item.line
             ));
         }
+        advance(progress);
     }
-    let directory = root.join("evidence").join(CITATIONS_DIR);
-    if directory.is_dir() {
-        for file in crate::evidence::files_with_extension(root, &directory, "json", errors) {
-            if !expected.contains(&file) {
-                errors.push(format!(
-                    "{}: orphaned citation review: no source item outside the book with {{cite}} references matches it",
-                    display_path(root, &file)
-                ));
-            }
+    for file in files {
+        if !expected.contains(&file) {
+            errors.push(format!(
+                "{}: orphaned citation review: no source item outside the book with {{cite}} references matches it",
+                display_path(root, &file)
+            ));
         }
+        advance(progress);
     }
 }
 

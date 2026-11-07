@@ -62,6 +62,7 @@ pub(crate) fn dependencies(
 /// Terms referenced directly by the subject text or the record's inputs.
 // {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.definitions.selection`
+// {impl}`requirements.references.markdown_literals`
 fn direct_references(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,
@@ -96,14 +97,18 @@ fn direct_references(
                 InputSelector::Definition { definition } => {
                     pending.insert(definition);
                 }
-                InputSelector::Outline { file, .. } if file.ends_with(".rs") => {
+                InputSelector::Outline { file, .. }
+                    if crate::outline::profile_for_path(Path::new(&file)).name == "rust" =>
+                {
                     for range in crate::rust_coverage::comments(&text) {
                         referenced_terms(&text[range], false, &mut pending);
                     }
                 }
-                InputSelector::Outline { file, .. } => {
-                    referenced_terms(&text, file.ends_with(".md"), &mut pending)
-                }
+                InputSelector::Outline { file, .. } => referenced_terms(
+                    &text,
+                    crate::outline::is_markdown_path(Path::new(&file)),
+                    &mut pending,
+                ),
                 InputSelector::Requirements { .. } => {
                     // Scan bodies, not the surrounding colon fences: Markdown code
                     // protection must be evaluated in the declaration's own context.
@@ -199,4 +204,62 @@ pub(crate) fn escaped_phrase(phrase: &str) -> String {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+
+    use super::*;
+
+    // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.definitions.dependencies`
+    #[test]
+    fn term_dependencies_of_every_markdown_extension_skip_literal_roles() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(
+            root.join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        let used = ["{", "term}`terms.unit`"].concat();
+        let missing = ["{", "term}`terms.missing`"].concat();
+        let notes = format!(
+            "Uses {used}.\n\n`{missing}` and \\{missing}\n\n```text\n{missing}\n```\n\n<span title=\"{missing}\"></span>\n"
+        );
+        let declarations = crate::evidence::load_definitions(root).unwrap();
+        let outlines = OutlineCache::default();
+        let dependencies = |file: &str| {
+            fs::write(root.join(file), &notes).unwrap();
+            let record = json!({"inputs": [{"file": file, "item": ""}]});
+            dependencies(
+                root,
+                &declarations,
+                &outlines,
+                record.as_object().unwrap(),
+                None,
+            )
+        };
+        for file in [
+            "docs/a.md",
+            "docs/b.markdown",
+            "docs/C.MD",
+            "docs/d.Markdown",
+        ] {
+            assert_eq!(
+                dependencies(file),
+                Ok(BTreeSet::from(["terms.unit".to_owned()])),
+                "{file}"
+            );
+        }
+        // The same text in a plain-text file is not Markdown.
+        let error = dependencies("docs/e.txt").unwrap_err();
+        assert!(error.contains("terms.missing"), "{error}");
+    }
 }
