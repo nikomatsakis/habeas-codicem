@@ -220,4 +220,28 @@ mod tests {
         // Without --verbose, only the counts appear.
         assert!(!summary.render(false).contains("rules.both"));
     }
+
+    // {test}`requirements.cli.fixme_summary`
+    #[test]
+    fn groups_order_by_decreasing_count_before_reference() {
+        // `#9` sorts after `#1` as text but affects more judgments, so it
+        // comes first; `#1` and `#5` tie and fall back to reference order.
+        let mut summary = FixmeSummary::default();
+        summary.add("rules.a", "requirement", &strings(&["FIXME(#9)"]));
+        summary.add("rules.b", "requirement", &strings(&["FIXME(#9)"]));
+        summary.add(
+            "rules.c",
+            "requirement",
+            &strings(&["FIXME(#9) and FIXME(#5)"]),
+        );
+        summary.add("rules.d", "example", &strings(&["FIXME(#1)"]));
+        let output = summary.render(false);
+        let order: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("- `#"))
+            .map(|line| line.split('`').nth(1).unwrap().to_owned())
+            .collect();
+        assert_eq!(order, ["#9", "#1", "#5"], "{output}");
+        assert!(output.contains("- `#9` — affects 3 judgments"), "{output}");
+    }
 }
