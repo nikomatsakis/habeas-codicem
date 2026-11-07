@@ -1,8 +1,8 @@
 {
-  "requirement": "Habeas MUST store persistent per-user activity state under\n`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,\notherwise under `$HOME/.local/state/habeas`. On Windows it MUST use\n`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that\nstate root and document their record formats and locations.\n\nState MUST persist across invocations and MUST NOT be stored in the project\nrepository, the configuration file, or a disposable cache directory. Habeas MUST\ncreate the required directories when recording state. If it cannot determine or\nwrite the state location, the operation requiring that state MUST report the\nfailure and MUST NOT claim that its history was recorded.",
+  "requirement": "Habeas MUST store persistent per-user activity state under\n`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,\notherwise under `$HOME/.local/state/habeas`. On Windows it MUST use\n`%LOCALAPPDATA%/habeas/state`. `HOME` and `LOCALAPPDATA` MUST likewise be\nabsolute, nonempty paths to be used. Features MUST use a named subdirectory under that\nstate root and document their record formats and locations.\n\nState MUST persist across invocations and MUST NOT be stored in the project\nrepository, the configuration file, or a disposable cache directory. Habeas MUST\ncreate the required directories when recording state. If it cannot determine or\nwrite the state location, the operation requiring that state MUST report the\nfailure and MUST NOT claim that its history was recorded.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.configuration.state_location`. Every obligation has marked implementation code, and tests cover the main boundaries and failure cases.\n\n**Implementation**\n- **Root resolution.** `config::state_root` and `state_root_from` (src/config.rs 631–650) resolve the root.\n  - On Unix, an absolute `XDG_STATE_HOME` gives `$XDG_STATE_HOME/habeas`.\n  - Otherwise `$HOME/.local/state/habeas` is used, and `HOME` must itself be absolute. `absolute_directory` rejects empty and relative values.\n  - On Windows, `%LOCALAPPDATA%/habeas/state` is used.\n  - If the root cannot be determined, `required_directory` returns a `NotFound` error saying \"cannot determine Habeas directory…\".\n  - `ConfigPlatform::current` selects the platform.\n- **Named subdirectory.** The only state-using feature, authoring, writes under `<state-root>/authoring/usage/<run-id>.json` (`UsageLog::start`, src/authoring/usage.rs).\n- **Persistence and location.** The state root is outside the project and the configuration file, and nothing uses a cache directory. Records are kept as JSON files, so they survive across invocations.\n- **Project exclusion.** `usage_state_root` (src/authoring/mod.rs 186–208) refuses any state root inside the project before creating anything. It resolves symlinks through the nearest existing ancestor via `resolved_location`.\n- **Directory creation.** `usage_state_root` runs `create_dir_all` on the root. `UsageLog::start` runs it again on `authoring/usage`.\n- **Failure reporting.**\n  - Failures to determine, create or write the state location are returned before any model request.\n  - `finish`, `save` and `persisted` propagate write errors as \"cannot record usage at … (evidence written: …)\".\n  - The failed path in `PendingAssessment::failed` and in `prepare_assessment` reports \"cannot record failed usage / cannot record usage\".\n  - No \"Usage:\" line or success summary is claimed when recording fails.\n- **Documentation.** The record format and location are documented in `requirements.authoring.usage_storage` (md/requirements/authoring.md) and in md/reference.md. The reference lists the Unix XDG and `HOME` fallback paths and the Windows path for `authoring/usage`.\n- **Marking.** The code that implements this requirement carries `{impl}` markers: `state_root`, `state_root_from`, `absolute_directory`, `required_directory`, `ConfigPlatform::current`, `usage_state_root`, `resolved_location`, the `UsageLog` start/finish/save functions, and the authoring entry points. I found no unmarked code that implements part of it. The authoring.md citation is documentation only.\n\n**Tests**\n- tests/configuration.rs `locations_use_absolute_xdg_values_and_platform_fallbacks` covers:\n  - a valid `XDG_STATE_HOME`;\n  - the empty and relative fallbacks to `HOME`;\n  - the Windows `LOCALAPPDATA` path;\n  - errors when `HOME` or `LOCALAPPDATA` is missing.\n- tests/authoring_cli.rs `undeterminable_unwritable_or_project_state_fails_before_a_model_request` covers, for both single and `--all` runs:\n  - no `XDG_STATE_HOME` or `HOME`;\n  - a state root that is a file, so it cannot be created;\n  - a state root inside the project.\n  \n  Each case fails with the expected message, no model request is made, no success is claimed, and evidence is unchanged.\n- `state_reaching_the_project_through_a_symlink_is_refused` covers symlink aliases into the project, including a not-yet-created tail.\n- `usage_write_failures_are_reported_without_claiming_recorded_history` makes the usage files read-only after the request. It checks that the run fails with \"cannot record\" and prints no \"Usage:\" line.\n- tests/authoring_cli.rs `usage_record_identifies_its_run_and_unusable_state_is_reported` checks the record is created and persisted under `<state>/habeas/authoring/usage`.\n\nThe Windows branch is exercised only through the injected-lookup unit test, not an end-to-end run. That is reasonable for a platform-specific path.",
-  "references": "85db551d4aec9344172a00d7c6b6abde2d42cfc73605765c8d169d81acbbe2b5",
+  "rationale": "**Verdict:** the sources satisfy `requirements.configuration.state_location`. I found no unmarked implementation and no unspecified behaviour.\n\n**Implementation**\n- `src/config.rs`, `state_root_from` (via `state_root`, `ConfigPlatform::current`, `absolute_directory` and `required_directory`):\n  - On Unix it uses `$XDG_STATE_HOME/habeas` when that variable is an absolute, nonempty path. `absolute_directory` rejects empty and relative values.\n  - Otherwise it uses `$HOME/.local/state/habeas`. `HOME` must itself be absolute and nonempty, or `required_directory` returns a `NotFound` error naming the variable.\n  - On Windows it uses `%LOCALAPPDATA%/habeas/state`, with the same absolute and nonempty rule.\n- Named subdirectory under the state root: the authoring feature uses `authoring/usage` (`UsageLog::start` in `src/authoring/usage.rs`). Nothing else in `src` uses a state root or a cache directory, and no state goes into the configuration file.\n- Not in the repository: `usage_state_root` in `src/authoring/mod.rs` resolves symlinks through the nearest existing ancestor (`resolved_location`). It refuses any state location inside the canonical project root, before creating any directory.\n- Directory creation: `usage_state_root` and `UsageLog::start` call `create_dir_all`. Errors are wrapped with the path.\n- Failure reporting, without claiming history was recorded:\n  - A state location that cannot be determined, created or written fails the operation before any model request.\n  - `UsageLog::finish` and `save` failures are reported as \"cannot record usage at …\" in `author_evidence_with_output`, `persisted`, `failed` and `prepare_assessment`. These messages include \"evidence written: …\" and never present the usage as recorded.\n- Persistence across invocations: each run writes a durable JSON file named by run id.\n- Documentation of locations and formats: `md/reference.md` documents the Unix and Windows locations. The record format is documented in `requirements.authoring.usage_storage`.\n- The {impl} markers are on every function that resolves, creates or writes the state location.\n\n**Tests**\n- `tests/configuration.rs::locations_use_absolute_xdg_values_and_platform_fallbacks`:\n  - Absolute XDG value.\n  - Empty and relative XDG values fall back to `HOME`.\n  - Windows `LOCALAPPDATA`.\n  - Missing variables produce an error.\n- `tests/configuration.rs::base_directories_must_be_absolute_and_nonempty`:\n  - Empty and relative `HOME` and `LOCALAPPDATA` are rejected, with the variable named in the error.\n  - A relative XDG value falls back to an absolute `HOME`.\n- `tests/authoring_cli.rs::undeterminable_unwritable_or_project_state_fails_before_a_model_request`:\n  - Undeterminable location.\n  - State blocked by a file, so directory creation fails.\n  - State inside the project.\n  - Each case runs for single and `--all` authoring and asserts a nonzero exit, a diagnostic, no \"Usage:\" or \"authored\" success output, no model request, and no evidence change.\n- `state_reaching_the_project_through_a_symlink_is_refused`: a symlinked state root, and one reached through a symlinked ancestor with not-yet-created components, are both refused. Nothing is created in the project.\n- `usage_write_failures_are_reported_without_claiming_recorded_history`: usage files made read-only mid-run give a failure containing \"cannot record\" and no \"Usage:\" line, for single and batch runs.\n- The Windows path is checked only through the platform-parameterised function, which is reasonable. Cross-invocation persistence is covered by the existing usage_storage tests, which read the stored record.\n\nThe tests cover the design space: both platforms, the fallback conditions, and the determine, create, write and in-project failure modes.",
+  "references": "0de96637500a4eae052a7bccbabdcab113e38d2ae56e5fc2c925371cf649f861",
   "inputs": [
     {
       "requirements": "requirements.configuration.state_location",
@@ -14,7 +14,8 @@
         "Habeas MUST store persistent per-user activity state under",
         "`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,",
         "otherwise under `$HOME/.local/state/habeas`. On Windows it MUST use",
-        "`%LOCALAPPDATA%/habeas/state`. Features MUST use a named subdirectory under that",
+        "`%LOCALAPPDATA%/habeas/state`. `HOME` and `LOCALAPPDATA` MUST likewise be",
+        "absolute, nonempty paths to be used. Features MUST use a named subdirectory under that",
         "state root and document their record formats and locations.",
         "",
         "State MUST persist across invocations and MUST NOT be stored in the project",
@@ -121,6 +122,16 @@
       "hash": "d74719353ea80d5e405a2afc88374e109d7bd64a0b8b768da97dcf6e6a3573d6"
     },
     {
+      "file": "tests/configuration.rs",
+      "item": "fn[base_directories_must_be_absolute_and_nonempty]",
+      "hash": "d39c832e45087b364c39229e2def514e750e168eab7df427f9fe2cf94a46dc8f"
+    },
+    {
+      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
+      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.user_location`%20and%20`requirements.configuration.state_location`%20—%20absolute%20base%20directories]",
+      "hash": "2a060597a0fac36d219e83ac86f6d9b1f7dc61e4c91e7cd1e421dcfc7e9f28ed"
+    },
+    {
       "file": "md/reference.md",
       "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
       "hash": "7831c5c754d1d5c4e9c4caab0d56d16c899fdc67761e9e775651a18e347274a3"
@@ -128,7 +139,7 @@
     {
       "file": "md/requirements/configuration.md",
       "item": "section[Configuration]/section[Locations%20and%20scope]/section[Persistent%20state]",
-      "hash": "4278eeff75b687315a55d004bbcbc1bab2149bb6bbc6306e2db3f73ccf3da2d8"
+      "hash": "426ff32d7d5ac17a4849b769e6a1187aeb2f4515eafe85e42a3a1d7a39894458"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -171,9 +182,24 @@
       "hash": "e37156e8469099a62c4c1207226306e2fcc0c1361ea09c634c39c96e5e35e181"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Configuration]/section[Editing%20the%20file]",
-      "hash": "702f3db87784310e1a6b39c7cfd673cf8d2125bf467bb999448e1c111905fd28"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]/fn[from_usage]",
+      "hash": "944822d33bc2724d78e3e264225baa12f1eadc8f7e19412f98bff33e1a710481"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]/fn[sum]",
+      "hash": "8453341618c4bba571b16e2163dfea6c32a735b591b805b4137d9dace78cb034"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]",
+      "hash": "effa7e378d3894b50e1d7961873579a030801077ba1d1e500d6d0c2d768b3b9d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]",
+      "hash": "ca4c66b03ccee76bdf4e29484650d1f71de21c2c45eac7b944a537aaddd2a39c"
     },
     {
       "file": "md/requirements/authoring.md",
