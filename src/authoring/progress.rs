@@ -7,7 +7,7 @@ use super::AuthoringOutcome;
 use crate::evidence::InspectionProgress;
 use crate::judgment::Judgment;
 
-// {cite}`requirements.authoring.progress`
+// {impl}`requirements.authoring.progress`
 pub(super) struct BatchProgress {
     bar: Option<ProgressBar>,
     inspection_stage: Option<(&'static str, bool)>,

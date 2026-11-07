@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 /// A requirement or example assessment, independent of source freshness.
-// {cite}`requirements.ci.outcomes`
+// {impl}`requirements.ci.outcomes`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Judgment {
     True,

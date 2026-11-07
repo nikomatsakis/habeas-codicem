@@ -132,7 +132,7 @@ pub(crate) struct RepositoryInspection {
 }
 
 /// Progress within one inspection phase; discovery has no known total.
-// {cite}`requirements.authoring.progress`
+// {impl}`requirements.authoring.progress`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InspectionProgress {
     pub(crate) stage: &'static str,

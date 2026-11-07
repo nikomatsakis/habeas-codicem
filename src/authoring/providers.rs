@@ -14,7 +14,7 @@ pub(super) trait CompletionProvider {
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
 }
 
-// {cite}`requirements.authoring.provider_backoff`
+// {impl}`requirements.authoring.provider_backoff`
 pub(super) struct ProviderBackoff {
     window: Duration,
 }

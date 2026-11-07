@@ -45,15 +45,15 @@ fn has(errors: &[String], needle: &str) -> bool {
 fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     let temp = project();
     let root = temp.path();
-    let cite = role("cite");
+    let cr = role("cite");
     let source = format!(
-        "// :::{cite} habeas:none\n// Glue that formats output.\n// :::\nfn glue() {{}}\n\n\
-         // {cite}`habeas:none`\nfn inline() {{}}\n\n\
-         // :::{cite} habeas:none\n// {cite}`rules.ready`\n// :::\nfn empty() {{}}\n\n\
-         // :::{impl} habeas:none\n// Wrong role.\n// :::\nfn wrong_role() {{}}\n\n\
-         // :::{cite} habeas:other\n// Unknown.\n// :::\nfn unknown() {{}}\n\n\
-         // :::{cite} rules.ready\n// never closed\n\n// :::\nfn unclosed() {{}}\n",
-        impl = role("impl"),
+        "// :::{cr} habeas:none\n// Glue that formats output.\n// :::\nfn glue() {{}}\n\n\
+         // {cr}`habeas:none`\nfn inline() {{}}\n\n\
+         // :::{cr} habeas:none\n// {cr}`rules.ready`\n// :::\nfn empty() {{}}\n\n\
+         // :::{im} habeas:none\n// Wrong role.\n// :::\nfn wrong_role() {{}}\n\n\
+         // :::{cr} habeas:other\n// Unknown.\n// :::\nfn unknown() {{}}\n\n\
+         // :::{cr} rules.ready\n// never closed\n\n// :::\nfn unclosed() {{}}\n",
+        im = role("impl"),
     );
     fs::write(root.join("src/lib.rs"), source).unwrap();
     let errors = errors(root);
@@ -61,14 +61,15 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
         "src/lib.rs:6: built-in habeas:none must be cited in fenced form",
         "src/lib.rs:9: fenced citation of built-in habeas:none has an empty justification",
         "src/lib.rs:14: built-in habeas:none may only be referenced with {cite}",
-        "src/lib.rs:19: {cite}`habeas:other` has no matching built-in definition",
+        "src/lib.rs:19: CITE`habeas:other` has no matching built-in definition",
         "src/lib.rs:24: fenced {cite} reference to rules.ready has no closing fence",
         "src/lib.rs:7: function inline has no requirement or example citation",
         "src/lib.rs:17: function wrong_role has no requirement or example citation",
         "src/lib.rs:22: function unknown has no requirement or example citation",
         "src/lib.rs:28: function unclosed has no requirement or example citation",
     ] {
-        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
+        let expected = expected.replace("CITE", &cr);
+        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
     }
     // A justified fenced citation of habeas:none covers its function, as
     // does an inline reference in a fence body.
@@ -179,22 +180,18 @@ fn review(root: &Path, citations: Value, determination: Value) -> Value {
 fn citation_reviews_are_required_current_and_not_orphaned() {
     let temp = project();
     let root = temp.path();
-    let cite = role("cite");
+    let cr = role("cite");
     let helper = |body: &str| {
         format!(
-            "// {cite}`rules.ready`\n// :::{cite} habeas:none\n// {body}\n// :::\nfn helper() {{\n    work();\n}}\n"
+            "// {cr}`rules.ready`\n// :::{cr} habeas:none\n// {body}\n// :::\nfn helper() {{\n    work();\n}}\n"
         )
     };
     fs::write(root.join("src/lib.rs"), helper("Formats output.")).unwrap();
-    fs::write(
-        root.join("notes.txt"),
-        format!("See {cite}`rules.ready`.\n"),
-    )
-    .unwrap();
+    fs::write(root.join("notes.txt"), format!("See {cr}`rules.ready`.\n")).unwrap();
     // Citations in the book are reviewed with their declaration instead.
     fs::write(
         root.join("md/guide.md"),
-        format!("# Guide\n\nSee {cite}`rules.ready`.\n"),
+        format!("# Guide\n\nSee {cr}`rules.ready`.\n"),
     )
     .unwrap();
     let path = "evidence/citations/src/lib.rs/fn[helper].json";
@@ -321,12 +318,10 @@ fn citation_reviews_are_required_current_and_not_orphaned() {
 fn review_paths_encode_selectors() {
     let temp = project();
     let root = temp.path();
-    let cite = role("cite");
+    let cr = role("cite");
     fs::write(
         root.join("src/lib.rs"),
-        format!(
-            "struct Thing;\nimpl Thing {{\n    // {cite}`rules.ready`\n    fn run() {{}}\n}}\n"
-        ),
+        format!("struct Thing;\nimpl Thing {{\n    // {cr}`rules.ready`\n    fn run() {{}}\n}}\n"),
     )
     .unwrap();
     let errors = errors(root);

@@ -30,7 +30,7 @@ use usage::UsageLog;
 // {impl}`requirements.authoring.provider_backoff`
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-// {cite}`requirements.authoring.invocation`
+// {impl}`requirements.authoring.invocation`
 pub struct AuthoringOutcome {
     pub subject: String,
     pub backend: String,
@@ -41,8 +41,8 @@ pub struct AuthoringOutcome {
     pub rationale: String,
 }
 
-// {cite}`requirements.authoring.reporting`
-// {cite}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.reporting`
+// {impl}`requirements.authoring.confirmation`
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuthoringOptions {
     pub verbose: bool,
@@ -51,7 +51,7 @@ pub struct AuthoringOptions {
 }
 
 // {cite}`requirements.authoring.invocation`
-// {cite}`requirements.references.citation_review`
+// {impl}`requirements.references.citation_review`
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
@@ -163,7 +163,7 @@ impl PendingAssessment {
     }
 }
 
-// {cite}`requirements.authoring.invocation`
+// {impl}`requirements.authoring.invocation`
 #[derive(Clone, Copy)]
 pub enum EvidenceOutput {
     File,
@@ -199,8 +199,8 @@ pub async fn author_evidence_with_output(
     .await
 }
 
-/// Assesses one subject, optionally confirming its result under
-/// {cite}`requirements.authoring.confirmation`.
+/// Assesses one subject, optionally confirming its result with further
+/// independent conversations.
 // {impl}`requirements.authoring.invocation`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`

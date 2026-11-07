@@ -123,7 +123,8 @@ pub(crate) struct Definition {
     pub(crate) kind: DefinitionKind,
 }
 
-// {cite}`requirements.references.targets`
+// {impl}`requirements.references.targets`
+// {impl}`requirements.definitions.references`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceKind {
     Impl,
@@ -157,7 +158,7 @@ impl ReferenceKind {
     }
 }
 
-// {cite}`requirements.references.targets`
+// {impl}`requirements.references.targets`
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
     end: usize,

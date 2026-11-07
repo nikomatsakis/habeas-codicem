@@ -146,6 +146,9 @@ impl UsageLog {
                 "outline"
             } else if input.get("requirements").is_some() {
                 "requirements"
+            } else if input.get("builtin").is_some() {
+                // A built-in's fixed text, supplied but not recorded as evidence.
+                "builtin"
             } else {
                 "definition"
             };

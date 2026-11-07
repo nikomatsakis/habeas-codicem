@@ -6,7 +6,8 @@ use std::process::Command;
 
 use super::inputs::generated_evidence_path;
 
-// {cite}`requirements.configuration.evidence_paths`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.credentials`
 #[derive(Default)]
 pub(crate) struct PathPolicy {
     allow: Vec<PathBuf>,
@@ -85,7 +86,8 @@ impl PathPolicy {
     }
 }
 
-// {cite}`requirements.authoring.source_tools`
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.authoring.generated_inputs`
 pub(crate) struct SourceAccess {
     tracked: Option<BTreeSet<PathBuf>>,
     policy: PathPolicy,

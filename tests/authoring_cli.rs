@@ -838,7 +838,11 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
                 .find(step)
                 .unwrap_or_else(|| panic!("{name}: {step} out of order"));
         }
-        for grouping in ["internal.config_parsing", "catch-all", "internal-detail requirement"] {
+        for grouping in [
+            "internal.config_parsing",
+            "catch-all",
+            "internal-detail requirement",
+        ] {
             assert!(!text.contains(grouping), "{name} suggests {grouping:?}");
         }
         for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
@@ -870,7 +874,10 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
                 .find(phrase)
                 .unwrap_or_else(|| panic!("{name} lacks {phrase:?} after the goal"));
         }
-        assert!(text.contains("Review substantive requirement changes with the user"), "{name}");
+        assert!(
+            text.contains("Review substantive requirement changes with the user"),
+            "{name}"
+        );
     }
 }
 
