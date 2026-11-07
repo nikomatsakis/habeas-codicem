@@ -1,7 +1,7 @@
 {
   "requirement": "An operation MUST load user configuration only when its requirements call for\nuser settings. A missing user file MUST represent absent user configuration;\nwhether the operation can proceed MUST be defined by the feature. Loading MUST\nNOT create a file, repair malformed input, or supply an undocumented selection.\n\nWhen loading configuration, Habeas MUST report unreadable files, invalid TOML,\nunsupported user-file versions, unknown common keys, and invalid common field\ntypes. It MUST validate the feature sections used by that operation and report\ninvalid feature settings with the file and setting identified. Unknown keys in\nan explicitly documented provider-owned options map MUST follow that feature's\nvalidation rules.\n\nAn operation MUST NOT require or semantically validate configuration for a\nfeature it does not use. This isolation MUST NOT suppress TOML syntax errors in\na shared file that the operation otherwise needs to parse. In particular,\nordinary validation still requires a parseable `book.toml` while remaining\nindependent of authoring settings and the user configuration file. It MUST apply\nthe selected workspace's evidence path policy without loading its model clients\nor credentials.",
   "determination": true,
-  "rationale": "## Verdict\n\nThe sources satisfy `requirements.configuration.loading`. Each obligation is implemented by marked code and exercised by tests. The one thing I'd tidy is a missing `{test}` tag, described under Testing.\n\n## Implementation\n\n**User file**\n- `load_user_config` (src/config.rs:676) returns `Ok(None)` when the file is `NotFound`, so a missing file means absent configuration. It never creates the file.\n- Any other read error is reported with the path.\n- `UserConfig::parse` and `UserConfig::validate` (src/config.rs:253, 275) handle the rest. `parse_document` reports TOML syntax errors with line and column.\n- `decode` and `decoded_setting` report unknown keys and wrong types through `#[serde(deny_unknown_fields)]`, naming the setting and redacting secrets.\n- `validate` rejects `version != 1`.\n- The authoring section is checked by `UserAuthoringConfig::validate` and `BackendConfig::validate`. Those checks cover names, model IDs, `api_key_env`, credential conflicts, canonical project paths, and reserved or non-finite keys in the provider-owned `options` map. Every error goes through `invalid(path, setting, …)`, so it names both the file and the setting.\n- The feature is the one that decides whether it can proceed. `resolve_authoring*` errors with \"no authoring configuration / no configuration selected\" when none is found.\n\n**Workspace file**\n- `workspace_document` reads and parses the nearest `habeas.toml`, then runs `validate_workspace_common`. That checks the version and the unknown top-level keys, which are the common parts of a shared file, so TOML syntax errors are never suppressed.\n- `load_workspace_evidence` decodes and validates only `[evidence]`. It only detects whether credentials are present and never decodes the authoring section, so a workspace without authoring use never needs authoring semantics or credentials.\n- `load_workspace_config` and `resolve_authoring` do full validation, and only authoring operations call them.\n\n**Per-operation isolation**\n- `main` (src/main.rs:111) preloads only the evidence policy, and only for commands that resolve evidence inputs.\n- `status`, `info`, `setup`, `hook`, and `mdbook supports` skip that preload.\n- `PathPolicy::load` and `resolve_evidence_file` (src/authoring/access.rs) apply the evidence path policy via `load_workspace_evidence`, with no model clients or credentials.\n- `author_all_with_options` returns early with no config load when there is nothing to author, so an invalid or absent user file is ignored then.\n- `configured_assessment` loads the configuration only when an assessment actually runs.\n\n**Validation and `book.toml`**\n- `inspect_repository_with_progress` records an invalid workspace file as one finding and continues.\n- `book_source_dir` requires a parseable `book.toml`, reports a malformed one as a finding, and falls back to `md` so the remaining checks still run.\n- Validation never touches the user file.\n\n**Marking**\n- The `{impl}` markers cover the loaders, parsers, validators, error formatting, and callers.\n- Authoring-specific helpers (`validate_name`, `OptionValue::validate`, `credential_values`) carry the markers of the authoring storage and credentials requirements. They are only reached through the marked validators, so this is not a marking gap.\n- I found no behavior in the `{impl}` code that this requirement or another cited definition doesn't specify.\n\n## Testing\n\n- **Absent versus minimal file, no creation or rewrite, `book.toml` `[habeas]` handling:** `absent_and_minimal_configuration_are_distinct_and_read_only`.\n- **Version, type, unknown key, and feature-value failures, each naming the file and setting:**\n  - `invalid_schema_and_feature_values_report_the_configuration_path`\n  - `storage_rules_reject_each_invalid_field_with_its_setting`, which covers provider `options` including reserved keys and NaN\n  - `workspace_diagnostics_identify_the_file_and_setting`\n- **Unreadable files (directory in place of a file, non-UTF-8), and no file created when absent:** `unreadable_configuration_files_are_reported_instead_of_skipped`.\n- **Evidence loading ignoring invalid or unused authoring settings, while still rejecting a bad version, unknown key, or bad `[evidence]`:**\n  - `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials`\n  - `validation_checks_workspace_common_config_without_loading_unused_authoring_settings`\n- **Commands that don't need evidence ignore an invalid workspace file, while evidence-resolving commands report it:** `commands_without_evidence_inputs_ignore_an_invalid_workspace_file` and `status_loads_nearest_workspace_file_without_validating_authoring`.\n- **Ordinary status ignores an invalid user file and creates no state:** `ordinary_status_ignores_invalid_user_authoring_configuration`.\n- **No-op `author --all` succeeds with invalid or absent user configuration:** `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`.\n- **Credentials redacted in errors:** `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`.\n\n**Minor tagging gap:** the malformed `book.toml` behavior is asserted in `configuration_and_dependency_failures_do_not_stop_later_checks` (src/evidence.rs) and in the `setup` tests, which assert \"book.toml: invalid TOML\" and similar. Those tests aren't tagged `{test}` for this requirement. The behavior is covered, so I don't count this as a gap.\n\nNo unacknowledged gaps and no FIXMEs.",
+  "rationale": "**Judgment:** `requirements.configuration.loading` is satisfied. The implementation covers each obligation and the tests cover the main boundaries and failure cases. Two small caveats are listed at the end; I don't think either is a gap.\n\n## Implementation\n\n**Loading only when called for**\n- Only `resolve_authoring` (src/config.rs) reads the user file, via `user_config_path` and `load_user_config`. It runs only for authoring, from `configured_assessment` (src/authoring/mod.rs) and `author_all_with_options` (src/authoring/batch.rs).\n- `author_all_with_options` calls it only after it knows there are subjects to author. A fully current batch therefore never touches the user file.\n- `main` (src/main.rs) loads just the evidence section of `habeas.toml`, through `load_workspace_evidence`, and only for commands that resolve evidence inputs. `setup`, `hook`, `mdbook supports`, `status` and `info` skip it. `status` and `info` instead record an invalid workspace file as one validation finding, in `inspect_repository_with_progress` (src/evidence.rs), and still run the other checks.\n\n**Missing, read-only, no repair**\n- `load_user_config` maps `NotFound` to `Ok(None)`. The \"no authoring configuration\" and \"no configuration selected\" errors come from the authoring feature in `resolve_authoring_with_workspace_from`, so the feature decides whether it can proceed.\n- Nothing in the loaders writes or repairs. Selection follows the documented explicit → project → workspace default → user default order, with no hidden default.\n\n**Reported errors**\n- Unreadable files: both `load_user_config` and `workspace_document` wrap read errors with the file path. `workspace_document` uses `symlink_metadata`, so an unreadable `habeas.toml` is reported rather than skipped.\n- Invalid TOML: `parse_document` reports the file plus line and column.\n- Unsupported versions and unknown common keys: `UserConfig::validate` and `validate_workspace_common` check these.\n- Invalid field types: `decode` reports them with the file and setting. `decoded_setting` also adds the unknown-field name to the setting, and secrets are redacted.\n- Invalid feature settings: `UserAuthoringConfig::validate`, `BackendConfig::validate` and `EvidenceConfig::validate` produce errors that name the file and setting via `invalid`.\n- Provider-owned `options` maps: `BackendConfig::validate` applies the feature's own rules. Reserved keys and non-finite values are rejected, and other keys are accepted.\n\n**Isolation**\n- `load_workspace_evidence` runs the common checks (version, unknown top-level keys, TOML syntax) but decodes only `[evidence]`. Authoring configs are inspected only to detect whether credentials are present, so unused authoring settings are neither required nor validated.\n- `PathPolicy::load` and `resolve_evidence_file` (src/authoring/access.rs) apply the evidence path policy through that loader. No model clients or credentials are loaded.\n- `book_source_dir` (src/evidence.rs) reports unreadable or unparseable `book.toml` and other invalid `book.toml` settings. It is independent of `habeas.toml` authoring settings and of the user file.\n\n## Tests\n\n- **Absent and read-only:** `absent_and_minimal_configuration_are_distinct_and_read_only` (missing user file gives `None`, no file created, existing file unchanged) and the empty-directory checks in `unreadable_configuration_files_are_reported_instead_of_skipped`.\n- **Unreadable files:** `unreadable_configuration_files_are_reported_instead_of_skipped` (directory in place of a file, invalid UTF-8).\n- **Common-key errors:**\n  - `invalid_schema_and_feature_values_report_the_configuration_path` and `workspace_diagnostics_identify_the_file_and_setting` cover version, unknown key, wrong types and TOML syntax errors with line and column.\n  - `storage_rules_reject_each_invalid_field_with_its_setting` covers names, project paths, `api_key_env`, non-finite floats and reserved option keys, each with its setting.\n- **Credentials:** `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` checks that errors name the file and do not leak secrets.\n- **Isolation:**\n  - `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` checks that unused authoring settings are ignored while syntax and common errors still surface.\n  - `commands_without_evidence_inputs_ignore_an_invalid_workspace_file` checks the commands that do not need the workspace file.\n  - `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` checks validation against the workspace file.\n  - `status_loads_nearest_workspace_file_without_validating_authoring` checks `status`.\n  - `ordinary_status_ignores_invalid_user_authoring_configuration` checks that `status` ignores a broken user file.\n  - The `author --all` no-op in `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` runs with an invalid and then a missing user file and still succeeds.\n- **`book.toml` and workspace discovery:** `book_source_defaults_only_when_absent_and_reports_invalid_configuration` and the `book.toml` case in `configuration_and_dependency_failures_do_not_stop_later_checks` (both in src/evidence.rs) cover the `book.toml` parse requirement. They cite other requirements (`ci.book_source`, `ci.errors`) rather than this one. `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers nearest-file discovery and leaving the file unrewritten.\n\n## Caveats\n- `SourceAccess::load` and `check_project_file` are thin wrappers around `PathPolicy::load` and `resolve_evidence_file`. They cite `evidence_paths` but not `loading`. They add no loading behaviour, so I do not count this as a gap.\n- The `book.toml` parseability tests cite other requirements rather than this one. Their coverage is real, so I do not count this as a gap either.",
   "references": "18acef0d986e172dad2a8121eb997672f868e597e5814b14e914492321497586",
   "inputs": [
     {
@@ -244,239 +244,29 @@
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "item": "impl[Fixture]/fn[new]",
-      "hash": "2abd61bf181092cf6b92510567cd78b74e382e59f42483dfa9ac64be0690abd4"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "impl[Fixture]/fn[new]",
-      "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[fixture]",
-      "hash": "df56baa38c6ac539bdbed7f2173606a08210d5feb6e286be26cb612265eacdba"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[fixme_fixture]",
-      "hash": "7ca18f3011c16cc7eb24a24b73ef26f61f10c2d71e861998687519974b83a339"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[commands_report_invalid_arguments_and_unmatched_selectors]",
-      "hash": "d3e5ef37c8bcb051fba22c0908323dcc2b280d531c816faf752615a2b1349afc"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
-      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
-      "hash": "80ca3b46648359ab84fccedb9c2ef70e7e0cd4b7f8df90810a93e7d1aa577fde"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[definition_glob_lists_a_requirement_and_an_example_in_info_and_status]",
-      "hash": "25c2ca7929faa0157d323d4c6d891fc340bdab557d82c2c93d9405412ceb1c89"
-    },
-    {
-      "file": "tests/commands.rs",
-      "item": "fn[add_input_item_selects_nodes_by_name_line_across_languages]",
-      "hash": "e180e845e25aceb36f82f36ddf60b93b4282ee45e98e1e68c912f8c81d2f3b22"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[fixture]",
-      "hash": "cf3a1ca69d526c80993146d2df62c3de65c2237e886a1e07f8e5dee78c0d7e46"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[fixture]",
-      "hash": "4a33bc170ebf4c2eac1c421a2427ca8d1acd72c8772476b61d2bf1a0f3c69949"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[live_bedrock_authoring]",
-      "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
-    },
-    {
-      "file": "tests/outcomes.rs",
-      "item": "fn[fixture]",
-      "hash": "9126c5ef449db339cb7032a660385f33f6f1ba29a49775015de69022683b8ec2"
-    },
-    {
-      "file": "tests/references.rs",
-      "item": "fn[project]",
-      "hash": "b5e1e570cb5e35f389f29288c51ff95572d9df541d544f5c0c892306e78e709b"
-    },
-    {
-      "file": "tests/repository.rs",
-      "item": "fn[mdbook_preprocessor_renders_definitions_between_stdin_and_stdout]",
-      "hash": "7a806bedaded2dcad1869a90a19d13f9162033d28cb07b2e52704545c7d16f3e"
-    },
-    {
-      "file": "tests/repository.rs",
-      "item": "fn[project_book_uses_the_repository_local_preprocessor_alias]",
-      "hash": "51799214d5608f2b8309358e0696fa0243dfc491ea05fa8dded5a319d6c9c8ec"
-    },
-    {
-      "file": "tests/repository.rs",
-      "item": "fn[book_links_to_the_repository_and_main_branch_edit_pages]",
-      "hash": "afdafec26468096817966df5b29e2e604fdacf4ec37ac096722b264e1bce1f20"
-    },
-    {
-      "file": "tests/repository.rs",
-      "item": "fn[ci_tests_pull_requests_and_main_then_deploys_the_book_from_main]",
-      "hash": "2c30892ea0cb2a91b2dcbf7d00f3820db27b4e6f6bfcde3dd9fedbb7a71d6022"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[fixture]",
-      "hash": "ff89973c8bee57423f224e1ae2fe044a693a759c5a3d907555ee0445ded2a621"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[setup_is_repeatable]",
-      "hash": "30a39e682c0610b494ff35376499b4be11ce769333c8f3bebdbb82b06e232bab"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[setup_keeps_an_existing_fold_setting]",
-      "hash": "b94065b970e3eec78d731a32088f5542408d6182d18d01aafa2f01aef26a05d7"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[setup_uses_src_when_book_table_or_source_setting_is_absent]",
-      "hash": "bf0b524c6a45c6fa1d24e36d8a59c9b7460cf93600db4640e70ef609f8c818cd"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[setup_rejects_invalid_book_configuration]",
-      "hash": "6465be129e1b8b7926fb10e711a6bd4ec21351e132c4976311311c28fb255481"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[session_start_advises_only_when_setup_is_incomplete]",
-      "hash": "c6179f13893c158ba3ee2b8f3b47f1f5c6c6d6e0113ddb8ed3e13474293b4af2"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[setup_does_not_overwrite_a_differing_test_or_stylesheet]",
-      "hash": "63d94d003ba5c65a6a71dee87b976992c35b187039ce6a624838281279f6804a"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[setup_finds_the_nearest_cargo_and_mdbook_ancestor]",
-      "hash": "cb2306934eb761c635ddcfb354076b085ae5503a971ce55cebf4e5ace10e1349"
-    },
-    {
-      "file": "tests/symposium_hook_smoke.py",
-      "item": "def[main]",
-      "hash": "e225275a81a6d0a67573ef7addd83be5cc6b4615e29795ac5b0991d053484943"
-    },
-    {
-      "file": "tests/validate.rs",
-      "item": "fn[validate_fails_the_test_with_every_error_and_authoring_instructions]",
-      "hash": "42454a4eea9e36854bc30920cc1a77ee03f089d2a038499b77940d80c4b0a38c"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[check_disallow]",
-      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "ef98601c16475681510bfef02215408a4462718be27f28c44e7cd7623573b6ef"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+      "file": "src/authoring/batch.rs",
+      "item": "mod[tests]/fn[selection_counts_definitions_and_citation_reviews_in_one_phase]",
+      "hash": "d46682419e826c3e3e148cb1243162ae1a64d418786bbf260dd69a20861eb049"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
-      "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
+      "item": "mod[tests]/fn[project]",
+      "hash": "fe2cd844de1cb0683bc9efd3c89dbc2d56b8880a80f3235a5dbb4b36ce6c5c80"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[citation_review_inputs_combine_item_declarations_terms_and_built_ins_once]",
-      "hash": "7e76d21e1bb882377df47473d9711573efb30a24787c42b38c6ed4419982e291"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
-      "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed]",
-      "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
+      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
+      "hash": "0d6245d261f2b03e2d0351841f9ef0ee73ccc4fd469696391e072151e9a663ed"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "aa14a49b4870c3defa4253018d1624300934052ebdef5d5a9199570c18a0a7b8"
+      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
+      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[untracked_diagnostics_name_git_add_and_an_allow_rule]",
-      "hash": "2676befc3221e3f4f737d578b1d19399bc5cff7888c411be92d8627359b73e0e"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
-      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
-      "hash": "204a1e1b56a975bbf449d5e38f893f680bc0563c1b4ffcd65c9544c0461b1eff"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "7c91da83f7607a87fcd5eb61ba7c80008806f4052d704d4616e891001bd70e43"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
-      "hash": "bd29c2fa110ed2c54197782e38fb1b9cf3db78f2a5e482aa35f907939882ae45"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
-      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
-      "hash": "e790b3d7c7430f6b8465159541f7048ff733c4872f04b86eca9dbb17f2cfee8e"
+      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
+      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
     },
     {
       "file": "src/config.rs",
@@ -490,143 +280,123 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[fixture]",
+      "hash": "61c07880cbe6294572e0fbb36f305866e58a558759bd71f7cf2d238fb4c10f56"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_reports_empty_phases_as_complete]",
+      "hash": "10d63b76697957faa836f8d6501073fa404715525ab950e7594a2440aa7c33f6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[book_source_defaults_only_when_absent_and_reports_invalid_configuration]",
+      "hash": "94b9c215d71325dd5702a2b7b12b1f360af99f2fd60aca395af6187990c7b118"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
     },
     {
-      "file": "src/config.rs",
-      "item": "use@c9e3c72379f8",
-      "hash": "c9e3c72379f81ea0f115bd0a5735f2a607954a989f437a3ec0c05b7d403cc073"
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]/fn[populate]",
+      "hash": "bea2cf30b818cd531bb4b522ec60e216bade0ae39472b104a99df7db21df787b"
     },
     {
-      "file": "src/config.rs",
-      "item": "const[CONFIG_EXAMPLES]",
-      "hash": "70edbe2f510dc5a1da83b1fec874e591b17eb05fcf31db49e6f3279d9fa74e20"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
+      "hash": "ce8b8ca782707df7e432b68042d6224595de1cfacffc8a47446ca3eb126200db"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[UserConfig]",
-      "hash": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
+      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[ProjectConfig]",
-      "hash": "487c2320263d6102d8c2df7c36cd39e87151d924b0897184bf6a5b5f30122729"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[common_input_extensions_select_highlighting_languages]",
+      "hash": "0aa970689b9c3680b597a49dd946891fa06fd1aaa03858e2d4b56731e5df98a7"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceConfig]",
-      "hash": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[findings_make_false_and_fixme_records_invalid]",
+      "hash": "4b36a11e4def531d3cdc3ae79164eabfaf3109619aee0c45a90f94c7f1e1057d"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceAuthoringConfig]",
-      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_and_detail_pages_show_each_example_evidence_state]",
+      "hash": "1e536dc2d81a9b43f74a69aae0df5341769ce812b1f99abca9621392d049c4c6"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[EvidenceConfig]",
-      "hash": "f25be8caf3c4f515b3a60e2b3262d173de9c5fb20e2d19f892470c9b18bc0902"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
+      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[LoadedWorkspaceConfig]",
-      "hash": "4b8838291dc0d39b581ee5dfc82764501ab9e0f8357cc1a89d4fde699d081959"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
+      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]",
-      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
+      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[BedrockCredentials]",
-      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+      "file": "src/lib.rs",
+      "item": "fn[validate]",
+      "hash": "650422c1e693574d5cdc7e44922f551e17eb4279fa1ac35aab4f8ef59911d806"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[UserAuthoringConfig]",
-      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[book_root]",
+      "hash": "d3f3bc4ab6a8cf07d968b7b0ee95b6a64ebded467e9f792221b1b3fa6038a5ea"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[ProjectSelection]",
-      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+      "file": "src/setup.rs",
+      "item": "fn[find_project_root]",
+      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[AuthoringConfig]",
-      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
+      "file": "src/setup.rs",
+      "item": "fn[project_root]",
+      "hash": "c0707987d208670061b30eb531a4c5a6640c2f948a3a1ea81dceca0fecc42807"
     },
     {
-      "file": "src/config.rs",
-      "item": "enum[BackendConfig]",
-      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
+      "file": "src/setup.rs",
+      "item": "fn[run]",
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[BedrockConfig]",
-      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+      "file": "src/setup.rs",
+      "item": "fn[is_configured]",
+      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[OllamaConfig]",
-      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+      "file": "src/terms.rs",
+      "item": "mod[tests]/fn[term_dependencies_of_every_markdown_extension_skip_literal_roles]",
+      "hash": "c51b072ed1253c7ad11d986f565d9ac6da0bb9c68fc3ab02dc51273875d004e6"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[to_toml]",
-      "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[load]",
+      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[to_toml]",
-      "hash": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]",
-      "hash": "9d9a20fc5bf46f4dd4df1bd3ec079246bd73834ca09664e5b6037bd0fb73803f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ProjectConfig]",
-      "hash": "e9e434f684e79be2fd86de660957fc5b92c3e773253bf6266ca40588706112fa"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]",
-      "hash": "21ee902d70fce92016589b493f2d0d2bf808661d27dbe0d4aee1ffc3b4c41cda"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options_json]",
-      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OptionValue]",
-      "hash": "c8e9e2a02cc67e48500beff2121d34a375effa4fe0d8540dcba8229896cb514d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_name]",
-      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
     }
   ]
 }

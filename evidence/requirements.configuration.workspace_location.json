@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers every clause, it is marked with `{impl}`, and tests exercise the interesting cases.\n\n**Implementation**\n\nAll discovery goes through `workspace_document` (src/config.rs:749). `load_workspace_config`, `load_workspace_evidence` and `PathPolicy::load` call it. A search of `src` found no other code that locates `habeas.toml`.\n\n- **Nearest file, searched upward.** It iterates `start.ancestors()` and returns the first `habeas.toml` it finds.\n- **No merging.** It returns after the first match, so ancestor files are never read or merged.\n- **Start directory.** `start` is the canonicalized current directory when that lies inside the given root, and otherwise the root. This is the library-operation rule exactly.\n  - In the CLI, `main` passes the current directory as the root for the early evidence load.\n  - `status`, `info` and `author` pass the project root found by `setup::project_root`. The current-directory rule then moves the search to where the user invoked the command.\n- **Base for relative paths.** `LoadedWorkspaceConfig.root` and `WorkspaceEvidenceConfig.root` are the selected file's parent directory. `PathPolicy::load` joins the allow and disallow paths onto that directory. The Cargo and mdBook project root stays the `root` argument in `inspect_repository_with_progress` and in the authoring code, so the file's directory does not replace it.\n- **Missing file.** A `NotFound` result moves on to the parent directory. If no file is found, the result is `Ok(None)`, meaning absent workspace settings.\n- **Unreadable candidates.** A `symlink_metadata` error other than `NotFound` is returned with the path in the message. A read failure on an existing candidate, such as a directory named `habeas.toml`, is also returned with the path. Neither case falls through to an ancestor.\n- **No file creation.** The loaders only read. `inspect_repository_with_progress` records a load error as a validation finding, and `main` skips the early load for `status` and `info` for the same reason.\n\n**Marking.** The functions that implement location carry `{impl}`: `workspace_document`, both loaders, `LoadedWorkspaceConfig`, `PathPolicy::load`, the `main` startup check, and `inspect_repository*`. `resolve_authoring` only calls the loader, and it is marked for the related loading and structure requirements. I found no unmarked code implementing a part of this requirement, and no behavior beyond what it specifies.\n\n**Tests**\n\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (tests/configuration.rs:343):\n  - An ancestor file is found from a project root, so the search starts at the given root.\n  - The nearer file wins and nothing is merged: the outer `allow` is not inherited.\n  - `root` equals the selected file's directory.\n  - The file's contents are unchanged after loading.\n  - A malformed nearest file produces an error naming that path.\n  - With both files removed, the result is `None`.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (tests/configuration.rs:1054):\n  - A directory named `habeas.toml` shadows a valid ancestor file, and both loaders report its path.\n  - Loading in an empty directory returns `None` and creates no file.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (tests/commands.rs:199) and `authoring_uses_nearest_workspace_configuration_without_a_user_file` (tests/authoring_cli.rs:489):\n  - Both run the CLI from a nested directory inside the project and use the nearest file.\n  - The authoring test shows the nearest file is used alone: the parent file points at a missing authoring config, and the nested file's config is the one that runs.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (tests/evidence_boundaries.rs:479) covers the library validation path at the project root.\n\n**Minor observation.** No test directly checks that a nested workspace file's relative `allow` and `disallow` entries resolve against that file's directory. The `root` assertion and the simple `config.root.join(path)` in `PathPolicy::load` give reasonable confidence, so this is not a gap.",
+  "rationale": "**Verdict:** the sources satisfy `requirements.configuration.workspace_location`. The implementation covers every clause. The tests cover the main discovery, failure and no-creation cases. I did not run the tests.\n\n**Implementation**\n\nAll discovery goes through `workspace_document` (`src/config.rs` 749–780). It is the only code in `src` that locates `habeas.toml`; my search of `src` found no other discovery path. It is marked `{impl}`, as are its callers.\n\n- **Start directory.** It canonicalizes the given root and uses the current directory as the start if that directory is inside the root. Otherwise it starts at the root. This is the library-operation rule exactly.\n- **Nearest file, no merging.** It walks `start.ancestors()` and returns the first `habeas.toml` it finds. It never reads or combines an ancestor file.\n- **Missing file.** A `NotFound` result moves on to the parent directory. If nothing is found at all it returns `Ok(None)`, which means absent workspace settings.\n- **Unreadable candidate.** Any other metadata error, or any read or parse failure on a candidate, returns an error that names the path. This covers a directory named `habeas.toml`, bad permissions, and a dangling symlink. The walk never falls through to an ancestor in these cases.\n- **No creation.** The code only reads. Nothing writes or creates the file.\n- **Base for relative paths.** `load_workspace_config` and `load_workspace_evidence` set `root` to the selected file's parent directory. `PathPolicy::load` joins evidence paths onto `config.root`.\n- **Cargo and mdBook root unchanged.** `inspect_repository_with_progress` keeps using its own canonical `root` for the book source directory, `evidence/` and reference scanning. It does not use the workspace directory for these.\n- **Invocation directory.** `main` calls `load_workspace_evidence(&current_dir())` for the commands that need it. `status` and `info` go through `inspect_repository`, which reports a workspace error as a validation finding and keeps running the other checks.\n\n`{impl}` markers are present on `LoadedWorkspaceConfig`, `workspace_document`, `load_workspace_config`, `load_workspace_evidence`, `PathPolicy::load`, `inspect_repository`, `inspect_repository_with_progress` and `main`. I found no behaviour in the marked code that this requirement or another definition it implements leaves unspecified.\n\n**Tests**\n\n- **`workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it`** (`tests/configuration.rs`):\n  - With only an outer file above the root, discovery finds it and uses its directory as the root.\n  - A nearer nested file wins. The outer file's `allow` value does not appear, so there is no merge.\n  - The file's bytes are unchanged after loading.\n  - A malformed nearest file gives an error naming that file.\n  - When no file exists anywhere, the result is `None`.\n- **`unreadable_configuration_files_are_reported_instead_of_skipped`** (`tests/configuration.rs`):\n  - A directory named `habeas.toml` inside the project, with a valid file above it, produces an error naming the path from both loaders. The valid ancestor is not selected.\n  - An empty directory gives `None` and nothing is created there. The check is `!exists` plus a directory entry count of zero.\n- **`status_loads_nearest_workspace_file_without_validating_authoring`** (`tests/commands.rs`):\n  - Running from a nested directory uses the nearest file. The invalid outer file is ignored.\n  - The cwd-inside-project start works.\n  - The workspace file in the nested directory does not move the project root. `status` still finds `evidence/requirements.malformed.json` at the original root.\n- **`authoring_uses_nearest_workspace_configuration_without_a_user_file`** (`tests/authoring_cli.rs`): end to end through the CLI, the nested file's settings are used rather than the parent's broken default.\n- **`validation_checks_workspace_common_config_without_loading_unused_authoring_settings`** (`tests/evidence_boundaries.rs`): invalid workspace files are reported against `habeas.toml` during validation.\n\n**Minor gap**\n\nNo test uses a read-denied file in an ancestor, or a dangling symlink. The directory-as-file case exercises the same error branch, so I do not count this as a gap.",
   "references": "d303ae30c072c0ffc067c3236de4700a7562c21cdc1aedcfd5e7589ddfc663c9",
   "inputs": [
     {
@@ -160,7 +160,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "7c91da83f7607a87fcd5eb61ba7c80008806f4052d704d4616e891001bd70e43"
+      "hash": "e763ebf7b5bb7b8902276ca55929483f5019a9aee24b8b2760a97354ef874af3"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -191,36 +191,6 @@
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[book_source]",
-      "hash": "b20a9e99576cac3e942529c3a29c9fcb49f5ff2a8c566fd0025a326b55ab1849"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[project_depends_on_habeas]",
-      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[find_project_root]",
-      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[project_root]",
-      "hash": "c0707987d208670061b30eb531a4c5a6640c2f948a3a1ea81dceca0fecc42807"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[write_new_or_same]",
-      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[run]",
-      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     }
   ]
 }
