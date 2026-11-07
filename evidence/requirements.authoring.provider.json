@@ -1,7 +1,7 @@
 {
   "requirement": "The authoring harness MUST use Rig and support Bedrock and Ollama. Users MUST be\nable to select a backend and model through configuration without changing the\nassessment tools, prompt, or evidence format.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The code implements it, the `{impl}` markings are adequate, and the tests cover the main cases. The one thing I would tidy is the `{cite}` on `RigProvider`.\n\n**Implementation**\n- The authoring harness completes requests only through the `CompletionProvider` trait (`src/authoring/providers.rs:12-15`). The one production implementation is `RigProvider`, built on `rig_core` and `rig_bedrock`.\n- `RigProvider::connect` (`providers.rs:105-134`) matches on `BackendConfig` and builds a Rig completion model for each backend:\n  - Bedrock uses an AWS SDK client wrapped in `rig_bedrock::client::BedrockRuntime`.\n  - Ollama uses Rig's `OllamaConfig` client, with the configured endpoint and optional API key.\n  - Both return the same type-erased `DynModel<Completion>`.\n- `configured_record` (`src/authoring/mod.rs:352-388`) takes the backend and model from the resolved configuration, records them in usage, and connects the provider. It then runs the same `assess` loop whatever the backend. The tool definitions, `initial_prompt` and evidence construction in `assess` do not depend on the backend. So choosing a backend and model by configuration leaves the tools, prompt and evidence format unchanged.\n- `RigProvider::complete` (`providers.rs:187-205`) applies backend-specific options and normalises Bedrock typed client tool calls via `normalize_bedrock_client_calls`. That keeps the Bedrock response in the same shape that `assess` expects from Ollama.\n- The `{impl}` markings cover `connect`, both `complete` functions, `normalize_bedrock_client_calls` and `configured_record`.\n- The remaining Bedrock helpers (`bedrock_sdk_config`, `bedrock_sdk_loader`, `apply_bedrock_options`) carry `{impl}` markings for the related configuration, credentials and mapping requirements, not for this one. Their behaviour belongs to those requirements, so I did not treat this as a gap.\n- `struct RigProvider` carries only a `{cite}`. It holds data, and all its behaviour sits in methods that carry `{impl}`, so I treated this as a minor point and not a gap.\n\n**Tests**\n- `tests/authoring_cli.rs` drives the real CLI against local mock HTTP servers.\n  - `authoring_uses_nearest_workspace_configuration_without_a_user_file` selects an Ollama backend and model from the workspace configuration. It checks the model name and the credential header, and that the key does not leak into the request body, usage record or output.\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` runs Bedrock end to end through the Converse API. It checks the profile, region, model path, inference options, tool schemas and all six tools. It also covers both untyped and typed (`type: \"tool_use\"`) tool-call responses, the replay of tool results, the evidence output and the usage record.\n  - `both_adapters_send_the_same_prompt_and_tools_with_default_connections` runs both backends with default connections. It asserts that the prompt and tool definitions are identical across backends (`assert_eq!(ollama, bedrock)`), which is the \"without changing tools, prompt…\" clause. It also checks that Ollama with no key sends no authorization header, and that Bedrock falls back to the SDK default chain.\n- Unit tests in `providers.rs` cover `normalize_bedrock_client_calls`:\n  - `typed_client_calls_preserve_order_and_native_history` covers order, preservation of unrelated blocks (reasoning, server and future tool-use types), idempotence and metadata preservation.\n  - `malformed_typed_client_calls_are_reported` covers failure cases: missing id, missing name, and non-object input.\n- `tests/live_bedrock.rs` adds an opt-in live Bedrock run. It skips when `CI` is set, which is a reasonable choice for a test that needs real credentials.\n\nThere are no gaps acknowledged by FIXME comments, and I found no unspecified behaviour in the `{impl}` code.",
+  "rationale": "**Judgment: the sources satisfy `requirements.authoring.provider`.**\n\n**Implementation**\n- **Rig.** `Cargo.toml` depends on `rig-core` 0.44 and `rig-bedrock` 0.44. `RigProvider::connect` (`src/authoring/providers.rs:105`) builds a Rig `DynModel<Completion>`.\n- **Bedrock.** The model comes from `rig_bedrock::client::BedrockRuntime` over an AWS SDK client configured by `bedrock_sdk_config`.\n- **Ollama.** The model comes from `rig_core::providers::ollama::OllamaConfig`, using the configured endpoint and optional API key.\n- **Backend and model by configuration.** `BackendConfig` is a serde-tagged enum with `Bedrock` and `Ollama` variants (`src/config.rs`). `configured_record` (`src/authoring/mod.rs:424`) records the backend and model from `config.model_ref()`. It then calls `RigProvider::connect(&config.backend)` and passes the provider to the generic `assess_subject`. The code is therefore the same for both backends.\n- **Tools, prompt and evidence unchanged.** `assess_subject` and the prompt and tool setup do not depend on the backend. `RigProvider::complete` only injects configured options and, for Bedrock, calls `apply_bedrock_options` and `normalize_bedrock_client_calls`. The latter converts typed `tool_use` blocks into client tool calls, so Bedrock responses feed the same tool loop and evidence format as Ollama's.\n- **Marking.** The code that implements the requirement carries `{impl}` markers: the `CompletionProvider::complete` trait method, `RigProvider::connect`, `RigProvider::complete`, `normalize_bedrock_client_calls` and `configured_record`. Config parsing in `src/config.rs` is marked with the configuration requirements, which cover that part. Behaviour the requirement does not specify, such as options validation, backoff and credentials, is marked with its own requirements. I found no unmarked provider logic.\n\n**Tests**\n- **Same prompt and tools.** `both_adapters_send_the_same_prompt_and_tools_with_default_connections` runs the CLI against a mock Ollama server and a mock Bedrock Converse endpoint. It asserts that the prompt and the six tool definitions are identical across the two. It also checks the Bedrock model path, credentials and region, and that Ollama sends no `Authorization` header when no key is configured.\n- **Bedrock end to end.** `bedrock_cli_uses_selected_profile_region_and_converse_tools` covers profile and region selection, option mapping, and tool schemas that Bedrock accepts. It runs a read-tool call followed by `submit_judgment`, in both untyped and typed `tool_use` forms. It then checks the evidence and usage ledger.\n- **Ollama via configuration.** `authoring_uses_nearest_workspace_configuration_without_a_user_file` shows a backend and model selected purely through configuration, and that the key does not leak.\n- **Normalization unit tests.** `typed_client_calls_preserve_order_and_native_history` and `malformed_typed_client_calls_are_reported` cover ordering, idempotence, hosted and unknown tool types, and malformed calls.\n- **Live test.** `live_bedrock_authoring` is skipped when `CI` is set.\n- **Failure cases and boundaries.** These are covered by tests for the related requirements (options validation, credentials, backoff, config precedence).\n\nI found no gaps and no acknowledged FIXMEs.",
   "references": "765a559c9429a8bac6ea43d27fa7b3577e769750a03881f6de7ce04b93ca51ec",
   "inputs": [
     {
@@ -20,7 +20,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "bd02de1eea84805ffdba0b1bc76bb6156b1a2d6436801239dbc54a37865c39f8"
+      "hash": "3b8b3aec7e741614c5864597673dbddd5718e23f570ee74f3213e9e5f317c1ec"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -101,6 +101,26 @@
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
       "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[aws-sdk-bedrockruntime]",
+      "hash": "fb9a6ba313fc2dbb00ceed3211253dc9b5d69ef5fb84cdbea2dd6447e36a50d6"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[rig-bedrock]",
+      "hash": "612ac83c1eeffd1259483e3bfe3035b5c689b8c2f92072ddfa531e269b8572e1"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[rig-core]/pair[version]",
+      "hash": "f1da6d5f07e91b4954fe79608480fda8fd944fe42db8cd7ae16f7dfc6f0e5511"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[rig-core]/pair[features]",
+      "hash": "9855bb7a0dbda791a3c5cb38a86517dc37311523013da5e0037eec496382894e"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -213,189 +233,54 @@
       "hash": "60c92f7fceb20eb4b5beda87d326d6cfd10aff5197a14a484a2ea3d34e95aebe"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@b71822583315",
-      "hash": "b718225833155b6088b7476ea406f2c18f35e095183960c725758183428ae7f2"
+      "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@29e5997df934",
-      "hash": "29e5997df934f95a95798a070abd7240d315481fa92620306ae9b0639e032cd1"
+      "file": "src/config.rs",
+      "item": "enum[BackendConfig]",
+      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@8196020d0f0d",
-      "hash": "8196020d0f0dc79883ae2eb139100d5a7dacf509a7d616894422b104bbfba1e8"
+      "file": "src/config.rs",
+      "item": "struct[BedrockConfig]",
+      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+      "file": "src/config.rs",
+      "item": "enum[OptionValue]",
+      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@a5eb9cdffbce",
-      "hash": "a5eb9cdffbce8b59ff0b6bc52bf79c4bba1be795b1e1e0a4facee1be9def0aa2"
+      "file": "src/config.rs",
+      "item": "enum[BackendKind]",
+      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@18a4bb66fc2c",
-      "hash": "18a4bb66fc2c16a5afc36c64f161f7e40625c5fd41178a0cf9c2e534bcf53309"
+      "file": "src/config.rs",
+      "item": "struct[ModelRef]",
+      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@33cd572d5867",
-      "hash": "33cd572d5867616122f641c092cb470ece180cbc8b4271e9d675cb80762ac978"
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]",
+      "hash": "21ee902d70fce92016589b493f2d0d2bf808661d27dbe0d4aee1ffc3b4c41cda"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@f0c01fe9f7db",
-      "hash": "f0c01fe9f7db30c5bd6cd8496efc9c926fda5ac2125ec416ffabd10ab4023139"
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]",
+      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "use@791045418a48",
-      "hash": "791045418a481a9d1694011a257001f68a7c6c017da5520810972a557e55b199"
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]",
+      "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "df71eface1ebf0b38f8b756edd91c75c101101bfb2d86bfa5dcc6f08f25b765f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/use@6708b8882ff4",
-      "hash": "6708b8882ff4edbfbd863ef39843ffd73153ade71543c5e7fac9a17d459679fb"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/use@eaa2db654a32",
-      "hash": "eaa2db654a32fe3a9174e9a18d224bbff6bbd5814d8b875654f8cf958edb2a07"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/use@7726e0a372ef",
-      "hash": "7726e0a372ef34331a3f2f0196c3a6b8009f232c3e8036f7f96626b18d113adb"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/use@a0259f98c77e",
-      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[JudgmentProvider]",
-      "hash": "a4d3bcc945e5ff73273efd38fe12c07e22eca04ce1dff12db82626cc57940bcc"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]",
-      "hash": "c9a27e858bb5439c186bc61d4ee26fbd809137f95ebb5a3016e51c3c46e1256d"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[ThrottledProvider]",
-      "hash": "b939d2cff6e7f5ca0ee329226794fe690cc625ffd0a9e622a272a25d9a06b546"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]",
-      "hash": "04043e25feb9635df0fe5fbadfcfecc9b84c292bab8c977f7c8be9769cca86b8"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]/fn[complete]",
-      "hash": "4f289871c9861ae8a0cb2312b2afc8d441a0a9e290ea3e966395ee81879c59b7"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[ReadingProvider]",
-      "hash": "8edf7a4a0bf0dd9aa1913ffbb351b1ccd4e29203ddcbd3d3aa82fd0ead89aa79"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ReadingProvider/CompletionProvider]",
-      "hash": "c9251d7f2f1c2a53590249c51a5d53e36a60cc40524f208cedfccefc7aaf7d0b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[HangingProvider]",
-      "hash": "607bfb6be5ecfce2b13f28ae13283c4162a0fa6145c9d23a4ab99a000aaf2704"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[HangingProvider/CompletionProvider]",
-      "hash": "ce3bab49ef2a1d3b2e43aa9a4a6b13167c3bf583fce6818ee415277480da62fd"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[ThrottledToolProvider]",
-      "hash": "7d7478f532f8ef60c3da4e501175059040b52799370a347ce6cdfbe7b8d0c7d2"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ThrottledToolProvider/CompletionProvider]",
-      "hash": "339d36725d9357b6845cc2c685c102cf5163b77a288559940d643e161e3d1662"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ThrottledToolProvider/CompletionProvider]/fn[complete]",
-      "hash": "9de72658ffcb46ea53a422b10166ca3cec5f29e249c266328eea3e2bbf6860b7"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[ScriptedProvider]",
-      "hash": "b0069dcf2b4fa712dbb838cb2501d22355555c0e0f46fd5dad935b4cc67cad80"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ScriptedProvider/CompletionProvider]",
-      "hash": "2461e47a38453d285e40c89c838448944cacbcd3f5836a9211d148979e08cf50"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/use@a0259f98c77e",
-      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/use@8e54b45306f5",
-      "hash": "8e54b45306f5c910001a450ab1ae4fc3746276c9d6b66f2187fe025955b166cb"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/use@2c85662818db",
-      "hash": "2c85662818dbc2f62cf50f34e6362d19ff44f0592a864857858057b88afe0a5f"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/use@adcefb336f4c",
-      "hash": "adcefb336f4c23fa907383ecfb8e95e863c95557912781dec907229daa250f5e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/use@944727b459e2",
-      "hash": "944727b459e2ea08a7586f8fcc5fdab323588c75dd91da10f0d0655cabae4082"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "use@b254c9726a6b",
-      "hash": "b254c9726a6bf20073ea1825ce8f93c5326b97722758d0c11b573ac41ace0b4a"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "use@1fee5dfeb258",
-      "hash": "1fee5dfeb258363dba1e6d791b567f5a1ef8dc1badfa794de0de110f71dab537"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "use@ee79f9c70b9d",
-      "hash": "ee79f9c70b9d06fb940d5fb18008024f03e7f4046f00a24ae3c5ed7f3622411f"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "use@ae28650edb42",
-      "hash": "ae28650edb426279725e0ce17aa894e8e0be5440573cbf57b3b9d71fbea44ba9"
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]",
+      "hash": "a436e51ccb4fe213290a40ac0af45e0175a792038893d08e534cef2dd0138006"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation is complete and marked, and the tests cover the main boundaries and failure cases.\n\n**Implementation**\n- Every route that resolves a recorded evidence input to a file goes through `resolve_evidence_file` (`src/authoring/access.rs:505`).\n  - Outline inputs go through `InputSelector::resolve`, then `OutlineCache::parse`, then `read_project_file`, then `check_project_file`, then `resolve_evidence_file` (`src/inputs.rs`). This path is also used by `add-input`, by dependency scanning in `terms.rs`, and by anchor resolution.\n  - Definition and requirements inputs call `check_project_file` on their declaring files in `InputSelector::resolve`.\n  - `validate_input`, `validate_outline_input` and `validate_resolved_input` in `src/evidence.rs` carry the `{impl}` markers and report errors with an input label.\n- `resolve_evidence_file` does the following:\n  - It canonicalises the root and the requested path.\n  - It resolves the symlink target, with `resolve` and `requested_location` handling a symlink before a `..` component.\n  - It calls `check_disallow` on both the requested location (including its ancestors) and the target, so an allowed alias cannot expose a disallowed target.\n  - If the requested path or target is outside the root, it permits the file only if an explicit allow rule matches, or both lie inside a discovered Cargo generated-output directory. Otherwise it returns the error \"resolves outside the repository without an allowed evidence path\".\n  - It rejects non-files.\n  - It does not consult Git tracking, so validation is independent of the Git index.\n- Missing files are reported as \"cannot open\", unreadable files as \"cannot read\", and excluded files as \"disallowed\".\n- `generated_roots` uses `cargo metadata --offline --locked --no-deps` and inspects existing `root-output` records. It never runs a build or build script, and it tolerates failures by returning an empty list. It does not read the inherited `OUT_DIR` environment variable.\n- I found no unmarked code that implements this behaviour. The `{impl}` markers are on `requested_location`, `normalize`, `resolve`, `resolve_evidence_file`, `project_path`, `check_project_file`, `read_project_file`, `OutlineCache::parse`, `InputSelector::resolve` and the validation functions.\n- The context requirements are carried out. `evidence_paths` is carried out by `PathPolicy`, with disallow winning and a symlink target checked. `generated_inputs` is carried out by generated-root discovery without a build.\n\n**Tests**\n- `tests/evidence_boundaries.rs`:\n  - `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` covers a symlink inside the project and a symlink to a sibling directory with the same prefix.\n  - `definition_and_requirements_inputs_obey_containment_for_declaring_files` covers disallow for definition and requirements inputs.\n  - `unreadable_and_missing_inputs_are_reported` covers missing and unreadable files. The unreadable assertion is guarded when the user is privileged.\n  - `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` covers an external file with no allow rule, then an allow rule, then a stale input, then a disallow rule.\n  - `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources` covers disallowed ancestors reached through a symlink or `..`.\n  - `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` covers an external Cargo output directory, freshness, disallow, and that no build runs (`!target.exists()`).\n- `src/authoring/access.rs` unit tests cover explicit allow overriding the defaults, disallow winning for an alias target, and symlink-before-`..` resolution with allow and disallow.\n- `tests/commands.rs` covers `status` applying disallow to existing evidence, and `add-input` with an external source under allow and disallow.\n- `src/evidence.rs` covers missing items and stale hashes.\n\n**Gaps**\n- There are no explicit acknowledged gaps (no FIXME).\n- The tests are Unix-only for symlinks, which is reasonable.",
+  "rationale": "**Judgment: the requirement is met.**\n\n**Implementation**\n\nEvery file an evidence input names, or resolves from a selector, goes through `resolve_evidence_file` (src/authoring/access.rs:507). It is reached through `check_project_file` and `read_project_file` (src/inputs.rs:346 and 352), `OutlineCache::parse`, and `InputSelector::resolve`. `InputSelector::resolve` calls it for outline files and for the declaring files of definition and requirements inputs. `validate_input`, `validate_outline_input` and `validate_resolved_input` in src/evidence.rs report the resulting errors.\n\n`resolve_evidence_file` does the following:\n- **Resolution:** It canonicalizes the root and resolves the requested path and its symlink target (`resolve` and `requested_location`).\n- **Disallow:** It calls `PathPolicy::check_disallow` on both the requested path and the target, and on every traversed ancestor location. This stops a disallowed symlink ancestor from redirecting into an allowed target. A disallowed path is rejected even if an allow rule or a generated-output rule also matches.\n- **Containment:** If the requested path or the target is outside the root, it is rejected unless an allow rule matches or both lie in a discovered generated-output directory. Symlinks are held to the same rule because both the request and the target are tested.\n- **Missing and unreadable files:** `resolve` returns \"cannot open …\" for a missing file. `read_project_file` returns \"cannot read …\" for an unreadable one. A path that is not a file returns \"is not a project file\".\n- **Git tracking:** It does not consult the Git index, as `evidence_paths` requires.\n- **Generated outputs:** `generated_roots` is called only when a path is outside the root. It reads `cargo metadata --offline --locked --no-deps` and the existing `root-output` records. It never runs a build or a build script, and it tolerates metadata failure by returning an empty list. It ignores the inherited `OUT_DIR`.\n- **Freshness:** Generated inputs are outline inputs, so they get the ordinary hash checks.\n\nSome parts of the subject are carried out by code marked only for other requirements: `matches_rule`, `check_disallow` and `generated_roots`. The input_containment text defers those parts to `evidence_paths` and `generated_inputs`, and those requirements' text covers them. I found no unmarked code that performs input containment. The remaining direct `fs::read_to_string` calls read evidence or citation-review records and chapters, not evidence inputs.\n\n**Tests**\n\n- **Symlinks and sibling prefix:** `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` checks that a symlink resolving inside the root is accepted and one resolving to a sibling directory with the same prefix is rejected.\n- **Definition and requirements inputs:** `definition_and_requirements_inputs_obey_containment_for_declaring_files` checks that the declaring file of a definition or requirements input is subject to disallow.\n- **Missing and unreadable files:** `unreadable_and_missing_inputs_are_reported`.\n- **External paths:** `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` checks that an external path is rejected without an allow rule, accepted with one, flagged as stale when the file changes, and rejected again under a disallow.\n- **Disallowed symlink ancestors:** `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`, with `..` and symlink combinations.\n- **Discovered Cargo output:** `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` uses an external build directory. It checks acceptance, freshness, disallow override, and that the target directory is never created, so no build ran.\n- **Policy unit tests in access.rs:** these cover allow and disallow precedence, alias targets, and `..` after a symlink.\n- **Command-level tests:** `status_applies_workspace_disallow_to_existing_evidence` and `add_input_external_sources_respect_allow_and_disallow` cover the `status` and `add-input` paths.\n\nTogether these cover the boundaries and failure cases: inside versus outside the root, symlinks, allow versus disallow precedence, missing and unreadable files, generated outputs, and no build being run. I found no gaps and no FIXME markers.",
   "references": "62835dbf10f4e8bb4c83e9056f57ae92661a01ff4890f04527ebf696592c9c10",
   "inputs": [
     {
@@ -121,7 +121,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_input]",
-      "hash": "7afcca3fd13ac29d384dfbc8d9c9dff12bb910ee7cb77898015f1eb987ab408d"
+      "hash": "dbf082fb2c4015e45e3c9e8bc8b80a908ad74039f7b1b6c02ebcf102ba192a04"
     },
     {
       "file": "src/evidence.rs",
@@ -176,7 +176,7 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
-      "hash": "a798c0a3903164d2f2f1758c0bfddce483826b6137ee6509776efbe71c14f2a6"
+      "hash": "169f61d6456c59ffb1e0167c16bb956447e0fdfa593682e456db805eb7690199"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -201,222 +201,12 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
-      "hash": "baacb5cc86251bd76c65ad8fec4dc09f9f19043f1c0f74bb881f83ea6b22ac16"
+      "hash": "4bce67c979ce5df2df09d50ba04e201158f7a36f139ad681b3aa57be31c5b6cf"
     },
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
       "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "fn[read_or_new]",
-      "hash": "9d1e50043e22fd9cc22879a0d3ede2522ff12c2e30d86343e960c5fec3208ccc"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[discover_generated_roots]",
-      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
-      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "7449f6ef42af4fda0582a4da908f6f04f0a9f45e6606834b8a1a599a7c5bd5d9"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]",
-      "hash": "035a746b5d4bc5ef6fadfdb528065812f0d554534df0d7103a5b312980813022"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]",
-      "hash": "2af79a330e536398fbf1e0d2c982568cde39eaa253e84e26b029f46bc9de9922"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
-      "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[operating_system_permission_failures_are_ordinary_read_failures]",
-      "hash": "04c90934cac22abafe16c61ddf6e80ce32e927aa1d565952b234e0121df2e3e1"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[persisted]",
-      "hash": "d0caafefaaa93e51e0657841bd7d4abb7c8ac441d6ae928209760b9378831d82"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
-      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_user_config]",
-      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[workspace_document]",
-      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[book_source_dir]",
-      "hash": "370090f1cfdd25d6d5eee2c18b1a54e3b68930513d570f4f305f084e07ba4a45"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "6e0d1bcbefe2f48a1562a260a5dd81fc25e54da33c79bd059f85f76df0b5db1e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "38d4022dff717f3d4a0b045e09870a330c39a8d9df26be52d6df9fdec6545920"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_references]",
-      "hash": "7489dd27e1333f83abd297027be13bee765f5c1d634606c6f12c14a0d9c1ed3d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_references_with_progress]",
-      "hash": "93d27acc2c376f3ff8d2049397cd679c542efd3b5a1c423ec4fe08ba9ad3eebb"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[evidence_input_ranges]",
-      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[stamp_reference_sets]",
-      "hash": "f73ee2fbdc73f41fe351ccfcafe42aa256b4cc37527ec673228c8d1e8dd82a3c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[load]",
-      "hash": "796c6adf330cbdc2dc13569a0f1cb8d08c4548b9651d269809ab83e78eee4169"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[workflow_job_marks_belong_to_the_job_that_follows]",
-      "hash": "6c977e3be265b9efe3e2863e77cec92f75e1e3fd9d8055801d7550882f9d5a00"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[validate_rust_functions]",
-      "hash": "63e62c880207bbe731b5584ab6b7611a7051a63a6f9aff6d35a89e20d24eb64f"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[project_depends_on_habeas]",
-      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[write_new_or_same]",
-      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[run]",
-      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[is_configured]",
-      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "fn[selectors_for_mode]",
-      "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[parse_file]",
-      "hash": "60bcb250ef0b20cccfac78923540d1637b80fbea9c68d624ec1f775aca96cb29"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[reference_selector]",
-      "hash": "c3bcab3d9334c955dbf2e8aa26fb077e5aa89c42eb98ca7ee661283fe07bd449"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[retry_after]",
-      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[with_retry_after]",
-      "hash": "73d4f9618ef5754c6c1b02c3f472ed1b96a5faa2cd165303208a9a7321530e89"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "impl[Anchor]/fn[resolve]",
-      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "ec478c2139c990c709c04d3ca855e4e33533d491f91f179c45c402ccc790a509"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
-      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[outline_inputs_for_lines]",
-      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse_with]",
-      "hash": "c78942451f3a6a9f5d1bd6b05e3d80b0884e352f10a15719b190429c78a96f60"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[direct_references]",
-      "hash": "98ea11a7e7fa5ffc06d25053633f2e9e32a04916216708d865d62bd6ed744df9"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[close_dependencies]",
-      "hash": "7505912bdea9e2777bb6ca92e2ed4255ac0e6322bb358a0e33dcd732b900ca29"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[validate_dependencies]",
-      "hash": "384460cdf651e0a04222f97e6b6f61287c7fc9cc42f7c5ac81b45e282d3cd216"
     },
     {
       "file": "src/authoring/access.rs",
@@ -470,63 +260,133 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[matches_rule]",
-      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[OutsideProject]",
-      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[OutsideProject/std::fmt::Display]",
-      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[OutsideProject/std::error::Error]",
-      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_outside_request]",
-      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[PolicyDenial]",
-      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PolicyDenial/std::fmt::Display]",
-      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PolicyDenial/std::error::Error]",
-      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_os_denial]",
-      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[tracked_sources]",
-      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "fn[generated_roots]",
       "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[read_or_new]",
+      "hash": "9d1e50043e22fd9cc22879a0d3ede2522ff12c2e30d86343e960c5fec3208ccc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
+      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[persisted]",
+      "hash": "d0caafefaaa93e51e0657841bd7d4abb7c8ac441d6ae928209760b9378831d82"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate_review]",
+      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_user_config]",
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "38d4022dff717f3d4a0b045e09870a330c39a8d9df26be52d6df9fdec6545920"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references_with_progress]",
+      "hash": "ab5630cf0b99cf55cb908d1323837e213a865d682af12bf96df095f55a871765"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[stamp_reference_sets]",
+      "hash": "f73ee2fbdc73f41fe351ccfcafe42aa256b4cc37527ec673228c8d1e8dd82a3c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load_path]",
+      "hash": "5e19d310ac29287b46a46da897cf09fa235c0d59481be775ed6e90c13e99161e"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[workflow_job_marks_belong_to_the_job_that_follows]",
+      "hash": "6c977e3be265b9efe3e2863e77cec92f75e1e3fd9d8055801d7550882f9d5a00"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[validate_rust_functions]",
+      "hash": "63e62c880207bbe731b5584ab6b7611a7051a63a6f9aff6d35a89e20d24eb64f"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[project_depends_on_habeas]",
+      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[write_new_or_same]",
+      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[run]",
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[is_configured]",
+      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[matches_rule]",
+      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
     }
   ]
 }

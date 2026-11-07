@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input --item <file>:<line>` MUST parse the file under {cite}`requirements.references.outlines` and add or refresh one\noutline input for every outline node declared on that line. A named node is\ndeclared on the line where its name begins in the source. An anonymous node, or\na named node whose name is not written in the source, such as an extern block\nwithout an ABI string, is declared on the line where its own syntax starts,\nexcluding attached comments and attributes. Each input MUST store the selected `file` under the path\nrules in {cite}`requirements.ci.schema`, the node's selector, and its structural\nhash. The command MUST report every selected node and reject a line on which no\nnode is declared.",
   "determination": true,
-  "rationale": "**Verdict:** the implementation and tests satisfy `requirements.cli.add_input_item`. I found no unacknowledged gaps.\n\n**Implementation**\n- **CLI entry:** `Command::AddInput` in `src/main.rs` defines `--item <file:line>`. It is in a required, mutually exclusive group with `--requirements`. `main` passes it as `InputMode::ItemsAtLine` to `add_input`.\n- **Parsing and rejection:** `selectors_for_mode` in `src/add_input.rs` splits on the last `:`, parses a positive-integer line, and parses the file through the shared `OutlineCache`. That cache is the outline machinery from `requirements.references.outlines`, so syntax errors fail with a first-error line. If no node is declared on the line, it returns `\"<file>:<line>: no outline node is declared on this line\"`.\n- **Path rules:** the file is recorded relative to the project root when inside it, and absolute otherwise. This matches the path rules of `requirements.ci.schema`. `resolve` also enforces the allow/disallow policy.\n- **Selecting nodes:** `Outline::declared_on_line` returns every non-root node whose `declaration_line` equals the line. That gives one input per node, including nested nodes on the same line.\n- **Declaration line:** `Builder::walk` and `finish` compute `declaration_line` from a declaration byte.\n  - A named node uses the byte where its name begins. The naming rules supply that byte: the generic `Field` and `FirstChild` rules, the CSS `selectors_name` and `prelude_name`, the Markdown `heading_name`, and the Rust `impl_name`.\n  - An anonymous node, or a node whose name is not written (an extern block with no ABI, via `extern_name`), uses the start of the core grammar node. The core node excludes attached attributes and doc comments.\n  - The plain-text profile uses the line itself.\n- **Stored input:** `InputSelector::to_input` stores `file`, `item` (the selector) and `hash` (the structural hash). It stores no source text and no line numbers.\n- **Add or refresh, and reporting:** `update_inputs` adds a new input, refreshes a changed one, or leaves an unchanged one alone. It reports `added`, `refreshed` or `unchanged` for every selected node. The extra behavior there is specified elsewhere and annotated: capturing definition inputs, the reference set, and resetting review. Each of those is annotated with `{impl}` for its own requirement.\n- **Minor marking gap:** `OutlineNode.declaration_line`, `Draft.declaration_byte` and `Builder::push` carry the declaration data. They are marked only with `outlines`, not `add_input_item`. They are plain data plumbing, and the behavior that uses them is marked, so I do not treat this as a gap.\n\n**Tests**\n- `nodes_are_declared_on_their_name_line_or_where_their_syntax_starts` in `src/outline/tests.rs` covers:\n  - a wrapped impl header declared on its name's line;\n  - an anonymous `use` declared after its doc comment and attribute;\n  - `extern \"C\"`, a wrapped `extern \"system\"`, and an extern with no ABI declared where its syntax starts;\n  - Markdown headings;\n  - CSS at-rule and rule-set preludes spanning lines.\n- `add_input_item_selects_nodes_by_name_line_across_languages` in `tests/commands.rs` covers:\n  - the wrapped impl on its name line, with failure on the `impl` line;\n  - the anonymous `use` on line 7 and its attribute on line 6, which is rejected;\n  - TOML and Markdown;\n  - rejection of lines 0 and 99 and of a syntax-error file, each leaving the record unchanged.\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently` covers:\n  - two nodes on one line (`main` and a nested fn), both reported;\n  - plain-text lines;\n  - idempotent re-adding;\n  - rejection of a non-numeric line and a missing file;\n  - hash behavior when comments change.\n- `add_input_requires_one_target_and_mode_and_resets_changed_records` covers `--item` mode. It checks the unchanged, refreshed and added outputs, and exactly one target and one mode.\n- `add_input_external_sources_respect_allow_and_disallow` covers absolute paths outside the project, and rejection under `disallow`.\n\nThe tests cover the design space of the requirement, including the boundaries and failure cases. I found no FIXMEs.",
+  "rationale": "**Implementation**\n\n- **Command wiring.** `Command::AddInput` in `src/main.rs` requires exactly one target and exactly one mode through clap `ArgGroup`s. `main` passes `--item` to `habeas::add_input` as `InputMode::ItemsAtLine`.\n- **Line parsing.** `selectors_for_mode` in `src/add_input.rs` splits `<file>:<line>` at the last colon and parses the line as a `usize`. It parses the file through the shared `OutlineCache`, so the outline profiles from `requirements.references.outlines` apply. Syntax errors fail the parse, and the test checks that the error mentions \"syntax error\".\n- **Path rules.** The recorded file path is made project-relative when it is under the root and stays absolute otherwise. This matches `requirements.ci.schema`, and `add_input_external_sources_respect_allow_and_disallow` tests it.\n- **Selecting nodes.** `Outline::declared_on_line` returns every non-root node whose `declaration_line` equals the requested line. It returns all of them, so several nodes on one line are all selected. If none match, `selectors_for_mode` returns the error \"no outline node is declared on this line\", so a line with no declared node is rejected.\n- **Declaration line.** `Builder::walk` and `Builder::name` compute the declaration byte as follows:\n  - For a named node it is the byte where the name begins. `impl_name` uses the earlier of the trait path and the self type, so a wrapped `impl` header is declared on its name's line.\n  - For an anonymous node, or a node whose name is not written, it is `child.start_byte()` of the core node. Attached attributes, doc comments and decorators are excluded because they are siblings recorded separately. `extern_name` returns the node start when there is no ABI string.\n  - `finish` converts that byte to `declaration_line`.\n- **Hash and selector.** `InputSelector::to_input` in `src/inputs.rs` stores exactly `file`, `item` and `hash`, with no source text. `resolve` supplies the node's structural hash.\n- **Add or refresh, and reporting.** `update_inputs` in `src/add_input.rs` matches existing inputs by selector. It replaces a changed input (\"refreshed\"), appends a new one (\"added\"), and leaves an identical one (\"unchanged\"). It prints a line for every selected node.\n- **Markings.** The code that decides declaration lines carries `{impl}` for this requirement: the CSS, Markdown and Rust custom name functions, `plain_text`, `name`, `walk`, `finish`, `declared_on_line` and `CustomName`. The Python, TypeScript, TOML and YAML profiles use only the generic `Field`, `FirstChild` and `Anonymous` name rules, which are covered by `name` and `walk`. I found no unmarked code that implements the requirement. The extra behavior in `update_inputs` (resetting the determination, capturing definitions, recording the reference set) is attributed to other requirements that the function marks.\n\n**Tests**\n\n- `nodes_are_declared_on_their_name_line_or_where_their_syntax_starts` in `src/outline/tests.rs` checks declared lines at the outline level. It covers:\n  - a wrapped `impl` header;\n  - a `use` after a doc comment and attribute;\n  - `extern \"C\"`, a wrapped `extern \"system\"`, and an ABI-less `extern` after `#[link]`;\n  - Markdown headings;\n  - CSS multi-line at-rules and rule sets.\n- `add_input_item_selects_nodes_by_name_line_across_languages` is an end-to-end test of the command. It covers:\n  - a wrapped `impl` rejected on its `impl` line and accepted on its name line;\n  - an anonymous `use` accepted on its own line, with its attribute line rejected;\n  - TOML and Markdown;\n  - line 0, a line past the end of the file, and a syntax-error file, all rejected;\n  - the record file left unchanged after each rejection.\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently` covers:\n  - several nodes on one line (`main` and `nested`) and all of them reported;\n  - plain-text line nodes;\n  - idempotent re-adds reported as \"unchanged\";\n  - rejection of a non-numeric line and of a missing file;\n  - the \"no outline node is declared on this line\" message;\n  - hash behaviour: the hash ignores the citation comment but changes with the doc comment.\n- `add_input_requires_one_target_and_mode_and_resets_changed_records` covers the clap group rules and the \"refreshed\" and \"unchanged\" outcomes.\n- `add_input_external_sources_respect_allow_and_disallow` covers absolute external paths and a disallowed path.\n\n**Minor observations (not gaps)**\n\n- The report prints the selector with `{:?}` (Debug formatting), which is a little unpolished. It still names every node and the tests check for it.\n- There are no declared-line tests for Python decorators or TypeScript. Those profiles use the same generic mechanism, so this is a small coverage gap rather than a defect.",
   "references": "6ac1343c48193397401d9e367fd7e34611efb50e381ac655eb86422404dc6efa",
   "inputs": [
     {
@@ -91,12 +91,12 @@
     {
       "file": "src/main.rs",
       "item": "enum[Command]",
-      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
+      "hash": "457d88e87ea6e8701cecd57a6df44b7064f6c55c32081a6d3cd82ab95ad780bc"
     },
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "e3549f9dbbff2aee432420a2ce46199ffa1860d8687be924e4d97d9c57771d53"
+      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
     },
     {
       "file": "src/outline/css.rs",
@@ -179,24 +179,74 @@
       "hash": "e180e845e25aceb36f82f36ddf60b93b4282ee45e98e1e68c912f8c81d2f3b22"
     },
     {
-      "file": "src/outline/css.rs",
-      "item": "const[KINDS]",
-      "hash": "0dc130621ef8b72e8342ce642823745c07941daef123980ca661eb16f2d6d28f"
+      "file": "src/outline/python.rs",
+      "item": "",
+      "hash": "dd73095782519cc87b57e47b7b47263062b53eba0f1d3f29c9ebef2bb8e94f7d"
     },
     {
-      "file": "src/outline/markdown.rs",
-      "item": "const[KINDS]",
-      "hash": "6bb42dd7e7815a837962f3a9783153b461b3348c9a93452e3ab4efc84d30e1ab"
+      "file": "src/outline/typescript.rs",
+      "item": "",
+      "hash": "744c851aa0f711a6342876d9edaee7fde4e95f0a8b9722954e7a94145f830e1a"
     },
     {
-      "file": "src/outline/profile.rs",
-      "item": "enum[NameRule]",
-      "hash": "18a6cd1fba5ea62d05b7fbd6c94cef387d8d61cdb4ef6dd429f5ead23ffa19f1"
+      "file": "src/outline/yaml.rs",
+      "item": "",
+      "hash": "a55079f30492e5fe43334e24f2bdef19e9a97270a068f3676828031398128576"
+    },
+    {
+      "file": "src/outline/toml.rs",
+      "item": "",
+      "hash": "66fd8d52e8deee3e21d8e02ee6a5b2897f0c341cb41cecf3cc758254362acfc3"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[in_item_list]",
+      "hash": "300c575334165f78850af68e4810db9db1def543581759765e878facde322e29"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[item_macro]",
+      "hash": "c272110db5dfddc8bca362b038bc8a423206be1f66cc083b2e8b3dbdd5da2d81"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[is_comment]",
+      "hash": "062e7387928f80f073be4b44da8f8b8068a5293307e39a6e8210c682952b7c29"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[has_marker]",
+      "hash": "3c5ddb7e7a2e01db95ba2be25b3761f610867a35d1e34e071c4508bef7f9b8bb"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[is_doc_comment]",
+      "hash": "8b502a6799572b359e72be73cc58f3657fc7bcd6f18a92f00737885d6dc5c478"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[is_inner_doc_comment]",
+      "hash": "cf75162fca043c729cb5f5bfc7fc971354f351d41b267a19aa453aeef1154ed1"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[doc_prose]",
+      "hash": "1411af53e11153a4f4e8c89bdda86a9778cdf034e1664b9f01e3218b841e30b6"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "fn[attaches]",
+      "hash": "dc5b39a9e6b53d96362298d3f1132f6952cf877cec1deabed79489471072d09a"
     },
     {
       "file": "src/outline/rust.rs",
       "item": "const[KINDS]",
       "hash": "769b5e11880139cfb12a5df94a554164e020546731a14ba20df9cb656ef769ea"
+    },
+    {
+      "file": "src/outline/rust.rs",
+      "item": "static[PROFILE]",
+      "hash": "58414cfd9ba6701d94197225579bcc40b1bd66e93f5bf7478c4d240b735b85e9"
     },
     {
       "file": "src/outline/mod.rs",
@@ -226,7 +276,7 @@
     {
       "file": "src/rust_coverage.rs",
       "item": "fn[missing_function_references]",
-      "hash": "d4b988e82c7d1e3abc42602ad05d26d1bdb8eff836fd3e308d2ea1fb1e0c1bd4"
+      "hash": "bcab391793125a9f9a372c28d1755bfc6439d01ba47ac9d452f6e51b9f35ac0e"
     }
   ]
 }

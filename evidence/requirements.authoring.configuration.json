@@ -1,7 +1,7 @@
 {
   "requirement": "Authoring MUST use the `[authoring]` sections of the shared user configuration\nand the selected workspace's `habeas.toml`, refining\n{impl}`requirements.configuration.feature_sections` for the authoring feature.\n{cite}`requirements.configuration.user_location`\n{cite}`requirements.configuration.structure`\nAssessing a subject with `habeas author`, singly or in a batch that needs at\nleast one assessment, MUST require an `[authoring]` section in at least one of\nthese files; either section MAY be absent. No other operation requires the\nsection, including a batch with no assessments needed and the operations in\n{cite}`requirements.authoring.deterministic_validation`.\nIt MUST support named configurations, workspace defaults, and a user-local\nselection for each project. Credential-source references SHOULD be used;\nexplicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.\n{cite}`requirements.configuration.workspace_location`\n{cite}`requirements.configuration.workspace_structure`",
   "determination": true,
-  "rationale": "**Verdict: the requirement is satisfied.** I found one small edge case, noted at the end, that I did not count as a gap.\n\n**Implementation**\n\nThe three `resolve_authoring*` functions in `src/config.rs` carry the `{impl}` marks for this requirement.\n\n- **`resolve_authoring` (lines 888–907):**\n  - It loads the nearest workspace `habeas.toml` with `load_workspace_config`, which implements `workspace_location` and `workspace_structure`.\n  - It also loads the user file from `user_config_path()`. A missing user file gives `None`, because `load_user_config` maps `NotFound` to `Ok(None)`.\n  - It passes both to `resolve_authoring_with_workspace_from`.\n- **`resolve_authoring_with_workspace_from` (lines 924–1025):**\n  - It validates both files.\n  - It returns a \"no authoring configuration (searched …)\" error only when neither file has an `[authoring]` section. So either section may be absent, and at least one is required to author.\n  - Selection order is `--config`, then the user's per-project selection keyed by the canonical root, then the workspace default, then the user default. This gives named configurations, workspace defaults and a user-local per-project selection.\n  - Workspace configs override same-named user configs as whole records.\n  - Unknown names are reported against the file that chose them.\n- **Operations that must not require the section:**\n  - `author_all_with_options` returns early when `subjects.is_empty()`, before calling `config::resolve_authoring`. A batch with nothing to assess therefore needs no configuration. Another requirement, `requirements.authoring.batch`, states this exemption, so I did not assess that code as part of this requirement.\n  - Status, validation and rendering never call `resolve_authoring`. That is covered by `deterministic_validation`.\n- **Credentials:** explicit credentials are supported through `requirements.authoring.credentials`, which this requirement cites. The authoring docs in `md/requirements/authoring.md` recommend profile and environment references for credentials.\n- The `user_location`, `structure`, `workspace_location` and `workspace_structure` parts are carried out by the cited requirements and their own `{impl}` code, such as `user_config_path` and `load_workspace_config`. I did not reassess those.\n\n**Tests**\n\n- `tests/configuration.rs::workspace_defaults_and_configs_combine_with_existing_user_selections` covers:\n  - workspace default selection;\n  - same-name workspace override with no field merging;\n  - a user project selection outranking the workspace default;\n  - `--config` outranking both;\n  - a workspace default naming a user config;\n  - fallback to the user default;\n  - workspace-only configuration with no user config;\n  - an unknown name giving an error that names the file.\n- `explicit_project_and_default_selections_choose_whole_configs` and `configurations_without_any_selection_report_how_to_choose_one` cover:\n  - the \"no authoring configuration\" error;\n  - the \"no configuration selected\" error.\n- `unknown_selections_name_the_file_that_made_them` covers diagnostics for dangling selections.\n- `tests/authoring_cli.rs::authoring_uses_nearest_workspace_configuration_without_a_user_file` is an end-to-end test. It runs `habeas author` with no user file, using the nearest nested workspace file, which wins over the parent's. It also checks the workspace literal `api_key` reaches the provider without appearing in the request body, usage record or output.\n- `Fixture::new` in `tests/authoring_cli.rs` sets up a user config with named configs and a default, which the CLI tests use.\n- **Operations that must not require the section:**\n  - In `tests/authoring_batch.rs`, `batch_fills_evidence_preserves_current_records_…` runs `author --all` with an invalid user file and then with no user file, with nothing to assess. Both succeed without contacting the provider.\n  - `discovery_errors_fail_before_configuration_or_inference` and `unreadable_reference_sources_fail_the_batch_before_inference` show that discovery errors come before configuration resolution.\n  - `tests/authoring_cli.rs` has `ordinary_status_ignores_invalid_user_authoring_configuration` and `missing_or_stale_evidence_fails_validation_without_contacting_the_provider`. They show that status, validation and rendering run without authoring configuration or credentials, and with an invalid user file.\n  - `tests/commands.rs` and `tests/evidence_boundaries.rs` show that an invalid `[authoring]` table in `habeas.toml` is not validated when ordinary operations run.\n\n**Edge case not counted as a gap**\n\n`resolve_authoring` calls `user_config_path()` unconditionally. If no usable base directory (`HOME`, `XDG_CONFIG_HOME` or `APPDATA`) can be found, authoring fails even when a workspace file would suffice. This is arguably consistent with `user_location`, which says an operation requiring user configuration must fail with a diagnostic naming the variable. It is unlikely in practice and not contradicted by the text, so I did not count it.",
+  "rationale": "**Judgment: the requirement is met.** The implementation is complete and correctly marked, and the tests cover the main design points. I did not run the tests.\n\n**Implementation**\n- `resolve_authoring` (`src/config.rs:890`) loads the nearest workspace `habeas.toml` and the user config. It passes both to `resolve_authoring_with_workspace_from` (`src/config.rs:926`).\n- `resolve_authoring_with_workspace_from` implements the obligations in the subject:\n  - It reads the `[authoring]` section of both files, and either section may be absent. It fails with \"no authoring configuration (searched … and …)\" only when neither file has one.\n  - Named configurations are looked up in the workspace file first, then in the user file.\n  - Selection follows this order: explicit name, the user-local per-project selection, the workspace default, then the user default.\n  - An unknown name is reported against the file that made the selection.\n- Callers require the section only when an assessment is actually performed:\n  - `configured_assessment` (`src/authoring/mod.rs:375`) calls `resolve_authoring`.\n  - `author_all_with_options` (`src/authoring/batch.rs`) returns early when `subjects.is_empty()`, before it resolves configuration. A batch that needs no assessments therefore never requires the section.\n  - Validation, status and rendering do not call it. That is handled by `deterministic_validation`, which other code implements.\n- Explicit credentials and credential-source references are handled by `requirements.authoring.credentials`. Its text covers the part of this requirement that cites it. File discovery and structure are handled by the cited `workspace_location` and `workspace_structure` requirements, which carry out their parts. The impl markers on the resolution functions cover this requirement, and I found no unmarked implementing code or unspecified behaviour in them.\n\n**Tests**\n- `workspace_defaults_and_configs_combine_with_existing_user_selections` (`tests/configuration.rs:441`) covers:\n  - workspace default selection;\n  - workspace replacing a same-named user config;\n  - user per-project selection winning over the workspace default;\n  - explicit selection;\n  - a workspace default naming a user config;\n  - workspace-only resolution with no user file;\n  - an unknown name, with the diagnostic naming the workspace file.\n- `explicit_project_and_default_selections_choose_whole_configs` and `configurations_without_any_selection_report_how_to_choose_one` (`tests/configuration.rs`) cover the missing-section error (\"no authoring configuration\") and the no-selection error.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (`tests/authoring_cli.rs:435`) runs the CLI with no user file and a nested workspace file. The nearest file is used alone, ignoring the parent file's default. An explicit `api_key` is passed to the provider and does not leak into output or usage records.\n- `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` (`tests/authoring_batch.rs`) shows that `author --all` with nothing to assess succeeds with an invalid user config and with an absent one. That is the \"batch with no assessments needed\" exemption.\n- The `deterministic_validation` tests are also cited: `ordinary_status_ignores_invalid_user_authoring_configuration`, `status_loads_nearest_workspace_file_without_validating_authoring` and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings`. They show the other operations do not need the section.\n- The `Fixture::new` setup in `tests/authoring_cli.rs` exercises the user-file path end to end.\n\nI found no acknowledged gaps (no FIXME markers) and no unacknowledged ones.",
   "references": "a658228bbdae0a8c7124e123e9f53626a5f8a2150d0b3eced2b946164caad2e2",
   "inputs": [
     {
@@ -185,124 +185,24 @@
       "hash": "2f7d90c5cd6ac721390861eb6e8760d9b35646f1306b8856b5009ca5a3e1b8b2"
     },
     {
-      "file": "audits/requirement-rewordings/authoring.md",
-      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.configuration`%20—%20refine%20feature_sections]",
-      "hash": "a24aa3e80e5cbe52a99f556ace896945420b6ebb81118acbff4832696514fd6b"
-    },
-    {
-      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
-      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.integration.live_bedrock_test`]",
-      "hash": "85acff8b4cefa18c909e018c12e1e4e439f10cf2e646d13aa7c38e1bf975518d"
-    },
-    {
-      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
-      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.user_location`%20and%20`requirements.configuration.state_location`%20—%20absolute%20base%20directories]",
-      "hash": "2a060597a0fac36d219e83ac86f6d9b1f7dc61e4c91e7cd1e421dcfc7e9f28ed"
-    },
-    {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
+      "hash": "95397d47e5c7d75a894412d120707a16de3d20f5a0e447fa0f0014834d8702f1"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
-      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
-      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "use@ec3f2c37f86c",
-      "hash": "ec3f2c37f86c9ab66a39b1503bfbdfa2e740d1f22ddde13f9fab2a4f8bfdfa74"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[locations_use_absolute_xdg_values_and_platform_fallbacks]",
-      "hash": "d74719353ea80d5e405a2afc88374e109d7bd64a0b8b768da97dcf6e6a3573d6"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]",
-      "hash": "74416240e60e811474a85bfd6fa78d9c9c5b9b5f44854f8ca70b75116f9e2fb1"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
-      "hash": "eae9d7ae7e419e4c87f6d4f1cd77a36df6e6a94d7fa839eac97846478aa578c0"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[configurations_without_any_selection_report_how_to_choose_one]",
-      "hash": "2c76e33338d66e1745be1c2cc335dd05a9c30a145bec6bedfa14341ec6e49943"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[unknown_selections_name_the_file_that_made_them]",
-      "hash": "6c888f7660d28b9c4321353b4aef55a3aef6e320cc0b21f3c404e8fe7bea5e94"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
-      "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[select_config]",
-      "hash": "ebc03768315c3b195b11d48f9e44cef01fbb3be2e10dd12d86b5a82ae2608b4b"
+      "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
     },
     {
       "file": "src/config.rs",
-      "item": "fn[user_config_path]",
-      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_user_config]",
-      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_config]",
-      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[selected_config]",
-      "hash": "741f598266f20c82b51f5df06ebcfab4ce5fcc3f0f80a763c1c568a0542f52e6"
-    },
-    {
-      "file": "tests/setup.rs",
-      "item": "fn[session_start_advises_only_when_setup_is_incomplete]",
-      "hash": "c6179f13893c158ba3ee2b8f3b47f1f5c6c6d6e0113ddb8ed3e13474293b4af2"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[serve]",
-      "hash": "da0c441cba60aaf1d5b9987dbe0b20f3d2239d648bffc8d8e7e4aa4ee347c7cb"
+      "item": "fn[credential_values]",
+      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
       "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[ollama_batches_are_serial_by_default]",
-      "hash": "a5101e530004e2e082992ebac366ba931366d77b57a2e7b030e7043b947dc141"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
-      "hash": "2f783bcf3d834f9ccc927e6516b705adfa4853ea5b72df0ad38c0bb69e1d3cd1"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -331,21 +231,6 @@
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "fn[assert_interruption_stops_the_batch]",
-      "hash": "6ca8a932c36e420ee1b1d15ab2c62bb918827ca88395102d7affef3c182aa02b"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[denied_read_aborts_only_its_assessment_and_runs_queued_assessments]",
-      "hash": "89fa89a34652a79b4d81484a49d0a83603cf7175ec826411f9243341aa1a9dbd"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[denied_read_preserves_in_flight_assessments_and_their_evidence]",
-      "hash": "18752ee80ce8a21d0f6c24d417cbe38b44a76f617dae75726f4d3620b691c377"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
       "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
       "hash": "9300f6549623070b5a2e95fd53360844a1c336981a2c4c32416a0a500db17d37"
     },
@@ -356,8 +241,13 @@
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "fn[batch_stdout_is_rejected_before_authoring]",
-      "hash": "786cb76d7f97049b29578897face51fea380960f064e3ca456b69f4d1fb23210"
+      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
+      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
+      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -366,56 +256,48 @@
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "fn[empty_batches_and_early_errors_clear_the_terminal_display]",
-      "hash": "2d71d38782fa0a7a19ff40b32128a9d2701a84167329df4d63572a8033076dac"
+      "item": "fn[batch_authors_citation_reviews_and_preserves_current_ones]",
+      "hash": "7cc2bfeb5579c4287fa234d391fda1029988d13401efcc3aa9d96dd764387d0d"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[confirm_runs_a_second_assessment_with_its_own_usage_record]",
+      "hash": "ea55fa2409631f3fa1032bc1ad00b48fd48ebade03ca601aaa5f77cd76b2139d"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "impl[Fixture]/fn[run]",
-      "hash": "66f433dbce2d00c2fd405a27da5c1a672f55c4fb796f2fca3780a69e57eac54e"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[ordinary_status_ignores_invalid_user_authoring_configuration]",
-      "hash": "d3dbdc28df38b2392ef90e8f1fbb97ba6087158a0f19dfd80ba0a46aaa671d86"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[missing_or_stale_evidence_fails_validation_without_contacting_the_provider]",
-      "hash": "b05c07277f2b02f222be659b05866b2786659e462442fc8bfba546644fb4d71b"
+      "item": "fn[provider_rejection_of_inference_options_is_reported]",
+      "hash": "9fe3fdaba0abd95abf9f89268b8f887096a3133ff7293e72ef55fd5e1a934ebb"
     },
     {
       "file": "tests/commands.rs",
-      "item": "fn[status_loads_nearest_workspace_file_without_validating_authoring]",
-      "hash": "6fdea34aa32cce85dde294c79c50ba924c6478ed6812d2d0e04c90d806ff46ec"
+      "item": "fn[add_input_modes_capture_outline_nodes_and_refresh_idempotently]",
+      "hash": "462c7bb77b31806dc9f8f3075477b0c44b97bdd1936c71fbc21f02a43fa6981f"
     },
     {
       "file": "tests/commands.rs",
-      "item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
-      "hash": "49a37589f20de14d662421cdc3a473dc73813bfc2f4df71ab09846154d6d62d5"
+      "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
+      "hash": "80ca3b46648359ab84fccedb9c2ef70e7e0cd4b7f8df90810a93e7d1aa577fde"
     },
     {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
-      "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
+      "file": "tests/configuration.rs",
+      "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
+      "hash": "eae9d7ae7e419e4c87f6d4f1cd77a36df6e6a94d7fa839eac97846478aa578c0"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]",
-      "hash": "f169a850e4606af161eb255f8b540ce7b453ac8695f5b0a088ddb5f8196e902f"
+      "file": "tests/configuration.rs",
+      "item": "fn[configurations_without_any_selection_report_how_to_choose_one]",
+      "hash": "2c76e33338d66e1745be1c2cc335dd05a9c30a145bec6bedfa14341ec6e49943"
     },
     {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "tests/configuration.rs",
+      "item": "fn[invalid_schema_and_feature_values_report_the_configuration_path]",
+      "hash": "f0903831c57bc55e09ef682d4b1105d6d9fdf9a3dd60d12bf165e7da658811fb"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]",
+      "hash": "faac10d0f6016f3f8f3edd34c2304e4930eed364a0b115faeef738c38bf019f9"
     }
   ]
 }

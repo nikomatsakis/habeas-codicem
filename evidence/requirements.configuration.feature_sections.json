@@ -1,8 +1,8 @@
 {
   "requirement": "Each configurable feature MUST define the name and typed data structure of its\nuser section and any supported project section, citing these common configuration\nrequirements. The feature MUST specify its supported keys, value types, defaults,\nvalidation rules, and the precedence or combination rules for user settings,\nproject settings, and invocation options. It MUST specify the behavior of an\nabsent section and which operations require that section.\n\nFeature-specific fields MUST stay within the feature's section. A feature MUST\nNOT reinterpret another feature's settings or change the shared file locations\nor schema version. A feature MAY define a provider-owned options map, but MUST\ndocument that boundary and how those options are validated.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** Both configurable features have complete section definitions, the code that implements them is marked, and tests cover the scoping and absent-section rules.\n\n**What the requirement asks.** Each configurable feature must define its section's name and types, keys, defaults, validation, precedence and combination rules, and the behaviour of an absent section, including which operations need it. Feature fields must stay inside the feature's section. A feature must not reinterpret another feature's settings or change the shared locations or schema version. A provider-owned options map must have a documented boundary and documented validation.\n\nThe project has two features: authoring and evidence.\n\n**Spec side (read as the part that carries out the requirement).**\n- `requirements.authoring.configuration` states that it refines `feature_sections` with `{impl}`. It names the `[authoring]` sections of the user and workspace files and says which operations need the section.\n  - `habeas author`, single or in a batch needing at least one assessment, requires the section in at least one file. Either file's section may be absent.\n  - No other operation requires it, including a batch with no assessments needed and `deterministic_validation`.\n- The authoring requirements `configuration_structure`, `configuration_serialization`, `configuration_storage`, `concurrency`, `credentials` and `configuration_precedence` define the following:\n  - keys, types and defaults;\n  - validation;\n  - precedence: `--config`, then the user's project selection, then the workspace default, then the user default, with workspace records replacing same-named user records as a whole;\n  - the `options` map, which is provider-owned, passed through to Rig, and barred from replacing the model, prompt or tools.\n- `requirements.configuration.evidence_paths` (`[evidence]`) states that it refines `feature_sections`. It covers the keys and types, the defaults, the absent-table meaning, that no operation requires the section, that there is no user-file counterpart, and that there are no invocation options. It also says path loading must not validate unused authoring settings.\n- The `structure` and `workspace_structure` requirements fix the shared root and the version.\n\n**Implementation.** The `{impl}` markers cover the relevant code in `src/config.rs`:\n- `UserConfig`, `WorkspaceConfig`, `WorkspaceAuthoringConfig`, `UserAuthoringConfig` and `EvidenceConfig` use `deny_unknown_fields` and typed optional feature fields. That keeps feature settings scoped to their sections and keeps the root limited to `version` plus feature tables.\n- `validate_workspace_common` requires `version = 1` and rejects any root key other than `version`, `authoring` and `evidence`.\n- `BackendConfig::validate` checks:\n  - the model is nonempty;\n  - `api_key_env` is well formed;\n  - credentials do not conflict with a profile or `api_key_env`;\n  - credential values are nonempty;\n  - options may not contain model, prompt or tool keys, and option values are validated.\n- `load_workspace_evidence` reads only the `[evidence]` table. An absent table or absent arrays default to empty, and unused authoring settings are not validated.\n- `resolve_authoring_with_workspace_from` returns \"no authoring configuration\" only when neither file has an `[authoring]` section. It implements the precedence order, whole-record override, and error messages that name the files searched.\n- `author_all_with_options` calls `resolve_authoring` only after it finds that subjects need assessment, so a batch with nothing to do does not require the section.\n\nI found no unmarked implementing code.\n\n**Tests.**\n- `feature_sections_are_scoped_and_absent_sections_use_defaults` (`tests/configuration.rs:1091`) is marked `{test}` for this requirement. It covers:\n  - an absent `[evidence]` table or omitted arrays giving empty lists;\n  - an absent authoring section;\n  - rejection of feature keys at the root, in the wrong section, or in the user file (`[evidence]` in the user file);\n  - evidence loading not validating or reinterpreting authoring settings, even when those are invalid;\n  - rejection of harness keys in `options` and of a stray `allow` inside an authoring config.\n- Related tests cover the authoring precedence and missing-configuration behaviour, mainly through `requirements.authoring.configuration`:\n  - `workspace_defaults_and_configs_combine_with_existing_user_selections`;\n  - `explicit_project_and_default_selections_choose_whole_configs`, including the \"no authoring configuration\" error;\n  - `authoring_uses_nearest_workspace_configuration_without_a_user_file`;\n  - the batch tests, which show that discovery errors fail before configuration is required.\n\nNo gaps and no FIXME markers apply to this subject.",
-  "references": "9c36fc2f4690decaf9e7e3b516109dbc284e95b21eabc6d0027962034ded0f03",
+  "rationale": "**Judgment: the requirement is met.** `feature_sections` is a meta-requirement. Each configurable feature must define its own sections and rules, and the features here do. There are two, authoring and evidence. The spec text and the code both tie back to `feature_sections`, and a test covers the main points.\n\n**Spec side (feature definitions marked `{impl}`)**\n- `requirements.authoring.configuration` is marked `{impl}` of `feature_sections`. It sits in `md/requirements/authoring.md` near line 582 and cites `user_location`, `structure`, `workspace_location` and `workspace_structure`.\n  - It names the `[authoring]` user and workspace sections.\n  - It says which operations require the section. Only `habeas author` that needs at least one assessment does. Batches with no work and deterministic validation do not. Either file's section may be absent.\n  - Its sibling requirements supply the rest:\n    - `configuration_structure` gives the typed structures.\n    - `configuration_serialization` gives defaults and omitted-map behaviour.\n    - `configuration_storage` gives validation rules and the `options` boundary. Options are backend-defined, passed through to Rig, and must not replace the model, prompt or tools.\n    - `configuration_precedence` gives the order: `--config`, then project selection, then workspace default, then user default. It also covers record-level override and absent-configuration errors.\n    - `credentials` and `concurrency` cover their own keys.\n- `requirements.configuration.evidence_paths` is marked `{impl}` of `feature_sections`. It defines the typed `EvidenceConfig` and `[evidence]` as a workspace-only table. It sets the defaults: omitted arrays and an absent table both mean empty. It says no operation requires the section, there is no user counterpart, and there are no invocation options. It also gives the precedence rules for allow and disallow.\n- The common structure schema in `md/requirements/configuration.md` shows the typed optional field for each feature. It states that feature settings must not occupy root keys.\n\n**Code side (marked `{impl}`)**\n- `UserConfig`, `WorkspaceConfig`, `WorkspaceAuthoringConfig`, `UserAuthoringConfig` and `EvidenceConfig` in `src/config.rs` are marked `{impl}`.\n  - Each is a typed section with `deny_unknown_fields`.\n  - Optional sections are `Option` with `#[serde(default)]`, so absence is distinguishable from explicit settings.\n  - Authoring `projects` exist only in the user structure.\n  - `evidence` exists only in the workspace structure.\n  - `version` is fixed to 1.\n- `validate_workspace_common` rejects unknown top-level keys and any version other than 1. This keeps features from adding root keys or changing the schema version.\n- `load_workspace_evidence` treats an absent `[evidence]` as the default (empty arrays). It does not validate unused authoring settings.\n- `BackendConfig::validate` enforces the provider-owned `options` boundary. It rejects reserved keys (model, prompt, tools and similar) and runs per-value option validation. It also enforces the credential conflict rules.\n- `resolve_authoring*` implements the absent-section error and the precedence order. It is marked for `authoring.configuration` and `authoring.configuration_precedence`.\n- I found no `{impl}` code that does something this requirement does not specify. The extra validation is covered by `configuration_storage`, `credentials` and `loading`.\n\n**Tests**\n- `tests/configuration.rs::feature_sections_are_scoped_and_absent_sections_use_defaults` carries `{test}` for `feature_sections`. It covers:\n  - Absent `[evidence]` and omitted arrays both give empty defaults, and `authoring` and `evidence` are `None` when absent.\n  - Cross-section leakage fails: a root `allow` or `default`, `allow` under `[authoring]`, `default` under `[evidence]`, and `[evidence]` in the user file.\n  - Evidence loading does not reinterpret or validate authoring settings, even with a bad default and an unknown key there.\n  - An unknown field in an authoring config fails, and a reserved `options.model` is rejected, in both the user and workspace parsers.\n  - An absent user authoring section configures nothing.\n- Other tests cover precedence and missing-section behaviour. `workspace_defaults_and_configs_combine_with_existing_user_selections` covers precedence and whole-record override. `authoring_uses_nearest_workspace_configuration_without_a_user_file` covers workspace-only authoring.\n- Coverage is good. A test of the \"other operations don't require `[authoring]`\" claim is not in the supplied inputs, so I did not assess it.\n\nI found no acknowledged gaps and no unmarked implementation.",
+  "references": "891e7dd88784ea23683a983532bf2d8d1f6871451fd72636d211a056f5a21cbc",
   "inputs": [
     {
       "requirements": "requirements.configuration.feature_sections",
@@ -24,11 +24,6 @@
         "document that boundary and how those options are validated.",
         ":::"
       ]
-    },
-    {
-      "file": "audits/requirement-rewordings/authoring.md",
-      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.configuration`%20—%20refine%20feature_sections]",
-      "hash": "a24aa3e80e5cbe52a99f556ace896945420b6ebb81118acbff4832696514fd6b"
     },
     {
       "requirements": "requirements.authoring.configuration",
@@ -134,9 +129,19 @@
       "hash": "dc081af3df89c9eea64bd1a339bc22ee8a83c6bdd2ccaac85987f6c65b68a8bd"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Initial%20prompt]/section[Prompt%20template]",
-      "hash": "c1e82c6f5d963a283ba43bb9d5318db3f7f78a04dd5c53b414a506033b909a00"
+      "file": "audits/requirement-rewordings/authoring.md",
+      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.configuration`%20—%20refine%20feature_sections]",
+      "hash": "14b61797ddb667c759e5fe1a10ffe70203d5242b8eb796c47687cc82ac4718b8"
+    },
+    {
+      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
+      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.workspace_structure`]",
+      "hash": "15bbc31dcd1cb1bb5efe385df1d80e5837a712cfb60d9fcb15b21da18d983b8b"
+    },
+    {
+      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
+      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.evidence_paths`]",
+      "hash": "8aab1abc43506449d6fb723829f42b662ab6320dadcd885173d4bd98b1aeba98"
     },
     {
       "file": "md/requirements/authoring.md",
@@ -154,14 +159,9 @@
       "hash": "d75f26dd7bb57fbc8bcb9d10671c37390db6c0a40da4f4c8b6d07225e4cbf82d"
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all_with_options]",
-      "hash": "0dd0e3eefbc601180a4a24fc6d199330b4f5001172d246ccde5774436d473b50"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "1e1ad1be3950eabebdedc18afbd08de99b3f18ff7736c57cf368cfc3ec45beab"
+      "file": "src/config.rs",
+      "item": "fn[credential_values]",
+      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
     },
     {
       "file": "src/config.rs",
@@ -179,16 +179,6 @@
       "hash": "ca008e63fdef9e70314dd40b9bd0e611918e0179ee41125bb36ec027fdd019a6"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
-      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
-      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
-    },
-    {
       "file": "tests/authoring_cli.rs",
       "item": "impl[Fixture]/fn[new]",
       "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
@@ -197,11 +187,6 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
       "hash": "4682a1c95ac85718935f1342508f0d5a28acba4f4ed39f9de1d7c6d9d7d4e919"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
-      "hash": "eae9d7ae7e419e4c87f6d4f1cd77a36df6e6a94d7fa839eac97846478aa578c0"
     },
     {
       "file": "tests/configuration.rs",

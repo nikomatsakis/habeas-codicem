@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas status` MUST group the selected requirement and example judgments marked\nFIXME by issue reference and report how many distinct judgments each issue\naffects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME\nstrings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as\n`https://github.com/owner/repo/issues/123` MUST identify the same issue as\n`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with\nleading zeros normalized; repository spelling MUST remain case-sensitive, and\nunqualified and qualified references MUST remain distinct.\n\nA judgment MUST count at most once for each issue, even when that issue occurs\nrepeatedly or in several FIXME strings. A judgment naming several issues MUST\ncount in each corresponding group. Judgments with no recognized issue in any\nFIXME string MUST be counted once in a separate \"FIXME without an issue\" group.\nIssue groups MUST be ordered by decreasing affected-judgment count, then by\nnormalized reference; the group without an issue MUST follow them. A supplied\nselection MUST restrict these counts to the selected subjects.\n\n`--verbose` MUST list the full name and kind of every judgment in each issue\ngroup and in the group without an issue, along with its original FIXME strings.\nThe summary MUST include valid FIXME determinations even when other evidence\nchecks fail; grouping MUST NOT hide their validation findings. Malformed\ndeterminations MUST remain validation errors under {cite}`requirements.ci.outcomes`.",
   "determination": true,
-  "rationale": "**Judgment: true.** The `{impl}` code covers each obligation of `requirements.cli.fixme_summary`, and the tests cover the interesting cases. I did not run the tests; this rests on reading the code and test assertions.\n\n**Implementation**\n\n- **Collection and selection.**\n  - `status_markdown_with_options` (src/commands.rs) calls `fixmes.add(name, kind, evidence.fixme_entries())` only for definitions that pass the selection-glob filter, so a supplied selection restricts the counts.\n  - `status_markdown_with_options` marks `--verbose` for the summary, and `main` passes the flag through (src/main.rs).\n- **Entries survive other failures.**\n  - `LoadedDetailEvidence::load` (src/index.rs) parses the determination independently of the validation errors. A valid FIXME therefore still reaches the summary when inputs are stale or references are uncovered.\n  - The validation findings are still rendered, so grouping does not hide them.\n  - A malformed FIXME, such as an empty array, parses to no judgment. It yields no summary entries and stays an `Invalid` validation error (tests/outcomes.rs).\n- **Issue recognition.** `issue_references` (src/fixme.rs) handles each case as follows:\n  - **Forms recognized:** `#123`, `owner/repo#123`, and `https://github.com/owner/repo/issues/123`. The URL form normalizes to `owner/repo#123`, and matches are found inside `FIXME(...)` and explanatory text.\n  - **Token rules:** leading zeros are trimmed and `#0`/`#000` are rejected. A reference is skipped when it is preceded by an alphanumeric character, `_`, `/` or `#`, or followed by an alphanumeric character or `_`. That rejects `#12abc` and `##123`.\n  - **Spelling:** repository spelling is preserved, so case stays significant. Unqualified `#7` stays distinct from `owner/repo#7`.\n- **Counting and ordering.**\n  - Each judgment gets a `BTreeSet` of issues, so it counts at most once per issue and once in every group it names.\n  - Judgments with no issue go into a separate group.\n  - `render` sorts by decreasing count, then by normalized reference, and prints the no-issue group last.\n- **Verbose output.** `render_judgments` lists each judgment's full name and kind plus its original FIXME strings, HTML-escaped. It does this under every issue group and under the \"FIXME without an issue\" group.\n\n**Tests**\n\n- **Unit tests (src/fixme.rs):**\n  - A URL alone maps to the qualified issue, with leading zeros normalized, URL and short forms merging, and the unqualified form staying distinct.\n  - Verbose output lists a judgment under every group it belongs to. The same test covers repeated mentions counting once, `#0` falling into the no-issue group, and the singular/plural wording.\n  - Ordering by count and then by reference.\n- **Integration tests (tests/commands.rs, using `fixme_fixture`):**\n  - Leading zeros, repeated and multiple issues, case-sensitive repositories, and `#000`, `#12abc` and `##123` not counting.\n  - The no-issue group appearing last, and the summary also appearing under `--all`.\n  - Verbose listing with HTML escaping.\n  - Glob selection narrowing the counts, down to the no-issue-only case.\n- **Validation tests (tests/outcomes.rs):**\n  - `malformed_fixme_is_invalid_and_reports_the_required_shape` checks that a malformed FIXME stays `Invalid` and is not summarized.\n  - `fixme_does_not_hide_stale_inputs_or_uncovered_references` checks that a stale-input finding appears alongside `#125`.\n  - `valid_fixme_remains_visible_in_status_info_and_book` covers visibility in `status`, including the verbose path.\n\n**Marking**\n\nThe `{impl}` markers cover every involved function: the status functions, `FixmeSummary::add` and `render`, `issue_references`, `fixme_entries`, `LoadedDetailEvidence::load`, and `main`. I found no behavior outside the requirement. The boundary rules on preceding and following characters implement the requirement's \"complete numeric tokens\". The ordering of normalized references is lexical, which is a reasonable reading and is pinned by tests. I found no acknowledged FIXME gaps.",
-  "references": "20548dc0e944bcee4cb2b55ec71c18617357522a6d4bfa17ff3f98a691030ec2",
+  "rationale": "**Judgment: true.** The FIXME summary is implemented as the requirement states, and the unit and integration tests cover its main design points. The one soft spot is the tie-break ordering, described last.\n\n**Implementation**\n- **Collection:** `status_markdown_with_options` (src/commands.rs) loads each non-term definition that matches the glob and calls `fixmes.add(name, kind, evidence.fixme_entries())`.\n  - The glob filter runs before `add`, so a selection restricts the counts.\n  - `LoadedDetailEvidence::load_path` (src/index.rs) parses the `determination` independently of the validation errors, so a valid FIXME is still summarized when other checks fail.\n  - A malformed determination fails to parse, yields no entries, and stays a validation error, so it is never grouped.\n- **Issue recognition:** `issue_references` (src/fixme.rs) uses one regex for three forms.\n  - `#N` and `owner/repo#N` are matched anywhere in the string, including inside `FIXME(...)` and prose.\n  - A GitHub issue URL is mapped to the same `owner/repo#N` key.\n  - Leading zeros are trimmed, and an all-zero number is rejected.\n  - Characters before or after the match that would make it incomplete (`#12abc`, `##123`, `word#1`) cause it to be skipped.\n  - Repository case is preserved, and qualified and unqualified references are different keys.\n- **Counting:** references are collected in a `BTreeSet` per judgment, so a judgment counts at most once per issue even when the issue repeats or spans several strings.\n  - A judgment naming several issues is pushed into each group.\n  - A judgment with no recognized issue goes into `without_issue`.\n- **Ordering:** groups sort by decreasing count and then by normalized reference. The \"without an issue\" group is rendered after them.\n- **Verbose output:** `--verbose` lists each group, and the group without an issue, with every judgment's full name and kind. It also lists the original FIXME strings, HTML-escaped.\n- **Wiring:** `main.rs` passes `verbose` and the selection through to `status_markdown_with_options`.\n- **Marking:** all relevant code carries `{impl}` for `requirements.cli.fixme_summary`.\n\n**Tests**\n- **Unit tests in src/fixme.rs:**\n  - A URL alone normalizes to `owner/repo#42`, and URL, short and unqualified forms group as required.\n  - Verbose output lists a judgment under every group it belongs to, and `#0` counts as no issue.\n  - Ordering is by count before reference.\n- **Integration tests in tests/commands.rs:** a fixture covers `#00123` and `#123`, `rust-lang/rust#000456` and the URL form, case-different repositories, and `#000`, `#12abc` and `##123` as non-issues.\n  - The tests check counts, ordering, the no-issue group coming last, `--all`, `--verbose`, HTML escaping, and glob scoping to `rules.case` and `rules.unlinked`.\n- **Interaction with other checks (tests/outcomes.rs):**\n  - A stale-input record is still summarized (`#125` is present) while its row shows Invalid.\n  - A malformed `{\"FIXME\": []}` stays a validation error and produces no `affects` group.\n  - Valid FIXME judgments stay visible in status.\n\n**Residual ambiguity**\nOrdering \"by normalized reference\" is implemented as plain string order, so `#123` sorts before `#45`. The requirement does not say numeric order, and the tests encode the string-order behavior. I treat this as a defensible reading, not a gap.",
+  "references": "603508d0bd7b6766a92a73dae2749f9cd06ddff36c8e82f0a202a3d74ec0b97a",
   "inputs": [
     {
       "requirements": "requirements.cli.fixme_summary",
@@ -80,7 +80,17 @@
     {
       "file": "src/commands.rs",
       "item": "fn[status_markdown_with_options]",
-      "hash": "ac77fa61b31ea5613c156fd24c5a3def26886c1365f5638b46f3aa11b15dcfd8"
+      "hash": "facde8e858f5f27d750f03ba77521a316ee63e40fbfdb0d224af3b9dc39dbf50"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "struct[FixmeSummary]",
+      "hash": "97acef19bd5c19c3f5a9c6b66f9b3838c4aadfc016bd63e05541366baaaa6005"
+    },
+    {
+      "file": "src/fixme.rs",
+      "item": "struct[FixmeJudgment]",
+      "hash": "c5575ad6be04187dd51a0360ef5be799e431df6b3a19535d6703c629e43c44b8"
     },
     {
       "file": "src/fixme.rs",
@@ -135,7 +145,7 @@
     {
       "file": "src/index.rs",
       "item": "impl[LoadedDetailEvidence]/fn[load]",
-      "hash": "796c6adf330cbdc2dc13569a0f1cb8d08c4548b9651d269809ab83e78eee4169"
+      "hash": "525049c65288e655c838cf0465108812fd0e2934e2f563a1cffe4f9ebc8123f8"
     },
     {
       "file": "src/index.rs",
@@ -150,7 +160,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "e3549f9dbbff2aee432420a2ce46199ffa1860d8687be924e4d97d9c57771d53"
+      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
     },
     {
       "file": "tests/commands.rs",
@@ -186,6 +196,65 @@
       "file": "tests/outcomes.rs",
       "item": "fn[valid_fixme_remains_visible_in_status_info_and_book]",
       "hash": "6ffad3ae12ca5ea946aec039bfd1f3f4e28fb1fd9bc88d710ca83bac435d020b"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[SourceLinks]",
+      "hash": "266c670ff9d3bf7e5fc96ada339c4ef33716a5b4ec6acbf1180a991b47bd2e77"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[encode_url_segment]",
+      "hash": "0aa2cca56cbaa936f10b3f61ca7bb937dea609765c71dbfc24f6b5f982426987"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "enum[EvidenceState]",
+      "hash": "6a845f420dc533ad3dcb656d3188d9eb1bc4ad724b5a843930aae6967a5697a3"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[LoadedDetailEvidence]",
+      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[DetailEvidence]",
+      "hash": "2f1e313f2d698e693a9f494ca743c7b73444bf3cb0e72311362309ccf6933c52"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]",
+      "hash": "69a2b2ec3e08810dbb4493aa6b4a98aecae2b14e959bcbc2ba2def54454cd612"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[EvidenceState]",
+      "hash": "52f9687ee35767424d89917de8732f29c1d0e964aca30c4eb332934fe68b93e4"
+    },
+    {
+      "requirements": "requirements.cli.status",
+      "matches": [
+        "requirements.cli.status"
+      ],
+      "text": [
+        ":::{req} status",
+        "`habeas status [<selection>] [--all] [--verbose]` MUST consider requirements and named examples matched by the {term}`requirements.references.definition_selection`; without a selection it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, including repository-wide Rust function coverage findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied selection matching no definition clearly.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `references` tool with this interface:\n\n```text\nreferences({ selection: String? }) -> ReferenceIndex\n\nReferenceIndex {\n    definitions: Array<DefinitionName>,\n    sites: Array<ReferenceSite>,\n}\n\nDefinitionName { name: String, kind: \"requirement\" | \"example\" }\n\nReferenceSite {\n    name: String,\n    role: \"impl\" | \"cite\" | \"test\",\n    file: String,\n    line: Integer?,\n    item: String?,\n}\n```\n\n`selection` MUST be a {term}`requirements.references.definition_selection`.\nWithout `selection`, the tool MUST return\nthe full name and kind of every requirement and named example in full-name\norder, with empty `sites`. With `selection`, it MUST return the selected definitions\nin full-name order and one flattened `sites` array containing every valid\n`{impl}`, `{cite}`, and `{test}` reference to any match under\n{cite}`requirements.references.targets`, each naming the definition it\nreferences, ordered by name, file, and line. An anchor under\n{cite}`requirements.references.anchors` MUST be reported as a site for its\nanchored file without a line. A site in a supported language MUST give the\nselector of its smallest enclosing outline node under\n{cite}`requirements.references.outline_comments`. Sites in sources excluded by\n{cite}`requirements.authoring.source_tools` MUST be omitted without aborting.\nAn invalid selection or one matching no definition MUST return an explanatory tool\nerror.\n\nResults are listings without source text. Like directory listings, they MUST\nNOT become evidence inputs; the model requests the sources it relies on with the\n`habeas` tool.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** `references` is implemented and tested against each obligation. One small edge case (below) is not covered by a test and does not change the verdict.\n\n**Implementation**\n- **Advertised interface:** `definitions()` in `src/authoring/tools.rs` advertises a `references` tool. Its only parameter is an optional string `selection`, with `additionalProperties: false`. Its description covers the roles, globs, anchors and the null `line`/`item` values. `dispatch` routes `\"references\"` to `fn references`. Both carry `{impl}` markers.\n- **Selection validation:** `fn references` calls `check_keys` for the argument names and `string()` for the type. It then calls `definition_glob::validate`, so a bad or non-string selection returns a tool error. A name without `*` selects exactly that definition. This follows the `definition_selection` and `definition_globs` terms.\n- **Listing without a selection:** It loads definitions from a `BTreeMap`, which gives full-name order. It filters out terms and returns `{name, kind}` with `kind` being `requirement` or `example`. With no selection it returns `sites: []`.\n- **Listing with a selection:** It returns the matching definitions in the same order. A selection that matches nothing returns an explanatory error.\n- **Sites from source references:** The sites are every reference found by `evidence::collect_references`. That function applies the `requirements.references.targets` discovery rules, skipping `.git`, `target`, and the root `book` and `evidence` directories, and handling escaped roles and code examples.\n  - **Kept references:** References to terms and to names with no definition are dropped. `impl`, `cite` and `test` are kept, each with the definition name it references.\n  - **Excluded sources:** A source is omitted, without aborting, when `sources.access.file` denies it.\n  - **Item selector:** For a file whose profile has a language, `item` is the selector of `outline.owner_at_line(line)`, which is the smallest enclosing node. Other files get `null`. How comments map to nodes is the job of `outline_comments`.\n- **Anchors:** The `:impl:` and `:test:` anchors of matching definitions are added as sites. Excluded files are skipped without aborting. `line` is `null`, and `item` is the selector or `null` for a whole file. This block carries the `{impl}` marker for `requirements.references.anchors`.\n- **Ordering:** All sites are sorted by (name, file, line). `None` sorts before any line number.\n- **No evidence recorded:** `inputs` is always empty, so listings do not become evidence inputs.\n\n**Tests**\n- **Names, sites and errors** (`references_list_names_and_flattened_sites_without_recording_inputs`):\n  - The no-selection listing returns names and kinds in order with empty `sites`, and records no inputs.\n  - An exact selection returns cite, impl and test sites with the correct lines and `fn[...]` selectors, plus a `section@` selector for the Markdown cite.\n  - A glob selection returns three definitions and four sites sorted by name.\n  - A source excluded through `habeas.toml` is omitted.\n  - A missing name, a malformed name, an empty string, a non-string selection and an unknown argument all return errors.\n- **Anchors** (`references_report_anchors_as_file_or_node_sites`): A file anchor has `line: null` and `item: null`. A node anchor `section[Skill]` is reported. An anchor on an excluded file is omitted. Ordering and empty `inputs` are checked.\n- **Advertised schema** (`references_tool_is_advertised_with_an_optional_selection`): It checks the exact parameter schema and the description phrases.\n\n**Remaining gap, not a blocker**\n- `collect_references` records an error when a file cannot be read. `references` turns any such error into an abort. An unreadable file that is also excluded would therefore abort the call instead of being omitted. The tests do not cover this case, and it is an unusual one, so I do not count it as a failure.",
+  "rationale": "**Verdict:** `requirements.authoring.reference_index` is met. One small ambiguity about \"valid\" references is noted at the end.\n\n**Implementation** (`src/authoring/tools.rs`)\n- **Advertising the tool:** `definitions()` registers a `references` tool whose schema is a single optional string `selection` with `additionalProperties:false`. Its description covers the roles, globs, anchors and null `line`/`item`. `dispatch()` routes `\"references\"` to `references()`. Both are marked `{impl}`.\n- **No selection:** `references()` loads definitions from a `BTreeMap`, which gives full-name order. It drops terms and emits `{name, kind}` using `kind.noun()`, which yields `\"requirement\"` or `\"example\"`. It returns `sites: []` and records no inputs.\n- **With selection:**\n  - **Validation:** the selection is validated through `definition_glob::validate`. It is matched through `definition_glob::matches`, which is the shared definition-selection mechanism. An invalid selection, or one that matches nothing, returns `io::Error` with an explanatory message.\n  - **References:** all project references are collected through `collect_references`. That function skips `.git`, `target`, and the root `book`/`evidence` directories. The references are filtered to non-term matches for existing definitions, so built-ins and unknown names are dropped.\n  - **Excluded sources:** sources rejected by `sources.access.file` are silently omitted rather than aborting.\n  - **Selector:** each site gets the selector of `outline.owner_at_line(line)` when the file's profile has a language, otherwise `null`. `owner_at_line` applies the comment-ownership rules of `requirements.references.outline_comments`.\n  - **Anchors:** `:impl:` and `:test:` anchors become sites with `line: null`, and `item` is the selector or null. Anchors in excluded files are omitted.\n  - **Ordering:** sites are sorted by `(name, file, line)`, and `None` sorts before `Some`. They are flattened into one array, and every site names its definition.\n  - **Inputs:** `inputs` is always empty, so results never become evidence.\n\n**Tests**\n- `references_list_names_and_flattened_sites_without_recording_inputs` covers these points:\n  - the no-selection listing, with order, kinds and empty sites;\n  - an exact selection, with Rust items (`fn[work]`, `fn[check]`) and a Markdown `section@…` selector;\n  - a glob selection that flattens several definitions;\n  - omission of a site under a disallowed `private/` directory;\n  - empty `inputs` on every result;\n  - error cases: a missing name, `\"bad name\"`, `\"\"`, a non-string selection, and an unknown argument key.\n- `references_report_anchors_as_file_or_node_sites` covers file and node anchors, `line: null`, ordering, and omission of an anchor to an excluded file.\n- `references_tool_is_advertised_with_an_optional_selection` checks the schema and the key phrases in the description.\n\n**Minor observations (not gaps)**\n- Fenced references that never close are validation errors elsewhere. `references()` does not filter them out of `sites`, which is arguably a loose reading of \"valid\". The requirement does not say to exclude them, so I did not treat this as a gap.\n- Non-language files (item `null`) have no dedicated test case, but the code path is a single trivial branch.\n\nAll obligations in the requirement are implemented and marked `{impl}`. The tests exercise the design space, including boundaries and failure cases.",
   "references": "cdc3b2f17a13ba3eccb1059cc77ae904a6a5eae0b841fe7d8220806b72cc2bcc",
   "inputs": [
     {
@@ -61,7 +61,24 @@
       ],
       "text": [
         ":::{req} targets",
-        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references: discovery MUST skip `.git` and `target` directories at any depth and the project-root `book` and `evidence` directories.",
+        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references: discovery MUST skip `.git` and `target` directories at any depth and the project-root `book` and `evidence` directories.",
+        "",
+        "A source item MUST choose its references for each candidate definition by this",
+        "procedure, and MAY carry several:",
+        "",
+        "1. If the item is a test or test helper designed to verify the definition, it",
+        "   MUST use `{test}`.",
+        "2. Otherwise, if fulfilling the definition depends on the item, it MUST use",
+        "   `{impl}`. For code, this means it makes a decision, performs a check,",
+        "   produces an output, or handles a case the definition specifies. For a type,",
+        "   this means the definition constrains its shape: fields, variants, serialized",
+        "   form, or validation.",
+        "3. Otherwise, if the item should be re-checked or kept in sync when the",
+        "   definition changes, it MUST use `{cite}`.",
+        "4. If the item carries no reference after applying steps 1 to 3 to every",
+        "   definition, it MUST cite the built-in `habeas:none` under",
+        "   {cite}`requirements.references.no_requirement`, justifying why the item",
+        "   exists.",
         "",
         "```text",
         "{impl}`requirements.references.targets`",
@@ -248,7 +265,7 @@
     {
       "file": "src/evidence.rs",
       "item": "struct[RepositoryInspection]",
-      "hash": "800607c371b41426f2bd4e9fe2d864020dc805bdc4efda5ea0627d7978eecbe5"
+      "hash": "c5cb61cfd3c70bb3c02672a99332a58f9522ca90086e52d95413436854ffca47"
     },
     {
       "file": "src/evidence.rs",
@@ -268,12 +285,12 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "ed9509a1f75089d757aaed673cca2b9af204bbb5971b09a403f604a3958ef909"
+      "hash": "3cfe3bc3a23cde911c74359edc5424d312007daaf9975e2be382380ebfb93b10"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
-      "hash": "7489dd27e1333f83abd297027be13bee765f5c1d634606c6f12c14a0d9c1ed3d"
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
     },
     {
       "file": "src/evidence.rs",
@@ -283,7 +300,32 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[collect_references_with_progress]",
-      "hash": "93d27acc2c376f3ff8d2049397cd679c542efd3b5a1c423ec4fe08ba9ad3eebb"
+      "hash": "ab5630cf0b99cf55cb908d1323837e213a865d682af12bf96df095f55a871765"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[innermost_at_line]",
+      "hash": "8d528d088614e5ee17ffa2e2c679a23195b6ecbeb96ff5f95b9f466d288b7355"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[declared_on_line]",
+      "hash": "73cef5253c65b3cc36adcf1739851ff5b452cc3bcb3584553c84c630daf00928"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[comment_owners_at_line]",
+      "hash": "d146efc8ec0a109dda903d8a745fa3c50a29acabb0c2b7664f17d1075f0008bf"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[owner_at_line]",
+      "hash": "d8452a18a0e4184beb2070d2cd3a61abc9735a76035d440478bca922336e0030"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[nodes_for_lines]",
+      "hash": "247f3246871a13189002a690d858b7143488fe089e07a758c80ae7a45cde9108"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas add-input` MUST accept exactly one evidence target: `--for-requirement <full-name>` or `--for-example <full-name>`. It MUST accept exactly one input mode: `--item` or `--requirements`. It MUST use the same input schema and resolution rules as validation. Repeating a selector for a target MUST refresh its existing input rather than add a duplicate; an unchanged input MUST leave the record unchanged. The command MUST report every input it adds or refreshes. It MUST create a missing target record with a pending determination. Whenever it changes a record, it MUST leave `determination` false with a nonempty rationale indicating that review is pending.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is satisfied.** The implementation covers every obligation, the `{impl}` markings are complete, and the tests cover the main cases and failures.\n\n**Implementation**\n- **One target, one mode.** The `AddInput` variant in `src/main.rs` uses clap `ArgGroup`s. `target` is `for_requirement` or `for_example`. `mode` is `item` or `requirements`. Each group is required and not repeatable, so clap rejects zero or two members with exit code 2. `main` maps the arguments to `InputTarget` and `InputMode`.\n- **Same schema and resolution as validation.** `add_input` in `src/add_input.rs` builds `InputSelector`s. It calls `InputSelector::resolve` and `to_input` from `src/inputs.rs`, the same code validation uses. `--item <file:line>` expands to every outline node declared on that line through `Outline::declared_on_line`, and a line with no node is an error. `--requirements` becomes a `Requirements` selector. Evidence-path allow/disallow handling goes through the same outline parsing.\n- **Target checks.** `add_definition_inputs` rejects unknown names and wrong-kind targets, such as an example or a named definition given as a requirement. It rejects them before anything is written.\n- **Refresh without duplicates.** `update_inputs` finds an existing input by selector using `InputSelector::from_input`. If the input matches exactly, it reports \"unchanged\" and changes nothing. If it differs, it replaces the input in place and reports \"refreshed\". Otherwise it appends the input and reports \"added\".\n- **Reporting.** Every selector gets a line in the output with its action, plus the matches for a `--requirements` selection. The output is not limited to adds and refreshes. It also lists unchanged inputs and the captured and reference-set lines, which other requirements define (`definitions.capture` and `ci.reference_set`, both marked on these functions).\n- **Missing record.** `add_definition_inputs` creates a missing record with `determination: false` and a \"Review pending…\" rationale.\n- **Changed record.** Whenever `update_inputs` sets `changed` (an added or refreshed input, a captured definition, or a changed reference set), it sets `determination` to false and writes a nonempty \"Review pending…\" rationale.\n- **No write on unchanged or failed runs.** The file is written only when `output.1` is true, so unchanged or rejected runs leave it byte-for-byte untouched.\n- **Marking.** The helpers `read_or_new` and `invalid_input`, `to_input`, the CLI variant and `main` all carry `{impl}` markers. I found no unmarked code implementing a part of this requirement. The extra behaviour (term-dependency capture, reference-set recording) is covered by other requirements cited in the markers.\n\n**Tests (`tests/commands.rs`)**\n- `add_input_requires_one_target_and_mode_and_resets_changed_records` covers:\n  - four invalid target/mode combinations (exit 2, usage message, no `evidence/` directory);\n  - unknown and wrong-kind targets, with no files created;\n  - an exact name and a glob for `--requirements`, with their stored text and matches;\n  - creation of the record with a pending determination, and the `references` value;\n  - idempotence after approval, where \"unchanged\" is reported and the file bytes are identical;\n  - a rejected selection leaving the record unchanged;\n  - refresh in place after the sources change, with no duplicates (3 inputs), `determination` back to false and a \"Review pending\" rationale;\n  - a reference-set-only change that still resets review while inputs are unchanged.\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently` covers:\n  - multiple nodes on one line (`fn[main]` and its nested `fn[nested]`);\n  - plain-text line nodes;\n  - failures for a line with no node, a non-numeric line, and a missing file;\n  - the example target with a glob;\n  - the pending determination;\n  - a bad glob failing.\n- `add_input_external_sources_respect_allow_and_disallow` covers allowed and disallowed external paths, with the record untouched on failure.\n- `add_input_rejects_function_targets_without_creating_evidence` covers the removed `--for-rust-item` flag and the help text.\n\nMinor gap: the pending determination on a newly created record is asserted for the requirement target only. The example target uses the same code path.",
+  "rationale": "**Judgment: the requirement is met. The implementation is complete and marked, and the tests cover it.**\n\n**Implementation**\n\n- **Target and mode.** `Command::AddInput` in `src/main.rs` uses two clap `ArgGroup`s. `target` is required, non-multiple, and holds `--for-requirement` or `--for-example`. `mode` is required, non-multiple, and holds `--item` or `--requirements`. The `main` arm maps these to `InputTarget` and `InputMode`.\n- **Same schema and resolution as validation.** `src/add_input.rs::add_input` builds an `InputSelector` (`Outline` or `Requirements`) and calls `selector.resolve(...)` and `selector.to_input(...)`. Validation, authoring and `info` use the same `InputSelector::resolve` and `from_input` in `src/inputs.rs`, for example `validate_resolved_input` and `evidence_input_ranges` in `src/evidence.rs`.\n- **`--item`.** `selectors_for_mode` parses `<file>:<line>` and selects every outline node declared on that line. It returns a clear error if none exists, and the line parse and file-parse errors are also reported.\n- **Wrong or unknown target.** `add_definition_inputs` rejects an unknown name and a wrong-kind name (an example, a requirement, or a definition used as the target). It does this before anything is written.\n- **Refresh without duplicates.** `update_inputs` finds an existing input by selector (`InputSelector::from_input(old) == selector`). If it matches, the input is `unchanged` when equal and otherwise replaced and reported `refreshed`. If nothing matches, the input is pushed and reported `added`. The record is written only when `changed` is true, so an unchanged input leaves the file byte-identical.\n- **Reporting.** Each input is reported as `- added/refreshed/unchanged: <selector>`, with the matches for a requirements selection. Captured definitions and a recorded reference set are reported too.\n- **Missing record.** `read_or_new` supplies a fallback record with `determination: false` and the rationale \"Review pending: …\".\n- **Reset on change.** Whenever `changed` is true, `update_inputs` forces `determination` to `false` and sets a nonempty \"Review pending: …\" rationale. This covers changed inputs, newly captured definitions and a changed reference set.\n- **Marking.** Every function involved (`add_input`, `selectors_for_mode`, `add_definition_inputs`, `update_inputs`, `read_or_new`, `invalid_input`, `to_input`, the enums and the CLI) carries `{impl}`. The extra behavior (definition capture, reference-set recording, evidence paths, containment) is attributed to other requirements: `requirements.definitions.capture`, `requirements.ci.reference_set`, `requirements.configuration.evidence_paths`, and so on. I found no unmarked implementation of the subject.\n\n**Tests** (all in `tests/commands.rs`)\n\n- `add_input_requires_one_target_and_mode_and_resets_changed_records` covers:\n  - conflicting or missing target or mode, which exits with code 2 and creates no `evidence/` directory;\n  - unknown and wrong-kind targets, which write nothing;\n  - creation of a pending record, with exact-name and glob inputs;\n  - `unchanged` on a repeat with the record byte-identical after approval;\n  - a rejected selection leaving the record untouched;\n  - `refreshed` in place after the sources change, without duplicates, with `determination` reset to `false` and \"Review pending\" set;\n  - a changed reference set resetting review even when every input is unchanged.\n- `add_input_modes_capture_outline_nodes_and_refresh_idempotently` covers:\n  - multiple nodes declared on one line (nested items), and plain-text line nodes;\n  - failures for a line with no node, a bad line number and a missing file, each leaving the record unchanged;\n  - the `--for-example` target and `--requirements` globs, including the \"matches no requirement\" error;\n  - the pending state, and consistency with `info`.\n- `add_input_external_sources_respect_allow_and_disallow` covers allowed and disallowed external paths, with the record untouched on failure.\n- `add_input_rejects_function_targets_without_creating_evidence` covers a stale `--for-rust-item` option, which is rejected without creating evidence, and checks the `--help` text.\n\nThese tests cover the main boundaries and failure cases for every obligation in the requirement.",
   "references": "07ae769bc1757ee7eec5ffb415da979f7cb45b1bb0b4506a0178f7c4582a9b03",
   "inputs": [
     {
@@ -63,12 +63,12 @@
     {
       "file": "src/main.rs",
       "item": "enum[Command]",
-      "hash": "e79548048789858feda4b3655771b815ab065d01f81b8bb2a1203a63d82a7194"
+      "hash": "457d88e87ea6e8701cecd57a6df44b7064f6c55c32081a6d3cd82ab95ad780bc"
     },
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "e3549f9dbbff2aee432420a2ce46199ffa1860d8687be924e4d97d9c57771d53"
+      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
     },
     {
       "file": "tests/commands.rs",
@@ -91,14 +91,54 @@
       "hash": "80ca3b46648359ab84fccedb9c2ef70e7e0cd4b7f8df90810a93e7d1aa577fde"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "use@9deeef890732",
-      "hash": "9deeef8907322f72d657fceb434a61fb71a6ba1456f75a3570b2ffd0913d8753"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate_review]",
+      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[Anchor]/fn[resolve]",
+      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "ce77e1738db89880bd49602d3947249e47e8a9dcf6f3c520e06dcff3d41e58e3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "1f2cccc74a111d9173771fbe3c693bac16b47809a612063b9fcddbd6840dd7d3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[evidence_input_ranges]",
       "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
+      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]/fn[current]",
+      "hash": "702526d29352d4816fa00ddc14bed815cf62f7adc34830949ca206c0b29c15dc"
     },
     {
       "file": "src/index.rs",
@@ -107,8 +147,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[from_input]",
-      "hash": "36656c01e7424e4090153587c050dfd41868a8f14b91f908649232e20450cb22"
+      "item": "impl[ParsedSource]/fn[resolve]",
+      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
     },
     {
       "file": "src/inputs.rs",
@@ -116,109 +156,84 @@
       "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
-      "file": "src/lib.rs",
-      "item": "use@93013b067bff",
-      "hash": "93013b067bff50c284178a25b3ddd82e8ff9784d50a7bca6914ac30934a29dd6"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[add_input]",
-      "hash": "3002f31015d450b28bd63d702fa14c6ba70f52646f168ae774dafc87df8cee0b"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[authoring]",
-      "hash": "931cc87bcdd845c866365bfecf12600762b2a35858e471116fa35285e8614c8c"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[config]",
-      "hash": "e879b80085b71e7ff6548c87f8009794996fa037e3ce6cae5dd809ee8d8d3130"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[terms]",
-      "hash": "43ffc28e2f2f736a74c6a3942b9db80b346f48f76536087cadcb8ee7c371f20a"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "use@bc85dd3c96fa",
-      "hash": "bc85dd3c96fa928f0146f9c0bd49b447f117e6e0d0f9c7827bf65e1be79cf90d"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "use@2218ad1ebf7d",
-      "hash": "2218ad1ebf7d8113fcc16bf29fe20a759064f752b1fc33f44844352057e2d220"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "use@9aa99ad89c93",
-      "hash": "9aa99ad89c9349d8907962a5fa220f06b18d4cc163e5df51d30fe3a6692ccee9"
-    },
-    {
-      "file": "src/outline/css.rs",
-      "item": "fn[prelude_name]",
-      "hash": "079fd5e69813e613938f2e3a319c5e8e8726a52e5081fd08b8fede1d6b54fc9d"
-    },
-    {
-      "file": "src/outline/css.rs",
-      "item": "fn[selectors_name]",
-      "hash": "d4bdd69ff60ed5998d77615b5f377c19b306c574e973f299d72d10322efda40c"
-    },
-    {
-      "file": "src/outline/markdown.rs",
-      "item": "fn[heading_name]",
-      "hash": "b629dad0697ddcd66deccdacf82888ff380bccc7938bcbdce148ddc32fcfc67b"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[plain_text]",
-      "hash": "cbc6b87bc4f6a40b6820dc65c8f96e6d0c4eb8a1c43e54382032b958eb50f884"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[name]",
-      "hash": "cb018b86787ba4a8b1b0528df56b50617c9175b374a697727ec1d9f0cfff4e80"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[walk]",
-      "hash": "05a24bc13c26a59d9e0ced08b8dd9cc1b36d228cab3dd1f8a25818f02a24d31e"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
-      "hash": "0805d3bbba28444c7131a5b80a62bc35c7cdc46b613eeb47a0c8c2426806b397"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[declared_on_line]",
-      "hash": "73cef5253c65b3cc36adcf1739851ff5b452cc3bcb3584553c84c630daf00928"
-    },
-    {
-      "file": "src/outline/profile.rs",
-      "item": "type[CustomName]",
-      "hash": "1c0c15fd0382797faf7f5a0dddec5a7bfaa56026fc4639d3f4ce0965a61a5f4d"
-    },
-    {
-      "file": "src/outline/rust.rs",
-      "item": "fn[impl_name]",
-      "hash": "24c09ff811c2c914f2943230e73b83074754d8a3d761aca47f31b2e2158b1eaa"
-    },
-    {
-      "file": "src/outline/rust.rs",
-      "item": "fn[extern_name]",
-      "hash": "8a7b8f22c2baa6506598b59f9d05443240557fb3c88d1877ef0d117cd7a61d55"
+      "file": "src/inputs.rs",
+      "item": "fn[outline_input]",
+      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[yaml_comments_before_a_key_belong_to_that_key_not_the_previous_one]",
-      "hash": "38dcef33d9ac46b524cef888c64af6ee12eab2ae3b6d94b138088caf4c23de7c"
+      "item": "fn[rust_selectors_follow_syntactic_ancestry]",
+      "hash": "04f214ddc37cc19975a1c3b3e9b37cf42537f2109fd9fcab35e139d561cfa1b7"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[nodes_are_declared_on_their_name_line_or_where_their_syntax_starts]",
-      "hash": "eba203258b5c0d7bf78eb030e6b7a6d06992277b198917900af9570bfac9a316"
+      "item": "fn[identity_hashes_include_own_attached_siblings_but_not_descendants]",
+      "hash": "32ee4fde86b6940b0d7790a0f3e874d45cf36ffde804f676a6f159d689eb227d"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[anonymous_selectors_use_identity_hashes]",
+      "hash": "3b8ce2033af0eabfb93fa3242d82e70aeb880f0507210431d1b3f6c345f46731"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
+      "hash": "9542cefc7e015427e3b771eea77d2244ed2232e0bc3ea41296f3a63f1c479e63"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[run_hash]",
+      "hash": "738e876d4fd5ac86eeb171d1a46af2eb5d21389780a5042cc604170f4c9aaa7b"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[prose_words_are_encoded_separately]",
+      "hash": "155e51164266d2b832a0f570ddff8156b862cddcbf1ce6e1563d7b8a48ae4e8d"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[string_literals_hash_as_words]",
+      "hash": "ae134a1f513cece94e735d05482ae211853033371f38caa75e514fe5299ed4e3"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[reflowing_markdown_paragraphs_keeps_the_hash]",
+      "hash": "4c09d263039981e32ad03ebf535a296048ba27b182c8f007319a3c722d1c9618"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[reflowing_inner_and_block_doc_comments_keeps_the_hash]",
+      "hash": "4792c243f4cd4aeb1d7e788461afc17bc86756bc6c86b21841248baa7ba488e7"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[comment_runs_belong_to_the_next_node_or_their_container]",
+      "hash": "666d5a3c362eb4b50fe21daa0f83f84623a675bdea49a445f333947ab1bdc0f1"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[top_level_comment_with_nothing_after_belongs_to_the_root]",
+      "hash": "86d11e435d42687449a96df24c542449061f2ebf6c6621fee158877e10c5fad9"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[plain_text_lines_are_interchangeable_anonymous_nodes]",
+      "hash": "903bba444617c36a46085e4c98caea488135be8d26d47516ab6f808b389a2863"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[markdown_profile_nests_sections_by_heading]",
+      "hash": "00f45167f36261d4e1d67b785813d350bf2e2a84f5eb81a607a198e98255cbeb"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root]",
+      "hash": "1a4ab867146ac9c8828af6bda2453ed75b32c130c01afdc0f1bf964815bd4cc1"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[duplicate_names_are_numbered_in_source_order_without_line_numbers]",
+      "hash": "16214a4586dd5b69987d0fa62070cb81fa6be9605dacaab8246470fe37fa7a49"
     },
     {
       "file": "src/terms.rs",

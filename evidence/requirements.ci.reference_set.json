@@ -1,8 +1,8 @@
 {
-  "requirement": "A definition's reference set MUST consist of its current incoming `{impl}` and\n`{test}` edges under {cite}`requirements.references.targets` and\n{cite}`requirements.references.anchors`: for each edge, its role and the file and\noutline selector of the node the reference belongs to under\n{cite}`requirements.references.outline_comments`, or of the anchored file or\nnode. `{cite}` references MUST NOT contribute. The reference-set digest MUST be\nthe SHA-256 digest of an unambiguous encoding of those entries in sorted order,\nso it does not depend on line numbers or on the order references are found.\nAuthoring MUST record the digest of the reference set it supplied, and\nvalidation MUST recompute it and report a changed reference set as stale\nevidence. Adding or removing an `{impl}` or `{test}` reference or anchor,\nchanging its role, or moving it to a different node MUST therefore make the\nevidence stale even when no recorded input changed; moving a reference within\nthe node it belongs to MUST NOT.",
+  "requirement": "A definition's reference set MUST consist of its current incoming `{impl}` and\n`{test}` edges under {cite}`requirements.references.targets` and\n{cite}`requirements.references.anchors`: for each edge, its role and the file and\noutline selector of the node the reference belongs to under\n{cite}`requirements.references.outline_comments`, or of the anchored file or\nnode, and, for a fenced reference in a source outside the book, the words of\nits body under the word rule of {cite}`requirements.references.structural_hash`.\n`{cite}` references MUST NOT contribute. The reference-set digest MUST be\nthe SHA-256 digest of an unambiguous encoding of those entries in sorted order,\nso it does not depend on line numbers or on the order references are found.\nAuthoring MUST record the digest of the reference set it supplied, and\nvalidation MUST recompute it and report a changed reference set as stale\nevidence. Adding or removing an `{impl}` or `{test}` reference or anchor,\nchanging its role, editing its commentary, or moving it to a different node\nMUST therefore make the evidence stale even when no recorded input changed; moving a reference within\nthe node it belongs to MUST NOT.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation, and the tests cover the main points of the design space. One small deviation from the spec is noted below.\n\n**Implementation**\n- `reference_set_digest` (`src/evidence.rs`) builds the reference set.\n  - It keeps only `Impl` and `Test` references whose name matches the definition. `{cite}` references are filtered out, so they do not contribute.\n  - Each reference contributes its role, its file, and the selector of the outline node it belongs to. The node comes from `Outline::owner_at_line`, which uses the comment-run ownership of `requirements.references.outline_comments`. Plain-text files, and sources that cannot be outlined, contribute the root selector.\n  - Line numbers are never encoded, so moving a reference within its node leaves the digest unchanged.\n  - Anchors from `definition.anchors` contribute their role, file and selector.\n  - Entries are sorted before hashing, so discovery order does not matter.\n  - The encoding is SHA-256 over a count followed by length-prefixed fields, which makes it unambiguous.\n- Authoring records the digest.\n  - `AssessmentSources::prepare` computes it, and `assess` writes it to the `references` field of the evidence record.\n  - `add_definition_inputs` and `update_inputs` in `src/add_input.rs` record it too. A changed digest resets the determination to false and the rationale to a \"Review pending\" message even when no input changed.\n- Validation recomputes the digest.\n  - `validate_references` compares the recorded digest with the current one and reports \"reference set changed\" as an error.\n  - `validate_evidence_file` enforces that `references` is a lowercase hex SHA-256 string.\n  - `reference_set_digest_for` is a public helper for recomputing a digest.\n- Marking: the `{impl}` references sit on all of these sites.\n- Deviation: the encoding includes an extra `origin` field (\"reference\" or \"anchor\"). The spec lists only role, file and selector. The effect is that replacing a reference with an anchor to the same node changes the digest. That is conservative, and adding or removing the edge is stale under the spec anyway, so I do not count it as a gap.\n\n**Tests**\n- `reference_set_digest_tracks_impl_and_test_edges_by_node` covers:\n  - Determinism, and a 64-character hex digest.\n  - Invariance: unrelated lines, moves within a node, comment placement within a node, text-file and Markdown line shifts, and `{cite}` additions.\n  - Change: adding or removing a reference, re-roling, moving to another node, and Markdown section changes.\n  - Anchor changes: `:impl:` and `:test:` on a file, and on a node.\n- `validation_requires_a_current_reference_set_digest` covers:\n  - A current digest, which passes.\n  - A missing, non-string, uppercase or truncated digest, which each give the expected error.\n  - A new `{impl}` inside an already-covered node, which gives \"reference set changed\" while no input hash changed.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` and `bundle_combines_direct_references_terms_and_current_existing_selectors` verify that authoring records the digest.\n- `add_input_requires_one_target_and_mode_and_resets_changed_records` verifies that add-input records the digest, and that a changed reference set resets review even when every input is unchanged.\n- `batch_reauthors_a_false_judgment_when_its_reference_set_changes` verifies end to end that a changed reference set makes the record stale and that batch authoring re-authors it.\n- Fixture helpers in `tests/outcomes.rs`, `tests/evidence_boundaries.rs` and `src/evidence.rs` keep the other tests consistent.\n\nNo acknowledged gaps (FIXMEs) were found.",
-  "references": "9a81dfff37786ec3ca6ebf0409ae73de0b724a96af3f1b3ce91e88bb33cff1cd",
+  "rationale": "**Judgment:** the sources satisfy `requirements.ci.reference_set`. The implementation and the tests both cover it.\n\n**Implementation**\n- `reference_set_digest` in `src/evidence.rs` builds the reference set. It keeps only edges that name the definition and have role `Impl` or `Test`, so `{cite}` references are excluded.\n- For each edge it records the role, the file, and the selector of the owning outline node. The owner comes from `Outline::owner_at_line`, which applies the comment-run ownership rule of `outline_comments` (a comment's owner, otherwise the innermost covering node, otherwise the root). Plain-text files contribute the root selector.\n- Because the selector is of the owning node, moving a reference within its node leaves the digest unchanged. Moving it to another node changes the digest.\n- Anchors from `definition.anchors` contribute their role, file and selector as written.\n- Fenced references outside the book contribute their body as a list of words, split on whitespace, so reflowing does not change the digest. Book commentary is excluded, because it is already part of the declaration text.\n- Entries are sorted. They are then hashed with SHA-256 using length-prefixed fields, an unambiguous encoding that does not depend on line numbers or discovery order.\n- Authoring records the digest in three places:\n  - `AssessmentSources::prepare` computes it and `record` writes it into the evidence file.\n  - `add_definition_inputs` and `update_inputs` in `src/add_input.rs` record it, and a changed digest resets the determination to false.\n  - `reference_set_digest_for` exposes it to tests and callers.\n- Validation recomputes the digest:\n  - `validate_references` compares the recorded digest with the recomputed one. It reports \"reference set changed\" when they differ.\n  - `validate_evidence_file` checks that the field is a lowercase SHA-256 hex string.\n- Staleness fires even when no recorded input changed, because the check does not depend on the inputs.\n- The `{impl}` markers are placed on the digest functions, the struct, the authoring functions and the validation code. I found no behaviour outside the requirement that lacks a governing definition.\n\n**Tests**\n- `reference_set_digest_tracks_impl_and_test_edges_by_node` covers determinism and the 64-hex format. It checks that these leave the digest unchanged:\n  - unrelated lines\n  - moves within a node\n  - a `{cite}` added in code or text\n  - shifted lines in Markdown\n- It checks that these change it:\n  - adding a reference\n  - a second reference in the same node\n  - removing a reference\n  - changing the role\n  - moving to another node\n  - removing a text file's reference\n  - a Markdown section change\n  - a new `:impl:` or `:test:` anchor, including a node anchor\n- `fenced_commentary_outside_the_book_contributes_to_the_reference_set` covers four cases:\n  - reflowing the commentary leaves the digest unchanged\n  - changing the commentary words changes it\n  - the fenced form differs from the inline form\n  - in-book commentary is ignored\n- `validation_requires_a_current_reference_set_digest` covers a missing digest, a non-string, uppercase and truncated digests, and a stale digest after a new `{impl}` inside an already-covered node.\n- `batch_reauthors_a_false_judgment_when_its_reference_set_changes` shows that a changed reference set is reported as stale and triggers re-authoring.\n- The `add-input` test shows that a changed reference set is recorded and resets the determination even when all inputs are unchanged.\n- The authoring tests check that the recorded digest equals `reference_set_digest_for` and that the record carries it.\n\nI found no unacknowledged gaps.",
+  "references": "303749d6222315a4ddf31982fc4a9e1b28afbe21ba1ec205455612045d36bbf3",
   "inputs": [
     {
       "requirements": "requirements.ci.reference_set",
@@ -16,14 +16,16 @@
         "{cite}`requirements.references.anchors`: for each edge, its role and the file and",
         "outline selector of the node the reference belongs to under",
         "{cite}`requirements.references.outline_comments`, or of the anchored file or",
-        "node. `{cite}` references MUST NOT contribute. The reference-set digest MUST be",
+        "node, and, for a fenced reference in a source outside the book, the words of",
+        "its body under the word rule of {cite}`requirements.references.structural_hash`.",
+        "`{cite}` references MUST NOT contribute. The reference-set digest MUST be",
         "the SHA-256 digest of an unambiguous encoding of those entries in sorted order,",
         "so it does not depend on line numbers or on the order references are found.",
         "Authoring MUST record the digest of the reference set it supplied, and",
         "validation MUST recompute it and report a changed reference set as stale",
         "evidence. Adding or removing an `{impl}` or `{test}` reference or anchor,",
-        "changing its role, or moving it to a different node MUST therefore make the",
-        "evidence stale even when no recorded input changed; moving a reference within",
+        "changing its role, editing its commentary, or moving it to a different node",
+        "MUST therefore make the evidence stale even when no recorded input changed; moving a reference within",
         "the node it belongs to MUST NOT.",
         ":::"
       ]
@@ -35,7 +37,24 @@
       ],
       "text": [
         ":::{req} targets",
-        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references: discovery MUST skip `.git` and `target` directories at any depth and the project-root `book` and `evidence` directories.",
+        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Evidence snapshots and generated build output MUST NOT be counted as additional source references: discovery MUST skip `.git` and `target` directories at any depth and the project-root `book` and `evidence` directories.",
+        "",
+        "A source item MUST choose its references for each candidate definition by this",
+        "procedure, and MAY carry several:",
+        "",
+        "1. If the item is a test or test helper designed to verify the definition, it",
+        "   MUST use `{test}`.",
+        "2. Otherwise, if fulfilling the definition depends on the item, it MUST use",
+        "   `{impl}`. For code, this means it makes a decision, performs a check,",
+        "   produces an output, or handles a case the definition specifies. For a type,",
+        "   this means the definition constrains its shape: fields, variants, serialized",
+        "   form, or validation.",
+        "3. Otherwise, if the item should be re-checked or kept in sync when the",
+        "   definition changes, it MUST use `{cite}`.",
+        "4. If the item carries no reference after applying steps 1 to 3 to every",
+        "   definition, it MUST cite the built-in `habeas:none` under",
+        "   {cite}`requirements.references.no_requirement`, justifying why the item",
+        "   exists.",
         "",
         "```text",
         "{impl}`requirements.references.targets`",
@@ -101,6 +120,32 @@
       ]
     },
     {
+      "requirements": "requirements.references.structural_hash",
+      "matches": [
+        "requirements.references.structural_hash"
+      ],
+      "text": [
+        ":::{req} structural_hash",
+        "A node's structural hash MUST be the SHA-256 digest of an unambiguous encoding of",
+        "its outline-relevant structure, including siblings its profile attaches to it:",
+        "the kinds of its named grammar nodes and, in source order, its text pieces. A",
+        "text piece MUST be the text of a leaf token, or text inside a node that no child",
+        "token covers. Each text piece MUST be hashed as its ordered list of words, where",
+        "words are separated by whitespace, the whitespace itself, including leading and",
+        "trailing whitespace, is never hashed, and each word is encoded separately, so",
+        "`ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments",
+        "MUST be excluded, except comment kinds the profile includes; the Rust profile",
+        "MUST include doc comments. For an included comment, only its text MUST be hashed,",
+        "not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`,",
+        "so reflowing it across more or fewer lines does not change the hash. A `line`",
+        "node's hash MUST be computed by the same word rule over the line's text. A node's",
+        "identity hash MUST be computed the same way but MUST also exclude its outline",
+        "descendants and their attached siblings, so editing a descendant does not change",
+        "its ancestors' selectors.",
+        ":::"
+      ]
+    },
+    {
       "file": "src/add_input.rs",
       "item": "fn[add_definition_inputs]",
       "hash": "33aa1e4cace467d8d1511df506c97eaeb407f8bc776d6a4f843dd3fb56f38d89"
@@ -113,7 +158,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "e0f8d24bc9f29567593da650a14132845f1df6568a3da15c3c94ff025608a095"
+      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -122,8 +167,13 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[record]",
+      "hash": "0a005949d75be310771a207c2f340d09c147eee87c0fb4b4d0f88ad08bc6421b"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
-      "hash": "df71eface1ebf0b38f8b756edd91c75c101101bfb2d86bfa5dcc6f08f25b765f"
+      "hash": "70212a0eb3b417cf27f2ae46ecfcda09be4504a1d065155a83c5358153d9811b"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -137,13 +187,18 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "struct[SourceReference]",
+      "hash": "ca537c4b401782640fefcfb0906d8285c389870330d43e3ccf206480c28c090d"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "struct[ReferenceSetEntry]",
-      "hash": "0b9cc9886a958b4994f5c9c97b36f21302dfbc0bbe3400358928ca30768ad8d7"
+      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[reference_set_digest]",
-      "hash": "ec478c2139c990c709c04d3ca855e4e33533d491f91f179c45c402ccc790a509"
+      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
     },
     {
       "file": "src/evidence.rs",
@@ -153,7 +208,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
-      "hash": "7489dd27e1333f83abd297027be13bee765f5c1d634606c6f12c14a0d9c1ed3d"
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
     },
     {
       "file": "src/evidence.rs",
@@ -173,7 +228,7 @@
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[validation_requires_a_current_reference_set_digest]",
-      "hash": "d0d37434988bcab47a677b4f2d2292c6339192c12691014d650e2cdfedbdcf35"
+      "hash": "353b453b0a20219212386d36d056af2563a26be0805477dadedb44c06d7747bf"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -194,6 +249,16 @@
       "file": "tests/outcomes.rs",
       "item": "fn[write_record]",
       "hash": "674724c69adfae929c34fed7afc2586280266a035ca5fc26c8b0a0a7bb56b7e0"
+    },
+    {
+      "file": "tests/references.rs",
+      "item": "fn[digest]",
+      "hash": "c7a38f4e53d32fdea380463389798cb21ac586fd97c61f278d20d59022e05ff3"
+    },
+    {
+      "file": "tests/references.rs",
+      "item": "fn[fenced_commentary_outside_the_book_contributes_to_the_reference_set]",
+      "hash": "17057759981af16ea24bf98875260dfe602e891ec5e7af9f512ae121cad9bf8e"
     },
     {
       "file": "src/outline/mod.rs",
