@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `references` tool with this interface:\n\n```text\nreferences({ selection: String? }) -> ReferenceIndex\n\nReferenceIndex {\n    definitions: Array<DefinitionName>,\n    sites: Array<ReferenceSite>,\n}\n\nDefinitionName { name: String, kind: \"requirement\" | \"example\" }\n\nReferenceSite {\n    name: String,\n    role: \"impl\" | \"cite\" | \"test\",\n    file: String,\n    line: Integer?,\n    item: String?,\n}\n```\n\n`selection` MUST be a {term}`requirements.references.definition_selection`.\nWithout `selection`, the tool MUST return\nthe full name and kind of every requirement and named example in full-name\norder, with empty `sites`. With `selection`, it MUST return the selected definitions\nin full-name order and one flattened `sites` array containing every valid\n`{impl}`, `{cite}`, and `{test}` reference to any match under\n{cite}`requirements.references.targets`, each naming the definition it\nreferences, ordered by name, file, and line. An anchor under\n{cite}`requirements.references.anchors` MUST be reported as a site for its\nanchored file without a line. A site in a supported language MUST give the\nselector of its smallest enclosing outline node under\n{cite}`requirements.references.outline_comments`. Sites in sources excluded by\n{cite}`requirements.authoring.source_tools` MUST be omitted without aborting.\nAn invalid selection or one matching no definition MUST return an explanatory tool\nerror.\n\nResults are listings without source text. Like directory listings, they MUST\nNOT become evidence inputs; the model requests the sources it relies on with the\n`habeas` tool.",
-  "determination": true,
-  "rationale": "**Judgment: `requirements.authoring.reference_index` is satisfied.** The implementation covers each obligation and the tests exercise the main cases. I found a few small edge gaps, listed at the end; none is acknowledged in a source comment.\n\n**Implementation**\n- **Tool exposure.** `definitions()` in `src/authoring/tools.rs` advertises `references` with one optional string `selection` and `additionalProperties: false`. `dispatch` routes `\"references\"` to `references()`. Both carry `{impl}` for this requirement.\n- **Selection validation.** `references()` rejects unknown keys through `check_keys`. It rejects non-string selections through `string`. It validates the selection with `crate::definition_glob::validate`, which is the `definition_selection` term, and `definition_globs` carries the matching.\n- **No selection.** The tool returns every non-term definition as `{name, kind}`. `load_definitions` returns a `BTreeMap`, so the order is full-name order. `sites` is empty and `inputs` is empty.\n- **With selection.** The tool returns the matching definitions in the same order. It returns one flattened `sites` array built from the collected references (`collect_references`), filtered as follows:\n  - Terms and built-in names are dropped, because only names found in `definitions` as non-terms survive.\n  - Only references whose name matches the selection are kept.\n  - Each site carries `name`, `role` (from `kind.label()`), `file`, `line` and `item`.\n  - Sites are sorted by `(name, file, line)`.\n- **Anchors.** The anchors loop adds each `:impl:` and `:test:` anchor of a selected definition as a site with `line: null`. `item` is the selector, or null for a whole-file anchor.\n- **Outline selector.** For a file with a language profile, `item` is the selector of `outline.owner_at_line(line)`. That function implements `outline_comments`: comment owner first, otherwise the smallest innermost node. Files without a language give `item: null`.\n- **Excluded sources.** Sites and anchors whose file fails `sources.access.file` are skipped with `continue` or filtered out. Nothing aborts.\n- **Errors.** A selection that is invalid, or that matches no definition, returns an `io::Error`, which becomes an explanatory tool error.\n- **No evidence inputs.** `ToolDelivery.inputs` is always empty, so results are not recorded as evidence.\n- **Marking.** The three functions that carry the behaviour are all marked `{impl}`. No unspecified behaviour is present in them.\n\n**Tests** (all marked `{test}`)\n- `references_list_names_and_flattened_sites_without_recording_inputs` checks:\n  - the no-selection listing with kinds, full-name order and empty sites;\n  - an exact selection with ordered impl, cite and test sites;\n  - Rust `item` selectors, including a cite inside a function body and a comment run owned by the next function;\n  - a Markdown site with a `section@…` item;\n  - a glob selection that flattens sites across definitions;\n  - omission of a site in a `disallow`ed directory;\n  - empty `inputs` throughout;\n  - errors for a missing name, a bad name, an empty string, a non-string selection and an unknown argument key.\n- `references_report_anchors_as_file_or_node_sites` checks:\n  - file anchors and `path#selector` anchors, both with `line: null`;\n  - sorting across definitions;\n  - omission of an anchor on a disallowed file.\n- `references_tool_is_advertised_with_an_optional_selection` checks the schema and the description wording.\n\n**Minor edge gaps**\n- A plain-text site with `item: null` has no direct assertion.\n- The tool does not filter out unclosed fenced references or anchors with a bad selector, even though the spec says \"valid\". Those are reported as validation errors elsewhere.\n- An I/O scan error in an excluded file would fail the tool call.",
+  "determination": false,
+  "rationale": "**Verdict: not satisfied.** The `references` tool meets most of the requirement. It has one gap: it can report invalid references as sites, and no test covers that case.\n\n**What is implemented correctly** (`src/authoring/tools.rs`)\n- **Advertisement:** `definitions()` advertises the tool with an optional string `selection`, `additionalProperties:false`, and a description covering the roles, globs, anchors and null items. `dispatch` routes `\"references\"` to `references()`. Both carry `{impl}` markers.\n- **Selection validation:** `selection` is checked with `definition_glob::validate`. A name without `*` selects only that definition (via `definition_glob::matches`). An invalid selection returns an error, and so does a selection that matches nothing, with an explanatory message.\n- **No selection:** the tool returns every non-term definition as `{name, kind}`, in `BTreeMap` full-name order, with `sites: []` and no recorded inputs.\n- **With selection:**\n  - It returns the selected definitions in order and one flattened `sites` array.\n  - Each site names its definition and carries role, file, line and item. For a language-supported file, `item` is the selector from `owner_at_line`, which applies comment-run ownership. Otherwise it is null.\n  - Sites are sorted by (name, file, line).\n  - Anchors are added as sites with `line: null`, and `item` is the selector or null.\n  - Sources the access policy excludes are skipped without aborting, for both references and anchors.\n  - `inputs` is always empty, so results do not become evidence.\n- **Tests:** three tests are marked `{test}`.\n  - `references_list_names_and_flattened_sites_without_recording_inputs` checks the no-selection form, ordering, a glob, markdown versus Rust item selectors, omission of a disallowed file, empty inputs, and the error cases (missing name, bad name, empty string, non-string, unknown key).\n  - `references_report_anchors_as_file_or_node_sites` checks anchors, an excluded anchor omitted, and ordering.\n  - `references_tool_is_advertised_with_an_optional_selection` checks the advertised schema.\n\n**Gap: invalid references are reported as sites**\n- The requirement says the tool returns \"every *valid* `{impl}`, `{cite}`, and `{test}` reference\". Under `requirements.references.targets`, a fenced reference that does not close within its comment run, or a file, is a validation error.\n- `references()` takes its sites from `evidence::collect_references`. That function marks such fences `closed: false`, and `validate_references` reports them as errors.\n- The `found.retain(...)` filter in `references()` checks the reference kind, the glob, the definition kind and access. It never checks `reference.closed`, so an unclosed fenced `{impl}`, `{cite}` or `{test}` reference still appears as a site. Other consumers filter these out: `citation_items` skips `!reference.closed`, and `replace_references` skips unclosed fences.\n- No test covers this case. None of the three tests uses a fenced reference, a comment-run fence, or an unclosed fence.\n\nThere is no FIXME or other acknowledgement of this gap in the source, so it counts as an unacknowledged gap.\n\n**Minor observations (not decisive)**\n- Any discovery error (`!errors.is_empty()`) turns the whole call into a tool error, which the requirement does not specify.\n- Tests do not cover fenced references in comment runs or the smallest-enclosing-node rule for comment ownership, though `owner_at_line` is separately marked for `outline_comments`.",
   "references": "cdc3b2f17a13ba3eccb1059cc77ae904a6a5eae0b841fe7d8220806b72cc2bcc",
   "inputs": [
     {
@@ -254,43 +254,8 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "impl[Anchor]",
-      "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_repository]",
-      "hash": "f2052cf4a6e46c972d3d01cb902f0b784a9701ea210a47fd574690be652b4df7"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[RepositoryInspection]",
-      "hash": "c5cb61cfd3c70bb3c02672a99332a58f9522ca90086e52d95413436854ffca47"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[InspectionProgress]",
-      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
-    },
-    {
-      "file": "src/evidence.rs",
       "item": "fn[load_definitions]",
       "hash": "24dc7fffbb047826b4573df44f1a77addba9ea3c729332e80f7d487ae92c90ff"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository]",
-      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "3cfe3bc3a23cde911c74359edc5424d312007daaf9975e2be382380ebfb93b10"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_references]",
-      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
     },
     {
       "file": "src/evidence.rs",
@@ -304,38 +269,108 @@
     },
     {
       "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[resolve]",
-      "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[innermost_at_line]",
-      "hash": "8d528d088614e5ee17ffa2e2c679a23195b6ecbeb96ff5f95b9f466d288b7355"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[declared_on_line]",
-      "hash": "73cef5253c65b3cc36adcf1739851ff5b452cc3bcb3584553c84c630daf00928"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[comment_owners_at_line]",
-      "hash": "d146efc8ec0a109dda903d8a745fa3c50a29acabb0c2b7664f17d1075f0008bf"
-    },
-    {
-      "file": "src/outline/mod.rs",
       "item": "impl[Outline]/fn[owner_at_line]",
       "hash": "d8452a18a0e4184beb2070d2cd3a61abc9735a76035d440478bca922336e0030"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[nodes_for_lines]",
-      "hash": "247f3246871a13189002a690d858b7143488fe089e07a758c80ae7a45cde9108"
+      "file": "src/citations.rs",
+      "item": "fn[citation_items]",
+      "hash": "1f07b2d4daadae106de045c08f9e30b309986ce3d0350a7a8c6bca4a16dbe064"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[node_lines]",
-      "hash": "7734366f0b0f2d2025bc35a536733b893c61516129a21a958cf5a54bf9590f16"
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[SourceReference]",
+      "hash": "ca537c4b401782640fefcfb0906d8285c389870330d43e3ccf206480c28c090d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[SourceFence]",
+      "hash": "10dc43ee2aabc3b91e68f84e93a24934da0069193a4d0de91cc229befcf9858f"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[MarkdownFence]",
+      "hash": "7abe585a7a4d348a4473f454a00565e7ade76f1dd4707e9908c9b9760277edce"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[markdown_fences]",
+      "hash": "5c3f764de8ec8975e58065163dd32ac9cda7786cfd53bba935d08e87ca092e3a"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[comment_fences]",
+      "hash": "b40eb7fb19f2399a96f3bb1821a848d32d36e3d6f6a49e3b872d83ea765950ba"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[text_fences]",
+      "hash": "c0c83fb309e64eb614c5733d56120dea5859465ed5d7b0901dc6c90d3d3097d2"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]/fn[markdown_fences_close_with_enough_colons_and_skip_code]",
+      "hash": "da386c0ec297b2e2bc2b94e200279ed5a06f26a059bbef73e5c62342b7a05b98"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]/fn[comment_fences_close_within_one_comment_run]",
+      "hash": "e358905008efd2bb774ea1d5c6d0db75c748a70db2a40a0516aaeb5cba4ef1bc"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "struct[DefinitionBlock]",
+      "hash": "c8202c1f78549e8b2199b833dcfc5bd5eac90f70c292a836129f77d534961c9e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[preprocess_book]",
+      "hash": "84243bdbea511c897195278065bd95f1040174ec4c2e2044e3f6d8af386d300d"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_definitions]",
+      "hash": "d6f8128ea3f877ee9614d552540b6574455baf37a11dd435f271ade95650ba00"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_references]",
+      "hash": "236568b2fd4f8a76f4b2514fca54606e83de5ee398b43e978104462f3b519e54"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[a_longer_colon_fence_contains_a_shorter_nested_directive]",
+      "hash": "48241c78c8ebcc8a2969ade9b5d82ed7e09ea8225d2789e75644247e11ff4634"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[closing_fences_allow_no_trailing_text_and_fences_allow_three_spaces_of_indent]",
+      "hash": "4502247c4607842070edf7c0d6101d791d8ad5b499096acb7379c9e4e5fd1021"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[missing_function_references]",
+      "hash": "bcab391793125a9f9a372c28d1755bfc6439d01ba47ac9d452f6e51b9f35ac0e"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[source_fences]",
+      "hash": "1186144bd1200de2e8b0665a8af6e252fb87847a435f110e00f4f44518133f7a"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]",
+      "hash": "a625029e6cfbde2d4ca91cef9ae28b4e871e2f6f19977073f3a0e17698267af4"
     }
   ]
 }

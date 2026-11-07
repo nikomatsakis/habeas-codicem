@@ -1,7 +1,7 @@
 {
   "requirement": "For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
   "determination": true,
-  "rationale": "**Judgment:** the implementation and tests satisfy `requirements.references.evidence_coverage`. The one gap I found is minor and I did not treat it as blocking.\n\n**Implementation**\n- `collect_references_with_progress` (src/evidence.rs) walks every project file, skipping only `.git`, `target`, and the root `book` and `evidence` directories. It records each `{impl}`, `{test}` and `{cite}` reference with its canonical file and line. Markdown files are included, so references inside requirement or example declarations are scanned too.\n- `validate_references` (src/evidence.rs, marked `{impl}`) groups references by definition. It reads `evidence/<name>.json` and builds the covering ranges with `evidence_input_ranges`, which resolves each input selector. Outline inputs resolve to node line ranges, `requirements` globs to the matched declarations' line ranges, and definition inputs to the term's range.\n- Each non-`{cite}` reference must satisfy `input.file == reference.file && line_start <= line <= line_end`. If none does, the error reads `evidence/<name>.json: no input covers {role}`name` at file:line`. That gives the role, full name, file and line the requirement asks for.\n- `{cite}` references are explicitly filtered out and never need coverage.\n- A missing, unreadable or unresolvable evidence file yields no ranges. Every impl/test reference is then reported as uncovered rather than silently passing.\n- `InputRange`, `evidence_input_ranges` and `SourceRange` carry `{impl}` markers.\n- The other behavior in `validate_references` is marked for the definitions that specify it: anchors, reference-set digest, examples evidence, targets, builtins.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` is the positive case. An impl in a Rust file is covered by a whole-file input, and a `{test}` in markdown is covered by a line-range input. Uncovered `{cite}` references cause no error.\n- `reports_unknown_references_and_uncovered_lines` checks a partial range. Only the first of two identical lines is covered, and the error names the role, the name and `src/notes.txt:2`.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` has an empty input list. It gets exactly two errors, for the impl at line 3 and the test at line 5, and none for the cite at line 1. After the relevant outline nodes are added, no errors remain.\n- `cited_example_with_a_test_and_matching_evidence_validates` covers examples. With inputs emptied, it reports `no input covers` for `src/main.rs:1`.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` (tests/outcomes.rs) is an integration test. It shows an uncovered `{impl}` at `other.txt:1` is reported even when the requirement has a FIXME.\n\n**Minor gap**\n- No test places an `{impl}` or `{test}` reference inside a requirement or example declaration and checks it is covered through a `requirements` glob input. The code path is the same as for any other file, because the declaration's line range is a normal input range, so I did not treat this as blocking.\n\nThere are no acknowledged FIXMEs for this requirement.",
+  "rationale": "**Verdict: the requirement is met.** The `{impl}` code covers every obligation, and the tests exercise the main cases. One edge case has no dedicated test.\n\n**Implementation**\n- `validate_references` (src/evidence.rs 1249–1440) groups every non-`{cite}` reference by its target requirement or example. For each definition it loads `evidence/<name>.json`. `evidence_input_ranges` (1574–1608) resolves each recorded input to canonical file and line ranges. It uses `InputSelector::resolve`, which yields outline-node ranges, definition ranges or glob-match ranges. These ranges are held in `InputRange` (1240).\n- A reference counts as covered when some input has the same file and `line_start <= line <= line_end`. Otherwise the code reports `evidence/<name>.json: no input covers {role}`name` at <file>:<line>`. That message carries the role, full name, file and line, as the requirement demands.\n- `{cite}` references are filtered out of the coverage loop, so they never require coverage.\n- References inside requirement or example declarations are covered by the same logic. `collect_references_with_progress` scans every file, including the Markdown book, and records each reference's line. Coverage is then a plain line-range check. Any `{impl}` or `{test}` reference in a declaration therefore needs an input covering its line.\n- Path comparison is sound. The root is canonicalized in `inspect_repository_with_progress`, and the scan does not follow symlinked directories. Input files are canonicalized, so `PathBuf` equality is reliable.\n- A missing, unreadable or invalid evidence file yields no inputs, so every non-cite reference is reported uncovered.\n- `SourceRange` in src/inputs.rs 20–28 is correctly marked as the range carrier.\n- The other behaviour inside `validate_references` is unclosed fences, built-ins, term checks, the example-needs-test check, reference-set digest and anchors. Each is separately marked with the `{impl}` of the requirement that specifies it, so nothing unmarked or unspecified remains.\n- The `references` tool, `requirements.authoring.reference_index`, is cited only as the place cites are discoverable. That tool is not part of this subject's obligations.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` is the passing case. An `{impl}` is covered by a whole-file input and a `{test}` in Markdown by a line-selected input. A `{cite}` that is not covered, and a missing-target cite in a code fence, produce no errors.\n- `reports_unknown_references_and_uncovered_lines` is the partial-coverage boundary. Line 1 is covered, line 2 is uncovered and reported as `no input covers {test}`foo.bar.ready` at src/notes.txt:2`, and exactly two errors are produced.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks that empty inputs flag the impl and test with role and line, while the cite is not flagged. Adding fn-level inputs then clears the errors.\n- `cited_example_with_a_test_and_matching_evidence_validates` checks that an example's test is reported uncovered when the inputs are emptied, and covered again once restored.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` in tests/outcomes.rs is an integration case. A new `{impl}` in another file is reported as `no input covers` at `other.txt:1`.\n\n**Remaining gap**\n- No test places an `{impl}` or `{test}` inside a declaration. The mechanism is uniform, so this is minor.\n- No test covers an input that fails to resolve. In that case the input is silently dropped and the reference is reported uncovered. Resolution failures are reported elsewhere.",
   "references": "d2395c25a90d8e23a1109f7745415197c45db4bb152fccfd74efb8d63970bb24",
   "inputs": [
     {
@@ -124,6 +124,51 @@
       ]
     },
     {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]",
+      "hash": "05c1c7513ee5965d344dc95c768b6628cb6104927918fe28c889b659d02b820e"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring]",
+      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_from]",
+      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "ca008e63fdef9e70314dd40b9bd0e611918e0179ee41125bb36ec027fdd019a6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[Anchor]/fn[resolve]",
+      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[InputLocation]/fn[resolve]",
+      "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
+    },
+    {
       "file": "src/inputs.rs",
       "item": "struct[ResolvedNode]",
       "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
@@ -140,13 +185,23 @@
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_model_input]",
-      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
+      "item": "impl[ParsedSource]/fn[node_range]",
+      "hash": "a4f2fd736f9c0783c44c18091bc3311367dcedb8dbdc6bf02f924a8b106ab29e"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "747c8b1b4ad7f80254ca27080bf0b199c6ef1cf0fe663fe6ea44f45765578a02"
     },
     {
       "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
       "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[resolve]",
+      "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
     },
     {
       "file": "src/evidence.rs",
@@ -171,52 +226,12 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "3cfe3bc3a23cde911c74359edc5424d312007daaf9975e2be382380ebfb93b10"
+      "hash": "98375baafd9342b9c365f42cd9ded9d651ad862d21ca1f14e0eff93b3ef433df"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[reference_set_digest_for]",
       "hash": "1928a8d338ff5dae6a6dfefeb2599a172e4b76c67b9ab7445c2454b25d6c469b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository]",
-      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_resolved_input]",
-      "hash": "1f2cccc74a111d9173771fbe3c693bac16b47809a612063b9fcddbd6840dd7d3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[ReferenceSetEntry]",
-      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
-      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
-      "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
     }
   ]
 }

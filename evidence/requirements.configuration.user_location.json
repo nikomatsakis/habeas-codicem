@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST locate its per-user configuration at\n`$XDG_CONFIG_HOME/habeas/config.toml` on Unix when XDG_CONFIG_HOME is an absolute,\nnonempty path, otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST\nuse `%APPDATA%/habeas/config.toml`. `HOME` and `APPDATA` MUST likewise be\nabsolute, nonempty paths to be used. If no usable base directory can be\ndetermined, an operation requiring user configuration MUST fail with an\nexplanatory diagnostic naming the variable.\n\nThe same user configuration MUST be usable across projects. Its location MUST\nNOT be selected relative to the current project or changed by project settings.\nUser-local preferences for a project MAY remain in the user configuration;\nworkspace settings MUST use `habeas.toml` under\n{cite}`requirements.configuration.workspace_location`.",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.configuration.user_location`. The implementation matches the requirement, and the tests cover its interesting cases.\n\n**Implementation** (`src/config.rs`, all marked `{impl}`):\n- `user_config_path` calls `user_config_path_from(ConfigPlatform::current(), env)`. It takes no project argument, so the location cannot depend on the current project or on project settings.\n- On Unix, `user_config_path_from` uses `XDG_CONFIG_HOME` when `absolute_directory` accepts it. `absolute_directory` accepts a value only if `PathBuf::is_absolute()`, which rejects empty and relative values. Otherwise it falls back to `required_directory(\"HOME\")` joined with `.config`. The result is `<base>/habeas/config.toml`.\n- On Windows it requires an absolute `APPDATA` and appends `habeas/config.toml`.\n- `HOME` and `APPDATA` go through `required_directory`. When either is missing, empty or relative, it returns an `io::Error`. Its message is \"cannot determine Habeas directory: {name} must be an absolute, nonempty path\", which names the variable. `resolve_authoring` calls `user_config_path()?`, so an operation that needs user configuration fails with that diagnostic.\n- `resolve_authoring` is the only place in `src` that calls `user_config_path`. No unmarked code computes the user config path.\n- User-local project preferences stay in the user config (`authoring.projects`). Workspace settings load from `habeas.toml` via the separate `workspace_location` implementation (`workspace_document`). That requirement is only cited here and is carried out by its own text.\n- I found no behavior in the marked code that the requirement does not specify. The code shared with `state_location` is marked for both requirements.\n\n**Tests** (`tests/configuration.rs`, marked `{test}`):\n- `locations_use_absolute_xdg_values_and_platform_fallbacks` checks:\n  - an absolute `XDG_CONFIG_HOME` is used;\n  - empty and relative `XDG_CONFIG_HOME` values fall back to `$HOME/.config/habeas/config.toml`;\n  - Windows uses `APPDATA`;\n  - nothing set gives an error.\n- `base_directories_must_be_absolute_and_nonempty` checks:\n  - empty and relative `HOME` (Unix) and `APPDATA` (Windows) are rejected, and the error text contains the variable name;\n  - a relative `XDG_CONFIG_HOME` with an absolute `HOME` falls back correctly.\n- Together these cover the main boundaries: absolute, empty, relative and missing values, for both platforms and for the fallback chain. They also cover the error-naming obligation.\n- The project-independence obligation is structural, since the function has no project input, so a dedicated test is not needed.\n\nNo gaps or FIXMEs were found.",
+  "rationale": "**Judgment: the implementation and tests satisfy `requirements.configuration.user_location`.**\n\n**Implementation (`src/config.rs`)**\n- `user_config_path` (l.613) calls `user_config_path_from(ConfigPlatform::current(), env)`. `ConfigPlatform::current` (l.241) picks Windows or Unix with `cfg!(windows)`.\n- On Unix, `user_config_path_from` (l.618) first tries `XDG_CONFIG_HOME` through `absolute_directory`. That helper keeps a value only if it is an absolute path, so an empty or relative value is rejected. Otherwise it uses `required_directory(\"HOME\")` joined with `.config`. The result is `<base>/habeas/config.toml`.\n- On Windows it uses `required_directory(\"APPDATA\")` and appends `habeas/config.toml`.\n- `HOME` and `APPDATA` must be absolute and nonempty, because `required_directory` goes through the same absolute check.\n- When no usable base exists, `required_directory` returns an `io::Error` reading \"cannot determine Habeas directory: {name} must be an absolute, nonempty path\". It names the variable. `resolve_authoring` propagates it with `?`, so the operation fails with that diagnostic.\n- The path is computed only from the environment and platform. It takes no project argument, so it cannot be chosen relative to the project or changed by project settings, and the same file serves every project. The user file can hold per-project preferences in its `authoring.projects` table (`UserAuthoringConfig::validate`). Workspace settings come from `habeas.toml` via `workspace_document`, which `workspace_location` implements. I did not reassess that requirement.\n- Every function involved carries an `{impl}` marker: `ConfigPlatform`, `current`, `user_config_path`, `user_config_path_from`, `absolute_directory` and `required_directory`. I found no other code that computes the user config path (searched for `XDG_CONFIG_HOME`, `APPDATA`, `.config`), so no implementation is unmarked and no unspecified behavior is attached to this requirement.\n\n**Tests (`tests/configuration.rs`)**\n- `locations_use_absolute_xdg_values_and_platform_fallbacks` covers four cases:\n  - an absolute `XDG_CONFIG_HOME` is used;\n  - an empty or relative `XDG_CONFIG_HOME` falls back to `$HOME/.config/habeas/config.toml`;\n  - Windows uses `APPDATA`;\n  - an environment with nothing set returns an error.\n- `base_directories_must_be_absolute_and_nonempty` covers failure and boundary cases:\n  - an empty or relative `HOME` (Unix) or `APPDATA` (Windows) is rejected, and the error message contains the variable name;\n  - a relative `XDG_CONFIG_HOME` falls back to an absolute `HOME`.\n- Not directly tested: independence from the project and from project settings. That holds by construction, since the function has no such input, so a test would add little. Also, `tests/authoring_cli.rs` and `tests/live_bedrock.rs` set `XDG_CONFIG_HOME` and `APPDATA` and run the whole CLI.\n\nThe requirement text, code and tests agree, and no acknowledged gaps or FIXMEs remain.",
   "references": "a2800054065cedb39cfbad2b80c0a042d1159e4e7bdddddd8ac9e49a6e551787",
   "inputs": [
     {
@@ -86,14 +86,89 @@
       "hash": "d39c832e45087b364c39229e2def514e750e168eab7df427f9fe2cf94a46dc8f"
     },
     {
+      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
+      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.user_location`%20and%20`requirements.configuration.state_location`%20—%20absolute%20base%20directories]",
+      "hash": "2a060597a0fac36d219e83ac86f6d9b1f7dc61e4c91e7cd1e421dcfc7e9f28ed"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
+      "hash": "b7c457b6a0650d41970f2728f5bb0b41e0c929398cbadfbf0881b3a0e3979743"
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "item": "section[Configuration]/section[Locations%20and%20scope]",
+      "hash": "0b5c318e2078182953d52f3a6187be60fd47ba559788254da4b52e7c708eebd6"
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "item": "section[Configuration]/section[Locations%20and%20scope]/section[Persistent%20state]",
+      "hash": "426ff32d7d5ac17a4849b769e6a1187aeb2f4515eafe85e42a3a1d7a39894458"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root_from]",
+      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring]",
+      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[command]",
+      "hash": "7967ba5df4f15dee0bdf3a56316dcc57f0e244f27c56dce5022a52c3c213844a"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Fixture]/fn[run_in_pty_with_args]",
+      "hash": "d5743ba8cc8ae65f67cc740181164483b659f6353914f5fbf6f10a224f249207"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[command]",
+      "hash": "9395ba6ec9b28a157a0e132ccb2fc742834727f35629cb6d37db6c072168cbcd"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[usage_record_identifies_its_run_and_unusable_state_is_reported]",
+      "hash": "046f8e89b89ed9eb5eaf8b1a94d18437be39e8a31420255dcf5d5e5cdddbe2ab"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[usage_state_inside_the_project_is_refused_before_creating_it]",
+      "hash": "2de40a5147856b9de4e69b01d2eb1844b0e9b62f3c68cd12a9e72d330924342c"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[undeterminable_unwritable_or_project_state_fails_before_a_model_request]",
+      "hash": "a1fda7c51599afc5558f8b547621c13b06460593f88e0d9529c9d21c86356b74"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "use@ec3f2c37f86c",
+      "hash": "ec3f2c37f86c9ab66a39b1503bfbdfa2e740d1f22ddde13f9fab2a4f8bfdfa74"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[selected_config]",
+      "hash": "741f598266f20c82b51f5df06ebcfab4ce5fcc3f0f80a763c1c568a0542f52e6"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[skip_probe]",
+      "hash": "7e6f75f88c16fa516c68950b99cb10bca1df3bfae0f737439241ce3e90200532"
+    },
+    {
+      "file": "tests/validate.rs",
+      "item": "fn[validate_in]",
+      "hash": "e37156e8469099a62c4c1207226306e2fcc0c1361ea09c634c39c96e5e35e181"
+    },
+    {
       "file": "src/add_input.rs",
       "item": "fn[selectors_for_mode]",
       "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@ef65439d8cc7",
-      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
     },
     {
       "file": "src/authoring/access.rs",
@@ -107,11 +182,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[load]",
-      "hash": "35a027acfa5aabc36215ae643a316ffcef92f7dd33cd4e635b6f1be457564ae3"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "impl[PathPolicy]/fn[allowed]",
       "hash": "5960d03100435ec0b4494b19a912cfe60ddb53c1f34b28300122bc37ac969d5b"
     },
@@ -122,18 +192,13 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]",
-      "hash": "a333d5b62ee51cf26f663e644e85ce078964da3313643cf62ec1af22ad7a3069"
+      "item": "impl[SourceAccess]/fn[load]",
+      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
     },
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
       "hash": "ef98601c16475681510bfef02215408a4462718be27f28c44e7cd7623573b6ef"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[file]",
-      "hash": "d657c7657a2da7dbabe6bbe2388ea5f93672f99948fbc74d2b7072658d5703ca"
     },
     {
       "file": "src/authoring/access.rs",
@@ -172,18 +237,8 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[discover_generated_roots]",
-      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "fn[resolve_evidence_file]",
       "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
-      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
     },
     {
       "file": "src/authoring/access.rs",
@@ -202,11 +257,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]",
-      "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
       "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
     },
@@ -218,7 +268,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "95397d47e5c7d75a894412d120707a16de3d20f5a0e447fa0f0014834d8702f1"
+      "hash": "fde1da6692ee04c351070f57cecfa5b43fd8bbf8e38c7cfcadf20be98c184699"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -229,11 +279,6 @@
       "file": "src/authoring/inputs.rs",
       "item": "fn[source_input]",
       "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation]",
-      "hash": "a9f72f30b27102cfaa5697448cc58df1881aa7110ef023ca06f1d13c731c7b5e"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -287,8 +332,8 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "7a3013d0ca73f65f6499e84a0566193f302e57376276b30d62f03c6c8f870d2d"
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "cb7f6e696b6ceaf0f121d39f5462a13da962cdc583aac325af9d9f52b607dd3b"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -302,13 +347,8 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "df8166a440166e00a72e0c5e8f4971e3b597d6098ec0e5d342859f53b28c4ac9"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[normalize_bedrock_client_calls]",
-      "hash": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
+      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
+      "hash": "b42c72a2c67dff0921cbf94b97faec5fd6f78f21b9addf21946abc0dc6c901e6"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -324,11 +364,6 @@
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
       "hash": "c1dbd0d0c5a946629fa75e628e03d603331a8ae23f9fd6a0e04caf218dac06c4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]",
-      "hash": "60c92f7fceb20eb4b5beda87d326d6cfd10aff5197a14a484a2ea3d34e95aebe"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -367,11 +402,6 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
-      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
-    },
-    {
-      "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
       "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
     },
@@ -387,13 +417,8 @@
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]",
-      "hash": "c9f052052854a2e6cb018bd7b54cb916840b0e2c497f6d28819cb72141fe1d8c"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[skipped_tool]",
-      "hash": "b75aa1847cab3fc7573d68ed6e4d3c7f29417a61e17d8c51ee756d3d88de8cdb"
+      "item": "impl[UsageLog]/fn[start]",
+      "hash": "cd20e8dedb70eb0dcd2819c9047ae13cd38bce7f08b9f3f1f7959bb1a9a165cf"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -404,11 +429,6 @@
       "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[save]",
       "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "const[CONFIG_EXAMPLES]",
-      "hash": "70edbe2f510dc5a1da83b1fec874e591b17eb05fcf31db49e6f3279d9fa74e20"
     },
     {
       "file": "src/config.rs",
@@ -452,8 +472,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]",
-      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
+      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
+      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
     },
     {
       "file": "src/config.rs",
@@ -507,11 +527,6 @@
     },
     {
       "file": "src/config.rs",
-      "item": "struct[ResolvedAuthoringConfig]",
-      "hash": "75bdbf9fba8779579c42bb2ae80184f6652737689884a1a3336bee278ecb911c"
-    },
-    {
-      "file": "src/config.rs",
       "item": "impl[ConfigPlatform]",
       "hash": "816fa731bb902965f928c77a8204fb9d14c729f3e24c44320d7ff47e12dc84e7"
     },
@@ -522,13 +537,18 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
+      "item": "impl[UserConfig]/fn[to_toml]",
+      "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[parse]",
-      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+      "item": "impl[UserConfig]/fn[validate]",
+      "hash": "9d47228e0c5a1d9a1681eb79f95a62e082f16ff1f218268f1d1c0e8f85b2c9e1"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]",
+      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
     },
     {
       "file": "src/config.rs",
@@ -562,11 +582,6 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
-    },
-    {
-      "file": "src/config.rs",
       "item": "impl[BackendConfig]/fn[model_ref]",
       "hash": "08850ef1baf39ed65e13526a9d8d96e20a2e11a66b6033ffac04b58119c63ee9"
     },
@@ -597,6 +612,16 @@
     },
     {
       "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key]",
+      "hash": "5228ff96233c473974cb95a01d0d0dff8815da735dd6d667287a1fc5293176ee"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key_from]",
+      "hash": "5ba74dfd70cff06aeb97d6c95de7432de9eb7024c7882e434fc214c41eb3897b"
+    },
+    {
+      "file": "src/config.rs",
       "item": "impl[ResolvedAuthoringConfig]",
       "hash": "a436e51ccb4fe213290a40ac0af45e0175a792038893d08e534cef2dd0138006"
     },
@@ -604,11 +629,6 @@
       "file": "src/config.rs",
       "item": "fn[state_root]",
       "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[state_root_from]",
-      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
     },
     {
       "file": "src/config.rs",
@@ -652,16 +672,6 @@
     },
     {
       "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring]",
-      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
-    },
-    {
-      "file": "src/config.rs",
       "item": "fn[resolve_authoring_from]",
       "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
     },
@@ -688,7 +698,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "3cfe3bc3a23cde911c74359edc5424d312007daaf9975e2be382380ebfb93b10"
+      "hash": "98375baafd9342b9c365f42cd9ded9d651ad862d21ca1f14e0eff93b3ef433df"
     },
     {
       "file": "src/evidence.rs",
@@ -699,11 +709,6 @@
       "file": "src/evidence.rs",
       "item": "fn[validate_outline_input]",
       "hash": "ce77e1738db89880bd49602d3947249e47e8a9dcf6f3c520e06dcff3d41e58e3"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[recorded_input]",
-      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
     },
     {
       "file": "src/inputs.rs",
