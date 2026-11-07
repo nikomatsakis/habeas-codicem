@@ -1,7 +1,7 @@
 {
   "requirement": "For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met. The implementation is complete and the tests cover it.**\n\n**Implementation, obligation by obligation**\n\n- **Selection and matching.**\n  - `InputSelector::Requirements` in `src/inputs.rs` (`resolve`) first runs `definition_glob::validate`, which rejects an empty glob.\n  - It then matches the glob against every declaration in `definitions`, a `BTreeMap`, so matches come out in full-name order.\n  - It skips `Term` declarations, so only requirements and named examples match.\n  - `*` crossing dots is `definition_glob::matches`, which belongs to `definition_globs`.\n- **Recompute and compare `matches`.** `validate_resolved_input` in `src/evidence.rs` re-resolves the selector during validation and compares the stored `matches` with `resolved.matches`. A mismatch reports the glob plus `added [..], removed [..]`. `validate_input` also rejects a non-string entry in `matches`, a duplicate name, or a missing field.\n- **Raw fenced text.**\n  - `collect_definitions` records `raw_lines` from `block.start..block.end`, which covers the opening and closing fence lines.\n  - It strips `\\r` and, through `without_options`, drops `:impl:` and `:test:` option lines. That exclusion is required by `requirements.references.anchors` (\"Option lines MUST NOT form part of … requirements inputs\").\n  - `resolve` concatenates the declarations in full-name order with a single empty line between them.\n  - `validate_resolved_input` compares the result with the stored `text`.\n- **Retained file and line range.** `resolve` builds one `SourceRange` per match with `file`, `line_start`, `line_end` and `name`. They are returned in `ResolvedInput.ranges` for display and reference coverage. The index test `detail_page_shows_recorded_text_locations_and_first_matching_group` asserts the displayed `md/rules.md:5–7` ranges.\n- **No match is invalid.** `resolve` returns `requirements glob \"…\" matches no requirement or example`, and `validate_resolved_input` reports it with the label.\n- **Invalidation and moves.**\n  - Adding, removing or renaming a definition changes `matches`, and changing one changes `text`.\n  - Moving an unchanged declaration changes neither, because the comparison uses only names and raw lines and not line numbers.\n- **Errors.** Every message carries the evidence label and the selection. A text change adds `changed definitions [...]` (computed by searching the recorded text for each still-matched declaration's `raw_lines`) and a compact diff.\n- **Marking.** `collect_definitions`, `validate_input`, `validate_resolved_input`, `ResolvedInput` and `InputSelector::resolve` all carry `{impl}` references to this requirement.\n- **Minor note (not treated as a gap).** `Declaration`, which stores `raw_lines`, `file` and the line range, is marked only for `references.anchors`. The code that fills it, `collect_definitions`, is marked for this requirement.\n\n**Tests**\n\n- `requirements_inputs_track_matched_declarations_in_full_name_order` exercises these cases:\n  - A cross-dot glob matches both a requirement and an example, sorted by full name, with complete fenced text.\n  - Moving declarations and adding prose does not invalidate the input.\n  - A changed body names the changed definition and shows a diff.\n  - An added match, a removed match, and a rename (one added and one removed) each give the exact added/removed message.\n  - A glob that matches nothing is an error.\n- `cited_example_with_a_test_and_matching_evidence_validates` is the happy path through `validate_repository`, followed by a later added requirement that invalidates the input.\n- `requirements_inputs_omit_option_lines` checks that option lines are excluded from `raw_lines` and from the resolved text, and that the recorded line range is still the full block.\n- `schema_rejects_each_malformed_field_and_input_form` covers duplicate and non-string `matches`, a missing `matches` or `requirements` field, and a non-array `matches`.",
+  "rationale": "**Verdict:** the sources satisfy `requirements.ci.requirements_inputs`. Both the implementation and the tests cover every obligation.\n\n**Implementation**\n- `validate_input` in `src/evidence.rs` recognises a requirements input by its `requirements`/`matches` keys. It checks the keys, requires `matches` to be a string array, and rejects duplicate names. It then calls `validate_resolved_input`.\n- `InputSelector::Requirements` in `resolve` (`src/inputs.rs`) does the matching.\n  - It validates the selection as a definition glob. It matches against every non-term definition, so all requirements and named examples are covered.\n  - It iterates the definitions `BTreeMap`, which gives full-name order.\n  - It concatenates each match's `raw_lines`, with one blank line between declarations.\n  - It records each match's file and inclusive line range in `ranges`, with the name. Display and reference coverage use these ranges (`evidence_input_ranges`, `index.rs`).\n  - A selection with no matches returns the error `requirements glob \"…\" matches no requirement or example`, which names the selection.\n- `validate_resolved_input` recomputes the matches during validation. It compares the sorted match list with the stored `matches`, and compares the concatenated lines with the stored `text`.\n  - A change to the match set reports `added`/`removed` names.\n  - A text change reports the selector, the still-matched definitions whose declaration changed, and a diff.\n  - Together these identify the selection and the affected definitions.\n- `collect_definitions` supplies `raw_lines` and `line_start`/`line_end`. `raw_lines` run from the opening fence to the closing fence, with `:impl:`/`:test:` option lines stripped (`\\r` also stripped). That matches the documented rule that option lines are not part of the requirement text.\n- Moving an unchanged declaration does not invalidate the input. The comparison uses declaration lines and full names, not positions. Adding, removing, renaming or changing a match does invalidate it.\n- Every function that carries out part of the requirement has an `{impl}` mark: `collect_definitions`, `validate_input`, `validate_resolved_input`, `ResolvedInput` and `resolve`.\n- The extra checks in this code are schema-level (distinct names, key checks). Other requirements, such as `ci.schema`, cover them.\n\n**Tests**\n- `requirements_inputs_track_matched_declarations_in_full_name_order` covers the main cases:\n  - `*` crossing dots.\n  - Full-name ordering, where the example `foo.a.b.bar` sorts before `foo.a.bar`.\n  - The blank-line separator and full fenced declarations.\n  - Moving declarations with prose in between, which stays valid.\n  - A changed declaration, with the error naming the selection, the changed definition and the diff.\n  - An added match, a removed match, and a rename (one added and one removed).\n  - A glob matching nothing, which is invalid and names the selection.\n- `cited_example_with_a_test_and_matching_evidence_validates` covers an end-to-end requirements input over `rules.*`: a valid case, and a stale `matches` list after a definition is added.\n- `requirements_inputs_omit_option_lines` checks `raw_lines`, the line ranges (3–6, including the option line) and the resolved text.\n\nI found no gaps and no FIXME markers.",
   "references": "3bda2e90d554e501bf6d176a1079fcc50d2709ff27f17e128a4c3d7bbebba8e4",
   "inputs": [
     {
@@ -69,34 +69,129 @@
       ]
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[chapter_href]",
-      "hash": "2ba7dbb9d51a4b685ada2f2724fa9edefbc76dd53b6224537378950681c20429"
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[full_requirement_name]",
-      "hash": "ac0cc77829719f8e7db77ae937bb9689307e35d035e88c113a88dfdad49c80a8"
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "ce77e1738db89880bd49602d3947249e47e8a9dcf6f3c520e06dcff3d41e58e3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "use@fca24f9e7a26",
+      "hash": "fca24f9e7a267245df7f5ff3d8f3f12c6819a07d7c9cf64dd8f4a447fb1e166c"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "use@190a6e557681",
+      "hash": "190a6e5576819cf66e859b067582d009f83aaf24a7427c992bd305a57781efcb"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[FenceLine]",
+      "hash": "41dcdd883490fd648b36e854074b83c2ff456f50f71a4f60f41cd96dca9ce536"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[MarkdownFence]",
+      "hash": "7abe585a7a4d348a4473f454a00565e7ade76f1dd4707e9908c9b9760277edce"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[split_lines]",
+      "hash": "d4055a5521fd48cc5b602702b904c849bd2624517a2c2fd0746725d8ad8e1ff5"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[markdown_fences]",
+      "hash": "5c3f764de8ec8975e58065163dd32ac9cda7786cfd53bba935d08e87ca092e3a"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "use@32385ececd06",
+      "hash": "32385ececd064789409b672ceffe88cc4c175b097f9f269468476b3e6417d862"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]/fn[find]",
+      "hash": "b7efaaa513bd5bf680e2216370f5f03ce6443bc4b9dce687e5eeff41eb57fc78"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]/fn[populate]",
+      "hash": "bea2cf30b818cd531bb4b522ec60e216bade0ae39472b104a99df7db21df787b"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[DefinitionEdges]",
+      "hash": "a89483b9f3bacf30e6675a219463bfa5c8266304ddb66e85970a2d20a9b8a6e3"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]/fn[group]",
+      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_sections]",
+      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "struct[InputLocation]",
+      "hash": "99ea2be1f267223b80d87d341410380c2b14855b158cb3be7bedd36ee329724f"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[InputLocation]/fn[resolve]",
+      "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[marker_ranges]",
+      "hash": "95ef48a97dcbe7f703bc949cec6435eca16248cfd4e107de4ce330af9654cc23"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/use@a808f3cb1fa3",
+      "hash": "a808f3cb1fa38c5d16e0642515f8df52211cb0c70673b0e75cc2241fa28c53a6"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/use@6798534f627c",
+      "hash": "6798534f627cd0220f121fb044bab81b9b9cb86644a628fd366eccb292341ba4"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[marker_accepts_long_fences_and_ignores_examples]",
+      "hash": "c69b1f71521c8909cce7b88c732e3ddc8f2112b3d3c1525138e425bec413777b"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_model_input]",
+      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
     },
     {
       "file": "src/lib.rs",
       "item": "fn[definition_blocks]",
       "hash": "2b0bdec0c2df2d264c66f04e02823f8678591d3528764db7aad61bfdde467717"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[option_line]",
-      "hash": "5e4135e7c92fcfcb4c145c36dbb27c5ce491f47e55f23346ff491303c4c207a4"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[without_options]",
-      "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[colon_fence]",
-      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
     },
     {
       "file": "src/lib.rs",
@@ -109,294 +204,59 @@
       "hash": "8781f3d9271adea49e70f3eea16268d268d67d0ced851435be661de3a7fc794c"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "ac2ad28d53c6050143adeb4611418075c0158340aaf8b446e36780e1eecf57c2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[EvidenceReport]",
-      "hash": "47896ab52be57617950803d2e729ae51332c663fc16f075e6f139eb58a9b6e77"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[Declaration]",
-      "hash": "5b7addc906a3fae054cc3f35d45bfbad8d504dc80e8ed3828de5a19606713d7b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[Anchor]",
-      "hash": "5a2a5470e6528b90894f59fbeeeaa1e27264f4d4950c72ecbabba671039a0585"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[same_citations]",
-      "hash": "0b628e457d2f29f4ab27034aa3c01ee7618b5f3628bf62e265b49135ee93275e"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[validate]",
-      "hash": "c14f5376cbf78d357d35727ad4da29daf9fdf22a96c1a4700a59d92763295141"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[to_toml]",
-      "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[validate]",
-      "hash": "9d47228e0c5a1d9a1681eb79f95a62e082f16ff1f218268f1d1c0e8f85b2c9e1"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[to_toml]",
-      "hash": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[validate]",
-      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]",
-      "hash": "9d9a20fc5bf46f4dd4df1bd3ec079246bd73834ca09664e5b6037bd0fb73803f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ProjectConfig]",
-      "hash": "e9e434f684e79be2fd86de660957fc5b92c3e773253bf6266ca40588706112fa"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]",
-      "hash": "21ee902d70fce92016589b493f2d0d2bf808661d27dbe0d4aee1ffc3b4c41cda"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options_json]",
-      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "85a75e4507fc47425ea5274b29629a298b9259bce2cfc6d7fa79904e645d111a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OptionValue]",
-      "hash": "c8e9e2a02cc67e48500beff2121d34a375effa4fe0d8540dcba8229896cb514d"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[compact_diff]",
-      "hash": "6f358e5c5d4c9129a514ab0bf6d3cdd3eb7bbd562e0241208ada79cac17b6f4c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[changed_requirement_text_names_the_record_and_location_with_a_diff]",
-      "hash": "442781e8cf4b0bf058e05036291478774ec9fa0cb5f6f24ebbc06007e71479b1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[compact_diffs_elide_common_lines_and_truncate_long_runs]",
-      "hash": "5c37ad2b6be228e17ddeba522a492a9c4f46084c64740eca038a43a07e9ea6d7"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "enum[InputSelector]",
-      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[SourceRange]",
-      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[ResolvedNode]",
-      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[recorded_input]",
-      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[check_project_file]",
-      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[read_project_file]",
-      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+      "file": "src/lib.rs",
+      "item": "fn[protected_ranges]",
+      "hash": "60056ec394f43fa5e98c7a5392c306b59e7d5501a9cf183339ef15ce2ff5f82a"
     },
     {
       "file": "src/lib.rs",
-      "item": "use@d588b8bc294c",
-      "hash": "d588b8bc294c8ef60dbaf342b9a87fbc310fb5a428e7543a471eafb549c12f12"
+      "item": "fn[is_protected]",
+      "hash": "096aa5aeb26e538ce1a69dd6bf447d0b45071fd25e14885f63b4cf7865a98d87"
     },
     {
-      "file": "src/lib.rs",
-      "item": "use@93013b067bff",
-      "hash": "93013b067bff50c284178a25b3ddd82e8ff9784d50a7bca6914ac30934a29dd6"
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]/fn[finish]",
+      "hash": "0805d3bbba28444c7131a5b80a62bc35c7cdc46b613eeb47a0c8c2426806b397"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[add_input]",
-      "hash": "3002f31015d450b28bd63d702fa14c6ba70f52646f168ae774dafc87df8cee0b"
+      "file": "src/outline/mod.rs",
+      "item": "fn[assign_comments]",
+      "hash": "581f3667d708d7150e6673dc5866f435b08597e57cfdcf10e5aa3dc412c047c1"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[authoring]",
-      "hash": "931cc87bcdd845c866365bfecf12600762b2a35858e471116fa35285e8614c8c"
+      "file": "src/outline/mod.rs",
+      "item": "fn[trailing_owner]",
+      "hash": "ae50a27e459297a348cefa7254c268c4688a0c705588f2d4f8647b210fc59525"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[builtins]",
-      "hash": "07cb6956be41d8f6b8c97839b5788ec43b489372fd2e3696da03123c01d45d62"
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[resolve]",
+      "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[citations]",
-      "hash": "364df6153e302433e980d3513b77fe5edbbba453520fe731c98ca84688b60950"
+      "file": "src/outline/mod.rs",
+      "item": "impl[Outline]/fn[innermost_at_line]",
+      "hash": "8d528d088614e5ee17ffa2e2c679a23195b6ecbeb96ff5f95b9f466d288b7355"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[config]",
-      "hash": "e879b80085b71e7ff6548c87f8009794996fa037e3ce6cae5dd809ee8d8d3130"
+      "file": "src/rust_coverage.rs",
+      "item": "fn[raw_string_end]",
+      "hash": "6b5d5cd0373e986ed80d2bbcf6eb15b0fb248b1df89e3f5da629c9ed119fa8a3"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[definition_glob]",
-      "hash": "62708327e7e6f6ffb3b66787eda4a6b124a30d8372f3bc8247b3bf5d935b53e4"
+      "file": "src/rust_coverage.rs",
+      "item": "fn[comments]",
+      "hash": "600a55f0822af75ae6b91ea65bba44227e75d102d13910f0cc2dd293ec067796"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[evidence]",
-      "hash": "93be5a2d8c24e2da5d4ac927cbae2301fdefeeade8ae36cc767791ba69499ac0"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[References]/section[Anchors]",
+      "hash": "ec7a76cf9f04c93bf9168c77b142d3566783c3691e9309e556171744c27af3c2"
     },
     {
-      "file": "src/lib.rs",
-      "item": "mod[fenced]",
-      "hash": "1185935227c03bfddcc856894e1aa79ccabb986dfe147af8c9de5ef5035f4762"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[fixme]",
-      "hash": "28599fddc50c0ec33af1519bcac3fdd4819c5674e1516e175be90be3ef0120b3"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[index]",
-      "hash": "343817dd94e48f40d40f84652eaf665187c33adea0e0db284f40fb80ed2d9d29"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[inputs]",
-      "hash": "2424b8d775149239e8712afc2f7a1bab3763b0f0eb901e2f6c91779c5b073ef3"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[judgment]",
-      "hash": "4a9965400c0a7281208c9e1f33871ce600c3735b892420c833e5d9410b93621d"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[outline]",
-      "hash": "d3bd6c12c0b422035d79bf75653de114c598d54745301d6c6d86fb98f8030544"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[rust_coverage]",
-      "hash": "1e6b1e91cd98214ce039f09cdb27238a64a1a03d0e42157e8ecc2dbb9ee22fcb"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "use@2218ad1ebf7d",
-      "hash": "2218ad1ebf7d8113fcc16bf29fe20a759064f752b1fc33f44844352057e2d220"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "use@9aa99ad89c93",
-      "hash": "9aa99ad89c9349d8907962a5fa220f06b18d4cc163e5df51d30fe3a6692ccee9"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[validate]",
-      "hash": "650422c1e693574d5cdc7e44922f551e17eb4279fa1ac35aab4f8ef59911d806"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
-      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[requirements_reads_select_requirements_and_examples_but_not_definitions]",
-      "hash": "c3f94d4d5c2450f48fc8d520e85b25688406bd6f765dc7cfc84bc29182931041"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
-      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
-      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_input]",
-      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]",
+      "hash": "7fbd1243f4fac2c55aab4bd394c137feaf6589db5edd4cee4937ac71509d0de5"
     }
   ]
 }

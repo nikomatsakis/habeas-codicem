@@ -1,7 +1,7 @@
 {
   "requirement": "The `{term}` role followed by a backtick-delimited full definition name MUST reference a named definition. In rendered Markdown, the reference MUST display the definition's phrase as an ordinary hyperlink to its anchored declaration, without a badge. The phrase MUST be escaped appropriately for rendering.\n\nMissing targets and targets of another kind MUST be reported. Escaped references and references in Markdown code examples MUST remain literal. A term reference MUST NOT satisfy a requirement citation or a Rust function's requirement-coverage obligation.",
   "determination": true,
-  "rationale": "## Judgment: `requirements.definitions.references` is satisfied\n\nThe implementation covers each obligation and the tests cover the main cases. The one weakness is that two helpers contribute to term rendering without an `{impl}` marker for this requirement, which I judged minor.\n\n### Implementation\n\n- **Recognizing `{term}` references.** `reference_roles` in `src/lib.rs` recognizes `{term}` followed by a backtick-delimited name.\n  - It accepts only valid full names.\n  - It skips backslash-escaped roles through `is_escaped`.\n  - It skips Markdown code examples (code spans, code blocks, raw HTML) through `protected_ranges` and `is_protected`.\n  - Those literals stay literal and are not counted as references.\n- **Rendering.** `replace_inline_references` (`src/lib.rs`) turns a `{term}` whose target is a term definition into `<a href=\"…#habeas-definition-<name>\">phrase</a>`.\n  - The anchor comes from `DefinitionKind::anchor`.\n  - The phrase comes from `terms::declaration` and is escaped by `terms::escaped_phrase`. That function turns Markdown-significant characters into numeric entities and HTML-escapes the rest.\n  - No badge is produced, and `reference_badge` explicitly returns `None` for term targets.\n  - `replace_definitions` renders the declaration as `<strong id=\"habeas-definition-…\">`, which is the anchored declaration the link targets.\n  - `preprocess_book` drives this over all chapters, including detail pages.\n- **Reporting bad targets.** `validate_references` in `src/evidence.rs` reports `term X has no matching named definition` when the target is missing or is a requirement or example (another kind).\n  - It also reports non-term roles that point at a term or at nothing.\n- **Terms never count as citations or coverage.** A term reference is never added to `by_definition`, so it cannot satisfy evidence coverage or any citation.\n  - `missing_function_references` (`src/rust_coverage.rs`) returns `false` for `ReferenceKind::Term`, and `DefinitionKind::Term` targets never count.\n  - `example_references_requirement` accepts only `Cite` and `Test`.\n  - The authoring inputs and `reference_selector` code ignore terms.\n  - `terms::referenced_terms` handles dependencies separately.\n\n### Tests\n\n- `phrases_are_plain_links_and_markdown_literals_are_preserved` checks the rendering case.\n  - It asserts the declaration anchor and that no `shields.io` badge appears.\n  - It asserts exactly one link, with the correct relative cross-chapter href from a nested chapter.\n  - It asserts the escaped phrase `&#42;alpha&#42; &amp; &lt;beta&gt;`.\n  - Together with the exactly-one-link count, this shows the code-span, fenced-code and backslash-escaped forms stay unlinked.\n- `invalid_declarations_and_reference_targets_are_reported` checks that a term pointing at a requirement (`rules.ready`) and a term pointing at a missing name are both reported.\n- `definition_schema_deletion_and_literal_references_are_checked` checks several cases.\n  - Deleting the glossary produces the missing-target error.\n  - Literal forms (code span, fence, escape) yield no validation errors and no inputs.\n- `outline_inputs_capture_terms_without_counting_them_as_citations` checks that a Rust comment holding only a `{term}` leaves the function reported as having \"no requirement or example citation\".\n- The `validate_references` test for unknown `{impl}` targets and the `{test}`-marked tests for `references.markdown_literals` add coverage of the other-role failure case and the literal rules.\n\n### Gaps and caveats\n\n- `chapter_href` and `replace_references` contribute to term-link generation and nested fenced bodies, but they carry `{impl}` markers only for book-badge and navigation requirements, not this one. They are shared helpers, and I judged this minor.\n- There is no explicit test for a same-chapter term link, a term reference inside a fenced-reference body, or a term pointing at an example. The code paths are the same, so I judged this acceptable.\n- There are no FIXMEs.",
+  "rationale": "**Judgment: the sources satisfy `requirements.definitions.references`.** I read the marked `{impl}` code and the four `{test}` functions against each obligation. I did not run the tests.\n\n## Implementation, by obligation\n\n**Recognising `{term}` roles and keeping literals literal**\n- `reference_roles` (src/lib.rs:764) recognises `{term}` followed by a backtick-delimited valid definition name.\n- It skips escaped roles via `is_escaped`.\n- When `markdown` is true it also skips Markdown code and raw-HTML ranges via `protected_ranges`. Escaped references and references in Markdown code examples therefore stay literal in both rendering and validation.\n- Built-in names are never accepted for `{term}`.\n- `collect_references_with_progress` in src/evidence.rs uses the same function for every source file, so term references are collected from Markdown and source comments alike.\n\n**Rendering as a plain hyperlink**\n- `replace_inline_references` (src/lib.rs:471) turns a `{term}` whose target is a term definition into `<a href=\"…#habeas-definition-<name>\">phrase</a>`.\n- The href is computed relative to the current chapter and is HTML-escaped. No shield badge is produced; the badge path is only taken for impl, cite and test.\n- `DefinitionKind::anchor` supplies the anchor name, and `replace_definitions` emits the matching `<strong id=\"…\">` declaration.\n- If the target is missing or of another kind, the text is left literal.\n- `preprocess_book` applies this to every chapter.\n\n**Escaping the phrase**\n- `terms::escaped_phrase` (src/terms.rs:189) encodes Markdown-significant characters (`* _ \\` [ ] \\ ~ { }`) as numeric entities.\n- It HTML-escapes everything else, including `& < >`.\n\n**Reporting missing targets and targets of another kind**\n- `validate_references` (src/evidence.rs:1242) reports `term X has no matching named definition` unless the target exists and is a `DefinitionKind::Term`. A missing name and a requirement or example target are both reported.\n- Conversely, `{impl}`, `{cite}` and `{test}` references to terms fall into the \"no matching requirement or example\" error.\n- `terms::referenced_terms` and `close_dependencies` collect term references for dependency closure and report unresolved ones. These are marked as implementing the dependencies requirement.\n\n**A term reference does not satisfy a citation or a Rust coverage obligation**\n- Term references are `continue`d before `by_definition` is built, so they never count as `{impl}`/`{test}` evidence for a definition.\n- In `missing_function_references` (src/rust_coverage.rs:130), the `counts` closure returns false for `ReferenceKind::Term`. It also returns false when the target is a term definition.\n\nThe marking looks complete. The code that implements the obligation (`reference_roles`, `replace_inline_references`, `escaped_phrase`, `validate_references`, `missing_function_references`, `referenced_terms`, `ReferenceKind` and its helpers) carries `{impl}` references to this requirement. I found no `{term}` behaviour in unmarked code beyond what other requirements (declaration, dependencies, book_badges) specify.\n\n## Tests\n\n- **`tests/definitions.rs::invalid_declarations_and_reference_targets_are_reported`** covers validation errors. A `{term}` pointing at a requirement (`rules.ready`) and a `{term}` pointing at a nonexistent name (`missing.name`) each produce `term … has no matching named definition`. That covers both missing targets and targets of another kind.\n- **`phrases_are_plain_links_and_markdown_literals_are_preserved`** covers rendering:\n  - It renders from a nested chapter and asserts exactly one correct relative `href` to the anchored declaration.\n  - It asserts no `shields.io` badge.\n  - It asserts the phrase is escaped (`&#42;alpha&#42; &amp; &lt;beta&gt;`).\n  - Inline-code, fenced-code and backslash-escaped references stay unrendered, because the link count is exactly 1.\n- **`definition_schema_deletion_and_literal_references_are_checked`** covers validation of literals. The same three literal forms referencing a nonexistent term produce no error and no input. Deleting the glossary makes the real term reference an error.\n- **`outline_inputs_capture_terms_without_counting_them_as_citations`** covers the citation rule. A Rust function whose only comment is a `{term}` is reported as having \"no requirement or example citation\".\n- **`rust_coverage::tests::an_example_counts_only_when_it_references_a_requirement`** also checks that `{impl}` to a term does not count. It cites a different requirement, but it exercises the same code path.\n\nThe tests cover the main cases and boundaries: valid, missing, wrong-kind, and each literal form (inline code, fenced code, escaped).\n\n## Minor gaps, not enough to fail\n- There is no dedicated test for a `{term}` pointing at an example, or for a missing term in a source comment. These use the same branch as the tested cases.\n- No FIXMEs are involved.",
   "references": "9dd0d49ec24fc8b569c1a8d77409ce793041e85bbbf5de66fb2ce6d244585def",
   "inputs": [
     {
@@ -98,9 +98,24 @@
       "hash": "8ae4ea21d6333d2f0387bbde69364509558488d4672f0608a66b99709b8188e8"
     },
     {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[author_all_with_options]",
+      "hash": "95397d47e5c7d75a894412d120707a16de3d20f5a0e447fa0f0014834d8702f1"
+    },
+    {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[prepare]",
       "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "75fcd50d474e901c1fad0e540f035103e29f98a664b9329b70a5843917c9723f"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -108,194 +123,19 @@
       "hash": "3a4ea1fa16cf897d7d8c0d7c1e953ff9626ed8e09972793c3f42c66006444c57"
     },
     {
-      "file": "src/builtins.rs",
-      "item": "const[BUILTINS]",
-      "hash": "8ce47d9d1452becf82888d66cfd9bb33a1c94cd89bb54b3d6d52fa2ee7ffe7a4"
-    },
-    {
-      "file": "src/builtins.rs",
-      "item": "mod[tests]/fn[habeas_none_has_its_approved_text_and_only_permits_fenced_citations]",
-      "hash": "7e661b1cddb8a038b0fed92ada1d76c2d162108260d563a5b23727405da3cb28"
-    },
-    {
       "file": "src/citations.rs",
       "item": "fn[citation_items]",
       "hash": "1f07b2d4daadae106de045c08f9e30b309986ce3d0350a7a8c6bca4a16dbe064"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "use@d34bb79f11fa",
-      "hash": "d34bb79f11fa91ff43df333fd09f08c055030852bcc4690bfdeddbdd36265b71"
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown_with_options]",
+      "hash": "facde8e858f5f27d750f03ba77521a316ee63e40fbfdb0d224af3b9dc39dbf50"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[example_references_requirement]",
-      "hash": "8442da42361b1c2a7e0fd0c8cca509c370c7ab8e2dfb1dbc5ccd107c60691d06"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_references_with_progress]",
-      "hash": "ab5630cf0b99cf55cb908d1323837e213a865d682af12bf96df095f55a871765"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
-    },
-    {
-      "file": "src/fenced.rs",
-      "item": "use@190a6e557681",
-      "hash": "190a6e5576819cf66e859b067582d009f83aaf24a7427c992bd305a57781efcb"
-    },
-    {
-      "file": "src/fenced.rs",
-      "item": "fn[opening_fence]",
-      "hash": "93c466042065e60b4601f541d47367193425fdc3d57edc3a8c09d4b473b190a2"
-    },
-    {
-      "file": "src/fenced.rs",
-      "item": "fn[justification]",
-      "hash": "5b4f2ef571bcb35856854462484939526a86ce9b4938eb46daad1dcd047cec11"
-    },
-    {
-      "file": "src/fenced.rs",
-      "item": "mod[tests]/fn[opening_fences_take_a_role_and_one_valid_or_built_in_name]",
-      "hash": "d6f330a1b9725764366fd08b93c4e976f189cc304c64415a2acb06871c3e6eff"
-    },
-    {
-      "file": "src/fenced.rs",
-      "item": "mod[tests]/fn[comment_fences_close_within_one_comment_run]",
-      "hash": "e358905008efd2bb774ea1d5c6d0db75c748a70db2a40a0516aaeb5cba4ef1bc"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DefinitionEdges]/fn[current]",
-      "hash": "702526d29352d4816fa00ddc14bed815cf62f7adc34830949ca206c0b29c15dc"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DefinitionEdges]/fn[group]",
-      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[text_references]",
-      "hash": "8e96d00979e2861bac60dab5e9733213f94b6441891b788fd9f71a2ee4fa38a0"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/use@36082be0a766",
-      "hash": "36082be0a766ab9557ba41cc9a2f5a902f52abee0e1a5c8aa7873b0217b9def0"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[invalid_names_remain_literal]",
-      "hash": "6fa8e9e43955295ed3e02fc3eab6764fbc52e74ab922cc0b542ec3c847abde0b"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[roles_in_raw_html_stay_literal]",
-      "hash": "2e3da80022ff4ce62041fe2d87be7a97d548b68e1ad7e0462a3d64fcff90e8ba"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[references_in_requirement_bodies_are_scanned_as_markdown]",
-      "hash": "2cb4a911d69075733e93b81b78d37661c6f3dcf79e6982c5865d8f6185921b57"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "use@b1e5daf2ec14",
-      "hash": "b1e5daf2ec14749fe6a2b5442472ab5df532ec448835e00af9c1d65849249116"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "use@1e0b93d961bf",
-      "hash": "1e0b93d961bffccdab83c4784acdd4a7832c485920c14e8186806c5bb104a6a6"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[replace_references]",
-      "hash": "236568b2fd4f8a76f4b2514fca54606e83de5ee398b43e978104462f3b519e54"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[reference_badge]",
-      "hash": "8eb1880787947dd773aefd3cc5471933546d430817b4d30922a528d810bba479"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[shield_path_component]",
-      "hash": "37719a67a16b3486fa81842e5598ef22dd74cb4ec5550f1e524642ec387ca2ee"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[chapter_href]",
-      "hash": "2ba7dbb9d51a4b685ada2f2724fa9edefbc76dd53b6224537378950681c20429"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[colon_fence]",
-      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[overlaps_protected]",
-      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[protected_ranges]",
-      "hash": "60056ec394f43fa5e98c7a5392c306b59e7d5501a9cf183339ef15ce2ff5f82a"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[is_protected]",
-      "hash": "096aa5aeb26e538ce1a69dd6bf447d0b45071fd25e14885f63b4cf7865a98d87"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[is_escaped]",
-      "hash": "b5579d1a216565d53f327f68812bb121cabe82deac40cd008ae2a7d5f68ef6bd"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "use@4e5e9454aa1a",
-      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "use@329c335dba2c",
-      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "use@9deeef890732",
-      "hash": "9deeef8907322f72d657fceb434a61fb71a6ba1456f75a3570b2ffd0913d8753"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[declaration]",
-      "hash": "5263149823d66ebe73fd2dbdf0eebb70dab76aea126cb1da175a6c5dc221d290"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "ac2ad28d53c6050143adeb4611418075c0158340aaf8b446e36780e1eecf57c2"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
-      "hash": "80f0e04a167277add8bf139cf1fb69dfb86907523e39504ef7455791f0e31e63"
+      "file": "src/commands.rs",
+      "item": "fn[info_markdown]",
+      "hash": "a9830dc8abda6a1630b308950385476f56d0ff614c9da33c26053edf3b8290f9"
     },
     {
       "file": "src/evidence.rs",
@@ -304,18 +144,53 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "fn[reference_set_digest_for]",
       "hash": "1928a8d338ff5dae6a6dfefeb2599a172e4b76c67b9ab7445c2454b25d6c469b"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
-      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
+      "file": "src/lib.rs",
+      "item": "impl[DefinitionKind]/fn[noun]",
+      "hash": "cf5d9c19831ce1e2aa729a66e8b62bf58a4a54cab76483c1fad1ae93ea159560"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "impl[DefinitionKind]/fn[badge]",
+      "hash": "f125d53f01e225faaa1b1935c45e37cc8d4f5dac24475ca5359eb24f34fd9e3a"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[reference_badge]",
+      "hash": "8eb1880787947dd773aefd3cc5471933546d430817b4d30922a528d810bba479"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[definition_blocks]",
+      "hash": "2b0bdec0c2df2d264c66f04e02823f8678591d3528764db7aad61bfdde467717"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[an_example_counts_only_when_it_references_a_requirement]",
+      "hash": "c65d65ed91711c7879e9394dee4f6a6af6c5d95e22c39cae3f669b9f9f3ce00b"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[close_dependencies]",
+      "hash": "7505912bdea9e2777bb6ca92e2ed4255ac0e6322bb358a0e33dcd732b900ca29"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[new]",
+      "hash": "a6727f1556cf97a83cf5e7adfac2a451c2e80f81b0fa50691f36b6bf35008351"
     },
     {
       "file": "src/evidence.rs",
@@ -323,24 +198,109 @@
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
     },
     {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[nested_evidence_files_are_reported]",
-      "hash": "2e3d1660a6c496c838526f920cedbc95c013f14d538c50e3620d6af7b59b4498"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
+      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
     },
     {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[evidence_named_for_terms_or_nothing_is_reported_at_the_top_level]",
-      "hash": "4d26d157230d34d930b546a140d2a453b2f875348aa34692998391fb84416a5a"
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references_with_progress]",
+      "hash": "924a0ad8b6484b5fdd21845acd001416b6f646acefc3f98228b9b3ac500e9d4b"
     },
     {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[symlinked_evidence_json_files_are_checked_like_other_files]",
-      "hash": "750877ff2abeffc7c33ccba988f7609c870a37d28ca79f610ff864b71e8d62c3"
+      "file": "src/fenced.rs",
+      "item": "fn[comment_fences]",
+      "hash": "b40eb7fb19f2399a96f3bb1821a848d32d36e3d6f6a49e3b872d83ea765950ba"
     },
     {
-      "file": "tests/references.rs",
-      "item": "fn[citation_reviews_are_required_current_and_not_orphaned]",
-      "hash": "e1ee3ba29e4e7118e05a669761396a09f1802b56f9b68a41a9e8d730bf18bd3b"
+      "file": "src/fenced.rs",
+      "item": "mod[tests]/fn[comment_fences_close_within_one_comment_run]",
+      "hash": "e358905008efd2bb774ea1d5c6d0db75c748a70db2a40a0516aaeb5cba4ef1bc"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_references]",
+      "hash": "236568b2fd4f8a76f4b2514fca54606e83de5ee398b43e978104462f3b519e54"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "use@190a6e557681",
+      "hash": "190a6e5576819cf66e859b067582d009f83aaf24a7427c992bd305a57781efcb"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[FenceLine]",
+      "hash": "41dcdd883490fd648b36e854074b83c2ff456f50f71a4f60f41cd96dca9ce536"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[Fence]",
+      "hash": "74e31f2b9e20fae1ac15bf3ec0f5a8cf0400b660406dcc5760234a602574530b"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[SourceFence]",
+      "hash": "10dc43ee2aabc3b91e68f84e93a24934da0069193a4d0de91cc229befcf9858f"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[opening_fence]",
+      "hash": "93c466042065e60b4601f541d47367193425fdc3d57edc3a8c09d4b473b190a2"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[closes]",
+      "hash": "be64eb76428f338fed4e9ff7eda886247385c0672a65e719902f34b4f38bcbe6"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[find_fences]",
+      "hash": "9d427715ee1dd9e15323d6db8d347b9746066cccfb7366b9bcd46d61bd25b2cf"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[body]",
+      "hash": "c5a6b9dd8a5f624fc7998320d92cae0f8dd89c4cfc155dff36fcb2209f39a9ff"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[justification]",
+      "hash": "5b4f2ef571bcb35856854462484939526a86ce9b4938eb46daad1dcd047cec11"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[MarkdownFence]",
+      "hash": "7abe585a7a4d348a4473f454a00565e7ade76f1dd4707e9908c9b9760277edce"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[split_lines]",
+      "hash": "d4055a5521fd48cc5b602702b904c849bd2624517a2c2fd0746725d8ad8e1ff5"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[markdown_fences]",
+      "hash": "5c3f764de8ec8975e58065163dd32ac9cda7786cfd53bba935d08e87ca092e3a"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[strip_comment_delimiters]",
+      "hash": "357d036fdb7703167f19442822ac4cc3c5b483157ba03f9f9581dec17451ea7e"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[text_fences]",
+      "hash": "c0c83fb309e64eb614c5733d56120dea5859465ed5d7b0901dc6c90d3d3097d2"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[source_fences]",
+      "hash": "1186144bd1200de2e8b0665a8af6e252fb87847a435f110e00f4f44518133f7a"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]/fn[markdown_fences_close_with_enough_colons_and_skip_code]",
+      "hash": "da386c0ec297b2e2bc2b94e200279ed5a06f26a059bbef73e5c62342b7a05b98"
     }
   ]
 }

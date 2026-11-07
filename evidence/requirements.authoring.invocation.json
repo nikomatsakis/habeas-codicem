@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas author <full-name> [--config <name>] [--stdout] [-v|--verbose]` MUST assess one\nexisting requirement or named example in the current project. It MUST report the\nselected subject, backend, model, evidence destination, and usage-record path on\ncompletion. The evidence destination MUST identify the evidence-file path by\ndefault or stdout when `--stdout` is selected. In stdout mode, the completion\nreport and diagnostics MUST go to stderr. `author-evidence` MUST remain an alias\nfor the single-subject command.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation covers every obligation, the tests cover the main cases and the obvious failure cases, and I found no gaps.\n\n**Implementation**\n- **Command shape.** `src/main.rs` `Command::Author` defines `habeas author <subject>` with `--config`, `--stdout`, and `-v/--verbose`. `alias = \"author-evidence\"` makes the old name an alias for the same single-subject command. An `ArgGroup` makes the subject and `--all` mutually exclusive, and `--all` conflicts with `--stdout`.\n- **Assessing one existing subject.**\n  - `AuthoringSubject::parse` and `AssessmentSources::prepare` (`src/authoring/inputs.rs`) reject any name that is not an existing non-term definition. The error reads \"no matching requirement or named example\".\n  - `author_evidence_with_options`, `configured_assessment`, and `configured_record` (`src/authoring/mod.rs`) run the assessment.\n- **Completion report.** `AuthoringOutcome` carries subject, backend, model, `evidence_path: Option<PathBuf>`, and `usage_path`. `main` prints `subject: backend / model`, then `Evidence: <path>` and `Usage: <path>`.\n- **Evidence destination.**\n  - By default `evidence_path` is `Some(path)` and the report prints it.\n  - With `--stdout`, `evidence_path` is `None` and the report prints `Evidence: stdout`.\n- **Stdout mode.**\n  - Only the evidence JSON goes to stdout (`configured_assessment` writes it via `io::stdout().lock()`).\n  - The completion report goes to `eprintln!`, as do the false-judgment notice and the verbose rationale.\n  - Errors propagate through `main`'s `Result`, which Rust prints to stderr.\n  - `BatchProgress::println` also uses stderr.\n- **Marking.** The relevant functions carry `{impl}` markers.\n  - `AuthoringSubject` and `AssessmentKind` carry only `{cite}` markers. They are plumbing for the separate citation-review feature, and the actual parsing is marked `{impl}` on `parse`. I do not count that as a gap.\n- **Unspecified behaviour.** The `citations:` subject form and `--all` / `--confirm` are specified by other requirements (`references.citation_review`, `authoring.batch`, `authoring.confirmation`), and the code marks them that way.\n\n**Tests** (`tests/authoring_cli.rs`)\n- **Default mode.** `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` runs `author-evidence SUBJECT` (the alias). It checks the report contains the model, `Evidence:`, and `Usage:`, and that the evidence file is written.\n- **Stdout mode.** `stdout_emits_only_evidence_json_without_changing_project_files` covers true, false, and FIXME judgments, with and without existing evidence, and with and without `--verbose`.\n  - stdout is pure evidence JSON ending in a newline.\n  - stderr contains `SUBJECT: ollama / MODEL`, `Evidence: stdout`, and a `Usage:` path that exists.\n  - The evidence file and project files are untouched.\n- **Verbose flags.** `verbose_single_author_reports_only_false_rationale_without_source_inputs` exercises `-v` and `--verbose`.\n- **Failures.** `author_rejects_unknown_subjects_and_conflicting_targets` checks that an unknown subject fails with the name in stderr. It also checks that conflicting targets exit with code 2 for both `author` and `author-evidence`, and that existing evidence is unchanged.\n- **Configuration and live runs.**\n  - `--config` appears in several tests; the others are the batch test and the `false_is_a_completed_assessment` test.\n  - `authoring_uses_nearest_workspace_configuration_without_a_user_file` tests workspace configuration.\n  - `live_bedrock_authoring` (`tests/live_bedrock.rs`) runs `--config` with `--stdout` on a real backend.\n\n**Minor observations (not gaps)**\n- No test passes a term name as the subject. The code filters terms out, and the rejection path is the same as for an unknown name, so I treat this as covered.\n- Stderr routing of failure diagnostics in stdout mode relies on standard `main` error handling and is not tested separately.",
-  "references": "56d3da65bcc5f6f41950d40387611e52c5a7af00e20c3da40a2a3f953a8bd42c",
+  "rationale": "**Implementation**\n\n- **CLI shape.** `src/main.rs` `Command::Author` accepts `subject`, `--config`, `--stdout`, and `-v/--verbose`. It carries `alias = \"author-evidence\"`, so the alias is the same single-subject command. The `--all`/subject group and the `--all` vs `--stdout` conflict are covered by the batch requirement.\n- **Existing subject only.** `AssessmentSources::prepare` (`src/authoring/inputs.rs`) looks the name up among definitions and rejects terms and unknown names with \"no matching requirement or named example\". `AuthoringSubject::parse` and `configured_assessment` route the name into it.\n- **Evidence destination.** `EvidenceOutput` and `configured_assessment` either write `evidence/<name>.json` and return `evidence_path = Some(path)`, or write the JSON to stdout and return `None`.\n- **Completion report.** `AuthoringOutcome` carries subject, backend, model, evidence path and usage path. `main` prints `subject: backend / model`, `Evidence: <path>` and `Usage: <path>`.\n  - In file mode the report goes to stdout.\n  - In stdout mode it goes to stderr, with `Evidence: stdout`.\n  - The false judgment and verbose rationale go to stderr.\n  - Errors from `main` also go to stderr.\n- **Stdout hygiene.** The only `println!` calls in the authoring path are the `--all` summary and the single-subject file-mode report in `main`. The progress printer uses `eprintln!`. The only stdout write in stdout mode is the evidence JSON.\n- **Marking.** All code that carries these obligations has `{impl}` markers. The one `{cite}` on `AssessmentKind` is incidental, since that type mainly serves citation review. The `citations:` subject branch in `parse` is specified by `requirements.references.citation_review`, which is also marked.\n\n**Tests (`tests/authoring_cli.rs`)**\n\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` runs the `author-evidence` alias end to end. It checks that stdout contains the model, `Evidence:` and `Usage:`, and that the evidence file is written.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` runs `author` from a nested directory.\n- `author_rejects_unknown_subjects_and_conflicting_targets` covers the failure case of an unknown subject, and the conflicting-target exit code 2 for both `author` and `author-evidence`. It also checks that the evidence file is unchanged.\n- `verbose_single_author_reports_only_false_rationale_without_source_inputs` covers `-v` and `--verbose` and the report content.\n- `stdout_emits_only_evidence_json_without_changing_project_files` covers `--stdout`.\n  - **Output:** stdout parses wholly as JSON, the report goes to stderr with `Evidence: stdout\\n` and a usage path that exists, and the usage record has `evidence_output = \"stdout\"`.\n  - **Cases:** true, false and FIXME judgments, a missing evidence directory, and verbose or not.\n  - **Side effects:** the project evidence file is unchanged, and no evidence directory is created when there was none.\n- `--config` is exercised in the configuration-precedence tests that share the same fixture.\n\nThe boundaries and failure cases of the requirement are covered. I found no unacknowledged gaps.",
+  "references": "aa874c5d7e7b17bf9c286d0581cdede3b7369585ff60617270a28e1bb4d4ddab",
   "inputs": [
     {
       "requirements": "requirements.authoring.invocation",
@@ -30,6 +30,11 @@
       "file": "src/authoring/mod.rs",
       "item": "struct[AuthoringOutcome]",
       "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "enum[AuthoringSubject]",
+      "hash": "c4acbc98ae3c51105819043874213061a7d7f3e90429ef6a222122340b2d2c12"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -94,7 +99,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+      "hash": "f76c94b0daa3865870b0c221dc99175a60089e7cf63d62019b890c7d893235e0"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -147,21 +152,6 @@
       "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "struct[AuthoringOptions]",
-      "hash": "ea01113a93a66d1f44e07adb65e3d495a34d37be3fddf180d40beecb30398b41"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "enum[AuthoringSubject]",
-      "hash": "c4acbc98ae3c51105819043874213061a7d7f3e90429ef6a222122340b2d2c12"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[AuthoringSubject]",
-      "hash": "d4a38eefdc767d7109b8d60bdf1bdf0e29453370aa105b10da31fa1cc2589442"
-    },
-    {
       "file": "src/authoring/inputs.rs",
       "item": "use@af5af7ca9b21",
       "hash": "af5af7ca9b21b459949168a24caa4a5918639b9884d390487f8cdfaa36b95032"
@@ -197,29 +187,24 @@
       "hash": "2c23db94f80dc2545a74cce8e57db3f6b3ad15a7de5816314a8df067be3eb9b5"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
+      "file": "src/authoring/inputs.rs",
+      "item": "struct[AssessmentSources]",
+      "hash": "bfc92dfeffbb0753740e0e6f5b463863b52627efb842793bd4f7ae470039b2a7"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[false_is_a_completed_assessment]",
-      "hash": "f4bc297166811ae55126fa690b8007e9808d10cc8568a3c74462fd20a8219e89"
+      "file": "src/authoring/mod.rs",
+      "item": "impl[AuthoringSubject]",
+      "hash": "d4a38eefdc767d7109b8d60bdf1bdf0e29453370aa105b10da31fa1cc2589442"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[undeterminable_unwritable_or_project_state_fails_before_a_model_request]",
-      "hash": "a1fda7c51599afc5558f8b547621c13b06460593f88e0d9529c9d21c86356b74"
+      "file": "src/authoring/mod.rs",
+      "item": "struct[PendingAssessment]",
+      "hash": "7bf1a9e1e151e73bd0479a1abafbd02269c3bac9a2b1211140ce53c4c77e3dac"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[state_reaching_the_project_through_a_symlink_is_refused]",
-      "hash": "bf047d3c8de43b23f9a423ca34718ff8da263027b16bb7eb6ef7cdd10768d80e"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[live_bedrock_authoring]",
-      "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
+      "file": "src/authoring/mod.rs",
+      "item": "impl[PendingAssessment]",
+      "hash": "58eca1f55681587adbff8cf82af2f46a8a8a08c6f6b69db82422cc4520dfdc16"
     }
   ]
 }

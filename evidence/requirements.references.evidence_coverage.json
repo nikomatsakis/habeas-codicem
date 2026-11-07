@@ -1,7 +1,7 @@
 {
   "requirement": "For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
   "determination": true,
-  "rationale": "**Judgment:** the implementation and tests satisfy `requirements.references.evidence_coverage`. I found no gaps.\n\n**Implementation**\n- `collect_references_with_progress` (src/evidence.rs) scans every project file outside `.git`, `target`, and the root `book` and `evidence` directories. It records each `{impl}`, `{test}`, and `{cite}` reference with its file and line. That scan includes markdown declarations. It is marked `{impl}` for `requirements.references.targets`, which defines what counts as a valid reference.\n- `validate_references` (src/evidence.rs:1237) groups references by target definition. For each requirement and example it loads `evidence/<name>.json` and builds the resolved input ranges with `evidence_input_ranges`.\n  - `evidence_input_ranges` resolves every input (outline, definition, or requirements glob) to canonical file and line ranges.\n  - The root is canonicalized in `inspect_repository_with_progress`, so path comparison is sound.\n- Every non-`Cite` reference is checked against those ranges. A reference is covered only if the input's file matches and `line_start <= line <= line_end`.\n- `{cite}` references are explicitly filtered out of the coverage check, as the requirement states.\n- Each uncovered reference produces an error of the form `evidence/<name>.json: no input covers {role}`name` at file:line`. That gives the role, full name, source file, and line, as required.\n- A missing or unparsable evidence file yields no inputs, so its references are reported as uncovered rather than skipped.\n- Requirements-glob inputs (`InputSelector::Requirements`) resolve to the declaration line ranges. A reference inside a requirement or example declaration can therefore be covered by selecting that declaration, as the requirement's \"including one in a declaration\" clause needs. `SourceRange` in src/inputs.rs carries those ranges and is marked `{impl}`.\n- Related behavior in the same function is attributed to other definitions: the reference-set digest (`ci.reference_set`), the anchor checks (`references.anchors`), and the example true-determination check (`examples.evidence`).\n- The `{impl}` markings are complete. `InputRange`, `validate_references`, `evidence_input_ranges`, and `SourceRange` are all marked.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` covers the positive case. Impl and test references in a Rust file and a markdown file are covered, and an uncovered `{cite}` produces no error.\n- `reports_unknown_references_and_uncovered_lines` covers the failure case. An input covering only line 1 leaves line 2 uncovered. The test asserts that the error names the role, the full name, and `src/notes.txt:2`.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` is the boundary test for roles.\n  - With empty inputs it expects exactly the impl (line 3) and test (line 5) errors, and none for the cite at line 1.\n  - After the evidence is fixed with outline inputs it expects no errors.\n- `cited_example_with_a_test_and_matching_evidence_validates` checks that an empty `inputs` array reports `no input covers … src/main.rs:1` for an example's `{test}`.\n- `tests/outcomes.rs::fixme_does_not_hide_stale_inputs_or_uncovered_references` is an end-to-end check. A new `{impl}` in `other.txt` is reported as uncovered at `other.txt:1`.\n\n**Remaining nits (not blocking)**\n- No test places an `{impl}` or `{test}` reference inside a requirement or example declaration and checks coverage by a requirements input. The range-resolution code handles it by construction.\n\nThere are no FIXME acknowledgements.",
+  "rationale": "**Judgment:** the implementation and tests satisfy `requirements.references.evidence_coverage`. The one gap I found is minor and I did not treat it as blocking.\n\n**Implementation**\n- `collect_references_with_progress` (src/evidence.rs) walks every project file, skipping only `.git`, `target`, and the root `book` and `evidence` directories. It records each `{impl}`, `{test}` and `{cite}` reference with its canonical file and line. Markdown files are included, so references inside requirement or example declarations are scanned too.\n- `validate_references` (src/evidence.rs, marked `{impl}`) groups references by definition. It reads `evidence/<name>.json` and builds the covering ranges with `evidence_input_ranges`, which resolves each input selector. Outline inputs resolve to node line ranges, `requirements` globs to the matched declarations' line ranges, and definition inputs to the term's range.\n- Each non-`{cite}` reference must satisfy `input.file == reference.file && line_start <= line <= line_end`. If none does, the error reads `evidence/<name>.json: no input covers {role}`name` at file:line`. That gives the role, full name, file and line the requirement asks for.\n- `{cite}` references are explicitly filtered out and never need coverage.\n- A missing, unreadable or unresolvable evidence file yields no ranges. Every impl/test reference is then reported as uncovered rather than silently passing.\n- `InputRange`, `evidence_input_ranges` and `SourceRange` carry `{impl}` markers.\n- The other behavior in `validate_references` is marked for the definitions that specify it: anchors, reference-set digest, examples evidence, targets, builtins.\n\n**Tests**\n- `source_references_are_covered_by_evidence_inputs` is the positive case. An impl in a Rust file is covered by a whole-file input, and a `{test}` in markdown is covered by a line-range input. Uncovered `{cite}` references cause no error.\n- `reports_unknown_references_and_uncovered_lines` checks a partial range. Only the first of two identical lines is covered, and the error names the role, the name and `src/notes.txt:2`.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` has an empty input list. It gets exactly two errors, for the impl at line 3 and the test at line 5, and none for the cite at line 1. After the relevant outline nodes are added, no errors remain.\n- `cited_example_with_a_test_and_matching_evidence_validates` covers examples. With inputs emptied, it reports `no input covers` for `src/main.rs:1`.\n- `fixme_does_not_hide_stale_inputs_or_uncovered_references` (tests/outcomes.rs) is an integration test. It shows an uncovered `{impl}` at `other.txt:1` is reported even when the requirement has a FIXME.\n\n**Minor gap**\n- No test places an `{impl}` or `{test}` reference inside a requirement or example declaration and checks it is covered through a `requirements` glob input. The code path is the same as for any other file, because the declaration's line range is a normal input range, so I did not treat this as blocking.\n\nThere are no acknowledged FIXMEs for this requirement.",
   "references": "d2395c25a90d8e23a1109f7745415197c45db4bb152fccfd74efb8d63970bb24",
   "inputs": [
     {
@@ -124,9 +124,29 @@
       ]
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[display_path]",
-      "hash": "02c394281888c5f67423da7d708114fd1e651d5f2e9d0c3a27721b68e4eb27de"
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]/fn[resolve]",
+      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_model_input]",
+      "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
     },
     {
       "file": "src/evidence.rs",
@@ -141,12 +161,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[collect_references_with_progress]",
-      "hash": "ab5630cf0b99cf55cb908d1323837e213a865d682af12bf96df095f55a871765"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
+      "hash": "924a0ad8b6484b5fdd21845acd001416b6f646acefc3f98228b9b3ac500e9d4b"
     },
     {
       "file": "src/evidence.rs",
@@ -169,19 +184,39 @@
       "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "enum[InputSelector]",
-      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository]",
+      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]/fn[node_range]",
-      "hash": "a4f2fd736f9c0783c44c18091bc3311367dcedb8dbdc6bf02f924a8b106ab29e"
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "1f2cccc74a111d9173771fbe3c693bac16b47809a612063b9fcddbd6840dd7d3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[ReferenceSetEntry]",
+      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[reference_set_digest]",
+      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
+      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
+      "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
     }
   ]
 }

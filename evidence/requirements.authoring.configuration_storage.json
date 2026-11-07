@@ -1,7 +1,7 @@
 {
   "requirement": "Configuration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.\nProject-selection keys MUST be canonical absolute project-root paths. Model IDs\nMUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST\nname a nonempty environment variable without `=` or NUL.\n\nAuthoring MUST validate its fields under {cite}`requirements.configuration.loading`.\nThe `options` map MUST accept backend-defined inference settings rather than a\nclosed Habeas list; the adapter MUST pass them through Rig's provider parameter\nmechanism and report rejection by Rig or the provider. These options MUST NOT\nreplace the selected model, the assessment prompt, or tool definitions.",
   "determination": true,
-  "rationale": "**Judgment:** the implementation and tests cover every obligation in `requirements.authoring.configuration_storage`. I did not run the tests or read code beyond the supplied inputs.\n\n**Implementation, by obligation**\n- **Configuration names:** `validate_name` in `src/config.rs` enforces `[A-Za-z0-9][A-Za-z0-9_-]*` byte-wise, so matching is ASCII-only and case-sensitive. It is applied to config names, `authoring.default` and project-selection `config` references. This happens in `UserAuthoringConfig::validate` and `WorkspaceConfig::validate`, and it runs again at resolution time.\n- **Project-selection keys:** `UserAuthoringConfig::validate` rejects a key unless all of these hold:\n  - the path is absolute;\n  - it has no `.` or `..` components;\n  - the spelled-out form matches the componentized form, which rejects trailing separators and `.` components;\n  - it equals its canonical form whenever the path exists, which rejects symlinks.\n\n  A root that does not exist yet cannot be canonicalized, so it is accepted. A test pins that choice.\n- **Model IDs:** `BackendConfig::validate` rejects empty model IDs. Other model strings are not interpreted, so tags and ARNs are kept as written.\n- **`api_key_env`:** `BackendConfig::validate` rejects an empty value or one containing `=` or NUL. Only the Ollama config appears to have this field.\n- **Validation under `requirements.configuration.loading`:** every check returns `invalid(path, setting, …)`, so the file and the setting are named. `UserConfig::parse` and `WorkspaceConfig::validate` call these checks. The resolve functions re-validate.\n- **Options pass-through:** options are an open `BTreeMap<String, OptionValue>`. `RigProvider::complete` passes them to Rig through `request.additional_params`. For Bedrock, the native keys are first moved into Rig's typed request fields by `apply_bedrock_options`, which type-checks them and returns an error when Rig can't take the value. Provider errors are mapped through `provider_failure`.\n- **Options cannot replace the model, prompt or tools:** `BackendConfig::validate` rejects `model`, `modelId`, `model_id`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig` as option keys. `OptionValue::validate` also rejects non-finite floats, including nested ones.\n- **Marking:** the `{impl}` annotations cover the validation, option and adapter code, so I found no unmarked implementing code. The credential checks are extra behavior, but they are marked as implementing `requirements.authoring.credentials`.\n\n**Tests**\n- `storage_rules_reject_each_invalid_field_with_its_setting` (`tests/configuration.rs`) covers:\n  - invalid names: empty, `.`, space, non-ASCII, a leading `-` or `_`, and a bad `default`;\n  - bad project keys: relative, `..`, `./`, trailing `/`, and a symlink on unix;\n  - empty model IDs for both backends;\n  - bad `api_key_env`: empty, `=`, NUL;\n  - NaN and inf floats, including nested ones;\n  - each forbidden option key for both backends;\n  - the same name and field rules for workspace files;\n  - accepted cases: case-distinct names, tagged and ARN model IDs, and an existing and a nonexistent canonical root.\n- `invalid_schema_and_feature_values_report_the_configuration_path` checks that errors name the file.\n- `backend_configuration_round_trips_without_materializing_defaults` checks that arbitrary option maps are accepted and round-trip.\n- `bedrock_native_option_types_are_checked_without_supplying_defaults` in `src/authoring/providers.rs` checks Bedrock type rejection and that unknown options such as `top_k` pass through untouched.\n- `ollama_cli_delivers_sources_…` and `bedrock_cli_uses_selected_profile_…` (`tests/authoring_cli.rs`) check end-to-end pass-through to the provider requests while the model, prompt and tools stay intact.\n- `provider_rejection_of_inference_options_is_reported` covers both failure paths: a provider HTTP 400 surfaced in stderr, and a Rig-side Bedrock rejection reported before any request.\n\nNo gaps and no FIXMEs found.",
+  "rationale": "**Implementation**\n\n- **Names.** `validate_name` (src/config.rs) enforces `[A-Za-z0-9][A-Za-z0-9_-]*` on config names, `authoring.default` and project `config` selections. Names are `BTreeMap` keys, so they are case-sensitive.\n  - Both `UserAuthoringConfig::validate` and `WorkspaceConfig::validate` call it.\n- **Project keys.** `UserAuthoringConfig::validate` requires keys to be absolute and free of `.` and `..` components.\n  - It also rejects non-normalized spellings, such as a trailing slash, by comparing the spelled-out key with its normalized form.\n  - It rejects keys that differ from their canonical form (symlinks) when the path exists.\n  - `resolve_authoring_with_workspace_from` canonicalizes the project root before looking up the selection.\n- **Model IDs.** `BackendConfig::validate` rejects an empty model ID and applies no other check, so IDs stay opaque. Tags and ARNs are preserved.\n- **`api_key_env`.** It is rejected if empty or if it contains `=` or NUL.\n- **Loading rules.** `UserConfig::parse`, `UserConfig::validate` and `WorkspaceConfig::validate` validate the fields and report the file and setting. This is consistent with `requirements.configuration.loading`.\n- **Options.** The `options` map is a map of `OptionValue`, so it accepts backend-defined keys.\n  - Non-finite floats are rejected.\n  - Keys such as `model`, `modelId`, `prompt`, `messages`, `system`, `tools`, `toolChoice` and `toolConfig` are rejected, so options cannot replace the model, prompt or tools.\n  - `RigProvider::complete` passes the options to Rig as `additional_params`.\n  - For Bedrock, `apply_bedrock_options` first maps the native inference keys (`temperature`, `maxTokens`, `topP`, `stopSequences`) into the Rig request fields. It type-checks them and rejects `inferenceConfig`, and the remaining keys pass through.\n  - Rig and provider errors are returned through `provider_failure`.\n- **Marking.** The code that implements the requirement carries `{impl}` markers.\n  - `RigProvider::connect` is not marked, but it only forwards `options_json()` and the model, and `options_json()` is marked.\n  - I found no unmarked behavior beyond what other requirements cover (credentials, concurrency, mapping).\n\n**Tests**\n\n- `storage_rules_reject_each_invalid_field_with_its_setting` (tests/configuration.rs) covers the boundaries.\n  - Invalid names: empty, `.`, space, non-ASCII, a leading `-` or `_`.\n  - Project keys: relative, `..`, `./`, trailing slash, symlink.\n  - Model IDs and `api_key_env`: empty model, empty `api_key_env`, `=` and NUL in `api_key_env`.\n  - Options: NaN and inf (including nested), and each reserved option key for both backends.\n  - Workspace files get the same checks.\n  - Accepted cases: case-distinct names, opaque model IDs with tags, a canonical existing root, and a canonical root that does not yet exist.\n- `backend_configuration_round_trips_without_materializing_defaults` covers arbitrary options (nested, arrays, booleans), ARN model IDs and round-tripping.\n- Other `tests/configuration.rs` tests cover selection by project key, with a `.` in the root and with case-sensitive lookup, and workspace combinations.\n- `provider_rejection_of_inference_options_is_reported` (tests/authoring_cli.rs) covers rejection reporting.\n  - A 400 response from the Ollama provider is surfaced after the options were passed through unchanged.\n  - A Bedrock option type error is reported by Rig before any request is sent.\n- The CLI tests assert that options and the model reach the Ollama request body and the Bedrock `inferenceConfig` and `additionalModelRequestFields`.\n- The unit test `bedrock_native_option_types_are_checked_without_supplying_defaults` covers the Bedrock option mapping.\n\nProvider-side rejection is tested only for Ollama, not Bedrock. The shared error path makes this a minor gap.\n\nNo gaps need a FIXME.",
   "references": "43421bae98a53ad986ab24b56f94aebb2b2299b6310715fcbb4a8380fc22a486",
   "inputs": [
     {
@@ -131,7 +131,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "9fe624ca408af882d586b7be0354fba78ffddda936115b97fe92e2f49a46e657"
+      "hash": "f76c94b0daa3865870b0c221dc99175a60089e7cf63d62019b890c7d893235e0"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -177,6 +177,101 @@
       "file": "tests/configuration.rs",
       "item": "fn[storage_rules_reject_each_invalid_field_with_its_setting]",
       "hash": "1d5ec2ad2a1a63f42fae93daef815c9f78837090da51165a6e6dc9f7b95b8e57"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@95d18074761c",
+      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@7d949f3dd9b8",
+      "hash": "7d949f3dd9b8f004dc89a84c71fe59a62b5f5ca0e84320f27245e882f1d23189"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@835bc5929e6d",
+      "hash": "835bc5929e6d97de26c368f72d95325f6d7399dad7d665fdcdace0d2d19d0a71"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@36004768e609",
+      "hash": "36004768e609c764cdec317e08fe2e411f75a96c197839308024bff4d7c951a8"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@fafb3a0aec25",
+      "hash": "fafb3a0aec25cddf8ec4d346f92f03126df2fce1b33c779de5ad2aa5866794b4"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@bd1b5107617c",
+      "hash": "bd1b5107617c0609840c71d2ae9c53a0c9e99ea8d688d0bc0518063a8cf292a2"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@4e5e9454aa1a",
+      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "use@4b4262645144",
+      "hash": "4b426264514446318af5d7118fad8cce9bdae44294b7d3e84d4ce1d90aab12af"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "trait[CompletionProvider]",
+      "hash": "8620761019b85df2703ec5a986f1fba64c3ec480849bcc25d9e2240092528164"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "struct[ProviderBackoff]",
+      "hash": "c47de749676284131db513d04d0958e226a545276a080ec1ecb8375a298cfe94"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff/Default]",
+      "hash": "efd5a0d411191c5a5cd2788e1ef275a16f9ca4f940f564173c3b77905988c782"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff]",
+      "hash": "0ad38b31bd78d48ec381548c2eed28f8e5a65ae0fd8a579e561873fcbc92589d"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[provider_failure]",
+      "hash": "12241b3ea13d123e305af8735f2329f9e2e99d71dbce5f9bf5676122404cd80f"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[retry_after]",
+      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "struct[RigProvider]",
+      "hash": "514a07edf3e620d7fc3b2e39eaaad9e7a3dc3240ca2d0d889b1822a07da4c6a0"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider]",
+      "hash": "7a3013d0ca73f65f6499e84a0566193f302e57376276b30d62f03c6c8f870d2d"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_config]",
+      "hash": "7ab162b0d655b45cb67e7829a19541bbff5e40b7e91f6943a66eb0fc37167a8e"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[bedrock_sdk_loader]",
+      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[RigProvider/CompletionProvider]",
+      "hash": "df8166a440166e00a72e0c5e8f4971e3b597d6098ec0e5d342859f53b28c4ac9"
     }
   ]
 }
