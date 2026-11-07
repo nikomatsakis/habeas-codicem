@@ -261,3 +261,50 @@ Code was changed instead of the requirement in these cases:
 **New:** "…MUST have a valid `\{impl}`, `\{cite}`, or `\{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under …no_requirement, in a Rust comment…"
 
 **Reason:** step 4 of the reference procedure (commit 8153b92, agreed with the user) directs items that no definition fits to cite `habeas:none`; the coverage rule still required a project definition. The implementation already accepts it.
+
+## requirements.references.citation_review
+
+Old (sentence on mandatory inputs):
+
+> Mandatory inputs MUST be the item's outline node, each cited declaration or built-in text, and the citations' commentary.
+
+New:
+
+> Mandatory inputs, under \{cite}`requirements.authoring.mandatory_inputs`, MUST be the item's outline node, each cited declaration or built-in text, and the citations' commentary.
+
+Reason: `requirements.authoring.mandatory_inputs` says a requirement that
+contributes mandatory inputs MUST cite it. This requirement contributes a
+citation review's inputs but did not cite it. The citation adds no obligation
+and removes none; `AssessmentSources::prepare_citation` and `builtin_input` are
+now also marked as implementing `mandatory_inputs`, with a test of the citation
+path's deduplication and abort on an unresolvable input.
+
+Prompted by: `evidence/requirements.authoring.mandatory_inputs.json` ("A
+contributing requirement does not cite this one. ... It cites
+`citation_prompt`, `targets` and `outcomes`, but not `mandatory_inputs`.").
+
+## requirements.references.book_badges (stylesheet layout)
+
+Old (sentence on focus and hover):
+
+> A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover.
+
+New:
+
+> A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. Badges MAY be laid out inline with the surrounding text, a fenced reference's badge and body MAY be visually set apart from the surrounding text as one block, and a built-in's unlinked badge MAY show a help cursor to signal its hover text.
+
+Reason: the anchored stylesheet `md/habeas.css` lays badges out inline
+(`.habeas-req-badge`, `.habeas-shield`), borders and pads each fenced reference
+(`.habeas-fenced-ref`), and gives built-in badges `cursor: help`
+(`.habeas-builtin`). These are deliberate presentation choices that no
+definition stated. The requirement now permits exactly these, so the stylesheet
+has no unspecified behaviour; every obligation is unchanged. A new test
+(`badge_stylesheet_keeps_visited_links_legible_and_shows_focus`) checks the
+visited, focus, and hover rules and that the stylesheet styles only these
+classes.
+
+Prompted by: `evidence/requirements.references.book_badges.json` ("No test
+covers the CSS obligations." and "The anchored `{impl}` stylesheet contains
+behaviour the requirement does not specify. ... The fenced-reference border and
+padding are end-user-visible and are neither specified nor covered by another
+requirement.").

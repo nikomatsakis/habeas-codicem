@@ -73,9 +73,9 @@ whether the item should be re-checked or kept in sync when the cited definition
 changes, and whether the reference procedure of
 {cite}`requirements.references.targets` calls for `{impl}` or `{test}` instead;
 for `habeas:none`, whether its justification is true, no definition applies, and
-the item implements no unspecified end-user-observable behavior. Mandatory inputs
-MUST be the item's outline node, each cited declaration or built-in text, and
-the citations' commentary. The record MUST contain the item's file and selector,
+the item implements no unspecified end-user-observable behavior. Mandatory inputs,
+under {cite}`requirements.authoring.mandatory_inputs`, MUST be the item's outline
+node, each cited declaration or built-in text, and the citations' commentary. The record MUST contain the item's file and selector,
 its citations by role, name, and commentary, `determination`, `rationale`, and
 `inputs`, with determinations under {cite}`requirements.ci.outcomes`. Validation
 MUST require a current, accepted review for every such item and report stale,
@@ -112,7 +112,7 @@ definition. Habeas's bundled agent skills MUST give this direction.
 
 :::{req} book_badges
 :impl: md/habeas.css
-In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline or fenced, MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. A fenced reference MUST render its badge followed by its body as Markdown. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. These badges use the syntax defined by {cite}`requirements.references.targets`.
+In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline or fenced, MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. A fenced reference MUST render its badge followed by its body as Markdown. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. Badges MAY be laid out inline with the surrounding text, a fenced reference's badge and body MAY be visually set apart from the surrounding text as one block, and a built-in's unlinked badge MAY show a help cursor to signal its hover text. These badges use the syntax defined by {cite}`requirements.references.targets`.
 :::
 
 :::{req} evidence_coverage
