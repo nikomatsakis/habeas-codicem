@@ -8,9 +8,12 @@ use pulldown_cmark::{Event, Parser, Tag};
 
 mod add_input;
 pub mod authoring;
+mod builtins;
+mod citations;
 pub mod config;
 mod definition_glob;
 mod evidence;
+mod fenced;
 mod fixme;
 mod index;
 mod inputs;
@@ -381,11 +384,94 @@ fn replace_definitions(
     result
 }
 
+/// Renders fenced references as their badge followed by their body, and
+/// inline references as badges. A fenced reference inside a definition needs
+/// a longer outer fence, so its closing fence does not end the definition.
+// {impl}`requirements.references.book_badges`
+// {impl}`requirements.references.builtin_definitions`
+fn replace_references(
+    content: &str,
+    current_path: &Path,
+    definitions: &BTreeMap<String, Definition>,
+) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for fence in fenced::markdown_fences(content, true) {
+        if fence.start < cursor || !fence.closed {
+            continue;
+        }
+        let body = &content[fence.body.clone()];
+        let Some(badge) = reference_badge(
+            fence.kind,
+            &fence.name,
+            Some(body),
+            current_path,
+            definitions,
+        ) else {
+            continue;
+        };
+        result.push_str(&replace_inline_references(
+            &content[cursor..fence.start],
+            current_path,
+            definitions,
+        ));
+        result.push_str("<div class=\"habeas-fenced-ref\">\n\n<p>");
+        result.push_str(&badge);
+        result.push_str("</p>\n\n");
+        result.push_str(&replace_references(body, current_path, definitions));
+        result.push_str("\n\n</div>\n\n");
+        cursor = fence.end;
+    }
+    result.push_str(&replace_inline_references(
+        &content[cursor..],
+        current_path,
+        definitions,
+    ));
+    result
+}
+
+/// The badge for a valid `{impl}`, `{cite}`, or `{test}` reference: a link to
+/// a project definition, or an unlinked badge whose hover text gives a
+/// built-in's text. `fenced` is the body of a fenced reference. Returns
+/// `None` for a reference that must remain literal.
+// {impl}`requirements.references.book_badges`
+// {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.references.safe_badges`
+fn reference_badge(
+    kind: ReferenceKind,
+    name: &str,
+    fenced: Option<&str>,
+    current_path: &Path,
+    definitions: &BTreeMap<String, Definition>,
+) -> Option<String> {
+    let label = kind.label();
+    let badge = shield_badge(label, name, kind.color());
+    if let Some(builtin) = builtins::builtin(name) {
+        builtin.check(kind, fenced).ok()?;
+        return Some(format!(
+            "<span class=\"habeas-req-badge habeas-req-ref-{label} habeas-builtin\" title=\"{}\">{badge}</span>",
+            escape_html(builtin.text())
+        ));
+    }
+    let target = definitions.get(name)?;
+    if target.kind == DefinitionKind::Term {
+        return None;
+    }
+    let href = escape_html(&chapter_href(
+        current_path,
+        &target.path,
+        Some(&target.kind.anchor(name)),
+    ));
+    Some(format!(
+        "<a class=\"habeas-req-badge habeas-req-ref-{label}\" href=\"{href}\">{badge}</a>"
+    ))
+}
+
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.index.navigation`
 // {impl}`requirements.examples.index`
-fn replace_references(
+fn replace_inline_references(
     content: &str,
     current_path: &Path,
     definitions: &BTreeMap<String, Definition>,
@@ -395,10 +481,11 @@ fn replace_references(
 
     for reference in reference_roles(content, true) {
         result.push_str(&content[cursor..reference.start]);
-        if let Some(target) = definitions.get(reference.name) {
-            if reference.kind == ReferenceKind::Term {
-                if target.kind == DefinitionKind::Term
-                    && let Ok((phrase, _)) = terms::declaration(&target.text)
+        if reference.kind == ReferenceKind::Term {
+            match definitions.get(reference.name) {
+                Some(target)
+                    if target.kind == DefinitionKind::Term
+                        && let Ok((phrase, _)) = terms::declaration(&target.text) =>
                 {
                     let href = chapter_href(
                         current_path,
@@ -410,27 +497,17 @@ fn replace_references(
                         escape_html(&href),
                         terms::escaped_phrase(phrase)
                     ));
-                } else {
-                    result.push_str(&content[reference.start..reference.end]);
                 }
-                cursor = reference.end;
-                continue;
+                _ => result.push_str(&content[reference.start..reference.end]),
             }
-            let kind = reference.kind.label();
-            let badge = shield_badge(kind, reference.name, reference.kind.color());
-            // {impl}`requirements.references.safe_badges`
-            let href = escape_html(&chapter_href(
-                current_path,
-                &target.path,
-                Some(&target.kind.anchor(reference.name)),
-            ));
-            result.push_str("<a class=\"habeas-req-badge habeas-req-ref-");
-            result.push_str(kind);
-            result.push_str("\" href=\"");
-            result.push_str(&href);
-            result.push_str("\">");
+        } else if let Some(badge) = reference_badge(
+            reference.kind,
+            reference.name,
+            None,
+            current_path,
+            definitions,
+        ) {
             result.push_str(&badge);
-            result.push_str("</a>");
         } else {
             result.push_str(&content[reference.start..reference.end]);
         }
@@ -563,9 +640,10 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
             index += 1;
             continue;
         };
+        // A reserved built-in name is recognized so validation can report it.
         if overlaps_protected(start, body_start, &code_ranges)
             || !rest.chars().next().is_some_and(char::is_whitespace)
-            || !valid_name(rest.trim())
+            || !(valid_name(rest.trim()) || builtins::is_builtin_name(rest.trim()))
         {
             index += 1;
             continue;
@@ -728,7 +806,8 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
         };
         let name_end = name_start + name_end_offset;
         let name = &content[name_start..name_end];
-        if valid_name(name) {
+        let builtin = kind != ReferenceKind::Term && builtins::is_builtin_name(name);
+        if valid_name(name) || builtin {
             references.push(ReferenceMatch {
                 start,
                 end: name_end + 1,
@@ -739,6 +818,26 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
     }
 
     references
+}
+
+/// Every reference in text, inline or fenced, as its role and name, in
+/// source order.
+// {impl}`requirements.references.targets`
+pub(crate) fn text_references(content: &str, markdown: bool) -> Vec<(ReferenceKind, String)> {
+    let mut references = reference_roles(content, markdown)
+        .into_iter()
+        .map(|reference| (reference.start, reference.kind, reference.name.to_owned()))
+        .collect::<Vec<_>>();
+    references.extend(
+        fenced::markdown_fences(content, markdown)
+            .into_iter()
+            .map(|fence| (fence.start, fence.kind, fence.name)),
+    );
+    references.sort_by_key(|(start, _, _)| *start);
+    references
+        .into_iter()
+        .map(|(_, kind, name)| (kind, name))
+        .collect()
 }
 
 // {impl}`requirements.references.markdown_literals`
@@ -819,6 +918,67 @@ mod tests {
         std::fs::create_dir(root.path().join("md")).unwrap();
         std::fs::write(root.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
         root
+    }
+
+    // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.builtin_definitions`
+    #[test]
+    fn fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked() {
+        let mut book = Book::new();
+        let content = [
+            "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n::::\n\n",
+            ":::{req} other\nOther.\n:::\n\n",
+            ":::{cite} habeas:none\nNothing applies.\n:::\n\n",
+            "Inline CITE`habeas:none` stays literal.\n\n",
+            ":::{cite} rules.missing\nUnknown.\n:::\n\n",
+            "```text\n:::{cite} rules.other\n:::\n```\n",
+        ]
+        .concat()
+        .replace("CITE", "{cite}");
+        book.push_item(Chapter::new("Rules", content, "rules.md", Vec::new()));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let rendered = book.chapters().next().unwrap().content.clone();
+
+        // The project reference links to its definition, then its body.
+        let linked = "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-cite\" href=\"rules.html#habeas-req-rules.other\">";
+        let start = rendered.find(linked).expect(&rendered);
+        let after = &rendered[start..];
+        assert!(
+            after.find("alt=\"cite rules.other\"").unwrap()
+                < after.find("The *other* rule.").unwrap(),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains(":::{cite} rules.other\nThe"),
+            "{rendered}"
+        );
+        // The outer requirement still contains it and closes at its own fence.
+        assert!(rendered.contains("See evidence"), "{rendered}");
+
+        // A built-in has no link; its hover text is its full text.
+        let none = crate::builtins::builtin("habeas:none").unwrap();
+        assert!(
+            rendered.contains(&format!(
+                "<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img",
+                super::escape_html(none.text())
+            )),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Nothing applies."), "{rendered}");
+        assert!(!rendered.contains("href=\"habeas"), "{rendered}");
+        // Invalid forms, unknown names, and code examples remain literal.
+        assert!(
+            rendered.contains(&"Inline CITE`habeas:none` stays literal.".replace("CITE", "{cite}"))
+        );
+        assert!(
+            rendered.contains(":::{cite} rules.missing\nUnknown.\n:::"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("```text\n:::{cite} rules.other\n:::\n```"),
+            "{rendered}"
+        );
     }
 
     // {test}`requirements.references.anchors`

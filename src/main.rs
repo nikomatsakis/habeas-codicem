@@ -44,6 +44,8 @@ enum Command {
     // {impl}`requirements.authoring.batch`
     // `--config <name>` selects a configuration for this invocation.
     // {impl}`requirements.authoring.configuration_precedence`
+    // `--confirm` applies to a named subject or `--all`.
+    // {impl}`requirements.authoring.confirmation`
     #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
     Author {
         subject: Option<String>,
@@ -58,6 +60,10 @@ enum Command {
         /// Show the stored rationale for false judgments.
         #[arg(short, long)]
         verbose: bool,
+        /// Confirm true and FIXME results with an independent second
+        /// assessment, verifying the less favorable result when they disagree.
+        #[arg(long)]
+        confirm: bool,
     },
     #[command(hide = true)]
     Hook {
@@ -170,12 +176,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         // {impl}`requirements.authoring.reporting`
         // {impl}`requirements.authoring.read_denial`
         // {impl}`requirements.authoring.configuration_precedence`
+        // {impl}`requirements.authoring.confirmation`
         Command::Author {
             subject,
             all,
             config,
             stdout,
             verbose,
+            confirm,
         } => {
             let root = setup::project_root()?;
             // Tokio's fixed worker pool is shared by all async assessments.
@@ -184,7 +192,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let outcome = runtime.block_on(habeas::authoring::author_all_with_options(
                     &root,
                     config.as_deref(),
-                    habeas::authoring::AuthoringOptions { verbose },
+                    habeas::authoring::AuthoringOptions { verbose, confirm },
                 ))?;
                 println!(
                     "{} authored; {} unchanged; {} failed",
@@ -205,11 +213,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 habeas::authoring::EvidenceOutput::File
             };
-            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_output(
+            let outcome = runtime.block_on(habeas::authoring::author_evidence_with_options(
                 &root,
                 &subject.expect("clap requires a subject or --all"),
                 config.as_deref(),
                 output,
+                habeas::authoring::AuthoringOptions { verbose, confirm },
             ))?;
             let mut summary = format!(
                 "{}: {} / {}",

@@ -42,23 +42,73 @@ pub struct AuthoringOutcome {
 }
 
 // {cite}`requirements.authoring.reporting`
+// {cite}`requirements.authoring.confirmation`
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuthoringOptions {
     pub verbose: bool,
+    /// Confirm `true` and FIXME results with a second assessment.
+    pub confirm: bool,
 }
 
 // {cite}`requirements.authoring.invocation`
+// {cite}`requirements.references.citation_review`
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
+    /// The citation review of one source item outside the book.
+    Citation {
+        file: String,
+        item: String,
+    },
 }
 
 impl AuthoringSubject {
+    /// Parses a single-subject name: a full requirement or example name, or
+    /// `citations:<file>#<selector>` for a citation review, where an omitted
+    /// or empty selector names the file's root node.
+    // {impl}`requirements.authoring.invocation`
+    // {impl}`requirements.references.citation_review`
+    pub(crate) fn parse(subject: &str) -> Self {
+        match subject.strip_prefix("citations:") {
+            Some(rest) => {
+                let (file, item) = rest.split_once('#').unwrap_or((rest, ""));
+                Self::Citation {
+                    file: file.to_owned(),
+                    item: item.to_owned(),
+                }
+            }
+            None => Self::Definition(subject.to_owned()),
+        }
+    }
+
     // {impl}`requirements.authoring.batch`
     // {impl}`requirements.authoring.usage_storage`
+    // {impl}`requirements.references.citation_review`
     pub(crate) fn label(&self) -> String {
-        let Self::Definition(name) = self;
-        name.clone()
+        match self {
+            Self::Definition(name) => name.clone(),
+            Self::Citation { file, item } => crate::citations::subject_label(file, item),
+        }
+    }
+
+    /// Where the subject's record is written.
+    // {impl}`requirements.authoring.persistence`
+    // {impl}`requirements.references.citation_review`
+    pub(crate) fn evidence_path(&self, root: &Path) -> PathBuf {
+        match self {
+            Self::Definition(name) => root.join("evidence").join(format!("{name}.json")),
+            Self::Citation { file, item } => root.join(crate::citations::review_path(file, item)),
+        }
+    }
+
+    /// Prepares the subject's sources and mandatory inputs.
+    // {impl}`requirements.authoring.mandatory_inputs`
+    // {impl}`requirements.references.citation_review`
+    fn sources(&self, root: &Path) -> io::Result<AssessmentSources> {
+        match self {
+            Self::Definition(name) => AssessmentSources::prepare(root, name),
+            Self::Citation { file, item } => AssessmentSources::prepare_citation(root, file, item),
+        }
     }
 }
 
@@ -139,6 +189,30 @@ pub async fn author_evidence_with_output(
     selection: Option<&str>,
     output: EvidenceOutput,
 ) -> io::Result<AuthoringOutcome> {
+    author_evidence_with_options(
+        root,
+        subject,
+        selection,
+        output,
+        AuthoringOptions::default(),
+    )
+    .await
+}
+
+/// Assesses one subject, optionally confirming its result under
+/// {cite}`requirements.authoring.confirmation`.
+// {impl}`requirements.authoring.invocation`
+// {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.configuration.state_location`
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.confirmation`
+pub async fn author_evidence_with_options(
+    root: &Path,
+    subject: &str,
+    selection: Option<&str>,
+    output: EvidenceOutput,
+    options: AuthoringOptions,
+) -> io::Result<AuthoringOutcome> {
     let root = fs::canonicalize(root)?;
     let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, subject)?;
@@ -148,7 +222,7 @@ pub async fn author_evidence_with_output(
     };
     usage.save()?;
     let result = tokio::select! {
-        result = configured_assessment(&root, subject, selection, output, &mut usage) => result,
+        result = configured_assessment(&root, subject, selection, output, options.confirm, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, "evidence authoring cancelled")),
@@ -232,6 +306,7 @@ pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
+    confirm: bool,
     mut cancellation: watch::Receiver<Option<&'static str>>,
 ) -> io::Result<PendingAssessment> {
     let root = fs::canonicalize(root)?;
@@ -245,7 +320,7 @@ pub(crate) async fn prepare_assessment(
                 cancellation.borrow().unwrap_or("evidence authoring cancelled"),
             ))
         }
-        result = configured_record(&root, subject, config, &mut usage) => result,
+        result = configured_record(&root, subject, config, confirm, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, "evidence authoring cancelled")),
@@ -308,20 +383,17 @@ async fn configured_assessment(
     subject: &str,
     selection: Option<&str>,
     output: EvidenceOutput,
+    confirm: bool,
     usage: &mut UsageLog,
 ) -> io::Result<AuthoringOutcome> {
     let config = config::resolve_authoring(root, selection)?;
-    let (determination, evidence) = configured_record(
-        root,
-        &AuthoringSubject::Definition(subject.to_owned()),
-        &config,
-        usage,
-    )
-    .await?;
+    let parsed = AuthoringSubject::parse(subject);
+    let (determination, evidence) =
+        configured_record(root, &parsed, &config, confirm, usage).await?;
     let json = format!("{}\n", serde_json::to_string_pretty(&evidence)?);
     let evidence_path = match output {
         EvidenceOutput::File => {
-            let path = root.join("evidence").join(format!("{subject}.json"));
+            let path = parsed.evidence_path(root);
             fs::create_dir_all(path.parent().expect("evidence parent"))?;
             fs::write(&path, json)?;
             Some(path)
@@ -361,6 +433,7 @@ async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
+    confirm: bool,
     usage: &mut UsageLog,
 ) -> io::Result<(Judgment, Value)> {
     let model = config.model_ref();
@@ -370,11 +443,9 @@ async fn configured_record(
     };
     usage.record.backend = Some(backend.into());
     usage.record.model = Some(model.model.clone());
-    let AuthoringSubject::Definition(name) = subject;
-    let mut sources = AssessmentSources::prepare(root, name)?;
-    usage.record.subject_kind = Some(sources.subject_kind.noun().into());
-    usage.prepared("mandatory", sources.mandatory_inputs());
-    usage.save()?;
+    // Mandatory inputs are prepared, and an unreadable one reported, before
+    // connecting to the provider.
+    let sources = subject.sources(root)?;
     let provider = RigProvider::connect(&config.backend)
         .await
         .map_err(|error| {
@@ -384,7 +455,197 @@ async fn configured_record(
                 config.name
             ))
         })?;
-    assess(&provider, &mut sources, usage).await
+    let state = usage_state_root(root)?;
+    assess_subject(&provider, root, &state, subject, sources, usage, confirm).await
+}
+
+/// Assesses a subject and, with `confirm`, confirms a `true` or FIXME result
+/// in an independent second conversation, verifying the less favorable of
+/// disagreeing assessments in a third. Each conversation has its own usage
+/// record; `usage` is the first's.
+// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.authoring.mandatory_inputs`
+async fn assess_subject(
+    provider: &impl CompletionProvider,
+    root: &Path,
+    state: &Path,
+    subject: &AuthoringSubject,
+    mut sources: AssessmentSources,
+    usage: &mut UsageLog,
+    confirm: bool,
+) -> io::Result<(Judgment, Value)> {
+    usage.record.subject_kind = Some(sources.subject_kind.noun().into());
+    usage.prepared("mandatory", sources.mandatory_inputs());
+    usage.save()?;
+    let first = assess(provider, &mut sources, usage).await?;
+    if !confirm || first.0 == Judgment::False {
+        return Ok(first);
+    }
+    let mut log = followup_log(state, root, subject, usage, "second assessment")?;
+    let result = match followup_sources(root, subject, &mut log) {
+        Ok(mut sources) => assess(provider, &mut sources, &mut log).await,
+        Err(error) => Err(error),
+    };
+    let second = finish_followup(log, "second assessment", result)?;
+    if first.0.kind() == second.0.kind() {
+        return Ok(first);
+    }
+    let first_kind = first.0.kind();
+    let second_kind = second.0.kind();
+    let (less, more) = if favorability(&second.0) < favorability(&first.0) {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    let less_judgment = less.0.clone();
+    let less_kind = less.0.kind();
+    let less_rationale = less.1["rationale"].as_str().unwrap_or_default().to_owned();
+    let mut log = followup_log(state, root, subject, usage, "verification")?;
+    let result = match followup_sources(root, subject, &mut log) {
+        Ok(mut sources) => {
+            verify(
+                provider,
+                &mut sources,
+                &mut log,
+                &less_judgment,
+                &less_rationale,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    let (confirmed, verification) = finish_followup(log, "verification", result)?;
+    let (mut chosen, outcome) = if confirmed {
+        (less, "confirmed")
+    } else {
+        (more, "did not confirm")
+    };
+    let note = format!(
+        "**Confirmation:** the assessments disagreed: the first determination was `{first_kind}` and an independent second assessment's was `{second_kind}`. A verifier checked the less favorable `{}` determination and {outcome} it, so the `{}` assessment is recorded.\n\nVerification:\n\n{}",
+        less_kind,
+        chosen.0.kind(),
+        verification.trim()
+    );
+    let rationale = format!(
+        "{}\n\n{note}",
+        chosen.1["rationale"].as_str().unwrap_or_default().trim()
+    );
+    chosen.1["rationale"] = Value::String(rationale);
+    usage.record.determination = Some(chosen.0.kind().into());
+    usage.save()?;
+    Ok(chosen)
+}
+
+/// Orders determinations: `false` is less favorable than FIXME, and FIXME
+/// than `true`.
+// {impl}`requirements.authoring.confirmation`
+fn favorability(judgment: &Judgment) -> u8 {
+    match judgment {
+        Judgment::False => 0,
+        Judgment::Fixme(_) => 1,
+        Judgment::True => 2,
+    }
+}
+
+/// Starts the usage record of a further conversation about a subject.
+// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.usage_storage`
+fn followup_log(
+    state: &Path,
+    root: &Path,
+    subject: &AuthoringSubject,
+    first: &UsageLog,
+    purpose: &str,
+) -> io::Result<UsageLog> {
+    let mut usage = UsageLog::start(state, root, &format!("{} ({purpose})", subject.label()))?;
+    usage.record.backend = first.record.backend.clone();
+    usage.record.model = first.record.model.clone();
+    usage.record.evidence_output = first.record.evidence_output;
+    Ok(usage)
+}
+
+/// Fresh sources for an independent conversation, recorded in its usage.
+// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.usage_inputs`
+fn followup_sources(
+    root: &Path,
+    subject: &AuthoringSubject,
+    usage: &mut UsageLog,
+) -> io::Result<AssessmentSources> {
+    let sources = subject.sources(root)?;
+    usage.record.subject_kind = Some(sources.subject_kind.noun().into());
+    usage.prepared("mandatory", sources.mandatory_inputs());
+    usage.save()?;
+    Ok(sources)
+}
+
+/// Finishes a further conversation's usage record with its outcome.
+// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.usage_storage`
+fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>) -> io::Result<T> {
+    let outcome = match &result {
+        Ok(_) => "completed",
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => "cancelled",
+        Err(_) => "failed",
+    };
+    usage.finish(outcome)?;
+    result.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{purpose}: {error}; usage: {}", usage.path.display()),
+        )
+    })
+}
+
+/// The opening line of each approved prompt template in the authoring chapter.
+// {impl}`requirements.authoring.initial_prompt`
+const DEFINITION_PROMPT: &str = "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.";
+// {impl}`requirements.authoring.citation_prompt`
+const CITATION_PROMPT: &str =
+    "Bring your expert judgment to the task of reviewing a source item's citations.";
+// {impl}`requirements.authoring.confirmation`
+const VERIFICATION_PROMPT: &str = "Another reviewer judged {{subject_kind}} {{subject_name}} as {{determination}} for these reasons:";
+
+/// An approved prompt template, from its opening line to its closing fence.
+// {impl}`requirements.authoring.initial_prompt`
+// {impl}`requirements.authoring.citation_prompt`
+// {impl}`requirements.authoring.confirmation`
+fn prompt_template(opening: &str) -> &'static str {
+    // Keep the approved templates as the sole source of these instructions.
+    let chapter = include_str!("../../md/requirements/authoring.md");
+    let start = chapter.find(opening).expect("approved prompt template");
+    chapter[start..]
+        .split("\n```")
+        .next()
+        .expect("prompt closing fence")
+}
+
+/// Replaces `{{name}}` placeholders in one pass, so substituted text that
+/// itself contains a placeholder, such as a requirement quoting a template,
+/// is left as written.
+// {impl}`requirements.authoring.initial_prompt`
+// {impl}`requirements.authoring.citation_prompt`
+// {impl}`requirements.authoring.confirmation`
+fn fill(template: &str, values: &[(&str, &str)]) -> String {
+    let mut result = String::with_capacity(template.len());
+    let mut rest = template;
+    'scan: while let Some(position) = rest.find("{{") {
+        result.push_str(&rest[..position]);
+        rest = &rest[position..];
+        for (name, value) in values {
+            let placeholder = format!("{{{{{name}}}}}");
+            if let Some(after) = rest.strip_prefix(placeholder.as_str()) {
+                result.push_str(value);
+                rest = after;
+                continue 'scan;
+            }
+        }
+        result.push_str("{{");
+        rest = &rest[2..];
+    }
+    result.push_str(rest);
+    result
 }
 
 // {impl}`requirements.authoring.initial_prompt`
@@ -392,22 +653,53 @@ async fn configured_record(
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.authoring.citation_prompt`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
-    // Keep the approved template as the sole source of these instructions.
-    let chapter = include_str!("../../md/requirements/authoring.md");
-    let opening = "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.";
-    let start = chapter.find(opening).expect("approved prompt template");
-    let template = chapter[start..]
-        .split("\n```")
-        .next()
-        .expect("prompt closing fence");
-    Ok(template
-        .replace("{{subject_kind}}", sources.subject_kind.noun())
-        .replace("{{subject_name}}", &sources.subject_name)
-        .replace(
-            "{{mandatory_inputs}}",
-            &serde_json::to_string_pretty(sources.mandatory_inputs())?,
-        ))
+    let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
+    Ok(match &sources.subject_kind {
+        AssessmentKind::Definition(_) => fill(
+            prompt_template(DEFINITION_PROMPT),
+            &[
+                ("subject_kind", sources.subject_kind.noun()),
+                ("subject_name", &sources.subject_name),
+                ("mandatory_inputs", &mandatory),
+            ],
+        ),
+        AssessmentKind::Citation(item) => fill(
+            prompt_template(CITATION_PROMPT),
+            &[
+                ("item_file", &item.file),
+                ("item_selector", item.selector_label()),
+                (
+                    "citations",
+                    &serde_json::to_string(&item.citations_value())?,
+                ),
+                ("mandatory_inputs", &mandatory),
+            ],
+        ),
+    })
+}
+
+/// The verifier's prompt for a determination and its rationale.
+// {impl}`requirements.authoring.confirmation`
+fn verification_prompt(
+    sources: &AssessmentSources,
+    determination: &Judgment,
+    rationale: &str,
+) -> io::Result<String> {
+    Ok(fill(
+        prompt_template(VERIFICATION_PROMPT),
+        &[
+            ("subject_kind", sources.subject_kind.noun()),
+            ("subject_name", &sources.subject_name),
+            ("determination", &determination.to_value().to_string()),
+            ("rationale", rationale.trim()),
+            (
+                "mandatory_inputs",
+                &serde_json::to_string_pretty(sources.mandatory_inputs())?,
+            ),
+        ],
+    ))
 }
 
 // {impl}`requirements.authoring.submission`
@@ -431,16 +723,49 @@ fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     Ok((judgment, rationale.to_owned()))
 }
 
+/// Parses a `submit_verification` call: exactly a boolean `confirmed` and a
+/// nonempty `rationale`.
+// {impl}`requirements.authoring.confirmation`
+fn verification(arguments: &Value) -> io::Result<(bool, String)> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| io::Error::other("submit_verification expects an object"))?;
+    if object.len() != 2 || !object.contains_key("confirmed") || !object.contains_key("rationale") {
+        return Err(io::Error::other(
+            "submit_verification requires exactly confirmed and rationale",
+        ));
+    }
+    let confirmed = object["confirmed"]
+        .as_bool()
+        .ok_or_else(|| io::Error::other("submit_verification confirmed must be a boolean"))?;
+    let rationale = object["rationale"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            io::Error::other("submit_verification rationale must be nonempty Markdown")
+        })?;
+    Ok((confirmed, rationale.to_owned()))
+}
+
+/// The source tools and one submission tool.
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.ci.outcomes`
-fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
+// {impl}`requirements.authoring.confirmation`
+fn tool_definitions_with(submit: &str) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
-    let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
-    definitions.push(json!({"name": "submit_judgment", "description": "Submit your final judgment exactly once. No other message supplies the result.",
-        "parameters": {"type":"object", "additionalProperties": false, "required":["determination","rationale"], "properties": {
-            "determination": determination,
-            "rationale":{"type":"string","minLength":1}}}}));
+    if submit == "submit_verification" {
+        definitions.push(json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
+            "parameters": {"type":"object", "additionalProperties": false, "required":["confirmed","rationale"], "properties": {
+                "confirmed":{"type":"boolean"},
+                "rationale":{"type":"string","minLength":1}}}}));
+    } else {
+        let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
+        definitions.push(json!({"name": "submit_judgment", "description": "Submit your final judgment exactly once. No other message supplies the result.",
+            "parameters": {"type":"object", "additionalProperties": false, "required":["determination","rationale"], "properties": {
+                "determination": determination,
+                "rationale":{"type":"string","minLength":1}}}}));
+    }
     definitions
         .into_iter()
         .map(|value| serde_json::from_value(value).map_err(io::Error::other))
@@ -449,8 +774,85 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.delivered_inputs`
+// {impl}`requirements.ci.outcomes`
+#[cfg(test)]
+fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
+    tool_definitions_with("submit_judgment")
+}
+
+/// The record a judgment produces: definition evidence, or a citation
+/// review with the item's file, selector, and citations.
 // {impl}`requirements.authoring.persistence`
+// {impl}`requirements.ci.schema`
+// {impl}`requirements.ci.reference_set`
+// {impl}`requirements.references.citation_review`
+fn record(sources: &AssessmentSources, judgment: &Judgment, rationale: &str) -> Value {
+    match &sources.subject_kind {
+        AssessmentKind::Definition(kind) => json!({kind.noun(): sources.subject_text,
+            "determination": judgment.to_value(), "rationale": rationale,
+            "references": sources.reference_set, "inputs": sources.recorded_inputs()}),
+        AssessmentKind::Citation(item) => json!({"file": item.file, "item": item.item,
+            "citations": item.citations_value(), "determination": judgment.to_value(),
+            "rationale": rationale, "inputs": sources.recorded_inputs()}),
+    }
+}
+
+// {impl}`requirements.authoring.submission`
+// {impl}`requirements.authoring.initial_prompt`
+// {impl}`requirements.authoring.persistence`
+// {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.ci.reference_set`
+// {impl}`requirements.ci.schema`
+// {impl}`requirements.references.citation_review`
+async fn assess(
+    provider: &impl CompletionProvider,
+    sources: &mut AssessmentSources,
+    usage: &mut UsageLog,
+) -> io::Result<(Judgment, Value)> {
+    let prompt = initial_prompt(sources)?;
+    let (judgment, rationale) = converse(
+        provider,
+        sources,
+        usage,
+        prompt,
+        "submit_judgment",
+        submission,
+    )
+    .await?;
+    usage.record.determination = Some(judgment.kind().into());
+    usage.save()?;
+    let evidence = record(sources, &judgment, &rationale);
+    Ok((judgment, evidence))
+}
+
+/// Verifies a determination and its rationale in its own conversation,
+/// returning whether the verifier confirmed it and the verifier's rationale.
+// {impl}`requirements.authoring.confirmation`
+async fn verify(
+    provider: &impl CompletionProvider,
+    sources: &mut AssessmentSources,
+    usage: &mut UsageLog,
+    determination: &Judgment,
+    rationale: &str,
+) -> io::Result<(bool, String)> {
+    let prompt = verification_prompt(sources, determination, rationale)?;
+    converse(
+        provider,
+        sources,
+        usage,
+        prompt,
+        "submit_verification",
+        verification,
+    )
+    .await
+}
+
+/// One conversation: sends the prompt with the source tools and the named
+/// submission tool, delivers tool results until the model submits exactly
+/// once, and returns the parsed submission.
+// {impl}`requirements.authoring.submission`
+// {impl}`requirements.authoring.delivered_inputs`
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.usage_requests`
 // {impl}`requirements.authoring.usage_storage`
@@ -464,15 +866,17 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.definitions.authoring_inputs`
-// {impl}`requirements.ci.reference_set`
-// {impl}`requirements.ci.schema`
-async fn assess(
+// {impl}`requirements.authoring.confirmation`
+async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
-) -> io::Result<(Judgment, Value)> {
-    let mut request = CompletionRequest::new(initial_prompt(sources)?);
-    request.tools = tool_definitions()?;
+    prompt: String,
+    submit: &str,
+    parse: impl Fn(&Value) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut request = CompletionRequest::new(prompt);
+    request.tools = tool_definitions_with(submit)?;
     let mut pending = sources.mandatory_inputs().to_vec();
     let mut backoff = providers::ProviderBackoff::default();
     loop {
@@ -515,37 +919,30 @@ async fn assess(
         let calls: Vec<_> = response.tool_calls().cloned().collect();
         let submissions: Vec<_> = calls
             .iter()
-            .filter(|call| call.function.name.as_str() == "submit_judgment")
+            .filter(|call| call.function.name.as_str() == submit)
             .collect();
         if !submissions.is_empty() {
             for call in &calls {
-                if call.function.name.as_str() != "submit_judgment" {
+                if call.function.name.as_str() != submit {
                     usage.skipped_tool(call.function.name.as_str());
                 }
             }
             if submissions.len() != 1 {
                 for _ in &submissions {
-                    usage.tool("submit_judgment", true);
+                    usage.tool(submit, true);
                 }
-                return Err(io::Error::other(
-                    "submit_judgment must be invoked exactly once; multiple submissions received",
-                ));
+                return Err(io::Error::other(format!(
+                    "{submit} must be invoked exactly once; multiple submissions received"
+                )));
             }
-            let result = submission(&Value::Object(submissions[0].function.arguments.clone()));
-            usage.tool("submit_judgment", result.is_err());
-            let (judgment, rationale) = result?;
-            usage.record.determination = Some(judgment.kind().into());
-            usage.save()?;
-            let AssessmentKind::Definition(kind) = &sources.subject_kind;
-            let evidence = json!({kind.noun(): sources.subject_text,
-                "determination": judgment.to_value(), "rationale": rationale,
-                "references": sources.reference_set, "inputs": sources.recorded_inputs()});
-            return Ok((judgment, evidence));
+            let result = parse(&Value::Object(submissions[0].function.arguments.clone()));
+            usage.tool(submit, result.is_err());
+            return result;
         }
         if calls.is_empty() {
-            return Err(io::Error::other(
-                "model finished without invoking submit_judgment",
-            ));
+            return Err(io::Error::other(format!(
+                "model finished without invoking {submit}"
+            )));
         }
         request.chat_history.push(
             response
@@ -1310,5 +1707,357 @@ mod tests {
                 assert!(result.is_err(), "{turns:?}");
             }
         }
+    }
+
+    /// Answers each request with the next scripted tool call, recording the
+    /// requests it receives.
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.citation_prompt`
+    struct RecordingProvider {
+        turns: Vec<(&'static str, Value)>,
+        requests: RefCell<Vec<Value>>,
+    }
+
+    impl RecordingProvider {
+        // {test}`requirements.authoring.confirmation`
+        fn new(turns: Vec<(&'static str, Value)>) -> Self {
+            Self {
+                turns,
+                requests: RefCell::default(),
+            }
+        }
+
+        /// The prompt and advertised tool names of each request.
+        // {test}`requirements.authoring.confirmation`
+        fn prompts(&self) -> Vec<(String, Vec<String>)> {
+            self.requests
+                .borrow()
+                .iter()
+                .map(|request| {
+                    let text = request.to_string();
+                    let tools = request["tools"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+                        .collect();
+                    (text, tools)
+                })
+                .collect()
+        }
+    }
+
+    impl CompletionProvider for RecordingProvider {
+        // {test}`requirements.authoring.confirmation`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let turn = self.requests.borrow().len();
+            self.requests
+                .borrow_mut()
+                .push(serde_json::to_value(&request).unwrap());
+            let (name, arguments) = self.turns[turn].clone();
+            Ok(CompletionResponse::new(
+                vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                    format!("call-{turn}"),
+                    ToolFunction::new(ToolName::new(name).unwrap(), arguments),
+                ))],
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    fn judgment(determination: Value, rationale: &str) -> (&'static str, Value) {
+        (
+            "submit_judgment",
+            json!({"determination": determination, "rationale": rationale}),
+        )
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    fn verdict(confirmed: bool, rationale: &str) -> (&'static str, Value) {
+        (
+            "submit_verification",
+            json!({"confirmed": confirmed, "rationale": rationale}),
+        )
+    }
+
+    /// Runs one subject's assessment with `turns`, returning the outcome, the
+    /// provider, and the subjects of the usage records written.
+    // {test}`requirements.authoring.confirmation`
+    async fn confirmed(
+        turns: Vec<(&'static str, Value)>,
+        confirm: bool,
+    ) -> (io::Result<(Judgment, Value)>, RecordingProvider, Vec<Value>) {
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let subject = AuthoringSubject::Definition("requirements.ready".into());
+        let sources = subject.sources(project.path()).unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(turns);
+        let result = assess_subject(
+            &provider,
+            project.path(),
+            state.path(),
+            &subject,
+            sources,
+            &mut usage,
+            confirm,
+        )
+        .await;
+        usage.finish("completed").unwrap();
+        let mut logs = fs::read_dir(state.path().join("authoring/usage"))
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<Value>(&fs::read(entry.unwrap().path()).unwrap()).unwrap()
+            })
+            .collect::<Vec<_>>();
+        logs.sort_by_key(|log| log["subject"].as_str().unwrap_or_default().to_owned());
+        (result, provider, logs)
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    #[tokio::test]
+    async fn without_confirm_or_after_a_false_judgment_one_assessment_is_recorded() {
+        for (turns, confirm) in [
+            (vec![judgment(json!(true), "Covered.")], false),
+            (vec![judgment(json!(false), "A gap.")], true),
+        ] {
+            let (result, provider, logs) = confirmed(turns.clone(), confirm).await;
+            let (_, record) = result.unwrap();
+            assert_eq!(record["rationale"], turns[0].1["rationale"]);
+            assert_eq!(provider.requests.borrow().len(), 1);
+            assert_eq!(logs.len(), 1);
+        }
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    #[tokio::test]
+    async fn agreeing_assessments_record_the_first() {
+        let (result, provider, logs) = confirmed(
+            vec![
+                judgment(json!({"FIXME": ["#1"]}), "First."),
+                judgment(json!({"FIXME": ["#2"]}), "Second."),
+            ],
+            true,
+        )
+        .await;
+        let (judgment, record) = result.unwrap();
+        assert_eq!(judgment, Judgment::Fixme(vec!["#1".into()]));
+        assert_eq!(record["rationale"], "First.");
+        // Two independent conversations, each with the initial prompt and its
+        // own usage record.
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(
+            prompts
+                .iter()
+                .all(|(text, tools)| text.contains("Bring your expert judgment")
+                    && tools.contains(&"submit_judgment".to_owned()))
+        );
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0]["subject"], "requirements.ready");
+        assert_eq!(logs[1]["subject"], "requirements.ready (second assessment)");
+        assert_eq!(logs[1]["outcome"], "completed");
+        assert_eq!(logs[1]["determination"], "FIXME");
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    #[tokio::test]
+    async fn disagreeing_assessments_verify_the_less_favorable_one() {
+        for (turns, recorded, outcome) in [
+            // The second assessment is less favorable and is confirmed.
+            (
+                vec![
+                    judgment(json!(true), "Looks complete."),
+                    judgment(json!(false), "The empty case is unhandled."),
+                    verdict(true, "The empty case panics."),
+                ],
+                Judgment::False,
+                "confirmed",
+            ),
+            // The first is less favorable and is not confirmed.
+            (
+                vec![
+                    judgment(json!({"FIXME": ["#7"]}), "Issue 7 is open."),
+                    judgment(json!(true), "Complete."),
+                    verdict(false, "Issue 7 does not affect this."),
+                ],
+                Judgment::True,
+                "did not confirm",
+            ),
+        ] {
+            let (result, provider, logs) = confirmed(turns.clone(), true).await;
+            let (judgment, record) = result.unwrap();
+            assert_eq!(judgment, recorded);
+            assert_eq!(record["determination"], judgment.to_value());
+            let rationale = record["rationale"].as_str().unwrap();
+            assert!(
+                rationale.contains("the assessments disagreed"),
+                "{rationale}"
+            );
+            assert!(
+                rationale.contains(&format!("and {outcome} it")),
+                "{rationale}"
+            );
+            assert!(
+                rationale.contains(turns[2].1["rationale"].as_str().unwrap()),
+                "{rationale}"
+            );
+
+            // The verifier receives the less favorable determination and its
+            // rationale, with the source tools and submit_verification only.
+            let prompts = provider.prompts();
+            assert_eq!(prompts.len(), 3);
+            let (less, less_rationale) = if turns[1].1["determination"] == json!(false) {
+                ("false", turns[1].1["rationale"].as_str().unwrap())
+            } else {
+                (
+                    "{\\\"FIXME\\\":[\\\"#7\\\"]}",
+                    turns[0].1["rationale"].as_str().unwrap(),
+                )
+            };
+            let (verifier, tools) = &prompts[2];
+            assert!(
+                verifier.contains(&format!(
+                    "Another reviewer judged requirement requirements.ready as {less} for these reasons"
+                )),
+                "{verifier}"
+            );
+            assert!(verifier.contains(less_rationale), "{verifier}");
+            assert!(verifier.contains("Mandatory inputs:"), "{verifier}");
+            assert!(tools.contains(&"submit_verification".to_owned()));
+            assert!(tools.contains(&"habeas".to_owned()));
+            assert!(!tools.contains(&"submit_judgment".to_owned()));
+
+            assert_eq!(logs.len(), 3);
+            assert_eq!(logs[2]["subject"], "requirements.ready (verification)");
+            assert_eq!(logs[2]["outcome"], "completed");
+        }
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    #[test]
+    fn verifications_accept_exactly_a_boolean_and_a_nonempty_rationale() {
+        assert_eq!(
+            verification(&json!({"confirmed": true, "rationale": "Checked."})).unwrap(),
+            (true, "Checked.".to_owned())
+        );
+        for arguments in [
+            json!({"confirmed": "true", "rationale": "x"}),
+            json!({"confirmed": true}),
+            json!({"confirmed": true, "rationale": " "}),
+            json!({"confirmed": true, "rationale": "x", "extra": 1}),
+        ] {
+            assert!(verification(&arguments).is_err(), "accepted {arguments}");
+        }
+        let definitions =
+            serde_json::to_value(tool_definitions_with("submit_verification").unwrap()).unwrap();
+        let submit = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "submit_verification")
+            .unwrap();
+        assert_eq!(
+            submit["parameters"]["properties"],
+            json!({"confirmed": {"type": "boolean"}, "rationale": {"type": "string", "minLength": 1}})
+        );
+    }
+
+    // {test}`requirements.authoring.initial_prompt`
+    // {test}`requirements.authoring.confirmation`
+    #[test]
+    fn placeholders_are_filled_in_one_pass() {
+        assert_eq!(
+            fill("{{a}} {{b}} {{c}}", &[("a", "{{b}}"), ("b", "2")]),
+            "{{b}} 2 {{c}}"
+        );
+    }
+
+    // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.references.citation_review`
+    #[tokio::test]
+    async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
+        let project = inputs::tests::project();
+        let cite = concat!("{", "cite}`requirements.ready`");
+        fs::write(
+            project.path().join("src/lib.rs"),
+            format!(
+                "// {cite}\n// :::{{cite}} habeas:none\n// Formats output for the caller.\n// :::\nfn helper() {{}}\n"
+            ),
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        assert_eq!(
+            subject.evidence_path(project.path()),
+            project
+                .path()
+                .join("evidence/citations/src/lib.rs/fn[helper].json")
+        );
+        let mut sources = subject.sources(project.path()).unwrap();
+        let mandatory = sources.mandatory_inputs().to_vec();
+        assert_eq!(mandatory[0]["file"], "src/lib.rs");
+        assert_eq!(mandatory[0]["item"], "fn[helper]");
+        assert_eq!(mandatory[1]["requirements"], "requirements.ready");
+        assert_eq!(mandatory[2]["builtin"], "habeas:none");
+        assert!(
+            mandatory[2]["text"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("Cite this only when")
+        );
+
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(json!(true), "Both are sensible.")]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let prompts = provider.prompts();
+        let prompt = &prompts[0].0;
+        assert!(
+            prompt.contains("reviewing a source item's citations"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Subject: src/lib.rs fn[helper]"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Formats output for the caller."),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("{{"), "{prompt}");
+
+        let citations = json!([
+            {"role": "cite", "name": "requirements.ready", "commentary": ""},
+            {"role": "cite", "name": "habeas:none", "commentary": "Formats output for the caller."}
+        ]);
+        assert_eq!(record["file"], "src/lib.rs");
+        assert_eq!(record["item"], "fn[helper]");
+        assert_eq!(record["citations"], citations);
+        assert_eq!(record["determination"], true);
+        let inputs = record["inputs"].as_array().unwrap();
+        assert!(inputs.iter().all(|input| input.get("builtin").is_none()));
+        assert_eq!(inputs.len(), 2, "{inputs:#?}");
+
+        // The recorded review satisfies validation for its item.
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, record.to_string()).unwrap();
+        let errors = crate::validate_repository(project.path()).unwrap().errors;
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.starts_with("evidence/citations/")),
+            "{errors:#?}"
+        );
+
+        // A name without a selector reviews the file's root node.
+        assert!(matches!(
+            AuthoringSubject::parse("citations:notes.txt"),
+            AuthoringSubject::Citation { file, item } if file == "notes.txt" && item.is_empty()
+        ));
     }
 }

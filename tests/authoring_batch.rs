@@ -1342,3 +1342,104 @@ fn empty_batches_and_early_errors_clear_the_terminal_display() {
         }
     }
 }
+
+// {test}`requirements.references.citation_review`
+// {test}`requirements.authoring.batch`
+#[test]
+fn batch_authors_citation_reviews_and_preserves_current_ones() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let source = fixture.project.join("src/lib.rs");
+    let cite = ["// {", "cite}`requirements.alpha`\n"].concat();
+    fs::write(
+        &source,
+        format!(
+            "{}{cite}pub fn helper() {{}}\n",
+            fs::read_to_string(&source).unwrap()
+        ),
+    )
+    .unwrap();
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let subjects = server.subjects();
+    assert_eq!(subjects.len(), 7, "{subjects:?}");
+    assert!(
+        subjects.contains(&"src/lib.rs fn[helper]".to_owned()),
+        "{subjects:?}"
+    );
+    let review: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .project
+                .join("evidence/citations/src/lib.rs/fn[helper].json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        review["citations"],
+        json!([{"role": "cite", "name": "requirements.alpha", "commentary": ""}])
+    );
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    let again = fixture.run(&["author", "--all"]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout).trim(),
+        "0 authored; 7 unchanged; 0 failed"
+    );
+    // A citation review can also be named on its own.
+    let single = fixture.run(&["author", "citations:src/lib.rs#fn[helper]", "--stdout"]);
+    assert!(
+        single.status.success(),
+        "{}",
+        String::from_utf8_lossy(&single.stderr)
+    );
+    let printed: Value = serde_json::from_slice(&single.stdout).unwrap();
+    assert_eq!(printed["item"], "fn[helper]");
+    assert_eq!(server.subjects().len(), 8);
+}
+
+// {test}`requirements.authoring.confirmation`
+#[test]
+fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let output = fixture.run(&["author", "requirements.alpha", "--confirm"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        server.subjects(),
+        [
+            "requirement requirements.alpha",
+            "requirement requirements.alpha"
+        ]
+    );
+    let usage = fixture.usage();
+    let mut subjects = usage
+        .iter()
+        .map(|run| run["subject"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    subjects.sort();
+    assert_eq!(
+        subjects,
+        [
+            "requirements.alpha",
+            "requirements.alpha (second assessment)"
+        ]
+    );
+    // Agreeing assessments record the first unchanged.
+    assert!(
+        !fixture.evidence("requirements.alpha")["rationale"]
+            .as_str()
+            .unwrap()
+            .contains("Confirmation")
+    );
+}

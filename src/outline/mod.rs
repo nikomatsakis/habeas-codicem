@@ -82,6 +82,9 @@ pub(crate) struct OutlineComment {
     pub(crate) line_end: usize,
     /// Index of the owning node in [`Outline::nodes`].
     pub(crate) owner: usize,
+    /// Index of the comment run containing this comment; comments of one run
+    /// share it, and runs are numbered in source order.
+    pub(crate) run: usize,
 }
 
 /// A parsed outline.
@@ -684,6 +687,12 @@ fn assign_comments(
         .map(|node| (node.line_start, node.line_end))
         .collect::<Vec<_>>();
     let mut owners = vec![0; drafts.len()];
+    let mut run_of = vec![0; drafts.len()];
+    for (run_index, run) in runs.iter().enumerate() {
+        for index in run {
+            run_of[*index] = run_index;
+        }
+    }
     for run in &runs {
         let first = &drafts[run[0]];
         let last = &drafts[*run.last().expect("nonempty run")];
@@ -709,7 +718,8 @@ fn assign_comments(
     drafts
         .into_iter()
         .zip(owners)
-        .map(|(comment, owner)| {
+        .zip(run_of)
+        .map(|((comment, owner), run)| {
             let (line_start, line_end) = lines.range(comment.byte_start, comment.byte_end);
             OutlineComment {
                 byte_start: comment.byte_start,
@@ -717,6 +727,7 @@ fn assign_comments(
                 line_start,
                 line_end,
                 owner,
+                run,
             }
         })
         .collect()

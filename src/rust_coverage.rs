@@ -130,6 +130,7 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
 /// Lists functions, methods, structs, enums, and unions with no valid
 /// reference in a comment belonging to them, as `(line, kind, name)`.
 // {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.references.no_requirement`
 // {impl}`requirements.definitions.references`
 fn missing_function_references(
     source: &str,
@@ -137,23 +138,39 @@ fn missing_function_references(
 ) -> Result<Vec<(usize, &'static str, String)>, OutlineError> {
     let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
     let mut cited = vec![false; outline.nodes.len()];
+    // A built-in counts only in a form it permits, such as a fenced
+    // `habeas:none` citation with a justification.
+    let counts = |kind: crate::ReferenceKind, name: &str, fenced: Option<&str>| {
+        if kind == crate::ReferenceKind::Term {
+            return false;
+        }
+        if let Some(builtin) = crate::builtins::builtin(name) {
+            return builtin.check(kind, fenced).is_ok();
+        }
+        definitions.get(name).is_some_and(|d| match d.kind {
+            crate::DefinitionKind::Requirement => true,
+            // An example counts only when it traces to a
+            // requirement itself.
+            crate::DefinitionKind::Example => {
+                crate::evidence::example_references_requirement(d, definitions)
+            }
+            crate::DefinitionKind::Term => false,
+        })
+    };
     for comment in &outline.comments {
         if reference_roles(&source[comment.byte_start..comment.byte_end], false)
             .iter()
-            .any(|role| {
-                role.kind != crate::ReferenceKind::Term
-                    && definitions.get(role.name).is_some_and(|d| match d.kind {
-                        crate::DefinitionKind::Requirement => true,
-                        // An example counts only when it traces to a
-                        // requirement itself.
-                        crate::DefinitionKind::Example => {
-                            crate::evidence::example_references_requirement(d, definitions)
-                        }
-                        crate::DefinitionKind::Term => false,
-                    })
-            })
+            .any(|role| counts(role.kind, role.name, None))
         {
             cited[comment.owner] = true;
+        }
+    }
+    for fence in crate::fenced::comment_fences(source, &outline) {
+        if let Some(owner) = fence.owner
+            && fence.closed
+            && counts(fence.kind, &fence.name, Some(&fence.body))
+        {
+            cited[owner] = true;
         }
     }
     Ok(outline

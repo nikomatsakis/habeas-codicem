@@ -6,21 +6,26 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::access::SourceAccess;
+use crate::citations::CitationItem;
 use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
 use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::{DefinitionKind, ReferenceKind};
 
 // {cite}`requirements.authoring.invocation`
+// {cite}`requirements.references.citation_review`
 pub(crate) enum AssessmentKind {
     Definition(DefinitionKind),
+    Citation(CitationItem),
 }
 
 impl AssessmentKind {
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.authoring.initial_prompt`
+    // {impl}`requirements.authoring.confirmation`
     pub(crate) fn noun(&self) -> &'static str {
         match self {
             Self::Definition(kind) => kind.noun(),
+            Self::Citation(_) => "citation review",
         }
     }
 }
@@ -69,29 +74,34 @@ impl AssessmentSources {
             requirements: subject_name.to_owned(),
         }];
 
-        for reference in crate::reference_roles(&subject.text, true) {
-            if reference.kind == ReferenceKind::Term {
+        let mut builtins = Vec::new();
+        for (kind, name) in crate::text_references(&subject.text, true) {
+            if kind == ReferenceKind::Term {
+                continue;
+            }
+            // A built-in has no declaration; its fixed text is supplied instead.
+            if let Some(builtin) = crate::builtins::builtin(&name) {
+                if kind == ReferenceKind::Cite && !builtins.contains(&builtin.name) {
+                    builtins.push(builtin.name);
+                }
                 continue;
             }
             if !definitions
-                .get(reference.name)
+                .get(&name)
                 .is_some_and(|definition| definition.kind != DefinitionKind::Term)
             {
                 return Err(io::Error::other(format!(
-                    "{subject_name}: referenced subject {} does not exist",
-                    reference.name
+                    "{subject_name}: referenced subject {name} does not exist"
                 )));
             }
             // Only `{cite}` leaves the subject; its `{impl}` and `{test}`
             // references point into it from the definitions it implements or tests.
-            if reference.kind != ReferenceKind::Cite {
+            if kind != ReferenceKind::Cite {
                 continue;
             }
             insert_selector(
                 &mut selectors,
-                InputSelector::Requirements {
-                    requirements: reference.name.to_owned(),
-                },
+                InputSelector::Requirements { requirements: name },
             );
         }
 
@@ -180,6 +190,7 @@ impl AssessmentSources {
                 mandatory.push(input);
             }
         }
+        mandatory.extend(builtins.into_iter().map(builtin_input));
         Ok(Self {
             root,
             access,
@@ -188,6 +199,90 @@ impl AssessmentSources {
             subject_text: subject.text.clone(),
             outlines,
             reference_set,
+            mandatory,
+            recorded: Vec::new(),
+        })
+    }
+
+    /// Prepares a citation review of one source item outside the book. Its
+    /// mandatory inputs are the item's outline node, each cited declaration
+    /// or built-in text, and the terminology they use; the citations and
+    /// their commentary are supplied in the prompt.
+    // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.authoring.citation_prompt`
+    // {impl}`requirements.authoring.read_denial`
+    pub(crate) fn prepare_citation(root: &Path, file: &str, item: &str) -> io::Result<Self> {
+        let root = fs::canonicalize(root)?;
+        let access = SourceAccess::load(&root)?;
+        let definitions = load_definitions(&root)?;
+        let outlines = OutlineCache::default();
+        let mut errors = Vec::new();
+        let references = collect_references(&root, &mut errors);
+        if !errors.is_empty() {
+            return Err(io::Error::other(errors.join("\n")));
+        }
+        let subject_name = crate::citations::subject_label(file, item);
+        let citation = crate::citations::citation_items(
+            &root,
+            &definitions,
+            &references,
+            &outlines,
+        )
+        .remove(&(file.to_owned(), item.to_owned()))
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "{subject_name}: no source item outside the book with {{cite}} references matches"
+            ))
+        })?;
+        let mut mandatory = vec![source_input(
+            &root,
+            &access,
+            &definitions,
+            &outlines,
+            &InputSelector::Outline {
+                file: file.to_owned(),
+                item: item.to_owned(),
+            },
+        )?];
+        let mut builtins = Vec::new();
+        let mut selectors = Vec::new();
+        for cited in &citation.citations {
+            if crate::builtins::builtin(&cited.name).is_some() {
+                if !builtins.contains(&cited.name) {
+                    builtins.push(cited.name.clone());
+                }
+            } else {
+                insert_selector(
+                    &mut selectors,
+                    InputSelector::Requirements {
+                        requirements: cited.name.clone(),
+                    },
+                );
+            }
+        }
+        for selector in selectors {
+            mandatory.push(source_input(
+                &root,
+                &access,
+                &definitions,
+                &outlines,
+                &selector,
+            )?);
+        }
+        for input in definition_inputs(&root, &access, &definitions, &outlines, &mandatory, None)? {
+            if !mandatory.contains(&input) {
+                mandatory.push(input);
+            }
+        }
+        mandatory.extend(builtins.iter().map(|name| builtin_input(name)));
+        Ok(Self {
+            root,
+            access,
+            subject_name,
+            subject_kind: AssessmentKind::Citation(citation),
+            subject_text: String::new(),
+            outlines,
+            reference_set: String::new(),
             mandatory,
             recorded: Vec::new(),
         })
@@ -209,7 +304,9 @@ impl AssessmentSources {
     // {impl}`requirements.ci.outline_inputs`
     // {impl}`requirements.definitions.authoring_inputs`
     pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {
-        for input in inputs {
+        // A built-in's fixed text is supplied to the model but is not an
+        // evidence input form.
+        for input in inputs.iter().filter(|input| input.get("builtin").is_none()) {
             let input = recorded_input(input);
             if !self.recorded.contains(&input) {
                 self.recorded.push(input);
@@ -370,6 +467,14 @@ fn source_input(
         access.file(root, Path::new(&range.file))?;
     }
     Ok(selector.to_model_input(&resolved))
+}
+
+/// The model-facing input carrying a built-in's fixed text.
+// {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.references.citation_review`
+pub(crate) fn builtin_input(name: &str) -> Value {
+    let text = crate::builtins::builtin(name).map_or("", |builtin| builtin.text());
+    json!({ "builtin": name, "text": [text] })
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`

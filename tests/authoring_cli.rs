@@ -682,7 +682,7 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
 fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
     let chapter = include_str!("../md/requirements/authoring.md");
     let start = chapter
-        .find("Bring your expert judgment to the task")
+        .find("Bring your expert judgment to the task of assessing")
         .unwrap();
     let template = chapter[start..].split("\n```").next().unwrap();
     for (subject, kind) in [

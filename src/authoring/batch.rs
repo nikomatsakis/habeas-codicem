@@ -38,6 +38,8 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
 // {impl}`requirements.authoring.reporting`
 // {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.references.citation_review`
 pub async fn author_all_with_options(
     root: &Path,
     selection: Option<&str>,
@@ -75,6 +77,31 @@ pub async fn author_all_with_options(
             completed: checked + 1,
             total: Some(total),
         });
+    }
+    // Every source item outside the book with citations needs a review.
+    // {impl}`requirements.references.citation_review`
+    let outlines = crate::inputs::OutlineCache::default();
+    for item in crate::citations::citation_items(
+        &root,
+        &inspection.definitions,
+        &inspection.references,
+        &outlines,
+    )
+    .into_values()
+    {
+        let evidence =
+            LoadedDetailEvidence::load_path(&root, &item.review_path(), &inspection.report);
+        if matches!(
+            evidence.state(),
+            EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
+        ) {
+            unchanged += 1;
+        } else {
+            subjects.push(AuthoringSubject::Citation {
+                file: item.file,
+                item: item.item,
+            });
+        }
     }
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
@@ -114,7 +141,9 @@ pub async fn author_all_with_options(
             let cancellation = cancellation.clone();
             let cancel = cancel.clone();
             tasks.spawn(async move {
-                let result = prepare_assessment(&root, &subject, &config, cancellation).await;
+                let result =
+                    prepare_assessment(&root, &subject, &config, options.confirm, cancellation)
+                        .await;
                 if let Err(error) = &result {
                     cancel_on_error(&cancel, error);
                 }
@@ -231,8 +260,7 @@ fn stop(cancel: &watch::Sender<Option<&'static str>>) {
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.persistence`
 fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {
-    let AuthoringSubject::Definition(name) = &pending.subject;
-    let path = root.join("evidence").join(format!("{name}.json"));
+    let path = pending.subject.evidence_path(root);
     let record = pending.record.clone();
     let parent = path.parent().expect("evidence parent");
     fs::create_dir_all(parent)?;

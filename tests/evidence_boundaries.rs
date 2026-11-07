@@ -46,6 +46,15 @@ fn write_inputs(root: &Path, inputs: Vec<Value>) {
     .unwrap();
 }
 
+/// Validation errors other than citation reviews.
+// {test}`requirements.references.citation_review`
+fn without_citation_reviews(errors: Vec<String>) -> Vec<String> {
+    errors
+        .into_iter()
+        .filter(|error| !error.starts_with("evidence/citations/"))
+        .collect()
+}
+
 /// The recorded outline input for `item` in `file`.
 // {test}`requirements.ci.outline_inputs`
 fn outline(root: &Path, file: &str, item: &str) -> Value {
@@ -63,9 +72,10 @@ fn outline(root: &Path, file: &str, item: &str) -> Value {
 fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     let temp = fixture();
     let root = temp.path().join("project");
+    // Citation reviews of the cited functions are checked elsewhere.
     let errors = |inputs: Vec<Value>| {
         write_inputs(&root, inputs);
-        validate_repository(&root).unwrap().errors.join("\n")
+        without_citation_reviews(validate_repository(&root).unwrap().errors).join("\n")
     };
     let rust = "// CITE`rules.ready`\nfn alpha() { work(1); }\n\n/// Docs.\n// CITE`rules.ready`\nfn beta() {}\n"
         .replace("CITE", "{cite}");
@@ -454,7 +464,8 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
             let mut input = outline(&root, "public/source.rs", "struct[Source]");
             input["file"] = json!(file);
             write_inputs(&root, vec![input]);
-            let errors = validate_repository(&root).unwrap().errors.join("\n");
+            let errors =
+                without_citation_reviews(validate_repository(&root).unwrap().errors).join("\n");
             if file == "public/source.rs" {
                 assert!(errors.is_empty(), "{errors}");
             } else {

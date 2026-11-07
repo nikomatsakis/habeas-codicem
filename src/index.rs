@@ -13,8 +13,7 @@ use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, SourceRange};
 use crate::markdown::render_evidence_table;
 use crate::{
     Definition, DefinitionKind, EvidenceReport, ReferenceKind, chapter_href, colon_fence,
-    definition_blocks, escape_html, overlaps_protected, protected_ranges, reference_roles,
-    shield_badge,
+    definition_blocks, escape_html, overlaps_protected, protected_ranges, shield_badge,
 };
 
 /// Where generated evidence detail pages and the optional index go.
@@ -155,8 +154,16 @@ impl LoadedDetailEvidence {
     // {impl}`requirements.ci.outcomes`
     // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
-        let evidence_path = root.join("evidence").join(format!("{name}.json"));
-        let prefix = format!("evidence/{name}.json:");
+        Self::load_path(root, &format!("evidence/{name}.json"), report)
+    }
+
+    /// Loads the record at a project-relative path, with the validation
+    /// errors reported for it, such as a citation review.
+    // {impl}`requirements.index.state`
+    // {impl}`requirements.references.citation_review`
+    pub(crate) fn load_path(root: &Path, relative: &str, report: &EvidenceReport) -> Self {
+        let evidence_path = root.join(relative);
+        let prefix = format!("{relative}:");
         let mut errors = report
             .errors
             .iter()
@@ -592,10 +599,10 @@ impl DefinitionEdges {
                     ));
                 }
             }
-            edges.cited = reference_roles(&declaration.text, true)
+            edges.cited = crate::text_references(&declaration.text, true)
                 .into_iter()
-                .filter(|reference| reference.kind == ReferenceKind::Cite)
-                .map(|reference| reference.name.to_owned())
+                .filter(|(kind, _)| *kind == ReferenceKind::Cite)
+                .map(|(_, name)| name)
                 .collect();
         }
         edges

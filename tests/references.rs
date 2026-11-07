@@ -1,0 +1,367 @@
+//! Fenced references, built-in definitions, and citation reviews, checked
+//! through repository validation and `habeas status`.
+
+use std::fs;
+use std::path::Path;
+
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+/// A role written so this file's own source does not contain it.
+// {test}`requirements.references.targets`
+fn role(kind: &str) -> String {
+    format!("{{{kind}}}")
+}
+
+/// A project with one requirement, `rules.ready`, and empty sources.
+// {test}`requirements.references.targets`
+fn project() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("md")).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("evidence")).unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
+    fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+    fs::write(root.join("md/rules.md"), ":::{req} ready\nReady.\n:::\n").unwrap();
+    temp
+}
+
+// {test}`requirements.references.targets`
+fn errors(root: &Path) -> Vec<String> {
+    habeas::validate_repository(root).unwrap().errors
+}
+
+// {test}`requirements.references.targets`
+fn has(errors: &[String], needle: &str) -> bool {
+    errors.iter().any(|error| error.contains(needle))
+}
+
+// {test}`requirements.references.targets`
+// {test}`requirements.references.builtin_definitions`
+// {test}`requirements.references.no_requirement`
+// {test}`requirements.references.rust_item_coverage`
+#[test]
+fn fenced_references_in_comments_and_built_in_rules_are_validated() {
+    let temp = project();
+    let root = temp.path();
+    let cite = role("cite");
+    let source = format!(
+        "// :::{cite} habeas:none\n// Glue that formats output.\n// :::\nfn glue() {{}}\n\n\
+         // {cite}`habeas:none`\nfn inline() {{}}\n\n\
+         // :::{cite} habeas:none\n// {cite}`rules.ready`\n// :::\nfn empty() {{}}\n\n\
+         // :::{impl} habeas:none\n// Wrong role.\n// :::\nfn wrong_role() {{}}\n\n\
+         // :::{cite} habeas:other\n// Unknown.\n// :::\nfn unknown() {{}}\n\n\
+         // :::{cite} rules.ready\n// never closed\n\n// :::\nfn unclosed() {{}}\n",
+        impl = role("impl"),
+    );
+    fs::write(root.join("src/lib.rs"), source).unwrap();
+    let errors = errors(root);
+    for expected in [
+        "src/lib.rs:6: built-in habeas:none must be cited in fenced form",
+        "src/lib.rs:9: fenced citation of built-in habeas:none has an empty justification",
+        "src/lib.rs:14: built-in habeas:none may only be referenced with {cite}",
+        "src/lib.rs:19: {cite}`habeas:other` has no matching built-in definition",
+        "src/lib.rs:24: fenced {cite} reference to rules.ready has no closing fence",
+        "src/lib.rs:7: function inline has no requirement or example citation",
+        "src/lib.rs:17: function wrong_role has no requirement or example citation",
+        "src/lib.rs:22: function unknown has no requirement or example citation",
+        "src/lib.rs:28: function unclosed has no requirement or example citation",
+    ] {
+        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
+    }
+    // A justified fenced citation of habeas:none covers its function, as
+    // does an inline reference in a fence body.
+    assert!(!has(&errors, "function glue"), "{errors:#?}");
+    assert!(!has(&errors, "function empty"), "{errors:#?}");
+    // Only valid citations need reviews.
+    assert!(has(
+        &errors,
+        "missing citation review for src/lib.rs fn[glue]"
+    ));
+    assert!(!has(
+        &errors,
+        "missing citation review for src/lib.rs fn[inline]"
+    ));
+    // Built-ins need no evidence.
+    assert!(!has(&errors, "evidence/habeas:none"), "{errors:#?}");
+}
+
+// {test}`requirements.references.builtin_definitions`
+#[test]
+fn project_definitions_cannot_use_reserved_built_in_names() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("md/rules.md"),
+        ":::{req} ready\nReady.\n:::\n\n:::{req} habeas:none\nShadow.\n:::\n",
+    )
+    .unwrap();
+    let errors = errors(root);
+    assert!(
+        has(
+            &errors,
+            "md/rules.md:5: invalid requirement name \"rules.habeas:none\": names beginning with habeas: are reserved"
+        ),
+        "{errors:#?}"
+    );
+    let status = habeas::status_markdown(root, true).unwrap();
+    assert!(!status.contains("`habeas:none` (requirement)"), "{status}");
+}
+
+/// The digest after writing `source` to `src/lib.rs`.
+// {test}`requirements.ci.reference_set`
+fn digest(root: &Path, source: &str) -> String {
+    fs::write(root.join("src/lib.rs"), source).unwrap();
+    habeas::reference_set_digest_for(root, "rules.ready").unwrap()
+}
+
+// {test}`requirements.ci.reference_set`
+#[test]
+fn fenced_commentary_outside_the_book_contributes_to_the_reference_set() {
+    let temp = project();
+    let root = temp.path();
+    let fenced = |body: &str| {
+        format!(
+            "// :::{} rules.ready\n{body}// :::\nfn run() {{}}\n",
+            role("impl")
+        )
+    };
+    let base = digest(root, &fenced("// Handles the empty case.\n"));
+    // Reflowing the commentary keeps the digest; changing its words does not.
+    assert_eq!(
+        digest(root, &fenced("// Handles the\n//   empty case.\n")),
+        base
+    );
+    assert_ne!(digest(root, &fenced("// Handles the full case.\n")), base);
+    assert_ne!(
+        digest(
+            root,
+            &format!("// {}`rules.ready`\nfn run() {{}}\n", role("impl"))
+        ),
+        base
+    );
+
+    // In the book, commentary is part of the declaration text instead.
+    let book = |body: &str| {
+        fs::write(
+            root.join("md/rules.md"),
+            format!(
+                "# Rules\n\n::::{{req}} ready\nReady.\n::::\n\n::::{{req}} other\nOther.\n\n:::{} rules.ready\n{body}\n:::\n::::\n",
+                role("impl")
+            ),
+        )
+        .unwrap();
+        habeas::reference_set_digest_for(root, "rules.ready").unwrap()
+    };
+    assert_eq!(book("Refines the check."), book("Refines another check."));
+}
+
+/// A recorded citation review for `fn[helper]` in `src/lib.rs`.
+// {test}`requirements.references.citation_review`
+fn review(root: &Path, citations: Value, determination: Value) -> Value {
+    json!({
+        "file": "src/lib.rs",
+        "item": "fn[helper]",
+        "citations": citations,
+        "determination": determination,
+        "rationale": "The citations are sensible.",
+        "inputs": [
+            habeas::outline_input(root, "src/lib.rs", "fn[helper]").unwrap(),
+            {"requirements": "rules.ready", "matches": ["rules.ready"],
+             "text": [":::{req} ready", "Ready.", ":::"]}
+        ],
+    })
+}
+
+// {test}`requirements.references.citation_review`
+#[test]
+fn citation_reviews_are_required_current_and_not_orphaned() {
+    let temp = project();
+    let root = temp.path();
+    let cite = role("cite");
+    let helper = |body: &str| {
+        format!(
+            "// {cite}`rules.ready`\n// :::{cite} habeas:none\n// {body}\n// :::\nfn helper() {{\n    work();\n}}\n"
+        )
+    };
+    fs::write(root.join("src/lib.rs"), helper("Formats output.")).unwrap();
+    fs::write(
+        root.join("notes.txt"),
+        format!("See {cite}`rules.ready`.\n"),
+    )
+    .unwrap();
+    // Citations in the book are reviewed with their declaration instead.
+    fs::write(
+        root.join("md/guide.md"),
+        format!("# Guide\n\nSee {cite}`rules.ready`.\n"),
+    )
+    .unwrap();
+    let path = "evidence/citations/src/lib.rs/fn[helper].json";
+    let errors_for = |prefix: &str| {
+        errors(root)
+            .into_iter()
+            .filter(|error| error.starts_with(prefix))
+            .collect::<Vec<_>>()
+    };
+    let missing = errors_for("evidence/citations/");
+    assert!(
+        has(
+            &missing,
+            "evidence/citations/src/lib.rs/fn[helper].json: missing citation review for src/lib.rs fn[helper] at src/lib.rs:1"
+        ),
+        "{missing:#?}"
+    );
+    assert!(
+        has(
+            &missing,
+            "evidence/citations/notes.txt/_root.json: missing citation review for notes.txt <root>"
+        ),
+        "{missing:#?}"
+    );
+    assert!(!has(&missing, "md/guide.md"), "{missing:#?}");
+
+    let citations = json!([
+        {"role": "cite", "name": "rules.ready", "commentary": ""},
+        {"role": "cite", "name": "habeas:none", "commentary": "Formats output."}
+    ]);
+    fs::create_dir_all(root.join("evidence/citations/src/lib.rs")).unwrap();
+    let write = |record: Value| fs::write(root.join(path), record.to_string()).unwrap();
+    write(review(root, citations.clone(), json!(true)));
+    assert_eq!(errors_for(path), Vec::<String>::new());
+
+    // A FIXME review is accepted; a false one is reported with its rationale.
+    write(review(root, citations.clone(), json!({"FIXME": ["#4"]})));
+    assert_eq!(errors_for(path), Vec::<String>::new());
+    write(review(root, citations.clone(), json!(false)));
+    assert!(
+        has(
+            &errors_for(path),
+            "determination is false: The citations are sensible."
+        ),
+        "{:#?}",
+        errors_for(path)
+    );
+
+    // Changed commentary or citations make the review stale; reflowing does not.
+    write(review(root, citations.clone(), json!(true)));
+    fs::write(root.join("src/lib.rs"), helper("Formats  output.")).unwrap();
+    assert_eq!(errors_for(path), Vec::<String>::new());
+    fs::write(root.join("src/lib.rs"), helper("Formats all output.")).unwrap();
+    assert!(
+        has(&errors_for(path), "citations changed"),
+        "{:#?}",
+        errors_for(path)
+    );
+    fs::write(root.join("src/lib.rs"), helper("Formats output.")).unwrap();
+
+    // So do an edited item and an edited cited declaration.
+    fs::write(
+        root.join("src/lib.rs"),
+        helper("Formats output.").replace("work()", "rest()"),
+    )
+    .unwrap();
+    assert!(
+        has(&errors_for(path), "outline input changed"),
+        "{:#?}",
+        errors_for(path)
+    );
+    fs::write(root.join("src/lib.rs"), helper("Formats output.")).unwrap();
+    fs::write(
+        root.join("md/rules.md"),
+        ":::{req} ready\nReady now.\n:::\n",
+    )
+    .unwrap();
+    assert!(
+        has(&errors_for(path), "input text changed"),
+        "{:#?}",
+        errors_for(path)
+    );
+    fs::write(root.join("md/rules.md"), ":::{req} ready\nReady.\n:::\n").unwrap();
+
+    // The item and each cited declaration must be inputs.
+    let mut record = review(root, citations.clone(), json!(true));
+    record["inputs"] = json!([]);
+    write(record);
+    let found = errors_for(path);
+    assert!(
+        has(&found, "inputs must select the reviewed item"),
+        "{found:#?}"
+    );
+    assert!(
+        has(
+            &found,
+            "inputs must include the cited declaration rules.ready"
+        ),
+        "{found:#?}"
+    );
+    let mut record = review(root, citations.clone(), json!(true));
+    record["extra"] = json!(1);
+    write(record);
+    assert!(has(&errors_for(path), "unexpected field \"extra\""));
+
+    // Removing the citations orphans the review.
+    write(review(root, citations, json!(true)));
+    fs::write(
+        root.join("src/lib.rs"),
+        format!("// {}`rules.ready`\nfn helper() {{}}\n", role("impl")),
+    )
+    .unwrap();
+    assert!(
+        has(&errors_for(path), "orphaned citation review"),
+        "{:#?}",
+        errors_for(path)
+    );
+    // The review is not mistaken for misplaced definition evidence.
+    assert!(!has(&errors(root), "no matching requirement or example"));
+}
+
+// {test}`requirements.references.citation_review`
+#[test]
+fn review_paths_encode_selectors() {
+    let temp = project();
+    let root = temp.path();
+    let cite = role("cite");
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "struct Thing;\nimpl Thing {{\n    // {cite}`rules.ready`\n    fn run() {{}}\n}}\n"
+        ),
+    )
+    .unwrap();
+    let errors = errors(root);
+    assert!(
+        has(
+            &errors,
+            "evidence/citations/src/lib.rs/impl[Thing]%2Ffn[run].json: missing citation review for src/lib.rs impl[Thing]/fn[run]"
+        ),
+        "{errors:#?}"
+    );
+}
+
+// {test}`requirements.references.no_requirement`
+#[test]
+fn status_all_lists_habeas_none_citations_with_their_justification() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "// :::{} habeas:none\n// Glue that formats\n// output.\n// :::\nfn glue() {{}}\n",
+            role("cite")
+        ),
+    )
+    .unwrap();
+    let status = habeas::status_markdown(root, true).unwrap();
+    assert!(
+        status.contains(
+            "## `habeas:none` citations\n\n- `src/lib.rs` `fn[glue]` (line 1): Glue that formats output.\n"
+        ),
+        "{status}"
+    );
+    assert!(
+        !habeas::status_markdown(root, false)
+            .unwrap()
+            .contains("`habeas:none` citations")
+    );
+}

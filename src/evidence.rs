@@ -123,6 +123,8 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 
 // {cite}`requirements.authoring.batch`
 pub(crate) struct RepositoryInspection {
+    /// The canonical project root.
+    pub(crate) root: PathBuf,
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) references: Vec<SourceReference>,
     pub(crate) report: EvidenceReport,
@@ -204,7 +206,12 @@ pub(crate) fn inspect_repository_with_progress(
     };
     let mut present = BTreeSet::new();
     let outlines = OutlineCache::default();
-    let ordinary_files: Vec<_> = evidence_files.iter().collect();
+    // Citation reviews are validated against their source items below.
+    // {impl}`requirements.references.citation_review`
+    let ordinary_files: Vec<_> = evidence_files
+        .iter()
+        .filter(|file| !crate::citations::is_review_path(&evidence_root, file))
+        .collect();
 
     // {impl}`requirements.ci.orphans`
     for (completed, file) in ordinary_files.iter().enumerate() {
@@ -270,6 +277,8 @@ pub(crate) fn inspect_repository_with_progress(
         &mut errors,
         &mut progress,
     );
+    // {impl}`requirements.references.citation_review`
+    crate::citations::validate(&root, &definitions, &references, &outlines, &mut errors);
     // {impl}`requirements.references.rust_item_coverage`
     crate::rust_coverage::validate_rust_functions(
         &root,
@@ -288,6 +297,7 @@ pub(crate) fn inspect_repository_with_progress(
         .filter(|definition| definition.kind == DefinitionKind::Requirement)
         .count();
     Ok(RepositoryInspection {
+        root: root.clone(),
         report: EvidenceReport {
             requirements,
             examples,
@@ -306,7 +316,7 @@ pub(crate) fn inspect_repository_with_progress(
 // A malformed `book.toml` is one failed check: fall back to `md` so
 // definition collection and the checks after it still run.
 // {impl}`requirements.ci.errors`
-fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
+pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
     let path = root.join("book.toml");
     let source = match fs::read_to_string(&path) {
         Ok(content) => match content.parse::<DocumentMut>() {
@@ -358,6 +368,7 @@ fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
 
 // {impl}`requirements.ci.definition_errors`
 // {impl}`requirements.ci.identifiers`
+// {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.references.anchors`
@@ -396,6 +407,14 @@ fn collect_definitions(
                 + 1;
             let source = format!("{label}:{line}");
             let name = full_requirement_name(&namespace, &block.name);
+            // {impl}`requirements.references.builtin_definitions`
+            if name.starts_with("habeas:") || block.name.starts_with("habeas:") {
+                errors.push(format!(
+                    "{source}: invalid {} name {name:?}: names beginning with habeas: are reserved for built-in definitions",
+                    block.kind.noun()
+                ));
+                continue;
+            }
             if !valid_name(&name) {
                 errors.push(format!(
                     "{source}: invalid {} name {name:?}",
@@ -486,14 +505,7 @@ fn collect_definitions(
 
     for (name, definition) in &definitions {
         if definition.kind == DefinitionKind::Example
-            && !reference_roles(&definition.text, true)
-                .into_iter()
-                .any(|reference| {
-                    matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)
-                        && definitions
-                            .get(reference.name)
-                            .is_some_and(|target| target.kind == DefinitionKind::Requirement)
-                })
+            && !example_references_requirement(definition, &definitions)
         {
             errors.push(format!(
                 "{}: example {name} must reference at least one requirement with {{cite}} or {{test}}",
@@ -513,12 +525,12 @@ pub(crate) fn example_references_requirement(
     example: &Declaration,
     definitions: &BTreeMap<String, Declaration>,
 ) -> bool {
-    reference_roles(&example.text, true)
+    crate::text_references(&example.text, true)
         .into_iter()
-        .any(|reference| {
-            matches!(reference.kind, ReferenceKind::Cite | ReferenceKind::Test)
+        .any(|(kind, name)| {
+            matches!(kind, ReferenceKind::Cite | ReferenceKind::Test)
                 && definitions
-                    .get(reference.name)
+                    .get(&name)
                     .is_some_and(|target| target.kind == DefinitionKind::Requirement)
         })
 }
@@ -529,7 +541,7 @@ pub(crate) fn example_references_requirement(
 // {impl}`requirements.ci.coverage`
 // {impl}`requirements.ci.orphans`
 // {impl}`requirements.ci.errors`
-fn files_with_extension(
+pub(crate) fn files_with_extension(
     root: &Path,
     dir: &Path,
     extension: &str,
@@ -727,7 +739,7 @@ fn validate_evidence_file(
 // {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.definitions.inputs`
-fn validate_input(
+pub(crate) fn validate_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     outlines: &OutlineCache,
@@ -987,7 +999,7 @@ fn compact_diff(recorded: &[&str], current: &[&str]) -> String {
 }
 
 // {impl}`requirements.ci.schema`
-fn check_keys(
+pub(crate) fn check_keys(
     object: &Map<String, Value>,
     expected: &[&str],
     label: &str,
@@ -1001,7 +1013,7 @@ fn check_keys(
 }
 
 // {impl}`requirements.ci.schema`
-fn string_field<'a>(
+pub(crate) fn string_field<'a>(
     object: &'a Map<String, Value>,
     key: &str,
     label: &str,
@@ -1021,7 +1033,7 @@ fn string_field<'a>(
 }
 
 // {impl}`requirements.ci.schema`
-fn array_field<'a>(
+pub(crate) fn array_field<'a>(
     object: &'a Map<String, Value>,
     key: &str,
     label: &str,
@@ -1041,19 +1053,29 @@ fn array_field<'a>(
 }
 
 // {impl}`requirements.ci.diagnostics`
-fn display_path(root: &Path, path: &Path) -> String {
+pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .display()
         .to_string()
 }
 
-// {cite}`requirements.references.targets`
+// {impl}`requirements.references.targets`
+// {impl}`requirements.ci.reference_set`
+#[derive(Clone, Debug)]
 pub(crate) struct SourceReference {
     pub(crate) name: String,
     pub(crate) kind: ReferenceKind,
     pub(crate) file: PathBuf,
+    /// Line of the reference, or of a fenced reference's opening fence.
     pub(crate) line: usize,
+    /// A fenced reference's body without comment delimiters; `None` for an
+    /// inline reference.
+    pub(crate) commentary: Option<String>,
+    /// Whether a fenced reference closes within its comment run or file.
+    pub(crate) closed: bool,
+    /// Whether the source lies in the book's source directory.
+    pub(crate) in_book: bool,
 }
 
 /// One edge of a definition's reference set: its origin (an in-source
@@ -1065,6 +1087,8 @@ struct ReferenceSetEntry {
     role: &'static str,
     file: String,
     item: String,
+    /// The words of a fenced reference's body, for a source outside the book.
+    words: Vec<String>,
 }
 
 /// The reference-set digest of a definition: SHA-256 over a length-prefixed
@@ -1103,11 +1127,23 @@ pub(crate) fn reference_set_digest<'a>(
             // outlined is reported elsewhere and contributes its whole file.
             _ => String::new(),
         };
+        // Commentary in the book is part of the declaration text instead.
+        let commentary = reference
+            .commentary
+            .as_deref()
+            .filter(|_| !reference.in_book);
         entries.push(ReferenceSetEntry {
-            origin: "reference",
+            origin: if commentary.is_some() {
+                "fenced-reference"
+            } else {
+                "reference"
+            },
             role: reference.kind.label(),
             file,
             item,
+            words: commentary
+                .map(|body| body.split_whitespace().map(str::to_owned).collect())
+                .unwrap_or_default(),
         });
     }
     for anchor in &definition.anchors {
@@ -1116,6 +1152,7 @@ pub(crate) fn reference_set_digest<'a>(
             role: anchor.kind.label(),
             file: anchor.file.clone(),
             item: anchor.item.clone(),
+            words: Vec::new(),
         });
     }
     entries.sort();
@@ -1131,6 +1168,13 @@ pub(crate) fn reference_set_digest<'a>(
         field(entry.role.as_bytes());
         field(entry.file.as_bytes());
         field(entry.item.as_bytes());
+        // Only fenced entries carry words, so other entries encode as before.
+        if entry.origin == "fenced-reference" {
+            field(&(entry.words.len() as u64).to_le_bytes());
+            for word in &entry.words {
+                field(word.as_bytes());
+            }
+        }
     }
     hasher
         .finalize()
@@ -1208,6 +1252,35 @@ fn validate_references(
 ) {
     let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();
     for reference in references {
+        let location = format!("{}:{}", display_path(root, &reference.file), reference.line);
+        // {impl}`requirements.references.targets`
+        if reference.commentary.is_some() && !reference.closed {
+            errors.push(format!(
+                "{location}: fenced {{{}}} reference to {} has no closing fence with at least as many colons within its comment run or file",
+                reference.kind.label(),
+                reference.name
+            ));
+            continue;
+        }
+        // {impl}`requirements.references.builtin_definitions`
+        // {impl}`requirements.references.no_requirement`
+        if crate::builtins::is_builtin_name(&reference.name) {
+            match crate::builtins::builtin(&reference.name) {
+                Some(builtin) => {
+                    if let Err(problem) =
+                        builtin.check(reference.kind, reference.commentary.as_deref())
+                    {
+                        errors.push(format!("{location}: {problem}"));
+                    }
+                }
+                None => errors.push(format!(
+                    "{location}: {{{}}}`{}` has no matching built-in definition",
+                    reference.kind.label(),
+                    reference.name
+                )),
+            }
+            continue;
+        }
         let target = definitions.get(&reference.name);
         if reference.kind == ReferenceKind::Term {
             if !target.is_some_and(|d| d.kind == DefinitionKind::Term) {
@@ -1422,6 +1495,8 @@ fn collect_references_with_progress(
         }
     }
     files.sort();
+    // Book configuration errors are reported by inspection itself.
+    let md_root = book_source_dir(root, &mut Vec::new());
 
     let mut references = Vec::new();
     for (completed, file) in files.iter().enumerate() {
@@ -1445,6 +1520,8 @@ fn collect_references_with_progress(
             continue;
         }
         let markdown = file.extension().is_some_and(|extension| extension == "md");
+        let in_book = file.starts_with(&md_root);
+        let first = references.len();
         for role in reference_roles(&content, markdown) {
             let line = content[..role.start]
                 .bytes()
@@ -1456,8 +1533,23 @@ fn collect_references_with_progress(
                 kind: role.kind,
                 file: file.clone(),
                 line,
+                commentary: None,
+                closed: true,
+                in_book,
             });
         }
+        for fence in crate::fenced::source_fences(file, &content) {
+            references.push(SourceReference {
+                name: fence.name,
+                kind: fence.kind,
+                file: file.clone(),
+                line: fence.line,
+                commentary: Some(fence.body),
+                closed: fence.closed,
+                in_book,
+            });
+        }
+        references[first..].sort_by_key(|reference| reference.line);
     }
     progress(InspectionProgress {
         stage: "reference source files",
@@ -1505,6 +1597,16 @@ fn evidence_input_ranges(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// Validation errors other than citation reviews, for fixtures that test
+    /// other checks.
+    // {test}`requirements.references.citation_review`
+    pub(crate) fn without_citation_reviews(errors: Vec<String>) -> Vec<String> {
+        errors
+            .into_iter()
+            .filter(|error| !error.starts_with("evidence/citations/"))
+            .collect()
+    }
+
     use std::fs;
     use std::path::Path;
 
@@ -1916,8 +2018,8 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        let report = validate_repository(temp.path()).unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let errors = without_citation_reviews(validate_repository(temp.path()).unwrap().errors);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     // {test}`requirements.references.targets`
@@ -2640,7 +2742,7 @@ pub(crate) mod tests {
         };
         let path = temp.path().join("evidence/rules.ready.json");
         fs::write(&path, record(json!([]))).unwrap();
-        let errors = validate_repository(temp.path()).unwrap().errors;
+        let errors = without_citation_reviews(validate_repository(temp.path()).unwrap().errors);
         let uncovered: Vec<_> = errors
             .iter()
             .filter(|error| error.contains("no input covers"))
@@ -2671,8 +2773,8 @@ pub(crate) mod tests {
             ])),
         )
         .unwrap();
-        let report = validate_repository(temp.path()).unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let errors = without_citation_reviews(validate_repository(temp.path()).unwrap().errors);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     // {test}`requirements.ci.definition_errors`
@@ -3091,7 +3193,7 @@ pub(crate) mod tests {
             }
             fs::write(&path, record.to_string()).unwrap();
         };
-        let errors = || super::validate_repository(root).unwrap().errors;
+        let errors = || without_citation_reviews(super::validate_repository(root).unwrap().errors);
 
         let current = super::reference_set_digest_for(root, "requirements.ready").unwrap();
         write(Some(json!(current)));
