@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::evidence::{Declaration, InspectionProgress};
 use crate::outline::{self, OutlineError};
@@ -192,64 +192,24 @@ fn missing_function_references(
         .collect())
 }
 
+/// The first-party Rust files among the sources reference discovery
+/// considers: every `.rs` file outside the project-root `vendor` directory.
 // {impl}`requirements.references.rust_item_coverage`
-pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path::PathBuf> {
-    let mut stack = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = stack.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) => {
-                errors.push(format!(
-                    "{}: cannot scan Rust sources: {error}",
-                    display_path(root, &directory)
-                ));
-                continue;
-            }
-        };
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot read Rust source directory entry: {error}",
-                        display_path(root, &directory)
-                    ));
-                    continue;
-                }
-            };
-            let path = entry.path();
-            let kind = match entry.file_type() {
-                Ok(kind) => kind,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot inspect Rust source: {error}",
-                        display_path(root, &path)
-                    ));
-                    continue;
-                }
-            };
-            if kind.is_dir() {
-                let name = entry.file_name();
-                if !matches!(name.to_str(), Some(".git" | "target"))
-                    && !(directory == root
-                        && matches!(name.to_str(), Some("book" | "evidence" | "vendor")))
-                {
-                    stack.push(path);
-                }
-            } else if kind.is_file() && path.extension().is_some_and(|value| value == "rs") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
+pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
+    let vendor = root.join("vendor");
+    sources
+        .iter()
+        .filter(|path| path.extension().is_some_and(|value| value == "rs"))
+        .filter(|path| !path.starts_with(&vendor))
+        .cloned()
+        .collect()
 }
 
 // {impl}`requirements.references.rust_item_coverage`
 // {impl}`requirements.authoring.progress`
 pub(crate) fn validate_rust_functions(
     root: &Path,
+    sources: &[PathBuf],
     definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
     discovery_errors: &mut Vec<String>,
@@ -260,9 +220,7 @@ pub(crate) fn validate_rust_functions(
         completed: 0,
         total: None,
     });
-    let initial_errors = errors.len();
-    let files = rust_files(root, errors);
-    discovery_errors.extend(errors[initial_errors..].iter().cloned());
+    let files = rust_files(root, sources);
     let total = files.len();
     for (completed, file) in files.into_iter().enumerate() {
         progress(InspectionProgress {
@@ -642,6 +600,7 @@ fn outer() {
         let mut errors = Vec::new();
         validate_rust_functions(
             project.path(),
+            &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
             &mut errors,
             &mut Vec::new(),
@@ -683,6 +642,7 @@ fn outer() {
         let mut updates = Vec::new();
         validate_rust_functions(
             project.path(),
+            &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
             &mut Vec::new(),
             &mut Vec::new(),

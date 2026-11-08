@@ -269,8 +269,12 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     }
     let mut errors = Vec::new();
     let mut found = crate::evidence::collect_references(&sources.root, &mut errors);
+    // A considered source that cannot be read would silently drop its sites.
     if !errors.is_empty() {
-        return Err(io::Error::other(errors.join("\n")));
+        return Err(io::Error::other(format!(
+            "cannot list reference sites because reference discovery failed; fix or restore the named source before retrying:\n{}",
+            errors.join("\n")
+        )));
     }
     found.retain(|reference| {
         reference.kind != crate::ReferenceKind::Term
@@ -280,8 +284,6 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             && definitions
                 .get(&reference.name)
                 .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term)
-            // Discovery omits excluded sources rather than aborting.
-            && sources.access.file(&sources.root, &reference.file).is_ok()
     });
     let mut sites = Vec::new();
     for reference in &found {
@@ -1725,6 +1727,78 @@ mod tests {
             ])
         );
         assert!(result.inputs.is_empty());
+    }
+
+    // {test}`requirements.authoring.reference_index`
+    // {test}`requirements.references.targets`
+    #[test]
+    fn references_report_only_sites_in_considered_sources() {
+        let root = project();
+        let reference = format!(
+            "// {}\nfn site() {{}}\n",
+            role("impl", "requirements.ready")
+        );
+        for file in ["src/tracked.rs", "src/untracked.rs", "private/tracked.rs"] {
+            let path = root.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, &reference).unwrap();
+        }
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n\n[evidence]\ndisallow = [\"private\"]\n",
+        )
+        .unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        git(
+            root.path(),
+            &["rm", "--cached", "--quiet", "src/untracked.rs"],
+        );
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let result = dispatch(
+            &sources,
+            "references",
+            &json!({"selection": "requirements.ready"}),
+        )
+        .unwrap();
+        let files: Vec<_> = result.result["sites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|site| site["file"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(files, ["src/tracked.rs"]);
+    }
+
+    // {test}`requirements.authoring.reference_index`
+    #[cfg(unix)]
+    #[test]
+    fn references_name_a_considered_source_that_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = project();
+        let locked = root.path().join("src/locked.rs");
+        fs::write(&locked, "fn locked() {}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&locked).is_ok() {
+            // Permissions do not restrict this user, such as root.
+            return;
+        }
+        let error = dispatch(
+            &sources,
+            "references",
+            &json!({"selection": "requirements.ready"}),
+        )
+        .err()
+        .unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+        let message = error.to_string();
+        assert!(message.contains("src/locked.rs"), "{message}");
+        assert!(
+            message.contains("cannot read reference source"),
+            "{message}"
+        );
+        assert!(message.contains("reference discovery failed"), "{message}");
     }
 
     // {test}`requirements.authoring.read_denial`

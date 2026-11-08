@@ -271,7 +271,13 @@ pub(crate) fn inspect_repository_with_progress(
     // treat a partial scan as complete.
     // {impl}`requirements.authoring.batch`
     let scanned = errors.len();
-    let references = collect_references_with_progress(&root, &mut errors, &mut progress);
+    progress(InspectionProgress {
+        stage: "discovering source references",
+        completed: 0,
+        total: None,
+    });
+    let files = discovered_files(&root, &mut errors);
+    let references = collect_references_with_progress(&root, &files, &mut errors, &mut progress);
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_references(
         &root,
@@ -293,6 +299,7 @@ pub(crate) fn inspect_repository_with_progress(
     // {impl}`requirements.references.rust_item_coverage`
     crate::rust_coverage::validate_rust_functions(
         &root,
+        &files,
         &definitions,
         &mut errors,
         &mut discovery_errors,
@@ -1441,72 +1448,51 @@ fn validate_references(
 
 // {impl}`requirements.references.targets`
 pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
-    collect_references_with_progress(root, errors, &mut |_| {})
+    let files = discovered_files(root, errors);
+    collect_references_with_progress(root, &files, errors, &mut |_| {})
+}
+
+/// The project files reference discovery considers under source-access
+/// policy, reporting a failure to read the Git index as a discovery error.
+// {impl}`requirements.references.targets`
+pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
+    match crate::authoring::access::DiscoverySources::load(root) {
+        Ok(sources) => sources.files(errors),
+        Err(error) => {
+            errors.push(format!("cannot discover reference sources: {error}"));
+            Vec::new()
+        }
+    }
+}
+
+/// Untracked files in a Git worktree, outside the discovery exclusions, that
+/// contain references discovery would otherwise find; empty outside Git.
+// {impl}`requirements.cli.status`
+pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let root = fs::canonicalize(root)?;
+    let md_root = book_source_dir(&root, &mut Vec::new());
+    let untracked = crate::authoring::access::DiscoverySources::load(&root)?.untracked()?;
+    Ok(untracked
+        .into_iter()
+        .filter(|file| {
+            fs::read_to_string(file).is_ok_and(|content| {
+                !content.contains('\0')
+                    && file_references(file, &content, file.starts_with(&md_root))
+                        .iter()
+                        .any(|reference| reference.kind != ReferenceKind::Term)
+            })
+        })
+        .collect())
 }
 
 // {impl}`requirements.references.targets`
 // {impl}`requirements.authoring.progress`
 fn collect_references_with_progress(
     root: &Path,
+    files: &[PathBuf],
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) -> Vec<SourceReference> {
-    progress(InspectionProgress {
-        stage: "discovering source references",
-        completed: 0,
-        total: None,
-    });
-    let mut stack = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = stack.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) => {
-                errors.push(format!(
-                    "{}: cannot scan references: {error}",
-                    display_path(root, &directory)
-                ));
-                continue;
-            }
-        };
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot scan directory entry: {error}",
-                        display_path(root, &directory)
-                    ));
-                    continue;
-                }
-            };
-            let path = entry.path();
-            let kind = match entry.file_type() {
-                Ok(kind) => kind,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot inspect reference source: {error}",
-                        display_path(root, &path)
-                    ));
-                    continue;
-                }
-            };
-            if kind.is_dir() {
-                // Repository metadata and Cargo build output are skipped at
-                // any depth; the book build and evidence snapshots at the
-                // project root.
-                let name = entry.file_name();
-                let excluded = matches!(name.to_str(), Some(".git" | "target"))
-                    || (directory == root && matches!(name.to_str(), Some("book" | "evidence")));
-                if !excluded {
-                    stack.push(path);
-                }
-            } else if kind.is_file() {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
     // Book configuration errors are reported by inspection itself.
     let md_root = book_source_dir(root, &mut Vec::new());
 
@@ -1531,43 +1517,49 @@ fn collect_references_with_progress(
         if content.contains('\0') {
             continue;
         }
-        let markdown = crate::outline::is_markdown_path(file);
-        let in_book = file.starts_with(&md_root);
-        let first = references.len();
-        for role in reference_roles(&content, markdown) {
-            let line = content[..role.start]
-                .bytes()
-                .filter(|byte| *byte == b'\n')
-                .count()
-                + 1;
-            references.push(SourceReference {
-                name: role.name.to_owned(),
-                kind: role.kind,
-                file: file.clone(),
-                line,
-                commentary: None,
-                closed: true,
-                in_book,
-            });
-        }
-        for fence in crate::fenced::source_fences(file, &content) {
-            references.push(SourceReference {
-                name: fence.name,
-                kind: fence.kind,
-                file: file.clone(),
-                line: fence.line,
-                commentary: Some(fence.body),
-                closed: fence.closed,
-                in_book,
-            });
-        }
-        references[first..].sort_by_key(|reference| reference.line);
+        references.extend(file_references(file, &content, file.starts_with(&md_root)));
     }
     progress(InspectionProgress {
         stage: "reference source files",
         completed: files.len(),
         total: Some(files.len()),
     });
+    references
+}
+
+/// The inline and fenced references in one text file, in line order.
+// {impl}`requirements.references.targets`
+fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
+    let markdown = crate::outline::is_markdown_path(file);
+    let mut references = Vec::new();
+    for role in reference_roles(content, markdown) {
+        let line = content[..role.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        references.push(SourceReference {
+            name: role.name.to_owned(),
+            kind: role.kind,
+            file: file.to_owned(),
+            line,
+            commentary: None,
+            closed: true,
+            in_book,
+        });
+    }
+    for fence in crate::fenced::source_fences(file, content) {
+        references.push(SourceReference {
+            name: fence.name,
+            kind: fence.kind,
+            file: file.to_owned(),
+            line: fence.line,
+            commentary: Some(fence.body),
+            closed: fence.closed,
+            in_book,
+        });
+    }
+    references.sort_by_key(|reference| reference.line);
     references
 }
 

@@ -423,3 +423,117 @@ fn status_all_lists_habeas_none_citations_with_their_justification() {
             .contains("`habeas:none` citations")
     );
 }
+
+/// Runs `git` in `root`, failing the test if it fails.
+// {test}`requirements.references.targets`
+fn git(root: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// {test}`requirements.references.targets`
+// {test}`requirements.references.rust_item_coverage`
+// {test}`requirements.cli.status`
+#[test]
+fn untracked_sources_are_not_validated_until_staged_and_status_lists_them() {
+    let temp = project();
+    let root = temp.path();
+    let source = format!(
+        "// {}`rules.missing`\nfn referenced() {{}}\n\nfn uncited() {{}}\n",
+        role("impl")
+    );
+    fs::write(root.join("src/extra.rs"), &source).unwrap();
+    // An untracked file without references needs no reminder.
+    fs::write(root.join("notes.txt"), "No references here.\n").unwrap();
+    git(root, &["init", "--quiet"]);
+    git(root, &["add", "md", "book.toml", "Cargo.toml"]);
+
+    let untracked = errors(root);
+    assert!(!has(&untracked, "src/extra.rs"), "{untracked:#?}");
+    let status = habeas::status_markdown(root, false).unwrap();
+    let section = &status[status
+        .find("## Untracked files with references")
+        .unwrap_or_else(|| panic!("{status}"))..];
+    assert!(section.contains("git add"), "{status}");
+    assert!(section.contains("- `src/extra.rs`"), "{status}");
+    assert!(!section.contains("notes.txt"), "{status}");
+
+    // Staging the new file brings its references and items back.
+    git(root, &["add", "src/extra.rs"]);
+    let errors = errors(root);
+    assert!(has(&errors, "src/extra.rs:1"), "{errors:#?}");
+    assert!(has(&errors, "rules.missing"), "{errors:#?}");
+    assert!(
+        has(
+            &errors,
+            "src/extra.rs:4: function uncited has no requirement or example citation"
+        ),
+        "{errors:#?}"
+    );
+    let status = habeas::status_markdown(root, false).unwrap();
+    assert!(
+        !status.contains("Untracked files with references"),
+        "{status}"
+    );
+}
+
+// {test}`requirements.references.targets`
+// {test}`requirements.references.rust_item_coverage`
+// {test}`requirements.configuration.evidence_paths`
+#[test]
+fn disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file() {
+    let temp = project();
+    let root = temp.path();
+    let source = format!("// {}`rules.missing`\nfn uncited() {{}}\n", role("impl"));
+    for file in [
+        "private/hidden.rs",
+        "src/secret.rs",
+        "notes/other.rs",
+        "vendor/dep/lib.rs",
+        "crates/sub/target/out.rs",
+        "book/out.rs",
+    ] {
+        let path = root.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, &source).unwrap();
+    }
+    fs::write(
+        root.join("habeas.toml"),
+        "version = 1\n\n[evidence]\ndisallow = [\"private\", \"src/secret.rs\"]\n",
+    )
+    .unwrap();
+    let errors = errors(root);
+    for skipped in [
+        "private/hidden.rs",
+        "src/secret.rs",
+        "crates/sub/target/out.rs",
+        "book/out.rs",
+    ] {
+        assert!(!has(&errors, skipped), "{skipped}: {errors:#?}");
+    }
+    // Outside Git every other project file is considered, untracked or not;
+    // vendored Rust sources still carry references but are not covered.
+    assert!(has(&errors, "notes/other.rs:1"), "{errors:#?}");
+    assert!(
+        has(&errors, "notes/other.rs:2: function uncited"),
+        "{errors:#?}"
+    );
+    assert!(has(&errors, "vendor/dep/lib.rs:1"), "{errors:#?}");
+    assert!(
+        !has(&errors, "vendor/dep/lib.rs:2: function uncited"),
+        "{errors:#?}"
+    );
+    let status = habeas::status_markdown(root, false).unwrap();
+    assert!(
+        !status.contains("Untracked files with references"),
+        "{status}"
+    );
+}

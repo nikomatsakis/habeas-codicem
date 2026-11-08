@@ -234,6 +234,188 @@ impl SourceAccess {
     }
 }
 
+/// The project files reference discovery and Rust item coverage consider: the
+/// sources [`SourceAccess`] would let authoring read by default, found without
+/// authoring configuration, credentials, or Cargo metadata.
+// {impl}`requirements.references.targets`
+// {impl}`requirements.authoring.deterministic_validation`
+pub(crate) struct DiscoverySources {
+    root: PathBuf,
+    tracked: Option<BTreeSet<PathBuf>>,
+    policy: PathPolicy,
+}
+
+impl DiscoverySources {
+    /// Loads the Git index and the workspace `[evidence]` rules. An invalid
+    /// workspace configuration is reported by inspection itself, so discovery
+    /// then applies no workspace rules rather than failing a second time.
+    // {impl}`requirements.references.targets`
+    // {impl}`requirements.authoring.deterministic_validation`
+    pub(crate) fn load(root: &Path) -> io::Result<Self> {
+        Ok(Self {
+            root: root.to_owned(),
+            tracked: tracked_sources(root)?,
+            policy: PathPolicy::load(root).unwrap_or_default(),
+        })
+    }
+
+    /// Every considered file, sorted. In a Git worktree these are the indexed
+    /// files; outside Git, every file under the project root. Symlinks are not
+    /// followed, so no source is counted twice through an alias.
+    // {impl}`requirements.references.targets`
+    pub(crate) fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = match &self.tracked {
+            Some(tracked) => tracked
+                .iter()
+                .filter(|path| {
+                    // An indexed file deleted from the worktree has no
+                    // content to scan; an uninspectable one is kept so that
+                    // reading it reports the failure.
+                    fs::symlink_metadata(path).map_or_else(
+                        |error| error.kind() != io::ErrorKind::NotFound,
+                        |metadata| metadata.is_file(),
+                    )
+                })
+                .filter(|path| self.considers(path, false))
+                .cloned()
+                .collect(),
+            None => self.walk(errors),
+        };
+        files.sort();
+        files
+    }
+
+    /// Untracked files a Git worktree's ignore rules do not exclude, with the
+    /// same exclusions as [`Self::files`]; empty outside Git.
+    // {impl}`requirements.cli.status`
+    pub(crate) fn untracked(&self) -> io::Result<Vec<PathBuf>> {
+        if self.tracked.is_none() {
+            return Ok(Vec::new());
+        }
+        let output = Command::new("git")
+            .current_dir(&self.root)
+            .args([
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                ".",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "cannot list untracked files: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let mut files: Vec<PathBuf> = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .filter_map(|path| std::str::from_utf8(path).ok())
+            .map(|path| self.root.join(path))
+            .filter(|path| fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()))
+            .filter(|path| self.considers(path, false))
+            .collect();
+        files.sort();
+        Ok(files)
+    }
+
+    /// Whether a project file outside the fixed exclusions is permitted by the
+    /// workspace rules: not disallowed and not a configuration file holding
+    /// literal credentials.
+    // {impl}`requirements.references.targets`
+    // {impl}`requirements.configuration.evidence_paths`
+    // {impl}`requirements.authoring.credentials`
+    fn considers(&self, path: &Path, directory: bool) -> bool {
+        if excluded_from_discovery(&self.root, path, directory) {
+            return false;
+        }
+        let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        self.policy.check_disallow(path, &target).is_ok()
+            && !self.policy.contains_credentials(path, &target)
+    }
+
+    /// Lists every file outside Git, skipping excluded and disallowed
+    /// directories without descending into them.
+    // {impl}`requirements.references.targets`
+    fn walk(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
+        let root = &self.root;
+        let label = |path: &Path| {
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        };
+        let mut stack = vec![root.clone()];
+        let mut files = Vec::new();
+        while let Some(directory) = stack.pop() {
+            let entries = match fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    errors.push(format!(
+                        "{}: cannot scan references: {error}",
+                        label(&directory)
+                    ));
+                    continue;
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        errors.push(format!(
+                            "{}: cannot scan directory entry: {error}",
+                            label(&directory)
+                        ));
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(error) => {
+                        errors.push(format!(
+                            "{}: cannot inspect reference source: {error}",
+                            label(&path)
+                        ));
+                        continue;
+                    }
+                };
+                if kind.is_dir() {
+                    if self.considers(&path, true) {
+                        stack.push(path);
+                    }
+                } else if kind.is_file() && self.considers(&path, false) {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+}
+
+/// Whether a file, or a directory when `directory` is set, lies in a `.git`
+/// or `target` directory at any depth or in the project-root `book` or
+/// `evidence` directory.
+// {impl}`requirements.references.targets`
+fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
+    };
+    let directories = if directory {
+        Some(relative)
+    } else {
+        relative.parent()
+    };
+    let mut components = directories.into_iter().flat_map(Path::components);
+    let first = components.next();
+    let is = |component: Option<Component<'_>>, names: &[&str]| matches!(component, Some(Component::Normal(name)) if names.iter().any(|candidate| name == *candidate));
+    is(first, &["book", "evidence", ".git", "target"])
+        || components.any(|component| is(Some(component), &[".git", "target"]))
+}
+
 // {impl}`requirements.configuration.evidence_paths`
 fn matches_rule(rule: &Path, requested: &Path, target: &Path) -> bool {
     requested_location(rule)
@@ -562,6 +744,56 @@ pub(super) mod tests {
         assert!(access.file(&root, Path::new("./inside.txt")).is_ok());
         assert!(access.file(&root, Path::new("../outside.txt")).is_err());
         assert!(access.file(&root, Path::new("outside.txt")).is_err());
+    }
+
+    // {test}`requirements.references.targets`
+    // {test}`requirements.authoring.credentials`
+    #[test]
+    fn discovery_considers_indexed_files_except_exclusions_and_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(root.path()).unwrap();
+        for file in [
+            "src/lib.rs",
+            "src/staged.rs",
+            "src/deleted.rs",
+            "src/untracked.rs",
+            "crates/a/target/out.rs",
+            "evidence/x.json",
+            "docs/book/page.md",
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "text\n").unwrap();
+        }
+        fs::write(
+            root.join("habeas.toml"),
+            "version = 1\n[authoring.configs.cloud]\nprovider = \"bedrock\"\napi_key = \"secret\"\n",
+        )
+        .unwrap();
+        git(&root, &["init", "--quiet"]);
+        git(&root, &["add", "-f", "."]);
+        git(&root, &["rm", "--cached", "--quiet", "src/untracked.rs"]);
+        fs::remove_file(root.join("src/deleted.rs")).unwrap();
+        let sources = DiscoverySources::load(&root).unwrap();
+        let mut errors = Vec::new();
+        let files: Vec<_> = sources
+            .files(&mut errors)
+            .into_iter()
+            .map(|path| path.strip_prefix(&root).unwrap().to_owned())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            files,
+            [
+                Path::new("docs/book/page.md"),
+                Path::new("src/lib.rs"),
+                Path::new("src/staged.rs"),
+            ]
+        );
+        assert_eq!(
+            sources.untracked().unwrap(),
+            [root.join("src/untracked.rs")]
+        );
     }
 
     // {test}`requirements.authoring.source_tools`
