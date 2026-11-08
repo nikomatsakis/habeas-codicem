@@ -219,10 +219,15 @@ fn secret_regions(source: &str) -> Vec<Region> {
                 break;
             }
         }
-        let mut previous = flagged.partition_point(|span| span.end <= region.span.start);
-        while previous > 0 && whitespace(flagged[previous - 1].end..region.span.start) {
-            previous -= 1;
-            region.span.start = flagged[previous].start;
+        let mut previous = flagged.partition_point(|span| span.start < region.span.start);
+        while previous > 0 {
+            let span = &flagged[previous - 1];
+            if span.end > region.span.start || whitespace(span.end..region.span.start) {
+                region.span.start = span.start;
+                previous -= 1;
+            } else {
+                break;
+            }
         }
     }
     regions
@@ -232,20 +237,27 @@ fn secret_regions(source: &str) -> Vec<Region> {
 /// file, whose explicit credential fields are redacted by name.
 // {impl}`requirements.authoring.redaction`
 fn is_configuration_file(path: &Path) -> bool {
+    is_configuration_file_for(path, crate::config::user_config_path().ok().as_deref())
+}
+
+/// [`is_configuration_file`] with the user configuration path given: a file
+/// named `habeas.toml`, the user file itself, or an alias resolving to it.
+// {impl}`requirements.authoring.redaction`
+fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
     if path.file_name().is_some_and(|name| name == "habeas.toml") {
         return true;
     }
-    let Ok(user) = crate::config::user_config_path() else {
+    let Some(user) = user else {
         return false;
     };
     path == user
-        || fs::canonicalize(&user)
+        || fs::canonicalize(user)
             .is_ok_and(|user| fs::canonicalize(path).is_ok_and(|path| path == user))
 }
 
 /// Regions of the explicit credential fields of a configuration file. A file
 /// that does not parse as TOML cannot be searched by field, so all of it is
-/// redacted.
+/// redacted with the kind `configuration`.
 // {impl}`requirements.authoring.redaction`
 fn configuration_regions(source: &str) -> Vec<Region> {
     match credential_fields(source) {

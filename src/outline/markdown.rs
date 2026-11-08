@@ -22,6 +22,7 @@ fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 
 /// HTML comment blocks are Markdown's comments.
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 fn is_comment(node: Node<'_>, source: &str) -> bool {
     let body = text(node, source).trim();
     node.kind() == "html_block" && body.starts_with("<!--") && body.ends_with("-->")

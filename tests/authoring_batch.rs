@@ -1447,3 +1447,36 @@ fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
             .contains("Confirmation")
     );
 }
+
+// {test}`requirements.authoring.confirmation`
+// {test}`requirements.authoring.batch`
+#[test]
+fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let output = fixture.run(&["author", "--all", "--confirm"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut subjects = server.subjects();
+    subjects.sort();
+    assert!(!subjects.is_empty());
+    for pair in subjects.chunks(2) {
+        assert_eq!(pair.len(), 2, "{subjects:?}");
+        assert_eq!(pair[0], pair[1], "{subjects:?}");
+    }
+    let usage = fixture.usage();
+    let seconds = usage
+        .iter()
+        .filter(|run| {
+            run["subject"]
+                .as_str()
+                .unwrap()
+                .ends_with(" (second assessment)")
+        })
+        .count();
+    assert_eq!(seconds * 2, subjects.len(), "{usage:?}");
+    assert_eq!(usage.len(), subjects.len(), "{usage:?}");
+}

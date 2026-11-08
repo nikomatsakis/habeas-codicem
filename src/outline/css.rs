@@ -22,6 +22,7 @@ fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 fn is_comment(node: Node<'_>, source: &str) -> bool {
     kind_is_comment(node, source) || node.kind() == "js_comment"
 }

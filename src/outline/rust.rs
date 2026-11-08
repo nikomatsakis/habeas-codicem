@@ -66,6 +66,7 @@ fn item_macro(node: Node<'_>) -> bool {
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 fn is_comment(node: Node<'_>, _source: &str) -> bool {
     matches!(node.kind(), "line_comment" | "block_comment")
 }
@@ -122,6 +123,7 @@ fn doc_prose(node: Node<'_>, body: &str) -> (&'static str, String) {
 
 /// Attributes and outer doc comments attach to the following item.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.structural_hash`
 fn attaches(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "attribute_item" || has_marker(node, "outer_doc_comment_marker")
 }

@@ -623,6 +623,7 @@ pub(crate) fn files_with_extension(
 // A malformed evidence file is one failed check reporting its first parse
 // problem; every well-formed record reports each failed field check.
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.ci.outcomes`
 fn validate_evidence_file(
     root: &Path,
     path: &Path,
@@ -1264,6 +1265,7 @@ struct InputRange {
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.reference_set`
+// {impl}`requirements.ci.errors`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -1524,6 +1526,7 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
 
 // {impl}`requirements.references.targets`
 // {impl}`requirements.authoring.progress`
+// {impl}`requirements.ci.errors`
 fn collect_references_with_progress(
     root: &Path,
     files: &[PathBuf],

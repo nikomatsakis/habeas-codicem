@@ -264,6 +264,7 @@ pub(crate) fn validate(
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.diagnostics`
+// {impl}`requirements.ci.errors`
 fn validate_review(
     root: &Path,
     label: &str,

@@ -516,6 +516,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.references.structural_hash`
     fn push(
         &mut self,
         kind: &'static str,

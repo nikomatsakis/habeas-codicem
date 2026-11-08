@@ -161,6 +161,7 @@ impl LoadedDetailEvidence {
     /// errors reported for it, such as a citation review.
     // {impl}`requirements.index.state`
     // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.ci.outcomes`
     pub(crate) fn load_path(root: &Path, relative: &str, report: &EvidenceReport) -> Self {
         let evidence_path = root.join(relative);
         let prefix = format!("{relative}:");

@@ -6,6 +6,7 @@ use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never};
 
 /// Decorators attach to the decorated definition.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.references.structural_hash`
 fn attaches(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "decorator"
 }

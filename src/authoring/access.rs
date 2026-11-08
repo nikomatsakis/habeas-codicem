@@ -230,6 +230,7 @@ impl DiscoverySources {
     /// then applies no workspace rules rather than failing a second time.
     // {impl}`requirements.references.targets`
     // {impl}`requirements.authoring.deterministic_validation`
+    // {impl}`requirements.ci.errors`
     pub(crate) fn load(root: &Path) -> io::Result<Self> {
         Ok(Self {
             root: root.to_owned(),

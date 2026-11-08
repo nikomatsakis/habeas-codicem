@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{Redaction, credential_fields, redact_text};
+use super::{Redaction, credential_fields, is_configuration_file_for, redact_text};
 use crate::outline::{Outline, parse_redacted, profile_for_path};
 
 // Credential-shaped values are assembled at run time so this source holds
@@ -274,4 +274,66 @@ fn slices_concatenate_to_the_redacted_whole() {
         );
         assert_eq!(joined, whole, "split at {split}");
     }
+}
+
+// {test}`requirements.authoring.redaction`
+#[test]
+fn invalid_configuration_files_are_redacted_whole_keeping_lines() {
+    let source = "version = 1\n[authoring.configs.local]\napi_key = 'unterminated\n";
+    assert_eq!(
+        Redaction::of_file(Path::new("habeas.toml"), source).apply(source),
+        "[REDACTED:configuration]\n\n\n"
+    );
+}
+
+// {test}`requirements.authoring.redaction`
+#[test]
+fn the_user_configuration_file_and_its_aliases_are_configuration_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let user = directory.path().join("config.toml");
+    std::fs::write(&user, "version = 1\n").unwrap();
+    assert!(is_configuration_file_for(&user, Some(&user)));
+    assert!(is_configuration_file_for(Path::new("a/habeas.toml"), None));
+    assert!(!is_configuration_file_for(
+        &directory.path().join("other.toml"),
+        Some(&user)
+    ));
+    assert!(!is_configuration_file_for(&user, None));
+    #[cfg(unix)]
+    {
+        let alias = directory.path().join("alias.toml");
+        std::os::unix::fs::symlink(&user, &alias).unwrap();
+        assert!(is_configuration_file_for(&alias, Some(&user)));
+    }
+    // The real user configuration path is recognized by `of_file`.
+    if let Ok(user) = crate::config::user_config_path() {
+        let source = "version = 1\n[authoring.configs.local]\napi_key = 'k'\n";
+        assert_eq!(
+            Redaction::of_file(&user, source).apply(source),
+            "version = 1\n[authoring.configs.local]\napi_key = '[REDACTED:api_key]'\n"
+        );
+    }
+}
+
+// {test}`requirements.authoring.redaction`
+#[test]
+fn regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte() {
+    let token = github_token();
+    let source = format!("let pair = \"Xk7pQm2Rv9Ls4Tz8Wn3Yb6Hd {token}\";\n");
+    assert_eq!(
+        redact_text(&source),
+        "let pair = [REDACTED:GitHub Token]\";\n"
+    );
+    let crlf = format!("a\r\n{}\r\nb\r\n", private_key().replace('\n', "\r\n"));
+    let redacted = redact_text(&crlf).into_owned();
+    assert!(
+        redacted.starts_with("a\r\n[REDACTED:Private Key Block]\r\n\r\n\r\n\r\n-----END"),
+        "{redacted:?}"
+    );
+    assert_eq!(
+        redacted.matches("\r\n").count(),
+        crlf.matches("\r\n").count()
+    );
+    let large = format!("{}\n{token}\n", "x ".repeat(1 << 20));
+    assert!(redact_text(&large).ends_with("\n[REDACTED:GitHub Token]\n"));
 }

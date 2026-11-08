@@ -315,3 +315,31 @@ failure path … The two requirements contradict each other".
 **New:** "When a provider reports a transient failure, the harness MUST wait and retry the same completion request. Transient failures are throttling, reported through HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability, reported through HTTP 500, 502, 503, or 504 or a Bedrock `ServiceUnavailableException`, `InternalServerException`, or `ModelNotReadyException`; and a request with no response after ten minutes, which the harness MUST abandon. The retry MUST retain…" The backoff window now doubles "after each consecutive transient failure".
 
 **Reason:** a full authoring run lost four assessments to Bedrock `503 Service Unavailable` and one waited about four hours on a request that never returned. The obligation is broadened, not weakened. Requested by the user.
+
+## `requirements.authoring.redaction` — an invalid configuration file is redacted whole
+
+**Old text (item 1):**
+
+> In a workspace `habeas.toml` or user configuration file, the value of every
+> explicit credential field defined by \{cite}`requirements.authoring.credentials`
+> MUST be replaced.
+
+**New text:**
+
+> In a workspace `habeas.toml` or user configuration file, the value of every
+> explicit credential field defined by \{cite}`requirements.authoring.credentials`
+> MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,
+> with `configuration` as the kind, because its fields cannot be located.
+
+**Reason.** Credential fields are located by name through the TOML parse, so a
+configuration file that does not parse has no locatable fields. The
+implementation fails safe by redacting the whole file; the requirement did not
+state this case and its kind rule ("the credential field or the rule's name")
+did not admit `configuration`. This is a precision rewording that states the
+fail-safe behavior; it strengthens, not weakens, the obligation.
+
+**Prompting rationale:** `evidence/requirements.authoring.redaction.json`:
+"`configuration_regions` redacts an entire configuration file as
+`[REDACTED:configuration]` when it is not valid TOML. This is a sensible
+fail-safe, but the requirement says `<kind>` is the credential field or the rule
+name, and it never mentions this case. It is also untested."

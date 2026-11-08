@@ -208,6 +208,7 @@ pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
 
 // {impl}`requirements.references.rust_item_coverage`
 // {impl}`requirements.authoring.progress`
+// {impl}`requirements.ci.errors`
 pub(crate) fn validate_rust_functions(
     root: &Path,
     sources: &[PathBuf],

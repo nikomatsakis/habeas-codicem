@@ -305,6 +305,7 @@ fn resolved_location(path: &Path) -> io::Result<PathBuf> {
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.authoring.confirmation`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
@@ -381,6 +382,7 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.persistence`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.authoring.confirmation`
 async fn configured_assessment(
     root: &Path,
     subject: &str,
@@ -432,6 +434,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.provider`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.confirmation`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,

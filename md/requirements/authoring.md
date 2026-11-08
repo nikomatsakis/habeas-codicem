@@ -732,7 +732,8 @@ the book or `habeas info`, MUST be redacted:
 
 1. In a workspace `habeas.toml` or user configuration file, the value of every
    explicit credential field defined by {cite}`requirements.authoring.credentials`
-   MUST be replaced.
+   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,
+   with `configuration` as the kind, because its fields cannot be located.
 2. In every source, each match of a built-in rule of the `secretshape` crate MUST
    be replaced. The replaced region MUST be extended through each adjacent region
    that the crate's entropy heuristic flags and that only whitespace separates
