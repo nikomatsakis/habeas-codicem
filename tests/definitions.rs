@@ -288,6 +288,48 @@ fn invalid_declarations_and_reference_targets_are_reported() {
     );
 }
 
+// {test}`requirements.definitions.references`
+#[test]
+fn references_to_a_definition_of_another_kind_are_reported() {
+    let temp = fixture();
+    fs::write(
+        temp.path().join("md/cases.md"),
+        ":::{example} case\nA ready case. CITE`rules.ready`\n:::\n".replace("CITE", "{cite}"),
+    )
+    .unwrap();
+    let source = ["impl", "cite", "test"]
+        .iter()
+        .map(|role| format!("// {{{role}}}`glossary.a`\n"))
+        .chain(["// TERM`cases.case`\n".replace("TERM", "{term}")])
+        .collect::<String>();
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        format!("{source}fn uses() {{}}\n"),
+    )
+    .unwrap();
+    let errors = validate_repository(temp.path()).unwrap().errors;
+    for (line, role) in [(1, "impl"), (2, "cite"), (3, "test")] {
+        let expected = format!(
+            "src/lib.rs:{line}: {{{role}}}`glossary.a` has no matching requirement or example"
+        );
+        assert!(
+            errors.iter().any(|error| error.contains(&expected)),
+            "{expected}: {errors:#?}"
+        );
+    }
+    assert!(
+        errors.iter().any(|error| error
+            .contains("src/lib.rs:4: term cases.case has no matching named definition")),
+        "{errors:#?}"
+    );
+    // A reference to a term does not cover the Rust item.
+    assert!(
+        errors.iter().any(|error| error
+            .contains("src/lib.rs:5: function uses has no requirement or example citation")),
+        "{errors:#?}"
+    );
+}
+
 // {test}`requirements.definitions.phrase_rendering`
 // {test}`requirements.definitions.references`
 // {test}`requirements.definitions.declaration`

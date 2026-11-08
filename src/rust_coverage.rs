@@ -8,6 +8,7 @@ use crate::outline::{self, OutlineError};
 use crate::reference_roles;
 
 /// The inspection phase label for Rust function coverage.
+// {impl}`requirements.authoring.progress`
 const RUST_COVERAGE_STAGE: &str = "Rust function coverage";
 
 // {impl}`requirements.definitions.dependencies`

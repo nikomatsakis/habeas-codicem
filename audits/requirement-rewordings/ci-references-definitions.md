@@ -308,3 +308,27 @@ covers the CSS obligations." and "The anchored `{impl}` stylesheet contains
 behaviour the requirement does not specify. ... The fenced-reference border and
 padding are end-user-visible and are neither specified nor covered by another
 requirement.").
+
+## `requirements.references.citation_review`: single-review invocation
+
+Old:
+
+> Authoring with `--all` MUST include citation reviews.
+
+New:
+
+> Authoring with `--all` MUST include citation reviews, and `habeas author citations:<file>#<selector>` MUST author the review of the one item it names, where omitting `#<selector>` names the file's root node.
+
+Reason: `AuthoringSubject::parse` in `src/authoring/mod.rs` accepts
+`citations:<file>#<selector>` as a single authoring subject and treats an
+omitted selector as the root node. `md/reference.md` documents this form, and
+the unit tests in `src/authoring/mod.rs` exercise it (`citations:src/lib.rs#fn[helper]`,
+`citations:notes.txt`). It is intended behaviour that no requirement stated:
+`requirements.authoring.invocation` covers only requirements and named
+examples. The requirement now states it; no existing obligation changed.
+
+Prompted by: `evidence/requirements.references.citation_review.json` ("The
+single-subject command form `habeas author citations:<file>#<selector>` is not
+specified by this requirement or by `requirements.authoring.invocation`. ...
+This user-visible CLI behavior is therefore not backed by any requirement
+text.").

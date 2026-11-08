@@ -81,7 +81,9 @@ its citations by role, name, and commentary, `determination`, `rationale`, and
 MUST require a current, accepted review for every such item and report stale,
 missing, or orphaned reviews; a review MUST become stale when the item's hash,
 a cited declaration, or its citations or their commentary change. Authoring with
-`--all` MUST include citation reviews. A citation in a requirement or example
+`--all` MUST include citation reviews, and `habeas author citations:<file>#<selector>`
+MUST author the review of the one item it names, where omitting `#<selector>`
+names the file's root node. A citation in a requirement or example
 declaration is reviewed as part of that definition's own assessment instead.
 :::
 
