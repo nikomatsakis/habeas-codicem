@@ -201,6 +201,7 @@ fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.determination`
 // {impl}`requirements.authoring.progress`
+// {impl}`requirements.ci.errors`
 pub(crate) fn validate(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -419,19 +420,22 @@ fn parse_citation(value: &Value, label: &str, errors: &mut Vec<String>) -> Optio
         return None;
     };
     check_keys(object, &["role", "name", "commentary"], label, errors);
-    let role = match string_field(object, "role", label, errors)? {
-        "cite" => "cite",
-        "impl" => "impl",
-        "test" => "test",
+    let role = string_field(object, "role", label, errors).and_then(|role| match role {
+        "cite" => Some("cite"),
+        "impl" => Some("impl"),
+        "test" => Some("test"),
         other => {
             errors.push(format!("{label}: unknown role {other:?}"));
-            return None;
+            None
         }
-    };
+    });
+    // Every field is checked, so one record reports each malformed field.
+    let name = string_field(object, "name", label, errors);
+    let commentary = string_field(object, "commentary", label, errors);
     Some(Citation {
-        role,
-        name: string_field(object, "name", label, errors)?.to_owned(),
-        commentary: string_field(object, "commentary", label, errors)?.to_owned(),
+        role: role?,
+        name: name?.to_owned(),
+        commentary: commentary?.to_owned(),
     })
 }
 

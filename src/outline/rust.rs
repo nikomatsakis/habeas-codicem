@@ -87,8 +87,10 @@ fn is_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "outer_doc_comment_marker") || has_marker(node, "inner_doc_comment_marker")
 }
 
-/// Inner doc comments document the item enclosing them.
+/// Inner doc comments document the item enclosing them, and their prose is
+/// hashed in its own group, apart from outer doc comments.
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "inner_doc_comment_marker")
 }

@@ -760,6 +760,7 @@ fn validate_evidence_file(
 // {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.definitions.inputs`
+// {impl}`requirements.ci.errors`
 pub(crate) fn validate_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -839,6 +840,7 @@ pub(crate) fn validate_input(
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.ci.input_containment`
+// {impl}`requirements.ci.errors`
 fn validate_outline_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -921,6 +923,7 @@ fn text_field(
 // {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.authoring.redaction`
+// {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
 fn validate_resolved_input(
     root: &Path,
@@ -1460,6 +1463,7 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
 /// The project files reference discovery considers under source-access
 /// policy, reporting a failure to read the Git index as a discovery error.
 // {impl}`requirements.references.targets`
+// {impl}`requirements.ci.errors`
 pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
     match crate::authoring::access::DiscoverySources::load(root) {
         Ok(sources) => sources.files(errors),
@@ -1475,6 +1479,7 @@ pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<Pat
 /// values. Outside Git nothing is committed, so nothing is reported; a Git
 /// index that cannot be read is reported by discovery.
 // {impl}`requirements.authoring.credentials`
+// {impl}`requirements.ci.errors`
 fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
     let Ok(sources) = crate::authoring::access::DiscoverySources::load(root) else {
         return;
@@ -2379,6 +2384,38 @@ pub(crate) mod tests {
             format!("src/main.rs:1: {unknown} has no matching requirement"),
         ] {
             assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
+        }
+    }
+
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn git_index_failure_is_reported_once_and_later_checks_still_run() {
+        let temp = fixture();
+        fs::write(
+            temp.path().join("md/rules.md"),
+            ":::{req} ready\nReady.\n:::\n",
+        )
+        .unwrap();
+        // A `.git` file naming a missing Git directory makes the Git index
+        // unreadable, so reference discovery fails.
+        fs::write(
+            temp.path().join(".git"),
+            format!("gitdir: {}\n", temp.path().join("missing").display()),
+        )
+        .unwrap();
+        fs::write(temp.path().join("evidence/ghost.json"), "{").unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors;
+        let discovery = errors
+            .iter()
+            .filter(|error| error.starts_with("cannot discover reference sources:"))
+            .count();
+        assert_eq!(discovery, 1, "{errors:#?}");
+        let errors = errors.join("\n");
+        for detail in [
+            "evidence/rules.ready.json: missing for requirement",
+            "evidence/ghost.json: invalid JSON",
+        ] {
+            assert!(errors.contains(detail), "missing {detail:?} in:\n{errors}");
         }
     }
 

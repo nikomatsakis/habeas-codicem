@@ -126,7 +126,12 @@ This is a convention for every validation error; the requirement for each check
 states which conditions that check reports. A file that cannot be parsed, such as
 a malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:
 its error MAY report only the first parse or decoding problem in that file, and
-checks that do not depend on its contents MUST still run.
+checks that do not depend on its contents MUST still run. Code carries out this
+convention when it decides how validation proceeds after a failed check: it
+continues to later checks, items, or files, substitutes a fallback so later
+checks still run, or omits a second report of a failure another check already
+reports. Code that checks one field or value and reports its failures implements
+that check's requirement, not this convention.
 :::
 
 :::{req} diagnostics

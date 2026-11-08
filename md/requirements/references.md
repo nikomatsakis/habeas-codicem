@@ -198,9 +198,12 @@ words are separated by whitespace, the whitespace itself, including leading and
 trailing whitespace, is never hashed, and each word is encoded separately, so
 `ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments
 MUST be excluded, except comment kinds the profile includes; the Rust profile
-MUST include doc comments. For an included comment, only its text MUST be hashed,
-not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`,
-so reflowing it across more or fewer lines does not change the hash. A `line`
+MUST include doc comments. For an included comment, only its text and its
+profile's comment group MUST be hashed, not its delimiter tokens such as `//`,
+`///`, `//!`, `/*`, `*/`, or a leading `*`; the Rust profile's groups are inner
+and outer doc comments. The words of consecutive included comments of one group
+MUST be hashed as one ordered list, so reflowing them across more or fewer lines
+or comments does not change the hash, while moving text between groups does. A `line`
 node's hash MUST be computed by the same word rule over the line's text. A node's
 identity hash MUST be computed the same way but MUST also exclude its outline
 descendants and their attached siblings, so editing a descendant does not change

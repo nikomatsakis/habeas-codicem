@@ -1105,3 +1105,159 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
         }
     }
 }
+
+/// The structural hash of the node at `selector` in a source at `path`.
+// {test}`requirements.references.structural_hash`
+fn node_hash(path: &str, source: &str, selector: &str) -> String {
+    let outline = outline(path, source);
+    let index = outline
+        .resolve(selector)
+        .unwrap_or_else(|error| panic!("{path} {selector}: {error:?}"));
+    outline.nodes[index].structural_hash.clone()
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn comments_are_excluded_from_hashes_in_every_other_profile() {
+    // Each case: path, selector, original source, sources differing from it
+    // only in comments, and a source with a changed non-comment word.
+    let cases: &[(&str, &str, &str, &[&str], &str)] = &[
+        (
+            "a.py",
+            "def[f]",
+            "def f(x):\n    # note\n    return x  # trailing\n",
+            &[
+                "def f(x):\n    # other note\n    return x  # changed\n",
+                "def f(x):\n    return x\n",
+            ],
+            "def f(x):\n    # note\n    return y  # trailing\n",
+        ),
+        (
+            "a.ts",
+            "function[f]",
+            "function f() {\n  // note\n  return /* inline */ 1;\n}\n",
+            &[
+                "function f() {\n  // other note\n  return /* changed */ 1;\n}\n",
+                "function f() {\n  return 1;\n}\n",
+            ],
+            "function f() {\n  // note\n  return /* inline */ 2;\n}\n",
+        ),
+        (
+            "a.css",
+            "rule[a]",
+            "a { /* note */ color: red; }\n",
+            &[
+                "a { /* other note */ color: red; }\n",
+                "a { color: red; }\n",
+            ],
+            "a { /* note */ color: blue; }\n",
+        ),
+        (
+            "a.md",
+            "section[H]",
+            "# H\n\n<!-- note -->\n\ntext\n",
+            &["# H\n\n<!-- other note -->\n\ntext\n", "# H\n\ntext\n"],
+            "# H\n\n<!-- note -->\n\nprose\n",
+        ),
+        (
+            "a.toml",
+            "table[t]",
+            "[t]\n# note\na = 1 # trailing\n",
+            &["[t]\n# other note\na = 1 # changed\n", "[t]\na = 1\n"],
+            "[t]\n# note\na = 2 # trailing\n",
+        ),
+        (
+            "a.yml",
+            "pair[a]",
+            "a:\n  # note\n  b: 1 # trailing\n",
+            &["a:\n  # other note\n  b: 1 # changed\n", "a:\n  b: 1\n"],
+            "a:\n  # note\n  b: 2 # trailing\n",
+        ),
+    ];
+    for (path, selector, source, same, changed) in cases {
+        let original = node_hash(path, source, selector);
+        for edited in *same {
+            assert_eq!(
+                node_hash(path, edited, selector),
+                original,
+                "{path}: {edited}"
+            );
+        }
+        assert_ne!(
+            node_hash(path, changed, selector),
+            original,
+            "{path}: {changed}"
+        );
+    }
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn python_decorators_attach_to_the_decorated_definition_for_hashing() {
+    let source = "@cache\ndef f():\n    pass\n";
+    let original = node_hash("a.py", source, "def[f]");
+    assert_ne!(
+        node_hash("a.py", "@other\ndef f():\n    pass\n", "def[f]"),
+        original
+    );
+    assert_ne!(
+        node_hash("a.py", "def f():\n    pass\n", "def[f]"),
+        original
+    );
+    assert_eq!(
+        node_hash("a.py", "@cache\n\n\ndef f():\n  pass\n", "def[f]"),
+        original
+    );
+
+    // A method's decorator is in its class's structural hash but outside the
+    // class's identity hash.
+    let class = |source: &str| {
+        let outline = outline("a.py", source);
+        let node = &outline.nodes[outline.resolve("class[C]").unwrap()];
+        (node.structural_hash.clone(), node.identity_hash.clone())
+    };
+    let (structural, identity) = class("class C:\n    @cache\n    def m(self):\n        pass\n");
+    let (edited_structural, edited_identity) =
+        class("class C:\n    @other\n    def m(self):\n        pass\n");
+    assert_ne!(edited_structural, structural);
+    assert_eq!(edited_identity, identity);
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn plain_text_line_hashes_ignore_whitespace_but_not_word_breaks() {
+    let line = |source: &str| {
+        outline("notes.txt", source).nodes[1]
+            .structural_hash
+            .clone()
+    };
+    let original = line("two words\n");
+    assert_eq!(original, super::hash::line("two words"));
+    for edited in [
+        "  two words\n",
+        "two words  \n",
+        "two \t  words\n",
+        "\ttwo words \n",
+    ] {
+        assert_eq!(line(edited), original, "{edited:?}");
+    }
+    assert_ne!(line("twowords\n"), original);
+    assert_ne!(line("two word\n"), original);
+}
+
+// {test}`requirements.references.structural_hash`
+#[test]
+fn inner_and_outer_doc_comments_hash_in_separate_groups() {
+    let module = |source: &str| node_hash("src/lib.rs", source, "mod[m]");
+    // Moving a word from a nested item's outer doc comment into the module's
+    // adjacent inner doc comment changes the module's hash.
+    assert_ne!(
+        module("mod m {\n    //! one\n    /// two\n    fn f() {}\n}\n"),
+        module("mod m {\n    //! one two\n    fn f() {}\n}\n")
+    );
+    // Within one group, splitting words across comments keeps the hash.
+    assert_eq!(
+        module("mod m {\n    //! one\n    //! two\n    fn f() {}\n}\n"),
+        module("mod m {\n    //! one two\n    fn f() {}\n}\n")
+    );
+}

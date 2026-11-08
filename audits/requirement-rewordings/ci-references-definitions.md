@@ -332,3 +332,57 @@ single-subject command form `habeas author citations:<file>#<selector>` is not
 specified by this requirement or by `requirements.authoring.invocation`. ...
 This user-visible CLI behavior is therefore not backed by any requirement
 text.").
+
+## requirements.ci.errors (marking scope)
+
+Old (end of requirement):
+
+> ... its error MAY report only the first parse or decoding problem in that file, and checks that do not depend on its contents MUST still run.
+
+New (sentences appended):
+
+> Code carries out this convention when it decides how validation proceeds after a failed check: it continues to later checks, items, or files, substitutes a fallback so later checks still run, or omits a second report of a failure another check already reports. Code that checks one field or value and reports its failures implements that check's requirement, not this convention.
+
+Reason: the requirement is a convention for every validation error, and
+\{cite}`requirements.references.targets` says such a convention is implemented
+by the source that carries it out, but did not say which helpers along the way
+count. Existing `{impl}` marks covered some report-and-continue helpers
+(`book_source_dir`, `DiscoverySources::load`, `files_with_extension`) but not
+others, so a reviewer found the marking inconsistent. The new sentences give the
+test the marks now follow. Under it, `discovered_files`, `citations::validate`,
+`validate_input`, `validate_outline_input`, `validate_resolved_input`,
+`validate_committed_credentials` and `DiscoverySources::walk` were marked; leaf
+field checks (`check_keys`, `string_field`, `array_field`, `text_field`) were
+not. `parse_citation` was changed to check every field instead of stopping at
+the first malformed one. A new test,
+`git_index_failure_is_reported_once_and_later_checks_still_run`, covers the
+Git-index failure path.
+
+Prompted by: `evidence/requirements.ci.errors.json` ("`discovered_files` ...
+is marked only `references.targets`, not `ci.errors` ... The `ci.errors` marks
+are applied inconsistently across the code that implements the convention ...
+No test for the Git-index failure path.").
+
+## requirements.references.structural_hash (comment groups)
+
+Old:
+
+> For an included comment, only its text MUST be hashed, not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`, so reflowing it across more or fewer lines does not change the hash.
+
+New:
+
+> For an included comment, only its text and its profile's comment group MUST be hashed, not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`; the Rust profile's groups are inner and outer doc comments. The words of consecutive included comments of one group MUST be hashed as one ordered list, so reflowing them across more or fewer lines or comments does not change the hash, while moving text between groups does.
+
+Reason: `Encoder::prose` tags each run of comment words with a group, and
+`rust::doc_prose` picks the inner or outer group with
+`rust::is_inner_doc_comment`. Without the group, moving words from a nested
+item's `///` comment into its module's adjacent `//!` comment would leave the
+module's hash unchanged, so the split is intended, but the requirement did not
+state it. `is_inner_doc_comment` is now marked for this requirement, and the new
+test `inner_and_outer_doc_comments_hash_in_separate_groups` pins the behaviour.
+The summary in `md/reference.md` was updated to match. In the same change, tests
+were added for comment exclusion in the Python, TypeScript, CSS, Markdown, TOML
+and YAML profiles, for Python decorator attachment, and for whitespace in
+plain-text `line` hashes.
+
+Prompted by: `evidence/requirements.references.structural_hash.json` ("`rust::is_inner_doc_comment` ... carries only an `outline_comments` impl marker, not `structural_hash` ... The `inner_doc_comment` / `outer_doc_comment` group split also goes beyond what the requirement states.").

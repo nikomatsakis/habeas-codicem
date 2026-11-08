@@ -324,6 +324,7 @@ impl DiscoverySources {
     /// Lists every file outside Git, skipping excluded and disallowed
     /// directories without descending into them.
     // {impl}`requirements.references.targets`
+    // {impl}`requirements.ci.errors`
     fn walk(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let root = &self.root;
         let label = |path: &Path| {
