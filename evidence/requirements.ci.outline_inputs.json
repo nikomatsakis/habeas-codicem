@@ -1,7 +1,7 @@
 {
   "requirement": "For an outline input, Habeas MUST parse `file` with its language's grammar under\n{cite}`requirements.references.outlines` and resolve `item` to exactly one\noutline node under {cite}`requirements.references.outline_selectors`. It MUST\ncompare `hash` with the node's current structural hash under\n{cite}`requirements.references.structural_hash`. It MUST derive the node's\ninclusive line range, including attached comments and attributes, during\nvalidation for display and reference coverage. Moving the node, editing other\nnodes, or editing comments its profile does not hash MUST NOT invalidate the\ninput. Habeas MUST report a missing file, unsupported language, parse failure,\ninvalid or ambiguous selector, or changed hash.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation and the tests exercise the main success and failure paths.\n\n**Implementation**\n- **Parse and resolve.**\n  - `OutlineCache::parse` (`src/inputs.rs`) reads the file through the containment and allow/disallow check.\n  - It parses the file with `outline::parse`, which picks the profile by language, so a syntax error fails with the first-error line. `check_errors` in `src/outline/mod.rs` reports that line.\n  - `ParsedSource::resolve` resolves `item` to exactly one node. It reports an invalid selector, an ambiguous selector (\"add a #N disambiguator\"), or no match as separate errors.\n- **Hash comparison.**\n  - `InputSelector::resolve` returns the node's `structural_hash`.\n  - `validate_outline_input` (`src/evidence.rs`) rejects unexpected or missing fields and a malformed hash. It then compares the recorded hash with the current one.\n  - A mismatch yields \"outline input changed: file selector (now lines a-b) no longer has the recorded hash\".\n- **Line range.**\n  - `ParsedSource::node_range` and `Outline::node_lines` derive the inclusive range and text from the outline node. The node's range already includes attached comments and attributes.\n  - `index.rs::render_input` uses the range for display.\n  - The anchor coverage check uses the same resolved ranges.\n- **Stability.** Inputs are recorded as `{file, item, hash}` only (`to_input`, `outline_input`), with no line numbers. The hash is the structural hash, which ignores unhashed comments, so moves, edits to other nodes, and edits to unhashed comments leave an input valid.\n- **Missing file and unsupported language.**\n  - A missing, unreadable or denied file is reported by `read_project_file`.\n  - The outline requirement gives every non-supported text file a plain-text profile, so there is no separate \"unsupported language\" case. A non-UTF-8 file is reported as \"cannot read\".\n- **Authoring side.** `read_lines`, `record_inputs` and `outline_inputs_for_lines` produce and record the same outline inputs for the authoring tool.\n\n**Tests**\n- `outline_inputs_survive_moves_and_unhashed_comments_but_not_edits` (`tests/evidence_boundaries.rs`) covers these cases:\n  - Moving nodes and lines, and editing unhashed comments, keep the inputs valid.\n  - Editing code or a doc comment makes the input stale, with the file, selector and current range named (1-2 and 4-6, which includes the attached comments).\n  - An edited plain-text line no longer matches any node.\n  - A missing selector, an ambiguous selector (`fn[dup]`), an invalid selector, a bad hash format, a missing file, a stale-format field, and a parse failure in `broken.rs` each produce their error.\n- `collects_missing_orphan_format_false_and_changed_line_errors` (`src/evidence.rs`) checks the root-node hash mismatch message and the \"no outline node matches\" message.\n- `selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor` covers reference coverage through ranges.\n- `line_range_reads_record_the_innermost_covering_nodes` covers the authoring path.\n- The external-path, symlink and `fixme_does_not_hide_stale_inputs…` tests cover staleness, containment and the error surface.\n\n**Remaining observations**\n- There is no separate test for a non-UTF-8 file or for a parse failure in a non-Rust language.\n- There are no acknowledged FIXMEs, and I found no unmarked implementation of this requirement.",
+  "rationale": "**Verdict:** the sources satisfy `requirements.ci.outline_inputs`. The implementation covers every obligation and the tests cover the main cases. I did not run the tests; this judgment rests on reading the code and test assertions.\n\n**Implementation**\n- **Validation entry:** `validate_input` in `src/evidence.rs` routes an input that is not a definition or requirements input to `validate_outline_input`. That function accepts exactly `file`, `item` and `hash`, so extra fields such as `text` or `line_start` are rejected. It requires a nonempty `file`, a string `item` and a lowercase SHA-256 `hash`.\n- **Parse and resolve:** `InputSelector::resolve` calls `OutlineCache::parse`. That calls `read_project_file`, which checks containment and reads the file, then calls `outline::parse`. Parse failures are reported as `\"<file>: cannot parse <profile> source: …\"`. `outline::check_errors` finds the first syntax error and its line.\n- **Selector errors:** `ParsedSource::resolve` maps the outline resolver's results to three distinct errors: an invalid selector, an ambiguous selector that needs a `#N` disambiguator, and no matching node. An empty `item` selects the root.\n- **Missing file:** a missing or unreadable file comes back as a `cannot open`/`cannot read` error.\n- **Unsupported language:** the plain-text profile handles every non-grammar file, so no file extension is unsupported. A non-UTF-8 file is reported by `read_project_file` as `cannot read`.\n- **Hash comparison:** `validate_outline_input` compares the recorded `hash` with the node's current `structural_hash`. A mismatch reports file, selector (or `<root>`) and current line range: `outline input changed: … (now lines a-b) no longer has the recorded hash`.\n- **Line range:** `node_range` and `node_lines` derive the inclusive range from the outline node's `line_start` and `line_end`. Because the range comes from the node itself, it includes attached comments and attributes.\n- **Stability under edits:** the hash is a node-local structural hash and the selector contains no line numbers. Moving a node, editing other nodes, or editing unhashed comments therefore leaves the input valid.\n- **Related code:** `outline_input`, `outline_inputs_for_lines`, `to_input`, the authoring `read_lines` and `record_inputs`, and the index `render_input` and `InputLocation::resolve` are all marked `{impl}`. They record only `{file, item, hash}` and display the range and a stale warning. I found no unmarked implementing code and no extra behavior that other definitions do not cover.\n\n**Tests**\n- `tests/evidence_boundaries.rs::outline_inputs_survive_moves_and_unhashed_comments_but_not_edits` is the main test.\n  - Moving nodes and lines, reflowing code and editing a non-doc comment leave the inputs valid.\n  - Editing code or a doc comment makes the input stale. The errors name the file and selector with the line ranges `1-2` and `4-6`, which confirms the attached comment lines are in the range.\n  - Other inputs are unaffected.\n  - An edited plain-text line no longer resolves.\n  - It also covers a missing node, an ambiguous selector (`fn[dup]`), an invalid selector (`fn[unclosed`), a bad hash format, a missing file, a parse failure (`src/broken.rs`), and unexpected or extra fields.\n- `src/evidence.rs` tests cover a valid root input, a root-hash mismatch reporting \"now lines 1-2\", the field errors, and a missing node.\n- Another `src/evidence.rs` test covers selector anchors being covered by an input that selects the node or an ancestor.\n- The `tests/evidence_boundaries.rs` tests for symlinks, external and Cargo-generated outputs, and disallow rules confirm that freshness (`outline input changed`) is checked for externally allowed files too.\n- `tests/outcomes.rs` confirms a stale input is still reported when a FIXME is present.\n- `src/authoring/tools.rs` tests line-range reads that produce outline inputs recording only the selector and hash.\n\n**Gaps:** none worth failing on. There is no dedicated test for a non-UTF-8 file, but the plain-text profile makes the \"unsupported language\" case moot.",
   "references": "a01ac2367b689408ecd5e6902c4ccaf6980b3a737883aea393c1585e9bc50484",
   "inputs": [
     {
@@ -261,69 +261,9 @@
       "hash": "9c8a9dcfcf208a2befb8dca8b48b8e0b42b78f6af37133dd329d35e1c1101011"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[tracked_sources]",
-      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[generated_roots]",
-      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/use@a0259f98c77e",
-      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[git]",
-      "hash": "026f1a1f4e69b5a2aa50b8ca4715b5028f15bf0501301d92ada0bcfba12026fb"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[nested_project_uses_only_its_part_of_the_git_index]",
-      "hash": "dea11d109c0202e1b5b6a7f89fc5e0b4864ee3a773393d4d2cb7f52f55a48595"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]",
-      "hash": "f4523290853d623e10ee05ed1a8cd475df3c2cf9bc48cf8432bd63cf131eea3c"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[untracked_diagnostics_name_git_add_and_an_allow_rule]",
-      "hash": "2676befc3221e3f4f737d578b1d19399bc5cff7888c411be92d8627359b73e0e"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[requests_through_symlinks_leaving_the_project_are_denials]",
-      "hash": "dbbce2b40958f4627e7ee64bb6fbca934f818daae21d35bb92b31e37f0ae0694"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
-      "hash": "f82e8f406792901475f63965518987bf91583e36486e9491ae3bf7af471c127e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "747c8b1b4ad7f80254ca27080bf0b199c6ef1cf0fe663fe6ea44f45765578a02"
     },
     {
       "file": "src/inputs.rs",
@@ -339,26 +279,6 @@
       "file": "src/inputs.rs",
       "item": "fn[read_project_file]",
       "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
-    },
-    {
-      "file": "src/outline/selector.rs",
-      "item": "fn[decode_name]",
-      "hash": "64998f3fae4a860923e8f05b291a5375ff695a049265667b946329a01dff8ed0"
-    },
-    {
-      "file": "src/outline/selector.rs",
-      "item": "enum[Label]",
-      "hash": "d341c47ec35ef3124cb0485ed6ede25a67e92447c0c4b962540f349f4d212cf2"
-    },
-    {
-      "file": "src/outline/selector.rs",
-      "item": "struct[Segment]",
-      "hash": "c8db69fb4dfaef4d441dd05412e5f723af4204f00933c047b78ec940c2031511"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[run]",
-      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
     }
   ]
 }

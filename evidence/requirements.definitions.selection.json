@@ -1,7 +1,7 @@
 {
   "requirement": "A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.",
   "determination": true,
-  "rationale": "**Judgment: the implementation and tests satisfy `requirements.definitions.selection`.**\n\n**Implementation**\n- **Selection excludes named definitions.** `InputSelector::resolve` for `Requirements` (src/inputs.rs) skips every `DefinitionKind::Term`. It matches the rest with `definition_glob::matches`, so a full name without `*` selects exactly that definition. An empty match set is an error: \"matches no requirement or example\".\n- **Same rule on every selection path.**\n  - `source_input` (src/authoring/inputs.rs) applies the same Term filter when it checks read access.\n  - `status_markdown_with_options` and `info_markdown` (src/commands.rs) skip Terms and report \"no definitions match\" when nothing is left.\n  - `add_input` and `update_inputs` (src/add_input.rs) reach the same `resolve`.\n  - `validate_resolved_input` (src/evidence.rs) re-resolves recorded inputs through it, so validation applies it too.\n  - `preprocess_book` is marked `{impl}`. Its book rendering keeps Terms out of the ordered list of requirements and examples (`order`), so they never appear as requirements or examples.\n- **Referenced definitions are captured as separate inputs.**\n  - `terms::direct_references` scans the bodies of the selected `Requirements` text for `{term}` references. It also scans the subject text, definition inputs and outline inputs.\n  - `close_dependencies` expands the references transitively to a fixed point.\n  - `dependencies` returns the resulting set.\n  - `update_inputs` adds each one as its own `Definition` input, whether or not its name matches the selection glob.\n  - `definition_inputs` does the same for authoring.\n  - `validate_dependencies` requires exactly one definition input per dependency.\n- **A shared name prefix is not a dependency.** Dependencies come only from actual `{term}` references in the text. Nothing derives them from glob or prefix matches.\n- **Marking.** All the relevant code carries `{impl}` markers. `additional_definitions` is unmarked for this requirement but delegates to the marked `definition_inputs`. The `references` tool (src/authoring/tools.rs) also filters out Terms. It handles a CLI-style discovery selection rather than a \"requirements input\", and it is marked for `definition_globs`. I found no unmarked behavior that this requirement specifies, and no behavior in the `{impl}` code outside this requirement and the other requirements it implements.\n\n**Tests**\n- `selections_match_requirements_and_examples_but_never_named_definitions` (tests/definitions.rs):\n  - The glob `rules.*` matches the requirement and the example but not the same-prefix definition `rules.used`.\n  - `rules.used` is not captured as a dependency.\n  - `add_input` with the exact name of a definition fails with \"matches no requirement or example\".\n  - `habeas status rules.*` and `habeas info rules.*` list the requirement and example but not the definition.\n  - `habeas info rules.used` fails.\n- `globs_exclude_terms_but_capture_referenced_terms_outside_the_glob` (tests/definitions.rs):\n  - The recorded input's text contains no `{definition}` block.\n  - Inputs after the first are exactly `glossary.a`, `glossary.b` (transitive) and `rules.used`, the referenced definitions, including one outside the `rules.*` glob.\n  - `rules.unrelated`, which shares the prefix but is not referenced, is absent from the inputs and from validation errors.\n- `requirements_reads_select_requirements_and_examples_but_not_definitions` (src/authoring/tools.rs): the `habeas` read tool returns matches `[requirements.case, requirements.ready]`, with no definition among them. Reading a definition by its exact name through the `requirements` form fails.\n\nThese cover the boundaries: glob versus exact name, prefix-sharing definitions, transitive dependencies, dependencies outside the glob, and the failure case of an empty selection. No gaps are acknowledged by FIXME.",
+  "rationale": "**Verdict:** `requirements.definitions.selection` is implemented and tested, and I found no gaps.\n\n**What the requirement says.** A definition selection in a requirements input must:\n1. select only requirements and named examples, never named definitions;\n2. capture definitions referenced by the selected texts as separate definition inputs, whether or not their names match the selection;\n3. not treat a definition as a dependency just because its name shares the selection's prefix.\n\n**Implementation**\n- **Exclusion of named definitions.**\n  - `InputSelector::resolve` (`src/inputs.rs`, the `Requirements` arm) skips every `DefinitionKind::Term`.\n  - It errors with \"matches no requirement or example\" when nothing remains.\n  - `source_input` (`src/authoring/inputs.rs`) applies the same filter when checking read permissions for authoring inputs.\n  - `status_markdown_with_options` and `info_markdown` (`src/commands.rs`) skip terms and report no-match errors, so the CLI selection paths follow the same rule.\n- **Separate capture of referenced definitions.**\n  - `terms::direct_references` scans the subject text and each input. For a `Requirements` input it scans only the bodies of the selected declarations, not the glob.\n  - `close_dependencies` then expands those references to a fixed point, so only definitions that are actually referenced are returned. The glob never adds a dependency.\n  - Three callers feed this result into separate definition inputs:\n    - `update_inputs` (`src/add_input.rs`) writes each one as its own `definition` input.\n    - `definition_inputs` (`src/authoring/inputs.rs`) supplies them to the model.\n    - `validate_dependencies` (`src/terms.rs`) requires exactly one definition input per required name.\n- **No prefix-based dependency.** No code derives a dependency from name matching. `preprocess_book` only classifies blocks; the preprocessor does not itself select definitions.\n- **Marking.**\n  - The `references` tool in `src/authoring/tools.rs` also excludes terms. It is marked only `definition_globs` and `reference_index`, which is appropriate: it is not a requirements input, and `definition_globs` requires every selection to match requirements and examples.\n  - Other term filters (`select_subjects`, `prepare`, `collect_definitions`) are not selection behavior.\n  - The `{impl}` markers on the status and info paths go beyond the requirement's \"requirements input\" wording, but the behavior they carry is the same rule.\n\n**Tests**\n- `tests/definitions.rs::globs_exclude_terms_but_capture_referenced_terms_outside_the_glob`:\n  - `rules.*` matches the requirement only.\n  - The selected text contains no definition.\n  - `glossary.a`, its dependency `glossary.b`, and `rules.used` are captured as separate inputs. `rules.used` matches the glob and is referenced.\n  - `rules.unrelated` shares the prefix, is not referenced, and is not captured.\n  - Validation reports no error mentioning `rules.unrelated`.\n- `tests/definitions.rs::selections_match_requirements_and_examples_but_never_named_definitions`:\n  - The glob matches the requirement and the example but not the definition.\n  - An exact definition name used with `add_input` fails with \"matches no requirement or example\".\n  - `habeas status` and `habeas info` with `rules.*` list the requirement and example but not the definition.\n  - `habeas info rules.used` fails.\n- `src/authoring/tools.rs::requirements_reads_select_requirements_and_examples_but_not_definitions`: the authoring `habeas` read tool returns the requirement and example for `requirements.*` with an empty `definitions` list, and rejects an exact definition name.\n\nTogether these cover the positive case, the exclusion boundary, an exact-name selection, a referenced definition matching the glob, a referenced definition outside the glob, an unreferenced prefix-sharing definition, and the CLI and authoring paths.",
   "references": "2f245a0a2a79fa55401b14b2ff61f57c0953d41d08e781ce65ef052194505e72",
   "inputs": [
     {
@@ -43,7 +43,7 @@
     {
       "file": "src/commands.rs",
       "item": "fn[status_markdown_with_options]",
-      "hash": "facde8e858f5f27d750f03ba77521a316ee63e40fbfdb0d224af3b9dc39dbf50"
+      "hash": "7c840acc6555a9ee932033adea2b093e737b1d56164c4d5c827bb14e52696b74"
     },
     {
       "file": "src/commands.rs",
@@ -116,7 +116,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[references]",
-      "hash": "825a2d30da5e68d6f17ede347d96ac598a7f3b05ff6d6f4437590c551a75fd9b"
+      "hash": "ad06e3cf141924e5418394d409c18d51b5628a36a0865c4db89d7ef4bbc1b391"
     },
     {
       "file": "src/citations.rs",
@@ -126,7 +126,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "98375baafd9342b9c365f42cd9ded9d651ad862d21ca1f14e0eff93b3ef433df"
+      "hash": "e348793889dd657daad2ab52847980358629480e82362f28f7b3a782f1db1735"
     },
     {
       "file": "src/evidence.rs",
@@ -184,54 +184,19 @@
       "hash": "7505912bdea9e2777bb6ca92e2ed4255ac0e6322bb358a0e33dcd732b900ca29"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "fn[add_input]",
-      "hash": "9cc12d878739427b06776d5746c85e1ce6166526a9105238f416571df68bc1bd"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "fn[selectors_for_mode]",
-      "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "ef98601c16475681510bfef02215408a4462718be27f28c44e7cd7623573b6ef"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_citation]",
-      "hash": "da1ac8c3f2775d444caef1f575a986564bbcd5936b7770e5e45248b423b2b9b8"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[generated_evidence_selector]",
-      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[read]",
-      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[validate_review]",
-      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
     },
     {
       "file": "src/evidence.rs",
-      "item": "impl[Anchor]/fn[resolve]",
-      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
+      "item": "fn[example_references_requirement]",
+      "hash": "cd0db348290f0a4c14fd0a8bbb4ed9184afdadf33154ce507680fb5844dc140f"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[files_with_extension]",
+      "hash": "4fab710823f8c96ba4bf9d890172091a4c3001a3c726298c099768d7c498073e"
     },
     {
       "file": "src/evidence.rs",
@@ -250,8 +215,13 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[evidence_input_ranges]",
-      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+      "item": "fn[reference_set_digest]",
+      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
     },
     {
       "file": "src/evidence.rs",
@@ -260,163 +230,97 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
+      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
+      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[compact_diffs_elide_common_lines_and_truncate_long_runs]",
+      "hash": "5c37ad2b6be228e17ddeba522a492a9c4f46084c64740eca038a43a07e9ea6d7"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirement_bodies_are_compared_without_surrounding_whitespace]",
+      "hash": "e113eb48763e0c67a3bbc7a55fb0b1a678848c9d22d2bd5af76d94377cbb9f6b"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
+      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[unsupported_and_empty_options_are_validation_errors]",
+      "hash": "f82e8f406792901475f63965518987bf91583e36486e9491ae3bf7af471c127e"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
       "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
     },
     {
-      "file": "src/index.rs",
-      "item": "impl[DefinitionEdges]/fn[current]",
-      "hash": "702526d29352d4816fa00ddc14bed815cf62f7adc34830949ca206c0b29c15dc"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Checking%20and%20viewing]",
+      "hash": "2e332d8291bfe9fe2050411089c1ae0e55a76c2efa3e08d8fdc5008cb529728b"
     },
     {
-      "file": "src/index.rs",
-      "item": "impl[DefinitionEdges]/fn[group]",
-      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Look%20up%20definitions%20and%20references:%20`references`]",
+      "hash": "1e11080443a7dd12e2a2fcbf385420b5fd90042d73dfea0b03387b06c6024ac5"
     },
     {
-      "file": "src/index.rs",
-      "item": "fn[render_detail_sections]",
-      "hash": "ff6dc7ba5786affd0d7cc445b505f2d3b8c74869f73da49d559240c9161789ff"
+      "file": "md/requirements/ci.md",
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "e5de551ab6804186da247de37ae808e023c84b142803f9241241e8b042aef559"
     },
     {
-      "file": "src/index.rs",
-      "item": "impl[InputLocation]/fn[resolve]",
-      "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
+      "file": "md/requirements/cli.md",
+      "item": "section[Command-line%20interface]",
+      "hash": "e9acb45ecd4989399ae45f43b119199c070913245feb392a2b1d1b12f3ab7619"
     },
     {
-      "file": "src/index.rs",
-      "item": "fn[render_input]",
-      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+      "file": "md/requirements/definitions.md",
+      "item": "section[Named%20definitions]",
+      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "enum[InputSelector]",
-      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]",
+      "hash": "9507961b2432876cb366c003467c4b7fd040b1ea286fdbefe8a3769be1e1b98e"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "struct[SourceRange]",
-      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Outlines]",
+      "hash": "80f0e04a167277add8bf139cf1fb69dfb86907523e39504ef7455791f0e31e63"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]/fn[resolve]",
-      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[References%20as%20authoring%20inputs]",
+      "hash": "129b55e097d757c1290d72bb678ff4f026ad559804142069bb7500986fe3cc22"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[from_input]",
-      "hash": "36656c01e7424e4090153587c050dfd41868a8f14b91f908649232e20450cb22"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_input]",
-      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[outline_input]",
-      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[resolve]",
-      "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[rust_selectors_follow_syntactic_ancestry]",
-      "hash": "04f214ddc37cc19975a1c3b3e9b37cf42537f2109fd9fcab35e139d561cfa1b7"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[identity_hashes_include_own_attached_siblings_but_not_descendants]",
-      "hash": "32ee4fde86b6940b0d7790a0f3e874d45cf36ffde804f676a6f159d689eb227d"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[anonymous_selectors_use_identity_hashes]",
-      "hash": "3b8ce2033af0eabfb93fa3242d82e70aeb880f0507210431d1b3f6c345f46731"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
-      "hash": "9542cefc7e015427e3b771eea77d2244ed2232e0bc3ea41296f3a63f1c479e63"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[run_hash]",
-      "hash": "738e876d4fd5ac86eeb171d1a46af2eb5d21389780a5042cc604170f4c9aaa7b"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[prose_words_are_encoded_separately]",
-      "hash": "155e51164266d2b832a0f570ddff8156b862cddcbf1ce6e1563d7b8a48ae4e8d"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[string_literals_hash_as_words]",
-      "hash": "ae134a1f513cece94e735d05482ae211853033371f38caa75e514fe5299ed4e3"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[reflowing_markdown_paragraphs_keeps_the_hash]",
-      "hash": "4c09d263039981e32ad03ebf535a296048ba27b182c8f007319a3c722d1c9618"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[reflowing_inner_and_block_doc_comments_keeps_the_hash]",
-      "hash": "4792c243f4cd4aeb1d7e788461afc17bc86756bc6c86b21841248baa7ba488e7"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[comment_runs_belong_to_the_next_node_or_their_container]",
-      "hash": "666d5a3c362eb4b50fe21daa0f83f84623a675bdea49a445f333947ab1bdc0f1"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[top_level_comment_with_nothing_after_belongs_to_the_root]",
-      "hash": "86d11e435d42687449a96df24c542449061f2ebf6c6621fee158877e10c5fad9"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[plain_text_lines_are_interchangeable_anonymous_nodes]",
-      "hash": "903bba444617c36a46085e4c98caea488135be8d26d47516ab6f808b389a2863"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[markdown_profile_nests_sections_by_heading]",
-      "hash": "00f45167f36261d4e1d67b785813d350bf2e2a84f5eb81a607a198e98255cbeb"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root]",
-      "hash": "1a4ab867146ac9c8828af6bda2453ed75b32c130c01afdc0f1bf964815bd4cc1"
-    },
-    {
-      "file": "src/outline/tests.rs",
-      "item": "fn[duplicate_names_are_numbered_in_source_order_without_line_numbers]",
-      "hash": "16214a4586dd5b69987d0fa62070cb81fa6be9605dacaab8246470fe37fa7a49"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[record_inputs]",
-      "hash": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_selector]",
-      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[additional_definitions]",
-      "hash": "e3388ed319591fc0df5b8e46fb83dff637a95befa4eff8d8e597d4410c6b963c"
+      "definition": "requirements.ci.validation_error",
+      "text": [
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
+      ]
     }
   ]
 }

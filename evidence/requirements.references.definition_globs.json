@@ -1,7 +1,7 @@
 {
   "requirement": "A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. Every definition selection MUST use this matching rule, including requirements evidence inputs, CLI definition filters, and the authoring `references` tool, and MUST match against both requirements and named examples.",
   "determination": true,
-  "rationale": "**Implementation**\n\n- `src/definition_glob.rs` `matches` is a dynamic-programming matcher over whole names. `*` matches zero or more bytes, including dots. Every other byte must equal the name byte. The result is read at the end of the name, so the match is anchored at both ends and a glob matches a complete full name.\n- `validate` rejects an empty glob. It also rejects any character outside the valid name characters (ASCII letters, digits, `_`, `-`, `.`) plus `*`. This agrees with `valid_name` in `src/lib.rs`, so \"all other valid name characters match literally\" holds, and `[` or spaces are never treated as glob syntax.\n- Every site that selects definitions uses this one matcher and excludes `Term` definitions, so selections span requirements and named examples:\n  - `src/inputs.rs` `InputSelector::resolve` for requirements inputs. It validates, matches, and errors when nothing matches. `evidence.rs` validation and `add-input` reach it through `resolve`.\n  - `src/authoring/inputs.rs` `source_input`, the authoring `habeas` tool's requirements form. It uses the matcher for the access check and then `resolve`, which validates.\n  - `src/authoring/tools.rs` `references`. It validates, matches the definitions, the reference sites, and the anchors, and errors when the selection matches nothing.\n  - `src/commands.rs` `status_markdown_with_options` and `info_markdown` for the CLI filters. Both validate first, then filter with the matcher.\n- Each of these functions carries an `{impl}` marker for this requirement. I found no other glob-matching code in `src` that lacks one. The extra behavior in these functions (no-match errors, ordering) is specified by other requirements they also mark, such as `definitions.selection`, `ci.requirements_inputs`, and `authoring.reference_index`.\n\n**Tests**\n\n- The unit test `wildcard_crosses_dot_segments_and_matches_the_whole_name` covers:\n  - `*` crossing dots (`foo.*.bar` matching `foo.x.y.bar`).\n  - Anchoring at the start (`prefix.foo.x.bar` is rejected).\n  - A trailing `*` requiring a separator (`foo.bar.*` does not match `foo.bar`).\n  - Empty-glob rejection.\n  - Rejection of an invalid character (`foo[bar]`).\n- The evidence test `requirements_inputs_track_matched_declarations_in_full_name_order` covers example `definition_glob_cases`. It uses a requirement and a named example, checks full-name ordering, checks that an added match invalidates the input, and checks that a glob matching nothing is invalid.\n- `tests/commands.rs` covers the CLI filters:\n  - `commands_report_invalid_arguments_and_unmatched_selectors` checks that `[` is rejected by both `info` and `status`, that `nothing.*` reports \"no definitions match\", and that `requirements.*ready` matches both `requirements.ready` and `requirements.xready`. That last case exercises `*` matching zero characters and is also the substring-versus-whole-name boundary.\n  - The status tests with `rules.case`, `rules.unlinked` and `requirements.ready` check exact-name selections and scoping.\n- The authoring `references` tool's glob behavior has tests in `src/authoring/tools.rs`: `references_list_names_and_flattened_sites_without_recording_inputs` and `references_report_anchors_as_file_or_node_sites`. They use `requirements.*`, an exact name, `\"\"`, and `\"bad name\"`. These tests are marked for `authoring.reference_index` and `references.anchors`, not for this requirement. They still exercise the behavior, so the marking is a minor housekeeping point and I do not count it as a gap.\n\nI found no unacknowledged gaps, so the determination is true.",
+  "rationale": "**Judgment: the requirement is met.** The shared matcher implements the rule exactly. Every definition-selection path I found uses it. The tests cover the main points of the design space.\n\n**Implementation**\n- `src/definition_glob.rs` holds the single matcher and validator.\n  - `matches` is a dynamic-programming match over the whole name. `*` matches zero or more bytes, including dots, and every other byte must equal the name's byte. The match is anchored at both ends, so it matches a complete full name.\n  - `validate` rejects the empty glob. It also rejects any character outside the valid-name set plus `*`: ASCII alphanumerics, `.`, `_` and `-`. That agrees with `valid_name` in `src/lib.rs`, so \"all other valid name characters match literally\" holds.\n- Each selection path validates, filters out terms, and matches with this one function. That covers both requirements and named examples.\n  - **Evidence inputs and `add-input --requirements`:** `InputSelector::resolve` (`src/inputs.rs`, `Requirements` arm) validates and matches. `validate_resolved_input` in `src/evidence.rs` calls it. It reports an error when nothing matches.\n  - **Authoring `habeas` tool and mandatory inputs:** `source_input` in `src/authoring/inputs.rs` applies the same matcher for access checks, then calls `resolve`, which validates.\n  - **CLI `status`:** `status_markdown_with_options` validates, matches, and returns an error if nothing matches.\n  - **CLI `info`:** `info_markdown` validates, matches, and returns an error if nothing matches.\n  - **Authoring `references` tool:** `references` in `src/authoring/tools.rs` validates, then uses the matcher for the definition list, the reference sites, and the anchors.\n- Code that passes a subject name as a selector uses an exact name. Name characters are matched literally, so this is consistent.\n- I found no `{impl}`-less code with its own glob logic, and no extra behaviour in the marked code beyond this requirement and the other requirements it is also marked for.\n\n**Tests**\n- The unit test `wildcard_crosses_dot_segments_and_matches_the_whole_name` in `src/definition_glob.rs` covers:\n  - `*` crossing dot segments (`foo.*.bar` matches `foo.x.y.bar`);\n  - anchoring (a prefixed name does not match);\n  - `foo.bar.*` not matching `foo.bar`;\n  - the empty glob being invalid;\n  - a bracketed glob being invalid.\n- `commands_report_invalid_arguments_and_unmatched_selectors` in `tests/commands.rs` covers:\n  - an invalid glob `[` being rejected by both `info` and `status`;\n  - unmatched globs failing;\n  - `requirements.*ready`, where `*` matches zero characters and also a non-empty run, matching both `requirements.ready` and `requirements.xready`.\n- `definition_glob_lists_a_requirement_and_an_example_in_info_and_status` (in `tests/commands.rs`, cited for the related CLI search requirement) shows a glob returning both a requirement and an example.\n- `requirements_inputs_track_matched_declarations_in_full_name_order` in `src/evidence.rs` covers evidence inputs. It has `*` crossing dots, a nested example matched together with a requirement, and a glob that matches nothing.\n- `references_list_names_and_flattened_sites_without_recording_inputs` in `src/authoring/tools.rs` covers the `references` tool. It tests `requirements.*` and rejects `\"\"`, `\"bad name\"` and a glob that matches nothing.\n- The status and verbose tests exercise glob scoping through the CLI.\n\n**Minor gaps, not enough to fail the subject**\n- There is no dedicated test of the empty or malformed glob through the evidence-input path. `resolve` calls `validate` unconditionally, and the unit test covers `validate` itself.\n- Leading and trailing `*` have no direct unit assertion. They are covered indirectly by `requirements.*`, `rules.*` and `foo.*`.",
   "references": "68bc1f3b56298f1e9ddb0a76d85acf729bb450e21baaf8f31b3f08101f8bbd24",
   "inputs": [
     {
@@ -23,12 +23,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[references]",
-      "hash": "825a2d30da5e68d6f17ede347d96ac598a7f3b05ff6d6f4437590c551a75fd9b"
+      "hash": "ad06e3cf141924e5418394d409c18d51b5628a36a0865c4db89d7ef4bbc1b391"
     },
     {
       "file": "src/commands.rs",
       "item": "fn[status_markdown_with_options]",
-      "hash": "facde8e858f5f27d750f03ba77521a316ee63e40fbfdb0d224af3b9dc39dbf50"
+      "hash": "7c840acc6555a9ee932033adea2b093e737b1d56164c4d5c827bb14e52696b74"
     },
     {
       "file": "src/commands.rs",
@@ -126,6 +126,346 @@
       "hash": "457d88e87ea6e8701cecd57a6df44b7064f6c55c32081a6d3cd82ab95ad780bc"
     },
     {
+      "file": "src/add_input.rs",
+      "item": "fn[selectors_for_mode]",
+      "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[add_definition_inputs]",
+      "hash": "33aa1e4cace467d8d1511df506c97eaeb407f8bc776d6a4f843dd3fb56f38d89"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_citation]",
+      "hash": "da1ac8c3f2775d444caef1f575a986564bbcd5936b7770e5e45248b423b2b9b8"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "75fcd50d474e901c1fad0e540f035103e29f98a664b9329b70a5843917c9723f"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
+      "hash": "0c52830b423f401c96a00da36f12bc4109085ca4e58d26e68a6593f3be2ef698"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
+      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[citation_review_inputs_combine_item_declarations_terms_and_built_ins_once]",
+      "hash": "7e76d21e1bb882377df47473d9711573efb30a24787c42b38c6ed4419982e291"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[only_edges_leaving_the_subject_contribute_inputs]",
+      "hash": "5c0a6d854b289c25861e9d98f77e5f13ec5bd7583cfb574ca9c25ecd7ab82410"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
+      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
+      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
+      "hash": "093c6a6a626fb34de7209772edeb2ff1c84d48398b03bfcd04b863245a6ad272"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[requirements_reads_select_requirements_and_examples_but_not_definitions]",
+      "hash": "c3f94d4d5c2450f48fc8d520e85b25688406bd6f765dc7cfc84bc29182931041"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[habeas_tool_describes_its_argument_conventions_with_an_example_per_form]",
+      "hash": "3eec68e94859ed552ac6613755d4b27f29ea02406b53e3e8fa2903bcbd7e9191"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[prepared]",
+      "hash": "2f5ee5841328017a9014a674c7d6f031d32007daa3a487758b1e73b0fb43db6d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/builtins.rs",
+      "item": "fn[is_builtin_name]",
+      "hash": "765b9731b9e6db61899066f2ae07498584d648c07c0446c620b8f7c5b16969a1"
+    },
+    {
+      "file": "src/builtins.rs",
+      "item": "fn[builtin]",
+      "hash": "4ecb002a357c7b377fdecf6b1056cdab5b8c1e5151574807405bf6eab414924f"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate_review]",
+      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[validate]",
+      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]/fn[validate]",
+      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "ca008e63fdef9e70314dd40b9bd0e611918e0179ee41125bb36ec027fdd019a6"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[validate_name]",
+      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "use@18a4bb66fc2c",
+      "hash": "18a4bb66fc2c16a5afc36c64f161f7e40625c5fd41178a0cf9c2e534bcf53309"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "use@d34bb79f11fa",
+      "hash": "d34bb79f11fa91ff43df333fd09f08c055030852bcc4690bfdeddbdd36265b71"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[EvidenceReport]",
+      "hash": "47896ab52be57617950803d2e729ae51332c663fc16f075e6f139eb58a9b6e77"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "e348793889dd657daad2ab52847980358629480e82362f28f7b3a782f1db1735"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_input]",
+      "hash": "dbf082fb2c4015e45e3c9e8bc8b80a908ad74039f7b1b6c02ebcf102ba192a04"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
+      "hash": "5d0928cbdeb6b36d33988b6bfca1b888ee083a1856d238c6856a16344ef82cc1"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
+      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[invalid_full_names_from_chapter_paths_are_reported_and_not_defined]",
+      "hash": "e2fff805c66e6f492d56304ccbc6970051f932a8d4cba86cf0a4c76b1a8468fb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
+      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "struct[SourceFence]",
+      "hash": "10dc43ee2aabc3b91e68f84e93a24934da0069193a4d0de91cc229befcf9858f"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "fn[opening_fence]",
+      "hash": "93c466042065e60b4601f541d47367193425fdc3d57edc3a8c09d4b473b190a2"
+    },
+    {
+      "file": "src/fenced.rs",
+      "item": "mod[tests]/fn[opening_fences_take_a_role_and_one_valid_or_built_in_name]",
+      "hash": "6843c6b45fb100a9da32f407332b8b2aba1fe3fcfe1625dc289eb38302c0277c"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]/fn[group]",
+      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
+      "hash": "ce8b8ca782707df7e432b68042d6224595de1cfacffc8a47446ca3eb126200db"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
+      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
+      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[SourceRange]",
+      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[from_input]",
+      "hash": "36656c01e7424e4090153587c050dfd41868a8f14b91f908649232e20450cb22"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_input]",
+      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[preprocess_book]",
+      "hash": "84243bdbea511c897195278065bd95f1040174ec4c2e2044e3f6d8af386d300d"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_definitions]",
+      "hash": "d6f8128ea3f877ee9614d552540b6574455baf37a11dd435f271ade95650ba00"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[definition_blocks]",
+      "hash": "2b0bdec0c2df2d264c66f04e02823f8678591d3528764db7aad61bfdde467717"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[reference_roles]",
+      "hash": "8781f3d9271adea49e70f3eea16268d268d67d0ced851435be661de3a7fc794c"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[is_escaped]",
+      "hash": "b5579d1a216565d53f327f68812bb121cabe82deac40cd008ae2a7d5f68ef6bd"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[valid_name]",
+      "hash": "d3113ad1c2701c9b8d3b9b044da3c1fc8d798d3c5628bc382138925bbc970a6e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked]",
+      "hash": "601fca0ab91d44900d17428dcb0453ac84221ab6cae3518c4d3297409e3288da"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[anchor_options_are_metadata_not_body_text]",
+      "hash": "59e1bd26b8fab0413f0e9c425b674daa01fe187bfe11035e5a7087228400ed94"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[chapter_path_prefixes_the_requirement_name]",
+      "hash": "b0fa7c20effd3d40786e299ed71bd9bee0c023ae4c97f1d179cac8b2de49c46e"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[code_examples_and_legacy_roles_remain_literal]",
+      "hash": "a3bdcf589dd175babcc140eba6ad5a136fe9deabe842f3e516755bd4868ca777"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[invalid_names_remain_literal]",
+      "hash": "6fa8e9e43955295ed3e02fc3eab6764fbc52e74ab922cc0b542ec3c847abde0b"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[chapters_with_invalid_namespaces_define_nothing_in_the_book]",
+      "hash": "3b32aabb528eb1f1ff24c864c2f3336ab11ccdd3278571e483cdd2759287fed8"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "mod[tests]/fn[colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal]",
+      "hash": "df470ba08a5001b10e0bd8410701af4d1a0e84370bff8ce8cdb4ccea3f3deff6"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[direct_references]",
+      "hash": "95af724648a6d7edc37e268e348db3c74fad4d48c0fcaabe85f24e9b511cf2f8"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[info_renders_exact_and_glob_matches_as_markdown_without_an_index]",
+      "hash": "ad225732d2ece2c8fd904dd848c3647bdc2285e0321478ca6c21691fd35cabc6"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_and_info_accept_a_definition_selection]",
+      "hash": "c5b67129dac964e55e3e2c039a73be46c0f38efac04ae648e904ea4136b0604c"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[definition_glob_lists_a_requirement_and_an_example_in_info_and_status]",
+      "hash": "25c2ca7929faa0157d323d4c6d891fc340bdab557d82c2c93d9405412ceb1c89"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[globs_exclude_terms_but_capture_referenced_terms_outside_the_glob]",
+      "hash": "d08988203be450c67ad8a7f362c87595e98d7cc3c6640f1eb0bf711af7a97e42"
+    },
+    {
+      "file": "tests/repository.rs",
+      "item": "fn[symposium_plugin_installs_the_cli_globally_for_its_session_start_hook]",
+      "hash": "effd870cb429be766cf75de51071916c4733ee9e7216e1e6b79ff6dfb2ce0aff"
+    },
+    {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
       "hash": "e763ebf7b5bb7b8902276ca55929483f5019a9aee24b8b2760a97354ef874af3"
@@ -137,70 +477,13 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[habeas_tool_describes_its_argument_conventions_with_an_example_per_form]",
-      "hash": "3eec68e94859ed552ac6613755d4b27f29ea02406b53e3e8fa2903bcbd7e9191"
+      "item": "mod[tests]/fn[references_report_only_sites_in_considered_sources]",
+      "hash": "39506aaaf845f3b90caf1c72af269bc45da9d896caf4d42f380b146f42bca526"
     },
     {
-      "file": "src/config.rs",
-      "item": "fn[validate_name]",
-      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[SourceLinks]/fn[from_config]",
-      "hash": "f49107c380bd028f7a82ff65620f161d69adbd4a768c7d0daf6334d2bf34b5f4"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[option_line]",
-      "hash": "5e4135e7c92fcfcb4c145c36dbb27c5ce491f47e55f23346ff491303c4c207a4"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[valid_name]",
-      "hash": "d3113ad1c2701c9b8d3b9b044da3c1fc8d798d3c5628bc382138925bbc970a6e"
-    },
-    {
-      "file": "src/outline/selector.rs",
-      "item": "fn[parse_segment]",
-      "hash": "72b5a839544efee8a56d3956beed5a94cf31e89f508edc009a0fb019ad81b938"
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]",
-      "hash": "e5de551ab6804186da247de37ae808e023c84b142803f9241241e8b042aef559"
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "5220d54dbeff94e65b4ecffc002e375e55418243d4bae0c8932373decb031c0e"
-    },
-    {
-      "definition": "requirements.ci.validation_error",
-      "text": [
-        ":::{definition} validation_error",
-        ":phrase: validation error",
-        "",
-        "One message in a repository validation report, describing a single failed check.",
-        "It begins with the affected evidence file, requirement, or source location, names",
-        "the failed check, and states the specific missing, invalid, or changed value,",
-        "with the expected value when available. It is concise because agents are its",
-        "primary readers.",
-        ":::"
-      ]
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[references_name_a_considered_source_that_cannot_be_read]",
+      "hash": "b0a7b69c07c1c2f6d0490f51192691e46980fe3ca6703c6f4b4dd3992a46efeb"
     }
   ]
 }

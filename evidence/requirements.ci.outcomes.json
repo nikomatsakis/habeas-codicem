@@ -1,7 +1,7 @@
 {
   "requirement": "A requirement or example judgment MUST use one of these outcomes, applying\n{cite}`requirements.ci.review_criteria`:\n\n- `true`: the sources support the subject and its testing obligations.\n- `false`: the sources do not support the subject, or information is missing,\n  and the gaps are not all explicitly acknowledged in source comments or tests.\n- `FIXME`: some aspects remain unmet or untested, and source comments or tests\n  explicitly acknowledge those gaps. The reviewer MUST explain the gaps and\n  their source locations in the rationale and record their issue references or\n  other identifying content from the inputs.\n\nThe JSON `determination` MUST be `true`, `false`, or an object containing exactly\n`\"FIXME\"` with a nonempty array of nonempty strings, such as\n`{\"FIXME\": [\"#125\", \"rust-lang/rust#123\"]}`. The expected source convention is\n`FIXME(issue-number)`, for example `FIXME(#125)` or\n`FIXME(rust-lang/rust#123)`. References MAY appear elsewhere in the comment or\ntest; the reviewer MUST recognize explicit acknowledgments without requiring\nthat spelling. When no issue reference is present, the strings MUST identify the\ndocumented gap using its source content. A FIXME judgment MUST be grounded in\nrecorded evidence inputs; a bare issue reference without an acknowledged gap\nMUST NOT suffice.",
   "determination": true,
-  "rationale": "## Judgment\n\n`requirements.ci.outcomes` is satisfied. It has two kinds of obligation: a machine-checkable shape for `determination`, and reviewer-facing guidance on when to choose each outcome. The code implements both, and the tests cover both. I found no acknowledged gaps, so no FIXME applies.\n\n## Implementation\n\n- **Outcome type and shape.**\n  - `src/judgment.rs`: `enum Judgment { True, False, Fixme(Vec<String>) }` is the three-outcome type.\n  - `Judgment::from_value` accepts exactly three forms. These are `true`, `false`, and an object with exactly one key, `FIXME`, whose value is a nonempty array of nonempty, non-blank strings.\n  - It rejects null, strings, arrays, `{}`, `{\"FIXME\": []}`, empty or blank entries, non-string entries, a non-array value, extra keys, and a lowercase `fixme` key.\n  - `Judgment::to_value` writes the same shapes back.\n- **Callers that enforce the shape.**\n  - `src/citations.rs`: `validate` and `validate_review` apply it to citation reviews, which `requirements.references.citation_review` says use these outcomes.\n  - `src/index.rs`: `LoadedDetailEvidence::load` maps the outcome to the evidence state.\n  - `src/evidence.rs`: `validate_evidence_file` also calls `Judgment::from_value`. It is marked `{impl}` for `requirements.ci.schema`, not for `outcomes`. `requirements.ci.schema` says `determination` \"MUST use one of the outcomes defined by `requirements.ci.outcomes`\", so that text carries out this part and I did not reassess that code.\n  - `submission` in `src/authoring/mod.rs` calls `Judgment::from_value` in the same way. `requirements.authoring.submission` states the same dependency.\n- **Model-facing contract.**\n  - `tool_definitions_with` in `src/authoring/mod.rs` advertises the `submit_judgment` schema as `oneOf [boolean, {FIXME: nonempty array of nonempty strings}]`, with `additionalProperties: false`.\n  - The prompt template in `md/requirements/authoring.md` (`initial_prompt`) conveys when to choose each outcome:\n    - Choose `true` when the subject meets the criteria.\n    - Choose `{\"FIXME\": [...]}` when the gaps are \"explicitly acknowledged in source comments or tests\", listing issue references \"or other identifying content\".\n    - The convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, \"but references may occur elsewhere\".\n    - Choose `false` for other gaps or insufficient evidence.\n    - The rationale must give source locations, \"including any acknowledged gaps\".\n  - The reviewer obligations (explain gaps, ground FIXME in recorded inputs, a bare issue reference is not enough) can only be carried out through this guidance. Validation deliberately does not reassess acknowledgments, per `requirements.ci.determination`.\n- **Marking.** Behavior in the `{impl}` code that this requirement does not specify is accounted for by other definitions that the same code implements (`citation_review`, `diagnostics`, `index.state`, `cli.fixme_summary`, `submission`, and others). I found no code implementing a part of the requirement that is marked only with `{cite}`.\n\n## Tests\n\n- `src/authoring/mod.rs`:\n  - `submit_judgment_advertises_exactly_the_three_outcome_shapes` asserts the exact JSON schema of `determination`.\n  - `initial_prompt_conveys_when_to_choose_each_outcome` asserts the prompt contains each outcome's selection guidance, the FIXME convention, and the instruction to explain acknowledged gaps.\n- `tests/outcomes.rs`:\n  - `judgments_round_trip_and_reject_invalid_fixme_shapes` round-trips `true`, `false`, and FIXME values with and without issue references. It then rejects 11 invalid shapes covering null, a string, an array, `{}`, an empty array, empty and blank entries, a non-string entry, a non-array value, extra keys, and a wrong-case key.\n  - `fixture` builds a valid example record whose determination is a FIXME with `#125` and `rust-lang/rust#123`, grounded in an input containing the FIXME comment. `malformed_fixme_is_invalid_and_reports_the_required_shape` mutates it to `{\"FIXME\": []}` and checks that validation reports \"nonempty array\" and status shows the record as Invalid.\n- `tests/commands.rs`: `fixme_fixture` validates FIXME records with issue-style entries and with free-text entries that have no issue number. It also covers a requirement and an example, and the validation report comes back with no errors.\n\n## Remaining limitations\n\nJudging whether a source comment really acknowledges a gap is not machine-checked. That is by design (`requirements.ci.determination`), so only prompt tests apply to it.",
+  "rationale": "## Judgment: `requirements.ci.outcomes`\n\nThe requirement imposes four obligations:\n1. A judgment uses one of three outcomes: `true`, `false`, or `FIXME`.\n2. The JSON `determination` is `true`, `false`, or an object holding exactly `FIXME` with a nonempty array of nonempty strings.\n3. The reviewer is told when to choose each outcome. It must recognise acknowledgments without requiring the `FIXME(#n)` spelling, and must identify the documented gap when no issue reference exists.\n4. A FIXME must rest on recorded evidence.\n\n### Implementation\n\n- **Outcome model and shape.**\n  - `src/judgment.rs` `enum Judgment` is exactly `True | False | Fixme(Vec<String>)`.\n  - `Judgment::from_value` accepts bool values, and accepts an object only when it has exactly one key, `FIXME`.\n  - It rejects an empty array, non-string entries, and blank or whitespace-only entries (`trim().is_empty()`). Any other value gets an error naming the required shape.\n  - `to_value` round-trips all three outcomes.\n- **Model-facing schema.** `tool_definitions_with` in `src/authoring/mod.rs` advertises `submit_judgment.determination` as `oneOf [boolean, {object, additionalProperties:false, required:[FIXME], FIXME: array minItems 1 of strings minLength 1}]`. This matches the requirement text exactly.\n- **Submission path.** `submission` rejects any other shape by calling `Judgment::from_value`. It is marked for `authoring.submission`, whose text defers to this requirement.\n- **Reviewer guidance.** `initial_prompt` is marked for this requirement. The template quoted in `md/requirements/authoring.md` contains the guidance:\n  - choose true when the criteria are met;\n  - choose `{\"FIXME\": [\"...\"]}` when the gaps are acknowledged in source comments or tests, listing \"issue references or other identifying content\";\n  - say that `FIXME(#125)` is only the usual convention and \"references may occur elsewhere\";\n  - choose false otherwise;\n  - explain acknowledged gaps with source locations.\n- **Validation.** `citations.rs` `validate` and `validate_review` apply `Judgment::from_value` to citation reviews. `index.rs` `LoadedDetailEvidence::load` and `load_path` map outcomes to evidence states. Neither adds unspecified behavior beyond what `ci.determination`, `index.state` and `citation_review` define.\n\n**Minor marking gap.** `validate_evidence_file` in `src/evidence.rs` also calls `Judgment::from_value` for ordinary evidence records. It is marked `ci.schema` and `ci.determination`, not `ci.outcomes`. The shape check lives entirely in the marked `from_value`, and `ci.schema` covers the field handling. I did not treat this as a material gap.\n\n**Grounding in recorded inputs.** This obligation is a reviewer-process rule, not code. The prompt ties FIXME to gaps \"explicitly acknowledged in source comments or tests\", and the evidence format records the inputs.\n\n### Tests\n\n- `tests/outcomes.rs::judgments_round_trip_and_reject_invalid_fixme_shapes` covers:\n  - round-trip of `true`, `false`, an issue-reference FIXME, and a FIXME with a prose gap description and no issue number;\n  - rejection of null, a string, an array, `{}`, an empty array, empty and blank entries, a non-string entry, a non-array value, an extra key, and a wrong-case key.\n- `malformed_fixme_is_invalid_and_reports_the_required_shape` is an end-to-end check. A malformed FIXME makes validation report \"nonempty array\" and makes the status show Invalid.\n- The `tests/outcomes.rs` `fixture` and `tests/commands.rs::fixme_fixture` build records with FIXME judgments. Validation accepts these records, including the one with no issue number.\n- `src/authoring/mod.rs::submit_judgment_advertises_exactly_the_three_outcome_shapes` checks the exact tool schema.\n- `initial_prompt_conveys_when_to_choose_each_outcome` checks that the prompt contains the guidance for each outcome. That includes the clause that references may occur elsewhere, which covers the \"identifying content\" provision.\n- `submissions_accept_exactly_a_judgment_and_a_nonempty_rationale` covers the submission boundary, including many invalid determinations.\n\nThe implementation and tests cover the design space: the three outcomes, the boundary cases of the FIXME array, the schema, and the prompt guidance. No FIXME or other gaps are acknowledged, and none are needed.",
   "references": "89946bf08646b3c39ef1e8086f45d22625827b386c1f513d8ddab2f50bd063cb",
   "inputs": [
     {
@@ -269,54 +269,9 @@
       "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
     },
     {
-      "file": "src/commands.rs",
-      "item": "fn[status_markdown_with_options]",
-      "hash": "facde8e858f5f27d750f03ba77521a316ee63e40fbfdb0d224af3b9dc39dbf50"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[LoadedDetailEvidence]",
-      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[DetailEvidence]",
-      "hash": "2f1e313f2d698e693a9f494ca743c7b73444bf3cb0e72311362309ccf6933c52"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[fixme_entries]",
-      "hash": "ad03572dab95520c3d63dd31edcf512c0134de581f5e4a662a5eda919be51d5a"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[borrowed]",
-      "hash": "660e1287fe8b7f04a5f7372e0f82410d36b57cfd18af7714334592b42e642382"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
-      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
-      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[invalid_evidence_detail_remains_readable]",
-      "hash": "7c2c957ce29dc4ed7d97b8eebdf072ef96bf9cbffa3b39c959465690efdcc9bb"
-    },
-    {
-      "file": "src/judgment.rs",
-      "item": "impl[Judgment]/fn[fixme_entries]",
-      "hash": "0b37cfce41f8658c9bcc49869a061baf4f3e5252821df966480edc87ddd32caa"
-    },
-    {
       "file": "md/requirements/authoring.md",
       "item": "section[Authoring%20evidence]",
-      "hash": "4e706288cb6fc39c830d832a00f58e751b9a314519fcc8d3cc4350c12ac83c2a"
+      "hash": "eb8e9ebdc4a704d7a1c60f3bb166508fc11c24e41080497be1e6f252feaf9cc0"
     },
     {
       "file": "md/requirements/authoring.md",
@@ -337,53 +292,14 @@
       ]
     },
     {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]",
-      "hash": "e5de551ab6804186da247de37ae808e023c84b142803f9241241e8b042aef559"
+      "file": "src/authoring/mod.rs",
+      "item": "const[DEFINITION_PROMPT]",
+      "hash": "a133148085e7105beb34aeb9cfc89b149797bcddfe9622c35f42483db8731569"
     },
     {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]/section[FIXME%20examples]/section[An%20acknowledged%20implementation%20gap]",
-      "hash": "a579e0f16d99c54824ed8904a0ed530ef7f6bc1b3f0e918e0470f712c4f651c2"
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]/section[FIXME%20examples]/section[Missing%20tests%20and%20references%20outside%20the%20marker]",
-      "hash": "4c1ae6da872734e2bef780b15cb46fabe260899ecbbec813d86d2fad0f4290ae"
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]/section[FIXME%20examples]/section[An%20acknowledged%20gap%20without%20an%20issue%20number]",
-      "hash": "32f0a851e6df7d2fa514d77ee0b741f3b46e61a7077887b8e80bac7abe202eac"
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]/section[FIXME%20examples]/section[An%20additional,%20unacknowledged%20gap]",
-      "hash": "8c6ac55c4960de6dcb5c8c7e5e9954a49f1df30e9e682710f18402b0cd0d8a0b"
-    },
-    {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]/section[FIXME%20examples]/section[Recorded%20FIXME%20evidence%20becomes%20stale]",
-      "hash": "5a83a0a51e9ff9f75fa42fa48e88bab04a5fc490a83982409d948aca53e125de"
-    },
-    {
-      "definition": "requirements.ci.validation_error",
-      "text": [
-        ":::{definition} validation_error",
-        ":phrase: validation error",
-        "",
-        "One message in a repository validation report, describing a single failed check.",
-        "It begins with the affected evidence file, requirement, or source location, names",
-        "the failed check, and states the specific missing, invalid, or changed value,",
-        "with the expected value when available. It is concise because agents are its",
-        "primary readers.",
-        ":::"
-      ]
-    },
-    {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "5220d54dbeff94e65b4ecffc002e375e55418243d4bae0c8932373decb031c0e"
+      "file": "src/authoring/mod.rs",
+      "item": "const[CITATION_PROMPT]",
+      "hash": "7ad9e1819be3867230b7b075c0c38ef54e9e73f2882ead5ab3e323b47232f02e"
     }
   ]
 }
