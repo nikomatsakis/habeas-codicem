@@ -411,3 +411,12 @@ Prompted by: the reassessment of `evidence/requirements.ci.errors.json`
 ("Over-marking of field-level checks. `validate_input`, `validate_outline_input`
 and `validate_resolved_input` check individual fields ... Unmarked code that
 decides how validation proceeds ... Questionable marking. `DefinitionKind::noun`").
+
+Follow-up (no text change): the second reassessment found three more functions
+that omit a second report of a failure another check makes and lacked the mark:
+`citations::citation_items`, `fenced::source_fences` and
+`evidence::reference_set_digest`. They are now marked `{impl}` for
+`requirements.ci.errors`. The "omits a second report" clause makes every
+graceful-degradation site an implementing site, so later reviews may keep
+finding unmarked ones; narrowing which code carries out this convention is a
+substantive change to review with the user.

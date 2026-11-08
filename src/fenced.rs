@@ -295,6 +295,7 @@ pub(crate) fn text_fences(content: &str, markdown: bool) -> Vec<SourceFence> {
 /// source its grammar cannot parse has no recognized fences; its parse
 /// failure is reported by the checks that outline it.
 // {impl}`requirements.references.targets`
+// {impl}`requirements.ci.errors`
 pub(crate) fn source_fences(path: &std::path::Path, content: &str) -> Vec<SourceFence> {
     if !content.contains(":::") {
         return Vec::new();

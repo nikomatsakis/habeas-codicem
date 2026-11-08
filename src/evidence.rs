@@ -1126,6 +1126,7 @@ struct ReferenceSetEntry {
 /// canonical, as reference discovery records canonical paths.
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.ci.errors`
 pub(crate) fn reference_set_digest<'a>(
     root: &Path,
     outlines: &OutlineCache,

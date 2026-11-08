@@ -119,6 +119,7 @@ pub(crate) fn subject_label(file: &str, item: &str) -> String {
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.ci.errors`
 pub(crate) fn citation_items(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
