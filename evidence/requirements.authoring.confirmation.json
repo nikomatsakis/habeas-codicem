@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas author [<full-name> | --all] --confirm` MUST assess each selected subject\nin an independent second conversation whenever the first assessment's\ndetermination is `true` or FIXME. The assessments agree when their outcomes are\nthe same kind; then the first assessment MUST be recorded. When they disagree,\nthe harness MUST verify the less favorable assessment, where `false` is less\nfavorable than FIXME and FIXME than `true`, in a third independent conversation.\nThe verifier MUST receive the subject, the mandatory inputs, that assessment's\nrationale, the same source tools, and a `submit_verification` tool accepting\nexactly `{ confirmed: Boolean, rationale: String }` in place of\n`submit_judgment`, with this prompt:\n\n```text\nAnother reviewer judged {{subject_kind}} {{subject_name}} as {{determination}} for these reasons:\n\n{{rationale}}\n\nVerify only whether that determination is correct for the reasons given: whether\nthe gaps it describes are real, and whether their acknowledgment by FIXME\ncomments or tests is as the determination states. Use the tools to read the\nsources you need. Call submit_verification exactly once with confirmed set to\ntrue if the determination is correct, and false otherwise, and a Markdown\nrationale explaining what you checked.\n\nMandatory inputs:\n{{mandatory_inputs}}\n```\n\nIf the verifier confirms, the less favorable assessment MUST be recorded;\notherwise the more favorable one MUST be. The recorded rationale MUST state that\nthe assessments disagreed and what the verification concluded, so the\ndisagreement remains visible for review under\n{cite}`requirements.cli.flip_guidance`. Each conversation MUST have its own usage\nrecord. Without `--confirm`, authoring MUST remain a single assessment per\nsubject.",
-  "determination": false,
-  "rationale": "## Summary\nThe core confirmation logic matches the requirement text. The remaining gaps are an untested `--all --confirm` path and unmarked plumbing code. Neither is acknowledged by a FIXME, so I judge **false**.\n\n## What is implemented correctly\n- **Second conversation:** `assess_subject` in `src/authoring/mod.rs` runs a second assessment only when `--confirm` is set and the first determination is not `false`. A `false` first result and the no-`--confirm` case both return after one assessment.\n- **Independence and usage records:** `followup_log` and `followup_sources` give the second assessment fresh sources and its own usage record. `finish_followup` finishes each follow-up record.\n- **Agreement:** the assessments agree when `kind()` is equal, and the first is recorded.\n- **Disagreement:** `favorability` orders false < FIXME < true. The less favorable assessment goes to `verify`, which runs a separate third conversation and records it in its own usage log.\n- **Verifier inputs:**\n  - `VERIFICATION_PROMPT` and `prompt_template` read the prompt from the approved template in `md/requirements/authoring.md`.\n  - `verification_prompt` fills in the subject kind, subject name, determination, rationale and mandatory inputs.\n  - `tool_definitions_with(\"submit_verification\")` offers the source tools plus `submit_verification`, with exactly `confirmed` and `rationale`, in place of `submit_judgment`.\n  - `verification` enforces exactly those two fields, a boolean `confirmed` and a nonempty `rationale`.\n- **Choosing the record:** a confirmed verification records the less favorable assessment, otherwise the more favorable one. The recorded rationale gets a \"**Confirmation:** the assessments disagreed…\" note that includes the verification text.\n- **Wiring:** `--confirm` is declared in `src/main.rs` and passed through `AuthoringOptions`.\n\n## Tests\nThese cover the central logic:\n- **Single-assessment cases:** the unit test `without_confirm_or_after_a_false_judgment_one_assessment_is_recorded` checks both.\n- **Agreement:** `agreeing_assessments_record_the_first` checks the FIXME/FIXME case and two independent usage records.\n- **Disagreement:**\n  - `disagreeing_assessments_verify_the_less_favorable_one` covers both directions: true vs false with the verdict confirmed, and FIXME vs true with the verdict not confirmed.\n  - It checks the recorded determination, the disagreement note, the verifier prompt text, the verifier's tool set and the third usage record.\n- **Verification parsing:** `verifications_accept_exactly_a_boolean_and_a_nonempty_rationale` checks the parser and the tool schema.\n- **CLI:** `confirm_runs_a_second_assessment_with_its_own_usage_record` in `tests/authoring_batch.rs` covers the single-subject CLI for the agreeing case.\n\n## Gaps\n1. **`--all --confirm` is untested.** The requirement names `habeas author [<full-name> | --all] --confirm`. The only end-to-end test uses a named subject. No test in `tests/` exercises `author --all --confirm`. The batch path (`author_all_with_options` → `prepare_assessment` → `configured_record` → `assess_subject`) is therefore verified only by inspection. That path runs inside a concurrent, cancellable task and then goes through `write_record`, and none of that is tested with confirmation. Failure cases are also untested: a failing second assessment or verifier conversation, and the FIXME-vs-false and true-vs-FIXME orderings.\n2. **Confirmation plumbing is not marked `{impl}`.** `prepare_assessment`, `configured_assessment` and `configured_record` take and forward the `confirm` flag. `configured_record` also supplies the `state` root and calls `assess_subject` with it. These functions carry `{impl}` markers for other requirements but none for `requirements.authoring.confirmation`. Code that implements part of the requirement without an `{impl}` reference counts as a gap.\n\nNo FIXME comments or tests acknowledge either gap, so the determination is false rather than FIXME.",
-  "references": "6d336a4ff99bcb9c215a32bd3b45925b0a7cb82b49bd9ea5f92ead315b240ebd",
+  "determination": true,
+  "rationale": "**Verdict:** `requirements.authoring.confirmation` is implemented completely and tested. I found no real gaps and no FIXME comments.\n\n## Implementation\n\nAll logic is in `assess_subject` (src/authoring/mod.rs). It is marked `{impl}`, as are its helpers and the plumbing.\n\n- **When a second conversation runs.**\n  - `if !confirm || first.0 == Judgment::False { return Ok(first) }` means a second assessment runs only with `--confirm` and only when the first result is `true` or FIXME.\n  - Without `--confirm` there is a single assessment.\n- **Independence.**\n  - The second conversation gets a fresh `followup_log` and `followup_sources(root, subject, …)`, so it has its own mandatory inputs, its own usage record, and a full `assess` run with the ordinary initial prompt and `submit_judgment`.\n- **Agreement.**\n  - `first.0.kind() == second.0.kind()` records the first assessment unchanged, so a FIXME with different entries still counts as agreement.\n- **Disagreement.**\n  - `favorability` orders false < FIXME < true.\n  - The less favorable assessment is chosen as `less`, and a third conversation runs via `verify` with fresh sources and its own usage log.\n- **Verifier inputs and prompt.**\n  - `verification_prompt` fills the template with `subject_kind`, `subject_name`, `determination`, `rationale` and `mandatory_inputs`.\n  - The template is read from the approved text in `md/requirements/authoring.md` through `prompt_template(VERIFICATION_PROMPT)`, so it is the same text the requirement quotes.\n  - `converse` is used with the same source tools. `tool_definitions_with(\"submit_verification\")` swaps `submit_judgment` for `submit_verification`, whose schema has exactly `confirmed: boolean` and `rationale: string` (minLength 1).\n  - `verification()` enforces exactly those two fields, a boolean and a nonempty rationale.\n- **Recording.**\n  - If the verifier confirms, the less favorable assessment is recorded; otherwise the more favorable one is.\n  - The recorded rationale gets a \"**Confirmation:** the assessments disagreed…\" note. It names the first and second kinds, the verified kind, whether the verifier \"confirmed\"/\"did not confirm\" it, and appends the verifier's rationale. The usage determination is updated to match.\n- **Usage records.**\n  - Each of the three conversations has its own usage log, using `followup_log` and `finish_followup`.\n- **Wiring.**\n  - `--confirm` is a CLI flag on `author`, accepted for a named subject or `--all` (src/main.rs).\n  - It is carried through `AuthoringOptions`, `author_evidence_with_options` → `configured_assessment`/`configured_record` → `assess_subject`.\n  - Batch mode passes it through `prepare_assessment`.\n  - The `{impl}` markers cover all of these.\n\nI found no behavior in the `{impl}` code that the requirement does not specify. Failure of a follow-up conversation propagates as an ordinary assessment error with its usage record finished. The requirement is silent on that case, so this is reasonable.\n\n## Tests\n\nUnit tests in src/authoring/mod.rs use a scripted `RecordingProvider`:\n- `without_confirm_or_after_a_false_judgment_one_assessment_is_recorded` covers the no-`--confirm` path and a first `false` result: one request and one usage log.\n- `agreeing_assessments_record_the_first` covers FIXME/FIXME with different entries. It checks that the first is recorded, that two conversations ran with the initial prompt and `submit_judgment`, and that there are two usage logs, including a `(second assessment)` log with a determination.\n- `disagreeing_assessments_verify_the_less_favorable_one` covers true→false with the verifier confirming, and FIXME→true with the verifier not confirming. It checks:\n  - the recorded determination;\n  - the disagreement note and the verifier's rationale in the recorded rationale;\n  - the verifier prompt text, including the determination formatting, the rationale and `Mandatory inputs:`;\n  - that the tools include `submit_verification` and `habeas` but not `submit_judgment`;\n  - three usage logs, with the verification log completed.\n- `verifications_accept_exactly_a_boolean_and_a_nonempty_rationale` covers the failure cases of a non-boolean `confirmed`, a missing, blank or extra field, and checks the tool schema.\n- `placeholders_are_filled_in_one_pass` covers the template filling.\n\nCLI integration tests in tests/authoring_batch.rs run end to end:\n- `confirm_runs_a_second_assessment_with_its_own_usage_record` covers a single named subject with `--confirm`.\n- `confirm_with_all_runs_a_second_assessment_for_each_batch_subject` covers `--all --confirm`.\n\nBoundaries and failure cases are covered well enough: both directions of disagreement, agreement, `false` first, no `--confirm`, and malformed verifier submissions. A few combinations are not run individually (true→FIXME, FIXME→false, a failing follow-up conversation). They go through the same `favorability` and `finish_followup` code paths, and the requirement does not specify failure behavior, so I do not consider this a gap.",
+  "references": "23f4eaf9fee90cf420ebfdad27b9a9370820e663a8570a2354ce85eaa3a8a559",
   "inputs": [
     {
       "requirements": "requirements.authoring.confirmation",
@@ -90,6 +90,21 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[author_evidence_with_options]",
       "hash": "28acce1cbd95a9295b6e918f5827dd962b2e28e7d4d1e2448737c179e0d08b3d"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "91b8abb2d031aba706e9031e447e3ca72800f3c04627a959a0c9f32f7b32d946"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_assessment]",
+      "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_record]",
+      "hash": "3b8b3aec7e741614c5864597673dbddd5718e23f570ee74f3213e9e5f317c1ec"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -232,29 +247,14 @@
       "hash": "ea55fa2409631f3fa1032bc1ad00b48fd48ebade03ca601aaa5f77cd76b2139d"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "91b8abb2d031aba706e9031e447e3ca72800f3c04627a959a0c9f32f7b32d946"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "3b8b3aec7e741614c5864597673dbddd5718e23f570ee74f3213e9e5f317c1ec"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
-      "hash": "37588f8c9898b87e7bf916d29d4e976c7fd477d38b5eadc671dda7e03d866e0e"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]",
+      "hash": "34b539d74d1c8d59face17e8291d0fb28b5383fa441ff4f8931a9edb27322f99"
     },
     {
       "file": "md/requirements/authoring.md",
       "item": "section[Authoring%20evidence]",
-      "hash": "fc50612cb21979161fda813bf28b7f770f923380f6c216c7f1ea7c89ff73d210"
+      "hash": "6511b2dc2665ba9cab93b17bb01e90a8a7d09a52ba4c4826e69627fc28ff66f5"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -275,9 +275,9 @@
       ]
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[bundled_skills_require_agreed_requirements_before_code]",
-      "hash": "c62baeff490b660dd5fa90eb93af9c805ce76de45e9512cea05f5d3c6cda2490"
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
+      "hash": "37588f8c9898b87e7bf916d29d4e976c7fd477d38b5eadc671dda7e03d866e0e"
     }
   ]
 }

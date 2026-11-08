@@ -1,8 +1,8 @@
 {
-  "requirement": "Every source text the harness supplies to a model, including mandatory inputs,\n`habeas` reads, and `ripgrep` results, and every source text Habeas displays in\nthe book or `habeas info`, MUST be redacted:\n\n1. In a workspace `habeas.toml` or user configuration file, the value of every\n   explicit credential field defined by {cite}`requirements.authoring.credentials`\n   MUST be replaced.\n2. In every source, each match of a built-in rule of the `secretshape` crate MUST\n   be replaced. The replaced region MUST be extended through each adjacent region\n   that the crate's entropy heuristic flags and that only whitespace separates\n   from the region, repeating until no flagged region is adjacent. The heuristic\n   MUST NOT cause redaction on its own.\n\nA replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential\nfield or the rule's name, and MUST keep every line break within the replaced\ntext, so line numbers are unchanged. Outlines MUST be built from the original\nsource, and the structural hash MUST hash each text piece that overlaps a\nredacted region in its redacted form, so evidence never depends on a credential's\nvalue and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading\nit MAY change redaction and hashes and MUST be treated as a deliberate change.",
-  "determination": false,
-  "rationale": "**Verdict: not met, though only narrowly.** The core design is sound and well tested. A few behaviors are unspecified, untested or asymmetric, and none is acknowledged by a FIXME.\n\n**What the implementation gets right**\n- **Pinning:** `Cargo.toml` pins `secretshape = \"=0.1.0\"` exactly, with a comment saying an upgrade is deliberate.\n- **Credential fields:** `Redaction::of_file` adds named credential fields for any `habeas.toml` or the user configuration file. `credential_fields`, `item_fields` and `value_fields` walk `authoring.configs.*.credentials` (including inline tables and multi-line strings) and `api_key`. String contents are replaced inside their quotes, and the marker is `[REDACTED:<field>]`.\n- **Rule matches:** `secret_regions` and `scanners` apply the built-in rules with the input cap removed. A match is extended forward through heuristic-flagged tokens separated only by whitespace. Heuristic findings never start a region. Regions are re-merged afterwards (`of_text`/`of_file` call `merge`), so extended regions cannot overlap.\n- **Markers and line numbers:** `Redaction::slice` and `push_line_breaks` emit `[REDACTED:<kind>]` and keep every line break, including CRLF.\n- **Outlines and hashes:** `parse_redacted` builds the outline from the original source. `Builder::piece` and `plain_text` hash each text piece in its redacted form through `slice`. `ParsedSource.redacted` and `node_range` serve redacted text.\n- **Model-facing and displayed text:**\n  - `InputSelector::resolve`, `OutlineCache::parse`, `redact_lines` and `model_citations_value` cover mandatory inputs, `habeas` reads, ripgrep nodes and citation commentary.\n  - `render_detail_sections` and `render_input` cover book pages and `habeas info`.\n  - `validate_resolved_input` compares redacted text.\n- **Tests:**\n  - `src/redaction/tests.rs` covers field redaction by name regardless of value, including inline tables and non-config files.\n  - It covers private-key extension through body lines with line counts preserved, and a token redacted without adjacent non-whitespace-separated code.\n  - It covers heuristics never redacting alone, hashes independent of credential values, outlines unchanged across YAML, Rust, TOML, Markdown and plain text, and slice concatenation at every split point.\n  - `tools.rs` (`model_inputs_reads_searches_and_citation_prompts_are_redacted`) and `index.rs` (`detail_pages_and_info_display_redacted_source`) cover prompts, reads, ripgrep and display.\n\n**Remaining gaps**\n1. **Unspecified behavior.** `configuration_regions` redacts an entire configuration file as `[REDACTED:configuration]` when it is not valid TOML. This is a sensible fail-safe, but the requirement says `<kind>` is the credential field or the rule name, and it never mentions this case. It is also untested.\n2. **Asymmetric extension.** The forward loop in `secret_regions` extends a region through a flagged token that overlaps it. The backward loop only handles flagged tokens that end at or before the region start. A flagged token that overlaps the start of a rule match, beginning before it, is not pulled in, so part of a credential could remain. No test covers backward extension or this boundary. The private-key test only exercises forward extension.\n3. **Untested identification of the user configuration file.** `is_configuration_file` matches the user config path by equality and by canonicalization. Only the `habeas.toml` filename branch is tested. Nothing tests CRLF handling or the lifting of the input cap for large inputs.\n\nI judged these gaps enough to withhold `true`. Closing them with tests and a statement of the fallback behavior would likely suffice.",
-  "references": "73747719994b73ca991e59e1a8df6e269188faaef77f66585bfa80a82b765c4e",
+  "requirement": "Every source text the harness supplies to a model, including mandatory inputs,\n`habeas` reads, and `ripgrep` results, and every source text Habeas displays in\nthe book or `habeas info`, MUST be redacted:\n\n1. In a workspace `habeas.toml` or user configuration file, the value of every\n   explicit credential field defined by {cite}`requirements.authoring.credentials`\n   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,\n   with `configuration` as the kind, because its fields cannot be located.\n2. In every source, each match of a built-in rule of the `secretshape` crate MUST\n   be replaced. The replaced region MUST be extended through each adjacent region\n   that the crate's entropy heuristic flags and that only whitespace separates\n   from the region, repeating until no flagged region is adjacent. The heuristic\n   MUST NOT cause redaction on its own.\n\nA replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential\nfield or the rule's name, and MUST keep every line break within the replaced\ntext, so line numbers are unchanged. Outlines MUST be built from the original\nsource, and the structural hash MUST hash each text piece that overlaps a\nredacted region in its redacted form, so evidence never depends on a credential's\nvalue and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading\nit MAY change redaction and hashes and MUST be treated as a deliberate change.",
+  "determination": true,
+  "rationale": "**Judgment: the implementation and tests meet `requirements.authoring.redaction`.** I found no unmarked implementation, no unspecified behavior and no acknowledged gap.\n\n## Implementation\n\n**Central module (`src/redaction.rs`)**\n- **Rule matches.** `secret_regions` scans with `secretshape` rule-only and heuristic scanners over the whole input (`max_input_bytes(usize::MAX)`). A heuristic finding never starts a region: it returns nothing when there are no rule findings, and only rule findings seed regions.\n- **Heuristic extension.** Each rule region extends forward and backward through flagged `high-entropy-token` spans that are adjacent or separated only by whitespace. The extension repeats until no flagged span is adjacent. Overlaps are merged.\n- **Configuration files.** `Redaction::of_file` adds name-based credential regions when the file is a `habeas.toml` or the user configuration file (including symlink aliases).\n  - `credential_fields` uses `toml_edit` to find every value under an authoring config's `credentials`, plus `api_key`. This covers tables, inline tables and multi-line strings, and the kind is the field name.\n  - A file that is not valid TOML is replaced whole with kind `configuration`.\n- **Replacement text.** `Redaction::slice` emits `[REDACTED:<kind>]` followed by the region's line breaks, preserving `\\r\\n` pairs (`push_line_breaks`). Line numbers are therefore unchanged.\n\n**Outlines and hashes**\n- `outline::parse_redacted` builds the outline from the original source. `Builder::piece` and `plain_text` hash each text piece through `Redaction::slice`, so the marker goes to the piece holding the region's first byte and line breaks go to every overlapped piece.\n- Hashes therefore do not depend on credential values, and the outline structure is unchanged.\n\n**Where redaction is applied**\n- `OutlineCache::parse` stores a redacted copy of each file. `node_range` and `InputSelector::resolve` use it, and also apply `redact_lines` to definition and requirement text.\n- That one path feeds mandatory inputs, `habeas` reads (item and line range), `ripgrep` results (via `read_lines` and `read_selector`), and the citation review's mandatory inputs.\n- `initial_prompt` and `model_citations_value` redact the citation commentary placed in the prompt.\n- On the display side, `render_detail_sections` and `render_input` in `src/index.rs` redact the definition text, validation findings, input text and unreadable records. This serves both the book detail pages and `habeas info`.\n\n**Pinning**\n- `Cargo.toml` pins `secretshape = \"=0.1.0\"`, with a comment that an upgrade may change redaction and hashes.\n\n## Tests\n\n- **Core behaviour.** `src/redaction/tests.rs` covers:\n  - configuration fields by name, including inline tables, multi-line strings and a non-configuration `.toml` file that must be left unchanged;\n  - an invalid TOML file replaced whole, keeping its line count;\n  - private-key blocks extended through flagged body lines;\n  - CRLF handling and backward extension;\n  - scanning past 1 MiB;\n  - heuristic-only findings not being redacted;\n  - slice concatenation at every split point;\n  - recognition of the user configuration file and its aliases.\n- **Hashes and outlines.** One test shows hashes are equal for different credential values (TOML, Rust, text) yet still change when non-credential code changes. Another shows the outline structure is identical with and without redaction (YAML, Rust, TOML, Markdown, text).\n- **Model side.** `model_inputs_reads_searches_and_citation_prompts_are_redacted` checks mandatory inputs, the initial prompt, `habeas` reads, `ripgrep` results (including patterns that match the credential itself) and citation prompts.\n- **Display side.** `detail_pages_and_info_display_redacted_source` checks the detail page and `info` output.\n\n## Minor observations (not gaps)\n\n- `rationale` and FIXME text on detail pages are model-written, not source text, so they are not redacted.\n- Evidence records keep the unredacted declaration text. That is repository data, not text supplied to a model or displayed.\n- There is no automated test that the pin stays exact. The `Cargo.toml` entry itself satisfies the pinning obligation.",
+  "references": "ca6fd37670d978dfa4182c63040bf0c41597afeb42d41d6abf21d65c136c1489",
   "inputs": [
     {
       "requirements": "requirements.authoring.redaction",
@@ -17,7 +17,8 @@
         "",
         "1. In a workspace `habeas.toml` or user configuration file, the value of every",
         "   explicit credential field defined by {cite}`requirements.authoring.credentials`",
-        "   MUST be replaced.",
+        "   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,",
+        "   with `configuration` as the kind, because its fields cannot be located.",
         "2. In every source, each match of a built-in rule of the `secretshape` crate MUST",
         "   be replaced. The replaced region MUST be extended through each adjacent region",
         "   that the crate's entropy heuristic flags and that only whitespace separates",
@@ -202,6 +203,21 @@
       "hash": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
     },
     {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[invalid_configuration_files_are_redacted_whole_keeping_lines]",
+      "hash": "0e00e4ec3bf1871450cbeb0e7cc772a617e1e9cfce594fdc875336b35b8a2cd5"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[the_user_configuration_file_and_its_aliases_are_configuration_files]",
+      "hash": "0a885bb37069bbbcee4bf3526b2f793e45b54c102b1d69001f91a7306d95fa6e"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte]",
+      "hash": "76aeabb2851db060abf9267aee28ccc079fdf8451d2320c27f9f6aa857e631b5"
+    },
+    {
       "file": "src/redaction.rs",
       "item": "struct[Region]",
       "hash": "0712fbed50e4176ab0d99da7d6318e3f46221e7ca3e99194c2b5b782dbca1224"
@@ -269,17 +285,22 @@
     {
       "file": "src/redaction.rs",
       "item": "fn[secret_regions]",
-      "hash": "c8c8b600a84043f7fd97ff16a203ad399bd39e2bdd7c39a456514fdd083f21d2"
+      "hash": "32e323c906372e0de5c320ec6710cfbd513f191a8d383a7ae5b0fef6206c01ed"
     },
     {
       "file": "src/redaction.rs",
       "item": "fn[is_configuration_file]",
-      "hash": "d8527164ce99e6c20b81a95049b152538a6b3e20ad7e8d947513d3f5be66faa1"
+      "hash": "ecf5c0195d92e670405c61648cf48a48ac5d890ddbe4392f421391439d5c027b"
+    },
+    {
+      "file": "src/redaction.rs",
+      "item": "fn[is_configuration_file_for]",
+      "hash": "f9c0918a9598b399b3bcaaa1d53c80d208170a5ca66fa769a86e9fbca3bd62c4"
     },
     {
       "file": "src/redaction.rs",
       "item": "fn[configuration_regions]",
-      "hash": "f62e4b9b3b0fc70c1e21dec0517003fcd02aa1615a739d65f26d405ba0e8a2e2"
+      "hash": "5ac83944c7bd834912a11b29fdd21124c589f8108bed68ebb6aa7496a9323b84"
     },
     {
       "file": "src/redaction.rs",
@@ -297,6 +318,31 @@
       "hash": "83d379eeebbc73d705c2267124fc5d8fbc291a79c76cfddf5e4754e5c2336eae"
     },
     {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_committed_credentials]",
+      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@167510602cb3",
+      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "use@167510602cb3",
+      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
+    },
+    {
+      "file": "src/redaction.rs",
+      "item": "",
+      "hash": "9d63cf6e5e457e5976049363b829c482a757b5f8f75fe57e229df0cbd6149bed"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "use@932900f4bf04",
+      "hash": "932900f4bf040be3537072b8c86afecf8609e53bb1ed7cd364fa03bf1fbbb2b2"
+    },
+    {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
       "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
@@ -312,16 +358,6 @@
       "hash": "18c77225e202f5ac560723436ec3878e6b588615de9c83ab7a18e5008a3db1eb"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_committed_credentials]",
-      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@167510602cb3",
-      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
-    },
-    {
       "file": "src/inputs.rs",
       "item": "struct[ParsedSource]",
       "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
@@ -330,11 +366,6 @@
       "file": "src/lib.rs",
       "item": "mod[redaction]",
       "hash": "3262c2fb167f921908126ba47336cd229d3e4345d4b7d63ee75c4e0da50733b0"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "use@167510602cb3",
-      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
     },
     {
       "file": "src/outline/mod.rs",
@@ -352,24 +383,134 @@
       "hash": "aba2a62c73760264b6c42903b0254c1c281a1b4f3603d171a9b513bdbc809435"
     },
     {
-      "file": "src/redaction.rs",
-      "item": "",
-      "hash": "a12c7f58c738b72091b98f99133f292570bfd2224995dd1768bb2dcf36d5bdf7"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]",
-      "hash": "6568993200f8cb18510299255f1b02d87072b05772b0fee7ff3c0920f57fe2fa"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "use@425724e6a6c2",
-      "hash": "425724e6a6c2c7dacf0d87a42a99601c14b4829eb60d8324b35b83185fa2590e"
-    },
-    {
       "file": "src/redaction/tests.rs",
       "item": "use@dae7a77fbaa1",
       "hash": "dae7a77fbaa1742164b8054a04bfed3e99575ca81ab22e07d39d667836936554"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[read_or_new]",
+      "hash": "9d1e50043e22fd9cc22879a0d3ede2522ff12c2e30d86343e960c5fec3208ccc"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_lines]",
+      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
+      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[search]",
+      "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[persisted]",
+      "hash": "d0caafefaaa93e51e0657841bd7d4abb7c8ac441d6ae928209760b9378831d82"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate_review]",
+      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[info_markdown]",
+      "hash": "a9830dc8abda6a1630b308950385476f56d0ff614c9da33c26053edf3b8290f9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_user_config]",
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "38d4022dff717f3d4a0b045e09870a330c39a8d9df26be52d6df9fdec6545920"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[untracked_reference_files]",
+      "hash": "7fe9619969e4bf8021ff67b65e48559f82ce5b4fc98f541d4a374c9f38e40689"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references_with_progress]",
+      "hash": "2b060aeac9806d5bd1566f2ffad63c74a9937fcbc2cfc085636aa462d105ccec"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[stamp_reference_sets]",
+      "hash": "f73ee2fbdc73f41fe351ccfcafe42aa256b4cc37527ec673228c8d1e8dd82a3c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load_path]",
+      "hash": "5e19d310ac29287b46a46da897cf09fa235c0d59481be775ed6e90c13e99161e"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]/fn[nodes_for_range]",
+      "hash": "f7e912b83a6bfedf37bfb1070d2605d97964a8c14beb8fd1138e38455e2fb044"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
     },
     {
       "file": "src/outline/mod.rs",
@@ -403,183 +544,98 @@
     },
     {
       "file": "src/outline/mod.rs",
-      "item": "fn[trails_code]",
-      "hash": "16526bc7236feeac97e5d4cd3778a0c76af02f6dc52ce66be7749494d9d8bd9b"
+      "item": "impl[Outline]/fn[node_lines]",
+      "hash": "7734366f0b0f2d2025bc35a536733b893c61516129a21a958cf5a54bf9590f16"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[duplicate_names_are_numbered_in_source_order_without_line_numbers]",
-      "hash": "16214a4586dd5b69987d0fa62070cb81fa6be9605dacaab8246470fe37fa7a49"
+      "item": "fn[workflow_job_marks_belong_to_the_job_that_follows]",
+      "hash": "6c977e3be265b9efe3e2863e77cec92f75e1e3fd9d8055801d7550882f9d5a00"
     },
     {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
-      "hash": "a89cf9052fb768360dcb975d6bb3edc2a897cac0c27eda6e085c5db292a87fbe"
+      "file": "src/rust_coverage.rs",
+      "item": "fn[validate_rust_functions]",
+      "hash": "4153358d65ac0e56d727e87689e3ce1f0c2f4e4bf223c3f5513b87cf49fbeac7"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]",
-      "hash": "cb1d0ae7535df80b9914ba9ada79252e76696c48578cfc7cadbe368b981a06f7"
+      "file": "src/setup.rs",
+      "item": "fn[project_depends_on_habeas]",
+      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Configuration]/section[Editing%20the%20file]",
-      "hash": "81fad2d68c1dd3e7357770ecf8f207b15169c017285c9ca546461cf6ec25d5fa"
+      "file": "src/setup.rs",
+      "item": "fn[write_new_or_same]",
+      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
     },
     {
-      "file": "md/requirements/configuration.md",
-      "item": "section[Configuration]/section[Loading%20and%20diagnostics]",
-      "hash": "6d6d6af5b3452cf40fafeb1bbc357d3225590b0f50ad56f228fd3297b3491f56"
+      "file": "src/setup.rs",
+      "item": "fn[run]",
+      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[is_configured]",
+      "hash": "e252fe4250c8fac063476903ced96ff0bed6972f3dbae5c6ef90148cc778cf73"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[UserConfig]",
+      "hash": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceAuthoringConfig]",
+      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[UserAuthoringConfig]",
+      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OllamaConfig]",
+      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[validate]",
+      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]/fn[validate]",
+      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[validate]",
+      "hash": "85a75e4507fc47425ea5274b29629a298b9259bce2cfc6d7fa79904e645d111a"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key_from]",
+      "hash": "5ba74dfd70cff06aeb97d6c95de7432de9eb7024c7882e434fc214c41eb3897b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "ca008e63fdef9e70314dd40b9bd0e611918e0179ee41125bb36ec027fdd019a6"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[add_definition_inputs]",
+      "hash": "33aa1e4cace467d8d1511df506c97eaeb407f8bc776d6a4f843dd3fb56f38d89"
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
-      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "e763ebf7b5bb7b8902276ca55929483f5019a9aee24b8b2760a97354ef874af3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
-      "hash": "d786929a98bd067cf7e7d36e66e5d96d07a71ad18adb5c1ed8ef357d446685ad"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
-      "hash": "5d0928cbdeb6b36d33988b6bfca1b888ee083a1856d238c6856a16344ef82cc1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[source_references_are_covered_by_evidence_inputs]",
-      "hash": "eedc00fcdd354c6784ef006108e911227325dcbfa775d538f3c8d81c814a669d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
-      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
-      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
-      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
-      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[a_false_determination_fails_only_its_own_record_with_its_rationale]",
-      "hash": "e462067423cb9ee5d18cc29623b31ead903a22123ce8961a62a5446fa790b2cd"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[changed_requirement_text_names_the_record_and_location_with_a_diff]",
-      "hash": "442781e8cf4b0bf058e05036291478774ec9fa0cb5f6f24ebbc06007e71479b1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirement_bodies_are_compared_without_surrounding_whitespace]",
-      "hash": "e113eb48763e0c67a3bbc7a55fb0b1a678848c9d22d2bd5af76d94377cbb9f6b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[colon_requirement_span_includes_markdown_and_excludes_following_text]",
-      "hash": "ca0ffcd00164e0ebe3d50d787c9605e3db025b6e49d19ccdce46070a0be1a775"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reports_a_missing_closing_colon_fence]",
-      "hash": "19b3ac6850dfc44a2c723659bed481f9b0dd98ade185280faae0563ce5a9ccc5"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[validates_four_or_more_colon_fences_and_longer_closers]",
-      "hash": "7e492812653aafa4ab5a4f003afc2dd8737981db76d408aa9e1391920a656a2e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are]",
-      "hash": "8438b66760683bc3ebb8338901de592dc71751d1e7c7de59fd6a0713b0a4f456"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
-      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
-      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[validation_requires_a_current_reference_set_digest]",
-      "hash": "353b453b0a20219212386d36d056af2563a26be0805477dadedb44c06d7747bf"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "mod[tests]/fn[a_github_issue_url_alone_identifies_the_qualified_issue]",
-      "hash": "434a89a5dde19e144c967be1ef2f4a73cc3f512dd073051d76b68397f19d0923"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "mod[tests]/fn[verbose_output_lists_each_judgment_under_every_group_it_belongs_to]",
-      "hash": "a8a7d4b2fd68ce8c8efce71b94a56c390abb3676423724c29b536e2ff3515c59"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "mod[tests]/fn[groups_order_by_decreasing_count_before_reference]",
-      "hash": "5eac5a7b8c3f0e7bb2f3b0454cba1c3afb493b28e4dd50a2d7add00ab46416a0"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
-      "hash": "ce8b8ca782707df7e432b68042d6224595de1cfacffc8a47446ca3eb126200db"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
-      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[findings_make_false_and_fixme_records_invalid]",
-      "hash": "4b36a11e4def531d3cdc3ae79164eabfaf3109619aee0c45a90f94c7f1e1057d"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
-      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "impl[DefinitionKind]/fn[noun]",
-      "hash": "cf5d9c19831ce1e2aa729a66e8b62bf58a4a54cab76483c1fad1ae93ea159560"
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
     },
     {
       "file": "src/evidence.rs",
@@ -588,13 +644,28 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
+      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
     },
     {
       "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
+      "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
+      "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_page]",
+      "hash": "1cce24f0597a0027d5301be53761324994999baed3d5e0ecb9ee034bebfba8e6"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[preprocess_book]",
+      "hash": "84243bdbea511c897195278065bd95f1040174ec4c2e2044e3f6d8af386d300d"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[anonymous_selectors_use_identity_hashes]",
+      "hash": "3b8ce2033af0eabfb93fa3242d82e70aeb880f0507210431d1b3f6c345f46731"
     },
     {
       "file": "src/outline/tests.rs",
@@ -610,6 +681,71 @@
       "file": "src/rust_coverage.rs",
       "item": "mod[tests]/fn[an_example_counts_only_when_it_references_a_requirement]",
       "hash": "c65d65ed91711c7879e9394dee4f6a6af6c5d95e22c39cae3f669b9f9f3ce00b"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[close_dependencies]",
+      "hash": "7505912bdea9e2777bb6ca92e2ed4255ac0e6322bb358a0e33dcd732b900ca29"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "struct[AssessmentSources]",
+      "hash": "bfc92dfeffbb0753740e0e6f5b463863b52627efb842793bd4f7ae470039b2a7"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_citation]",
+      "hash": "da1ac8c3f2775d444caef1f575a986564bbcd5936b7770e5e45248b423b2b9b8"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
+      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]",
+      "hash": "10538215a7754829dbe6716d1b88d278d37f59d1b443f6526d2ec33e432fbd6a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[record]",
+      "hash": "0a005949d75be310771a207c2f340d09c147eee87c0fb4b4d0f88ad08bc6421b"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_cli_detail_page]",
+      "hash": "d55ef7a30f775cb673eed234ff863550ce9e090a37e6eba509b7ff53085577ab"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]/fn[current]",
+      "hash": "702526d29352d4816fa00ddc14bed815cf62f7adc34830949ca206c0b29c15dc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[record_inputs]",
+      "hash": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_selector]",
+      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[parse_file]",
+      "hash": "60bcb250ef0b20cccfac78923540d1637b80fbea9c68d624ec1f775aca96cb29"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
     }
   ]
 }
