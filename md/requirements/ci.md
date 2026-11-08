@@ -131,7 +131,9 @@ convention when it decides how validation proceeds after a failed check: it
 continues to later checks, items, or files, substitutes a fallback so later
 checks still run, or omits a second report of a failure another check already
 reports. Code that checks one field or value and reports its failures implements
-that check's requirement, not this convention.
+that check's requirement, not this convention; code that runs several checks on
+one file, record, or input and continues after one of them fails carries out the
+convention.
 :::
 
 :::{req} diagnostics

@@ -1,7 +1,7 @@
 {
   "requirement": "An outline selector MUST be a `/`-separated path of segments from the file's\nroot node to an outline node; the empty selector MUST select the root node. A\nnamed node's segment MUST be `kind[name]`. An anonymous node's segment MUST be\n`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity\nhash under {cite}`requirements.references.structural_hash`. Siblings whose\nsegments would otherwise be identical MUST be disambiguated by `#N`, their\none-based position among those siblings in source order, except `line` nodes:\nidentical lines are interchangeable, so a `line` selector MUST resolve when any\nline with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,\n`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are\nreversible. Line numbers MUST NOT form part of a selector.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation, and the tests cover the main points of the design space. I did not run the tests; I judged them from their source.\n\n**Implementation**\n- **Selector shape.** `OutlineNode` in `src/outline/mod.rs` has a root with an empty `segment` and `selector` (`root_node`). Every other node has a segment, and `disambiguate` builds the full selector as the `/`-joined path of segments from the root. No line numbers appear in selectors.\n- **Named and anonymous segments.**\n  - `Segment::base` in `src/outline/selector.rs` emits `kind[name]` for named nodes and `kind@hash` for anonymous ones.\n  - `Builder::finish` and `plain_text` take the hash from `identity_hash[..HASH_DIGITS]`, and `HASH_DIGITS` is 12.\n  - The label uses the identity hash, not the structural hash, as the structural_hash requirement specifies. How that hash is computed is that requirement's concern.\n- **Percent-encoding.**\n  - `encode_name` encodes `%`, `[`, `]`, `/`, `#`, `@` and any Unicode whitespace as UTF-8 bytes.\n  - `decode_name` reverses this. It rejects malformed escapes, raw delimiters, raw whitespace and escapes that are not UTF-8.\n  - Multi-part names, such as a trait impl's `impl[Thing/Trait]`, encode each part separately and join the parts with `/`. That joining is defined by the Rust-specific selector requirements, not by this one.\n- **Disambiguation.** `disambiguate` groups siblings by identical base segment, in source order, and appends a one-based `#N` to each member of a group with more than one. It skips `line` nodes, as required.\n- **Resolution.**\n  - `Outline::resolve` parses the selector and walks it from the root. The empty selector gives the root.\n  - A `line` segment matches the first line with that content, so it resolves whenever any such line exists.\n  - `parse_selector`, `split_segments` and `parse_segment` reject malformed input: bad kind, unclosed or nested brackets, wrong hash length, `#0`, trailing text and empty segments.\n  - `ParsedSource::resolve` in `src/inputs.rs` reports invalid, ambiguous and not-found selectors with distinct messages.\n- **Markers.** All of this code carries `{impl}` markers for the requirement. I found no selector-producing code without one. The other places that use `.selector` only consume the selectors it produces.\n\n**Tests**\n- `names_round_trip_through_percent_encoding` checks the exact encoding of all special characters, tab and non-ASCII text, plus the round trip. It also checks rejection of raw `/`, a malformed `%zz` escape and raw whitespace.\n- `parses_named_anonymous_and_ordinal_segments` checks the empty selector, a multi-part name, `#N`, hash lowercasing and seven invalid forms.\n- `rust_selectors_follow_syntactic_ancestry` checks that every generated selector resolves back to its own node. It covers duplicate names with `#1`/`#2` and a name that needs percent-encoding. It also checks that the empty selector gives the root, that an ambiguous selector fails and that a missing one fails.\n- `anonymous_selectors_use_identity_hashes` checks that an anonymous segment has 12 hex digits and that selectors survive an inserted sibling. It checks that editing a node's own text invalidates its selector, and that duplicate anonymous nodes get `#1`/`#2`.\n- `plain_text_lines_are_interchangeable_anonymous_nodes` checks that identical lines share one selector with no `#N`, and that it resolves. It also checks that whitespace-only differences share a selector while `two words` and `twowords` differ.\n\n**Gaps:** none found, and no FIXME comments.",
+  "rationale": "**Verdict:** the implementation meets every obligation in `requirements.references.outline_selectors`, and the tests cover the main points of the design space.\n\n**Implementation**\n- **Path syntax and root.** `parse_selector` in `src/outline/selector.rs` returns no segments for the empty selector, and `Outline::resolve` returns node 0 (the root) for it. Other selectors are split on `/` outside brackets by `split_segments` and walked from the root through `children`, so a selector is a `/`-separated path from the root.\n  - `root_node` gives the root an empty segment and selector.\n  - `disambiguate` builds each full selector as the parent's selector, `/`, and the node's segment.\n- **Named and anonymous segments.**\n  - **Named:** `Segment::base` produces `kind[name]` for named nodes.\n  - **Anonymous:** it produces `kind@hash`. `Builder::finish` takes the label from `identity_hash[..HASH_DIGITS]`, with `HASH_DIGITS = 12`, so it is the first twelve hex digits of the identity hash.\n  - **Parsing:** `parse_segment` requires exactly twelve hex digits and lowercases them.\n  - **Plain text:** `plain_text` uses the line hash for `line@…` segments.\n- **Sibling disambiguation.** `disambiguate` groups siblings by identical base segment and appends `#N`, the one-based source-order position. It skips `line` nodes.\n- **Line nodes.** Identical `line` segments all stay equal, and `resolve` finds the first child whose segment matches. A line selector therefore resolves whenever a line with that content exists.\n- **Percent-encoding.** `encode_name` encodes `%`, `[`, `]`, `/`, `#`, `@` and any whitespace character as UTF-8 bytes. `decode_name` reverses this and rejects bare delimiters, bare whitespace, malformed escapes and invalid UTF-8.\n  - `impl[Thing/Trait]` leaves the `/` between the self type and trait unencoded. That follows the Rust trait-impl requirement, `selector_impl_and_trait`, and I did not count it against this requirement.\n- **No line numbers.** Selectors are built only from kind, name, identity hash and ordinal. Line ranges are stored as separate fields.\n- **Error handling.** Invalid and not-found selectors are distinguished by `ResolveError` and `SelectorError`. `ParsedSource::resolve` in `src/inputs.rs` also reports an ambiguous selector when `item#1` resolves. These are diagnostics for unresolved selectors, not extra selector semantics.\n- **Marking.** I found no selector-related code lacking an `{impl}` marker. Callers of `resolve` in other modules are marked with their own requirements.\n- **Structural hash.** That requirement is separate. Here I only checked that the identity hash is used as `outline_selectors` specifies.\n\n**Tests**\n- **`selector.rs`**\n  - **Percent-encoding:** `names_round_trip_through_percent_encoding` round-trips a name containing every special character, plus tab and non-ASCII text. It also checks rejection of bare `/`, a bad escape and bare whitespace.\n  - **Parsing:** `parses_named_anonymous_and_ordinal_segments` covers the empty selector, a two-part name, an ordinal and an uppercase-hex hash. It also covers seven malformed selectors: a missing bracket, no kind, `#0`, a short hash, trailing text and an empty segment.\n- **`tests.rs`**\n  - **Rust nesting and resolution:** `rust_selectors_follow_syntactic_ancestry` checks nested selectors, an encoded name containing spaces and brackets, the empty selector resolving to the root, an ambiguous selector failing and a missing one failing.\n  - **Anonymous selectors:** `anonymous_selectors_use_identity_hashes` checks twelve-digit hash segments. They survive an insertion before the node and break when the node's own content changes. Identical anonymous siblings get `#1` and `#2`.\n  - **Plain-text lines:** `plain_text_lines_are_interchangeable_anonymous_nodes` checks that duplicate `line@` selectors are equal and that the selector resolves. It also checks that whitespace within a line is not part of the hash, while removing it altogether (`two words` versus `twowords`) changes the selector.\n  - **Duplicate names:** `duplicate_names_are_numbered_in_source_order_without_line_numbers` checks that ordinals follow source order and are unaffected by moving the code.\n\nNo source comments acknowledge a gap, and I found none.",
   "references": "9c694a0889eef44dfd2a9625218d14330e43f70735051b24adb8eb5fe0c284f1",
   "inputs": [
     {
@@ -41,9 +41,12 @@
         "trailing whitespace, is never hashed, and each word is encoded separately, so",
         "`ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments",
         "MUST be excluded, except comment kinds the profile includes; the Rust profile",
-        "MUST include doc comments. For an included comment, only its text MUST be hashed,",
-        "not its delimiter tokens such as `//`, `///`, `//!`, `/*`, `*/`, or a leading `*`,",
-        "so reflowing it across more or fewer lines does not change the hash. A `line`",
+        "MUST include doc comments. For an included comment, only its text and its",
+        "profile's comment group MUST be hashed, not its delimiter tokens such as `//`,",
+        "`///`, `//!`, `/*`, `*/`, or a leading `*`; the Rust profile's groups are inner",
+        "and outer doc comments. The words of consecutive included comments of one group",
+        "MUST be hashed as one ordered list, so reflowing them across more or fewer lines",
+        "or comments does not change the hash, while moving text between groups does. A `line`",
         "node's hash MUST be computed by the same word rule over the line's text. A node's",
         "identity hash MUST be computed the same way but MUST also exclude its outline",
         "descendants and their attached siblings, so editing a descendant does not change",
@@ -188,8 +191,13 @@
     },
     {
       "file": "src/add_input.rs",
-      "item": "fn[selectors_for_mode]",
-      "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
+      "item": "fn[add_input]",
+      "hash": "9cc12d878739427b06776d5746c85e1ce6166526a9105238f416571df68bc1bd"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[update_inputs]",
+      "hash": "f52292ad7119fd0e7af60048f3e28ae8aa74fab808d14ea01bcd431923df7622"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -198,58 +206,63 @@
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "85e451997bbdd44fa29d5e65630f5fdb56b944283df41e34eb5e24356ff08369"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[reference_selector]",
-      "hash": "75fcd50d474e901c1fad0e540f035103e29f98a664b9329b70a5843917c9723f"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[outline_entries]",
-      "hash": "3b22131310e880e9df837e973cd3c32d83ed76e77452e17b9239f0fb25da675d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "ad06e3cf141924e5418394d409c18d51b5628a36a0865c4db89d7ef4bbc1b391"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[citation_items]",
-      "hash": "1f07b2d4daadae106de045c08f9e30b309986ce3d0350a7a8c6bca4a16dbe064"
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
+      "item": "impl[Anchor]/fn[resolve]",
+      "hash": "69104b1f28e3c217e7a568854949e0b4a1358de038aed11e90d929378ab8c3e1"
     },
     {
-      "file": "src/fenced.rs",
-      "item": "mod[tests]/fn[comment_fences_close_within_one_comment_run]",
-      "hash": "e358905008efd2bb774ea1d5c6d0db75c748a70db2a40a0516aaeb5cba4ef1bc"
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "ce77e1738db89880bd49602d3947249e47e8a9dcf6f3c520e06dcff3d41e58e3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "6420c858ddefc5fff915aff05d3853ca7979fe1e7780fc0cabc670259ae6a51e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_references]",
+      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
+      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
     },
     {
       "file": "src/index.rs",
-      "item": "fn[encode_url_segment]",
-      "hash": "0aa2cca56cbaa936f10b3f61ca7bb937dea609765c71dbfc24f6b5f982426987"
+      "item": "impl[DefinitionEdges]/fn[current]",
+      "hash": "702526d29352d4816fa00ddc14bed815cf62f7adc34830949ca206c0b29c15dc"
     },
     {
       "file": "src/index.rs",
-      "item": "fn[render_detail_sections]",
-      "hash": "99f2d71104c1973f5af2103efe4e59858c87722227ff88f9d456c5fb9859168f"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "fn[render_input]",
-      "hash": "d9de115b90fe0cdac7a7972a76b17e61c083627ef27d40859f4e2de9dbb8232d"
+      "item": "impl[InputLocation]/fn[resolve]",
+      "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
     },
     {
       "file": "src/inputs.rs",
-      "item": "fn[outline_inputs_for_lines]",
-      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_input]",
+      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "use@8bf6f3a162f9",
+      "hash": "8bf6f3a162f97ce0fe63f54eefa8301431f5c8b7edd1aa87289921b5a486915e"
     },
     {
       "file": "src/outline/selector.rs",
@@ -258,18 +271,38 @@
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[selectors]",
-      "hash": "c8f88c63e121faf26cc9ad0100d8ab43b9e1fb8c2af5e1d87bc967e4c075579f"
+      "item": "fn[identity_hashes_include_own_attached_siblings_but_not_descendants]",
+      "hash": "32ee4fde86b6940b0d7790a0f3e874d45cf36ffde804f676a6f159d689eb227d"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[summary]",
-      "hash": "f718ff331d0d5ef336519d542c13f8abffb7f301ee4a159dc355173b4364a64a"
+      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
+      "hash": "9542cefc7e015427e3b771eea77d2244ed2232e0bc3ea41296f3a63f1c479e63"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[comment_owner]",
-      "hash": "e909cf8e80f226ea616a15fab581af58d1253c4247d4030da723df9b6a3804b3"
+      "item": "fn[run_hash]",
+      "hash": "738e876d4fd5ac86eeb171d1a46af2eb5d21389780a5042cc604170f4c9aaa7b"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[prose_words_are_encoded_separately]",
+      "hash": "155e51164266d2b832a0f570ddff8156b862cddcbf1ce6e1563d7b8a48ae4e8d"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[string_literals_hash_as_words]",
+      "hash": "ae134a1f513cece94e735d05482ae211853033371f38caa75e514fe5299ed4e3"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[reflowing_markdown_paragraphs_keeps_the_hash]",
+      "hash": "4c09d263039981e32ad03ebf535a296048ba27b182c8f007319a3c722d1c9618"
+    },
+    {
+      "file": "src/outline/tests.rs",
+      "item": "fn[reflowing_inner_and_block_doc_comments_keeps_the_hash]",
+      "hash": "4792c243f4cd4aeb1d7e788461afc17bc86756bc6c86b21841248baa7ba488e7"
     },
     {
       "file": "src/outline/tests.rs",
@@ -278,38 +311,38 @@
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[line_queries_find_innermost_and_declared_nodes]",
-      "hash": "d838571a0d96992f40a5e26430a200414da698d33682344a0324f3e3dc1efd40"
+      "item": "fn[top_level_comment_with_nothing_after_belongs_to_the_root]",
+      "hash": "86d11e435d42687449a96df24c542449061f2ebf6c6621fee158877e10c5fad9"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[no_profile_invents_fallback_kinds]",
-      "hash": "67336a791b0af12a53dbf9e5091598fd528a512dfe73f3953349089a78a5753f"
+      "item": "fn[markdown_profile_nests_sections_by_heading]",
+      "hash": "00f45167f36261d4e1d67b785813d350bf2e2a84f5eb81a607a198e98255cbeb"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[markdown_comments_are_html_comment_blocks_not_inline_comments]",
-      "hash": "a12e2c4992104db70b0db755bbe8d000f286d32738a663fdcb8e5428995f6951"
+      "item": "fn[file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root]",
+      "hash": "1a4ab867146ac9c8828af6bda2453ed75b32c130c01afdc0f1bf964815bd4cc1"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[yaml_comments_before_a_key_belong_to_that_key_not_the_previous_one]",
-      "hash": "38dcef33d9ac46b524cef888c64af6ee12eab2ae3b6d94b138088caf4c23de7c"
+      "item": "fn[duplicate_names_are_numbered_in_source_order_without_line_numbers]",
+      "hash": "16214a4586dd5b69987d0fa62070cb81fa6be9605dacaab8246470fe37fa7a49"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[nodes_are_declared_on_their_name_line_or_where_their_syntax_starts]",
-      "hash": "eba203258b5c0d7bf78eb030e6b7a6d06992277b198917900af9570bfac9a316"
+      "item": "fn[node_hash]",
+      "hash": "323782a51f330fa57af1c66912cf2d9d80ee9704761d4a5cd3727f707b8d5b9b"
     },
     {
       "file": "src/outline/tests.rs",
-      "item": "fn[workflow_job_marks_belong_to_the_job_that_follows]",
-      "hash": "6c977e3be265b9efe3e2863e77cec92f75e1e3fd9d8055801d7550882f9d5a00"
+      "item": "fn[python_decorators_attach_to_the_decorated_definition_for_hashing]",
+      "hash": "4880346989fc4c0f3d49470daaedfce91278b7822142a3d7231fc808966df56f"
     },
     {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[hashes_do_not_depend_on_credential_values]",
-      "hash": "495c27757733832de498936ab966e65023bd9caf2eadd297f66ef59f09624e82"
+      "file": "src/terms.rs",
+      "item": "fn[direct_references]",
+      "hash": "95af724648a6d7edc37e268e348db3c74fad4d48c0fcaabe85f24e9b511cf2f8"
     }
   ]
 }

@@ -405,6 +405,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
     // {impl}`requirements.references.outlines`
     // {impl}`requirements.references.outline_comments`
+    // {impl}`requirements.references.structural_hash`
     fn is_comment(&self, node: Node<'_>) -> bool {
         (self.profile.is_comment)(node, self.source)
     }

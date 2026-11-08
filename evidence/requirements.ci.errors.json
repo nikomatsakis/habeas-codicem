@@ -1,8 +1,8 @@
 {
-  "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports. A file that cannot be parsed, such as\na malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:\nits error MAY report only the first parse or decoding problem in that file, and\nchecks that do not depend on its contents MUST still run.",
+  "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports. A file that cannot be parsed, such as\na malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:\nits error MAY report only the first parse or decoding problem in that file, and\nchecks that do not depend on its contents MUST still run. Code carries out this\nconvention when it decides how validation proceeds after a failed check: it\ncontinues to later checks, items, or files, substitutes a fallback so later\nchecks still run, or omits a second report of a failure another check already\nreports. Code that checks one field or value and reports its failures implements\nthat check's requirement, not this convention.",
   "determination": false,
-  "rationale": "**Verdict: false.** The implementation and tests are strong. The `{impl}` marking is incomplete, and the requirement says that is a gap.\n\n**What the code does well**\n- `inspect_repository_with_progress` (src/evidence.rs) accumulates every failure into one `errors` vector and keeps going through all checks:\n  - workspace config\n  - book config\n  - definitions\n  - evidence files\n  - missing evidence\n  - source discovery\n  - credentials\n  - references\n  - citation reviews\n  - Rust coverage\n- Parse failures are each one failed check that does not stop later checks:\n  - `load_workspace_evidence` errors are pushed and execution continues.\n  - `book_source_dir` falls back to `md` after recording a malformed `book.toml`.\n  - `validate_evidence_file` returns after the first JSON problem in that file and reports only that problem. Well-formed records report every field failure.\n  - `DiscoverySources::load` uses `unwrap_or_default` for the policy, so an invalid `habeas.toml` is not reported twice.\n  - `main` skips the early config load for `status` and `info`, so the validation report is still produced.\n- `close_dependencies`, `files_with_extension`, `validate_references`, `collect_references_with_progress`, `validate_rust_functions` and `validate_review` all record a problem and continue.\n\n**Tests**\n- `collects_missing_orphan_format_false_and_changed_line_errors` checks that many different errors are reported in one run.\n- `configuration_and_dependency_failures_do_not_stop_later_checks` covers three cases:\n  - several unresolvable terms in one record\n  - invalid `habeas.toml` and `book.toml` together with a malformed evidence file and an unknown reference\n  - other records' checks still running\n- `inspection_progress_preserves_validation_and_finishes_each_phase` covers a malformed evidence file and an unparsable Rust source in one run.\n- `status_loads_nearest_workspace_file_without_validating_authoring` covers invalid workspace files through the `status` and `info` commands.\n\n**Gaps**\n- **`discovered_files` (src/evidence.rs ~1460):** it turns a Git-index failure into a recorded error and returns an empty list so later checks run. That is the \"report and continue\" behaviour this requirement specifies. It is marked only `references.targets`, not `ci.errors`. `DiscoverySources::load` and `book_source_dir`, which do the same thing, are marked.\n- **`citations::validate` (src/citations.rs ~196):** it validates every review, reports each missing or orphaned review, and continues through the whole set. It has no `ci.errors` marker, although `validate_review`, which it calls, does.\n- **Other error-collecting helpers without a `ci.errors` marker:** `validate_input`, `validate_resolved_input`, `validate_outline_input` and `validate_committed_credentials`. The `ci.errors` marks are applied inconsistently across the code that implements the convention.\n- **No test for the Git-index failure path.** I did not find a test that exercises it.\n\nBecause the requirement states a convention that every check follows, code that implements part of it without a `{impl}` reference counts as a gap. No FIXME acknowledges these gaps, so the result is false rather than FIXME.",
-  "references": "a4aec57fc1ade986ceb98b452d07aee18db4ffb1bcb32d2456d871d6257afbc5",
+  "rationale": "**Verdict: false.** Validation behaves as the requirement says, and the tests are good. The gaps are in how completely the code is marked, plus one marking that doesn't fit.\n\n**What is implemented and tested well**\n- `inspect_repository_with_progress` (src/evidence.rs) collects errors into one list and keeps going after each failed check.\n- Failed `habeas.toml` loading is recorded as an error instead of aborting.\n- `book_source_dir` returns the `md` fallback on every kind of malformed `book.toml`, so definition collection and later checks still run.\n- `collect_definitions` and `files_with_extension` skip the unreadable or invalid item and continue with the rest.\n- `validate_evidence_file` and `validate_review` report only the first parse problem for a malformed file, then return. A well-formed record reports each failed field.\n- `close_dependencies` reports every unresolvable term, not just the first.\n- `discovered_files` reports a Git index failure once and returns an empty list. `DiscoverySources::load` and `validate_committed_credentials` do not report it a second time.\n- `collect_references_with_progress` discards book-configuration errors because inspection already reports them.\n- `main` lets `status` and `info` run even when the workspace file is invalid.\n- Tests cover the main cases:\n  - `configuration_and_dependency_failures_do_not_stop_later_checks` covers a bad `habeas.toml`, a bad `book.toml`, a malformed evidence file, an unresolvable term and an unknown reference.\n  - `git_index_failure_is_reported_once_and_later_checks_still_run` checks the Git index failure is reported exactly once.\n  - `collects_missing_orphan_format_false_and_changed_line_errors` covers many error kinds in one run.\n  - `inspection_progress_preserves_validation_and_finishes_each_phase` and `tests/commands.rs` `status_loads_nearest_workspace_file_without_validating_authoring` cover the report and CLI paths.\n- No FIXME acknowledges any of the gaps below.\n\n**Gaps**\n1. **Unmarked code that decides how validation proceeds.** The requirement says code carries out the convention when it \"substitutes a fallback so later checks still run, or omits a second report of a failure another check already reports.\" Several places do this but are not marked `{impl}` for `requirements.ci.errors`:\n   - `evidence_input_ranges` (src/evidence.rs ~1611) silently ignores unreadable records and inputs that fail to resolve. Those failures are reported elsewhere, and this lets coverage checks keep running. It is marked only for `evidence_coverage`.\n   - `terms::direct_references` (src/terms.rs) skips malformed or unresolvable inputs with `continue` so dependency checking proceeds. It is marked for `dependencies`, `selection` and `markdown_literals`, not `ci.errors`.\n   - `citations::parse_citation` has the comment \"Every field is checked, so one record reports each malformed field\". It keeps checking `name` and `commentary` after a bad `role`. It is marked only for `citation_review`.\n   - `DiscoverySources::files` keeps uninspectable indexed files \"so that reading it reports the failure\". It carries no `ci.errors` marking.\n2. **Questionable marking.** `DefinitionKind::noun` (src/lib.rs) is marked `{impl}` for `requirements.ci.errors`. It only maps a kind to a word. It decides nothing about how validation proceeds, so the requirement does not specify this behavior.\n3. **Over-marking of field-level checks.** `validate_input`, `validate_outline_input` and `validate_resolved_input` check individual fields. The requirement says such code \"implements that check's requirement, not this convention\". Marking them `ci.errors` blurs the line between this convention and the individual checks.\n\nBecause the marking of the implementing code is incomplete and partly misapplied, the subject is not fully and exactly marked.",
+  "references": "6013737540e0b3115c0d657fc4b1790a770c3b66d0e4550c5f230de8694fcb3e",
   "inputs": [
     {
       "requirements": "requirements.ci.errors",
@@ -17,7 +17,12 @@
         "states which conditions that check reports. A file that cannot be parsed, such as",
         "a malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:",
         "its error MAY report only the first parse or decoding problem in that file, and",
-        "checks that do not depend on its contents MUST still run.",
+        "checks that do not depend on its contents MUST still run. Code carries out this",
+        "convention when it decides how validation proceeds after a failed check: it",
+        "continues to later checks, items, or files, substitutes a fallback so later",
+        "checks still run, or omits a second report of a failure another check already",
+        "reports. Code that checks one field or value and reports its failures implements",
+        "that check's requirement, not this convention.",
         ":::"
       ]
     },
@@ -25,6 +30,16 @@
       "file": "src/authoring/access.rs",
       "item": "impl[DiscoverySources]/fn[load]",
       "hash": "56207181948908057dd7fc60fb1b8920bb421d522f64b255914bf4c95eb0ed67"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]/fn[walk]",
+      "hash": "916d46df740d97d0e696c09c5958dd8adcb0905dfc6e058938c19a35a0323b4f"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate]",
+      "hash": "ab65a72f40933e45b7a6d3bbb3c455bcfafa6fe438b47e72c58305d0eb6fe211"
     },
     {
       "file": "src/citations.rs",
@@ -63,8 +78,33 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "fn[validate_input]",
+      "hash": "dbf082fb2c4015e45e3c9e8bc8b80a908ad74039f7b1b6c02ebcf102ba192a04"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "ce77e1738db89880bd49602d3947249e47e8a9dcf6f3c520e06dcff3d41e58e3"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "6420c858ddefc5fff915aff05d3853ca7979fe1e7780fc0cabc670259ae6a51e"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "fn[validate_references]",
       "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[discovered_files]",
+      "hash": "69f990566604b1200771831a1303f4a265911f40d930ff504a3139ae843556c2"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_committed_credentials]",
+      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
     },
     {
       "file": "src/evidence.rs",
@@ -85,6 +125,11 @@
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[git_index_failure_is_reported_once_and_later_checks_still_run]",
+      "hash": "194dd37674c156fb7fa1fb92bcf1111e638c0b7c052780e7ea5eab6c3d8264cd"
     },
     {
       "file": "src/lib.rs",
@@ -132,93 +177,18 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[tracked_sources]",
-      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_repository]",
-      "hash": "f2052cf4a6e46c972d3d01cb902f0b784a9701ea210a47fd574690be652b4df7"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_input]",
-      "hash": "dbf082fb2c4015e45e3c9e8bc8b80a908ad74039f7b1b6c02ebcf102ba192a04"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[discovered_files]",
-      "hash": "69f990566604b1200771831a1303f4a265911f40d930ff504a3139ae843556c2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_committed_credentials]",
-      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[evidence_input_ranges]",
-      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[validate_repository]",
-      "hash": "6d9a9ba12afb91446b0c92cb8bed559ac8ad9e15260476d21c4a670ffcce7f70"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
-      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[check_keys]",
-      "hash": "5742561000c80a55016d788a76a974991f8570fc8339b8a85c5382a03593233e"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[string]",
-      "hash": "28e84ccff6e9bd409feed5343425d2b30375117beb27cf5251fcec7684f1167d"
+      "item": "impl[DiscoverySources]/fn[files]",
+      "hash": "36d05f255d7ded128763ebd771369fe797aa0ee7f81a106550b8f3ea5fe7406a"
     },
     {
       "file": "src/citations.rs",
-      "item": "fn[same_citations]",
-      "hash": "0b628e457d2f29f4ab27034aa3c01ee7618b5f3628bf62e265b49135ee93275e"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[validate]",
-      "hash": "ab65a72f40933e45b7a6d3bbb3c455bcfafa6fe438b47e72c58305d0eb6fe211"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_outline_input]",
-      "hash": "ce77e1738db89880bd49602d3947249e47e8a9dcf6f3c520e06dcff3d41e58e3"
+      "item": "fn[parse_citation]",
+      "hash": "e06e41bc068f80a71cb9369b808f9894279b4f5b0127721051d0656016a9ff52"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[text_field]",
       "hash": "6a8ce0033251210182c8c2d32fb41c7aa300ad888bf6159425cec7f023e5f239"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_resolved_input]",
-      "hash": "6420c858ddefc5fff915aff05d3853ca7979fe1e7780fc0cabc670259ae6a51e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[compact_diff]",
-      "hash": "6f358e5c5d4c9129a514ab0bf6d3cdd3eb7bbd562e0241208ada79cac17b6f4c"
     },
     {
       "file": "src/evidence.rs",
@@ -236,39 +206,69 @@
       "hash": "2eebdc599a26a3f546a2b0e7f22d2e4f9e14b00491da2482e462cd817dc9d7e8"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]",
-      "hash": "682d26ee9171ec9d76183444c82d48e36efdb578d3e036f2a3c29c4476301659"
+      "file": "src/evidence.rs",
+      "item": "fn[collect_references]",
+      "hash": "f3f9590681feafb196e4060246950b2069676bbdf99095fb52a4cf24325a7919"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[load]",
-      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "0150396844273da1aa3e490d9555b75ce3d48d31e49955e22bf209ba9e82f5b9"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[files]",
-      "hash": "36d05f255d7ded128763ebd771369fe797aa0ee7f81a106550b8f3ea5fe7406a"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_evidence]",
-      "hash": "55a4844bf88c98810c76d5486185af127d895626d83a9de141ce59be82bbd93d"
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load_path]",
+      "hash": "5e19d310ac29287b46a46da897cf09fa235c0d59481be775ed6e90c13e99161e"
     },
     {
       "file": "src/citations.rs",
-      "item": "fn[citation_items]",
-      "hash": "1f07b2d4daadae106de045c08f9e30b309986ce3d0350a7a8c6bca4a16dbe064"
+      "item": "fn[is_review_path]",
+      "hash": "f4171a8b8de3b714bc602983ca12a93f96c185a5f64011db1c778bb4586c1117"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[none_citations]",
+      "hash": "096599d00b81b5fbf3183514cc4bfaec8e2399422ccd4192d53217caa42558e7"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[file_references]",
+      "hash": "6bb24546f89cf1c05044f2ac3c1bb6c5ef7649119368d6bb876ab15831f76d1f"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]",
+      "hash": "dac5e70120a352dc156ee817ef8a672b03f9028ef8ccd24e8b3ffa3e53c2fa5d"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[missing_function_references]",
+      "hash": "bcab391793125a9f9a372c28d1755bfc6439d01ba47ac9d452f6e51b9f35ac0e"
+    },
+    {
+      "file": "src/rust_coverage.rs",
+      "item": "fn[rust_files]",
+      "hash": "1ea0ac345cc282446e79aa5609a9c112c379bf9b3f5cc9d59e93084106e3f087"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[declaration]",
+      "hash": "5263149823d66ebe73fd2dbdf0eebb70dab76aea126cb1da175a6c5dc221d290"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[referenced_terms]",
+      "hash": "0aab2e43df6313b72cfc090e621dbcad8e2a53aba6fe450675577ad8a76bd217"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[dependencies]",
+      "hash": "2b96ffc0104a7cae1a9be5aea04d79199d7524031c262ab97c1bb5d712e6d49b"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[direct_references]",
+      "hash": "95af724648a6d7edc37e268e348db3c74fad4d48c0fcaabe85f24e9b511cf2f8"
     }
   ]
 }

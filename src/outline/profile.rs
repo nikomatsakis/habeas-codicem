@@ -106,6 +106,7 @@ impl Profile {
 
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.structural_hash`
 pub(crate) fn kind_is_comment(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "comment"
 }

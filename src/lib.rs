@@ -61,7 +61,6 @@ pub(crate) enum DefinitionKind {
 }
 
 impl DefinitionKind {
-    // {impl}`requirements.ci.errors`
     // {impl}`requirements.examples.evidence`
     // {impl}`requirements.definitions.declaration`
     pub(crate) fn noun(self) -> &'static str {

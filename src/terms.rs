@@ -63,6 +63,8 @@ pub(crate) fn dependencies(
 // {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.references.markdown_literals`
+// Malformed or unresolvable inputs are skipped: their own checks report them.
+// {impl}`requirements.ci.errors`
 fn direct_references(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,

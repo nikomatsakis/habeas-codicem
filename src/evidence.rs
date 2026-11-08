@@ -1608,7 +1608,10 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
     references
 }
 
+/// Unreadable records and unresolvable inputs contribute no ranges: their
+/// own checks report them, and coverage checking continues.
 // {impl}`requirements.references.evidence_coverage`
+// {impl}`requirements.ci.errors`
 fn evidence_input_ranges(
     root: &Path,
     path: &Path,

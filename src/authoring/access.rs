@@ -243,6 +243,7 @@ impl DiscoverySources {
     /// files; outside Git, every file under the project root. Symlinks are not
     /// followed, so no source is counted twice through an alias.
     // {impl}`requirements.references.targets`
+    // {impl}`requirements.ci.errors`
     pub(crate) fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = match &self.tracked {
             Some(tracked) => tracked

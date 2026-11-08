@@ -386,3 +386,28 @@ and YAML profiles, for Python decorator attachment, and for whitespace in
 plain-text `line` hashes.
 
 Prompted by: `evidence/requirements.references.structural_hash.json` ("`rust::is_inner_doc_comment` ... carries only an `outline_comments` impl marker, not `structural_hash` ... The `inner_doc_comment` / `outer_doc_comment` group split also goes beyond what the requirement states.").
+
+## requirements.ci.errors (several checks in one unit)
+
+Old (last sentence):
+
+> Code that checks one field or value and reports its failures implements that check's requirement, not this convention.
+
+New:
+
+> Code that checks one field or value and reports its failures implements that check's requirement, not this convention; code that runs several checks on one file, record, or input and continues after one of them fails carries out the convention.
+
+Reason: after the previous rewording, the reassessment read `validate_input`,
+`validate_outline_input` and `validate_resolved_input` as field-level checks
+and called their `{impl}` marks over-marking, though each runs several checks on
+one input and continues after a failure. The added clause settles which side of
+the line they fall on. In the same change, `evidence_input_ranges`,
+`terms::direct_references`, `parse_citation` and `DiscoverySources::files`
+were marked, because each skips or keeps an item so that a failure is reported
+once by its own check while checking continues. The `ci.errors` mark on
+`DefinitionKind::noun`, which only names a definition kind, was removed.
+
+Prompted by: the reassessment of `evidence/requirements.ci.errors.json`
+("Over-marking of field-level checks. `validate_input`, `validate_outline_input`
+and `validate_resolved_input` check individual fields ... Unmarked code that
+decides how validation proceeds ... Questionable marking. `DefinitionKind::noun`").

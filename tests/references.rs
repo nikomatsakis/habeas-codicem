@@ -387,13 +387,35 @@ fn review_paths_encode_selectors() {
         format!("struct Thing;\nimpl Thing {{\n    // {cr}`rules.ready`\n    fn run() {{}}\n}}\n"),
     )
     .unwrap();
-    let errors = errors(root);
+    let slashed = errors(root);
     assert!(
         has(
-            &errors,
+            &slashed,
             "evidence/citations/src/lib.rs/impl[Thing]%2Ffn[run].json: missing citation review for src/lib.rs impl[Thing]/fn[run]"
         ),
-        "{errors:#?}"
+        "{slashed:#?}"
+    );
+
+    // A `%` already in the selector is encoded before `/`, so it is not
+    // mistaken for an encoded `/`.
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "impl [u8; 4] {{
+    // {cr}`rules.ready`
+    fn edge() {{}}
+}}
+"
+        ),
+    )
+    .unwrap();
+    let encoded = errors(root);
+    assert!(
+        has(
+            &encoded,
+            "evidence/citations/src/lib.rs/impl[%255Bu8;%25204%255D]%2Ffn[edge].json: missing citation review for src/lib.rs impl[%5Bu8;%204%5D]/fn[edge]"
+        ),
+        "{encoded:#?}"
     );
 }
 

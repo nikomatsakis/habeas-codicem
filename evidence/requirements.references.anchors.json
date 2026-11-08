@@ -1,7 +1,7 @@
 {
   "requirement": "A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`\ndeclaration MAY list `:test:` options, immediately after its opening fence and\nbefore its body, one per option line, naming a project file path or\n`path#selector` for one outline node under\n{cite}`requirements.references.outline_selectors`. Each anchor MUST be an `{impl}` or `{test}` edge, under\n{cite}`requirements.references.targets`, from the definition to the anchored file or\nnode, for files that cannot or should not carry a reference themselves.\nPaths MUST follow the path rules in {cite}`requirements.ci.schema`. Option lines\nMUST NOT form part of the definition's text for evidence comparison or for\nrequirements inputs, and MUST NOT render as body text.\n\nAn anchored file or node MUST be covered by the definition's evidence under\n{cite}`requirements.references.evidence_coverage`, by an input selecting it, so changing the file makes that evidence stale. A path or selector that\ndoes not resolve to a readable, permitted file or node MUST be a validation error naming the\ndefinition and the path; authoring MUST report it before inference, because the\ndefinition cannot be assessed without it. Any other option line in a `{req}` or\n`{example}` declaration MUST be a validation error.\n\nAgents SHOULD NOT anchor a file when a more precise reference is available, such\nas a reference attached to the Rust item that implements or tests the\ndefinition. Habeas's bundled agent skills MUST give this direction.",
   "determination": true,
-  "rationale": "**Judgment:** `requirements.references.anchors` is satisfied. I found no unacknowledged gaps. The one point that could be read as a gap is the skill-guidance obligation, discussed at the end.\n\n## Implementation\n\nEach obligation in the requirement text has marked `{impl}` code:\n\n- **Option-line syntax.**\n  - `definition_blocks` and `option_line` in `src/lib.rs` read option lines only immediately after the opening fence of a `{req}` or `{example}`, stopping at the first non-option line. Terms are skipped.\n  - `DefinitionBlock` and `DefinitionOption` carry the parsed options.\n- **Anchor parsing.**\n  - `collect_definitions` in `src/evidence.rs` maps `:impl:` to an impl edge, accepted on a `{req}` only.\n  - It maps `:test:` to a test edge, accepted on a `{req}` or an `{example}`.\n  - Any other option, and an empty path, is a validation error that names the definition and the line.\n  - `Anchor::parse` splits `path#selector`.\n- **Option lines excluded from text.** `without_options` removes them from the definition text, from `raw_lines` (the requirements input text), and from rendering. `replace_definitions` and `preprocess_book` render the body from `text_start`.\n- **Resolution and permission.** `Anchor::resolve` goes through `OutlineCache::parse`, which does the permitted-read check, and then `ParsedSource::resolve`, which does the selector resolution under `outline_selectors`.\n- **Coverage.**\n  - `validate_references` requires that some evidence input selects the anchored node or one of its ancestors. `AnchorTarget.nodes` lists the node and its ancestors, and `InputRange.node` records what each input selected.\n  - An unresolved anchor produces a validation error naming the definition, the anchor path and the declaration source.\n- **Authoring reports before inference.** `AssessmentSources::prepare` in `src/authoring/inputs.rs` resolves every anchor. It fails with `<name>: cannot read :<kind>: anchor <path>`, keeping `PermissionDenied` for denied paths. Anchors turn into outline-input selectors, so the evidence covers them. This happens before any inference.\n- **Edges and discoverability.**\n  - The `references` tool in `src/authoring/tools.rs` reports anchors as impl/test sites with a null line.\n  - `DefinitionEdges::current` in `src/index.rs` uses anchors to group inputs on the detail page.\n- **Skill guidance.** `assets/skills/habeas-requirements/SKILL.md` is anchored with `:impl:` from the declaration. It explains the anchor syntax and says \"Do not anchor a file when a more precise reference is available, such as a comment attached to the Rust item…\". That carries out the \"SHOULD NOT / skills MUST give this direction\" sentence.\n\n## Tests\n\nThe tests cover the main points of the design space:\n\n- `anchored_files_must_be_completely_covered_and_resolvable` (`src/evidence.rs`) checks:\n  - a section-only input does not cover a whole-file anchor;\n  - an unresolvable `:test: missing.sh` is a validation error;\n  - an example `:test:` anchor is covered;\n  - option lines are not part of the text;\n  - changing the anchored file makes the evidence stale.\n- `selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor` covers a sibling input failing, a node, ancestor and root input succeeding, and a missing selector failing.\n- `unsupported_and_empty_options_are_validation_errors` covers an unknown option, an empty `:impl:`, and `:impl:` on an example.\n- `requirements_inputs_omit_option_lines` and `anchor_options_are_metadata_not_body_text` cover:\n  - the text and requirements-input exclusion;\n  - the \"immediately after the fence\" rule (a later `:test:` line stays body text);\n  - options on a nested example inside a requirement;\n  - non-rendering.\n- `anchored_files_contribute_root_node_inputs`, `unreadable_or_denied_anchors_fail_before_inference` (missing file and a denied path) and `references_contribute_their_owning_outline_nodes` (selector anchors) cover the authoring-side behavior.\n- `references_report_anchors_as_file_or_node_sites` covers the `references` tool, including omitting a denied anchor.\n- The index and detail-page tests cover grouping and \"no option text rendered\".\n\n## Reservation\n\nOnly `habeas-requirements/SKILL.md` states the anchor direction. `habeas-bootstrap-requirements` does not repeat it, but it explicitly defers to the `habeas-requirements` guidance for directive syntax. I judged that sufficient, but a stricter reading of \"bundled agent skills\" could require the direction in the bootstrap skill as well.",
+  "rationale": "**Judgment:** `requirements.references.anchors` is implemented completely and is tested. I found no gaps.\n\n**Implementation, by obligation**\n\n- **Syntax (`:impl:`/`:test:` on `{req}`, `:test:` on `{example}`, only immediately after the opening fence).**\n  - `definition_blocks` and `option_line` in `src/lib.rs` (about lines 601–718) collect consecutive option lines directly after the opening fence. Terms get none, and parsing stops at the first non-option line.\n  - `collect_definitions` in `src/evidence.rs` (about lines 452–498) maps each option to an `Anchor` (`parse` and `label` in the `Anchor` impl). A `path#selector` value is split into file and item.\n  - It reports a validation error for any other option, for `:impl:` on an example, and for an empty path.\n- **Anchors are `{impl}`/`{test}` edges to a file or outline node.**\n  - They are stored in `Declaration.anchors`.\n  - `Anchor::resolve` reads the file through `OutlineCache::parse`, which goes through `read_project_file` and its containment and permission checks. It resolves the selector, with the empty selector meaning the root node.\n  - The edges feed the reference-set digest, the `references` tool (`src/authoring/tools.rs`), and the evidence-page grouping in `DefinitionEdges::current` (`src/index.rs`).\n- **Option lines are not definition text and do not render.**\n  - `without_options` strips them from the evidence text and from `raw_lines`.\n  - `preprocess_book` and `replace_definitions` (in `src/lib.rs`) render from `text_start`, which skips them.\n- **Coverage by evidence.**\n  - `validate_references` (`src/evidence.rs`) requires an outline input selecting the anchored node or one of its ancestors. Otherwise it reports `no input selects … anchored by :impl:`.\n  - `AssessmentSources::prepare` adds an outline selector for each anchor to the mandatory inputs. Changing the anchored file therefore makes the evidence stale.\n- **Unresolvable anchors.**\n  - Validation reports an error naming the definition, the path or selector, and the declaration location.\n  - `prepare` fails with `<subject>: cannot read :impl: anchor <path>…` before any inference.\n  - A disallowed path returns `PermissionDenied`.\n  - Default-excluded `evidence/` anchors are omitted, as the source-access policy specifies.\n- **Skills direction.** `assets/skills/habeas-requirements/SKILL.md` is anchored with `:impl:`. Its \"Authoring format\" section explains anchors and says \"Do not anchor a file when a more precise reference is available, such as a comment attached to the Rust item…\". The other two skills do not mention anchors. I read \"bundled agent skills\" as the skill that covers reference authoring. A stricter reading would also require the other skills to carry the direction.\n\n**Tests**\n\n- `src/lib.rs::anchor_options_are_metadata_not_body_text`:\n  - option parsing and line numbers, including an option on a nested example\n  - options stripped from the body and from rendered output\n  - a non-adjacent `:test:` line and an inline `:impl:` staying literal\n- `src/evidence.rs`:\n  - `anchored_files_must_be_completely_covered_and_resolvable`: partial coverage by a section input, an unresolvable file, an example anchor, no text-change error, and staleness after the anchored file changes.\n  - `selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor`: a sibling input does not cover, while the node, its parent, and the root do. It also covers an unresolvable selector.\n  - `unsupported_and_empty_options_are_validation_errors`: an unknown option, an empty option, and `:impl:` on an example.\n  - `requirements_inputs_omit_option_lines`: the declaration text excludes option lines.\n- `src/authoring/inputs.rs`: root-node inputs for anchors, a missing anchor failing before inference with the definition and path, a denied path giving `PermissionDenied`, and a selector anchor contributing its node.\n- `src/authoring/tools.rs::references_report_anchors_as_file_or_node_sites`: anchors appear as file or node sites, and a disallowed anchor is omitted.\n- `src/index.rs::detail_inputs_are_grouped_by_current_edges_in_disclosures`: an anchor drives the evidence grouping.\n\n**Marking.** Every piece of anchor-handling code I found carries `{impl}` for this requirement, so no cite-only gap exists. The extra behaviors (omitting generated evidence, rendering sites in the `references` tool) are specified by `requirements.authoring.source_tools`, `requirements.authoring.reference_index`, and `requirements.authoring.read_denial`, which those functions also reference. There are no FIXMEs.",
   "references": "8907ff3ceaf78431d42e4a17365514b87c11f1314e896f852ac5a0f217716a82",
   "inputs": [
     {
@@ -278,14 +278,29 @@
       "hash": "1e96b7c4309853b1fb6f3f6f4bc27fe14c1ac8a0982f5ee452be400b622d9ff3"
     },
     {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
+    },
+    {
       "file": "src/evidence.rs",
-      "item": "impl[Anchor]",
-      "hash": "5b683a553473984fe35866e0a23f7e57c867a15597d32f2f82ad8e9c8b53233d"
+      "item": "struct[ReferenceSetEntry]",
+      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[reference_set_digest]",
       "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
+      "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_page]",
+      "hash": "1cce24f0597a0027d5301be53761324994999baed3d5e0ecb9ee034bebfba8e6"
     },
     {
       "file": "src/index.rs",
@@ -298,6 +313,26 @@
       "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
     },
     {
+      "file": "src/lib.rs",
+      "item": "impl[DefinitionKind]/fn[anchor]",
+      "hash": "b567031807f002032a87db83cb7e7702240074a1a2848bfb4b1cfb84541b208c"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[reference_badge]",
+      "hash": "8eb1880787947dd773aefd3cc5471933546d430817b4d30922a528d810bba479"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[replace_inline_references]",
+      "hash": "6911063d11957b6a60f8c6be761507c9044c7566d9652204820729dff5a953cd"
+    },
+    {
+      "file": "src/lib.rs",
+      "item": "fn[chapter_href]",
+      "hash": "2ba7dbb9d51a4b685ada2f2724fa9edefbc76dd53b6224537378950681c20429"
+    },
+    {
       "file": "src/rust_coverage.rs",
       "item": "mod[tests]/fn[definitions]",
       "hash": "65866836139f2ff410592e6c4fc6ada7bb4a9e75b97d2d530245e9c204bb2709"
@@ -308,59 +343,14 @@
       "hash": "c65d65ed91711c7879e9394dee4f6a6af6c5d95e22c39cae3f669b9f9f3ce00b"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]",
+      "hash": "5bc0dbc4402dd2df031e8ee8520d63609649b532337f1601b57ef04aaa9208e0"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[AuthoringSubject]/fn[parse]",
-      "hash": "dfbad01c3051df5806770756e573e8968787ea88c59ccd514bb767263c0330f5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[parse]",
-      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[parse]",
-      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[evidence_input_ranges]",
-      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[InputLocation]/fn[resolve]",
-      "hash": "b7699db940e1d8de4f56c3ee27f8047b374868fb73009a4388af51af21f60267"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]/fn[parse]",
-      "hash": "547220a7cf9e860f93a3e2c1180eec2a232d80cd89e4b5cb63358d5ee9217638"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]/fn[resolve]",
-      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse]",
-      "hash": "294f2bcdba5e8c997ca582af1d87aab7443986c0a30402e9b2eb450e8207dc12"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[resolve]",
-      "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[References%20as%20authoring%20inputs]",
+      "hash": "129b55e097d757c1290d72bb678ff4f026ad559804142069bb7500986fe3cc22"
     },
     {
       "file": "assets/skills/habeas-requirements/SKILL.md",
@@ -368,14 +358,69 @@
       "hash": "3e300ad63c91756b14edfd8c7c8c69d7fd3432e887c5fd8586808fcdf6374ffa"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "2c0212e85f7d91d9f5cd96df1c2145e43de2faa14e199573ea7243ec260e5540"
-    },
-    {
       "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
       "item": "section[Bootstrap%20requirements]",
       "hash": "4532daa2c84250b8f271a6ffeb369434f58ee90c63de691e04b7ea21b7941c0f"
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "item": "section[Habeas%20evidence]",
+      "hash": "d36980b6139c006680d714e0bbf8613ffe4acd7aee2ba4e32b4f42c63d4c86a2"
+    },
+    {
+      "file": "assets/skills/habeas-evidence/SKILL.md",
+      "item": "section[Habeas%20evidence]/section[Disagreeing%20assessments]",
+      "hash": "df7643cb066ba39924e9db8be5a0669039658a1c4d486a98fd38035f7bde901e"
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "item": "section[Habeas%20requirements]/section[New%20or%20changed%20behavior]",
+      "hash": "fb0010ab9a6d2c9b2784adcb50306d98982f65b7a6d8eb82f08eb05d69886b67"
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "item": "section[Habeas%20requirements]/section[Reviewing%20code%20against%20requirements]",
+      "hash": "47e48c2695c5deef89f499f5fd631f52a89b16c5de1b7b0a8028d24d90bb37d7"
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "item": "section[Habeas%20requirements]/section[Choosing%20references]",
+      "hash": "9b96fc32827bf6ac13349ec85b357c9b2bd475610321a1b73f5ccc7ec63548b0"
+    },
+    {
+      "file": "assets/skills/habeas-requirements/SKILL.md",
+      "item": "section[Habeas%20requirements]/section[Disagreeing%20assessments]",
+      "hash": "619b3e8f1823ad6a64f07970ace14ffadb2f9628c51d3a529b28c0bebae7904c"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ParsedSource]",
+      "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "3d341a2ee9eac04b06cfb061e5d8e4be1c1d7c45470e654d500a607e1c173f13"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
     }
   ]
 }

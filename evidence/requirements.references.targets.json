@@ -1,7 +1,7 @@
 {
   "requirement": "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{impl}` and `{test}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Reference discovery MUST consider exactly the project sources that source-access policy permits under {cite}`requirements.authoring.source_tools`: in a Git worktree, files present in the Git index, including staged new files; outside Git, all project files; in both cases excluding the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`. Evidence snapshots and generated build output MUST therefore not be counted as source references.\n\nA source item MUST choose its references for each candidate definition by this\nprocedure, and MAY carry several:\n\n1. If the item is a test or test helper designed to verify the definition, it\n   MUST use `{test}`.\n2. Otherwise, if fulfilling the definition depends on the item, it MUST use\n   `{impl}`. For code, this means it makes a decision, performs a check,\n   produces an output, or handles a case the definition specifies. For a type,\n   this means the definition constrains its shape: fields, variants, serialized\n   form, or validation.\n3. Otherwise, if the item should be re-checked or kept in sync when the\n   definition changes, it MUST use `{cite}`.\n4. If the item carries no reference after applying steps 1 to 3 to every\n   definition, it MUST cite the built-in `habeas:none` under\n   {cite}`requirements.references.no_requirement`, justifying why the item\n   exists.\n\n```text\n{impl}`requirements.references.targets`\n{cite}`requirements.references.targets`\n{test}`requirements.references.targets`\n```",
   "determination": true,
-  "rationale": "## Judgment\n\nThe implementation matches every obligation in `requirements.references.targets`, and the tests cover the main cases and the failure cases. I found no unmarked implementation and no unspecified behavior that matters. One minor point is noted at the end.\n\n## Implementation\n\n- **Roles and names.**\n  - `reference_roles` in `src/lib.rs` finds the inline `{impl}`, `{cite}` and `{test}` roles. It accepts a valid full name or a built-in name.\n  - It leaves escaped roles, and roles in code or raw HTML, literal. The helpers `protected_ranges`, `is_protected` and `is_escaped` do this.\n  - `ReferenceKind` and `ReferenceMatch` hold the result.\n- **Fenced form.**\n  - `src/fenced.rs` implements `:::{role} name`. `opening_fence` takes three or more colons and one name. It rejects indentation of four or more spaces, and it accepts built-in names.\n  - `find_fences` closes a fence on a colon-only line with at least as many colons. Nested fences are allowed.\n  - `markdown_fences` and `text_fences` handle Markdown and plain text. Fences in Markdown code or HTML stay literal.\n- **Comment fences.**\n  - `strip_comment_delimiters` removes each line's comment delimiters.\n  - `comment_fences` builds one fence-recognition run per comment run, so a fence must open and close in the same run. It also records the owning outline node.\n  - `source_fences` chooses the strategy by file type.\n- **Unclosed fences.** `validate_references` in `src/evidence.rs` reports a fenced reference that does not close within its comment run or file.\n- **Unknown names.** `validate_references` reports a missing `{req}` or `{example}` target as `file:line: … has no matching requirement or example`.\n- **Built-ins.** Built-in names go through `builtin.check`. That part is implemented under `builtin_definitions` and `no_requirement`, and I did not reassess it here.\n- **Collection.** `collect_references_with_progress` and `file_references` read each file, skip binary or non-UTF-8 files, and produce both inline and fenced `SourceReference`s with file and line.\n- **Edge semantics.** `{impl}` and `{test}` edges are collected per definition and `{cite}` is left out of coverage. This is in `validate_references`, with the reference-set rules under `ci.reference_set`.\n- **Discovery scope.** `DiscoverySources` in `src/authoring/access.rs` does the following:\n  - In a Git worktree it uses the indexed files, including staged new files.\n  - Outside Git it walks every file.\n  - It excludes the project-root `book` and `evidence` directories, and `.git` and `target` at any depth (`excluded_from_discovery`).\n  - It drops paths disallowed under `evidence_paths` (`considers`).\n  - `discovered_files` reports a Git index read failure as an error.\n- **Marking.** Every part of the definition that I traced has an `{impl}` reference. These are the consumers that only call the code and cite it (`missing_function_references`, `terms::referenced_terms`, the book renderer, `index.rs`). Under the \"calling code\" rule they do not need `{impl}`.\n\n## Tests\n\n- **Discovery.**\n  - `discovery_considers_indexed_files_except_exclusions…` in `access.rs` covers staged, untracked and deleted files. It also covers `target`, `evidence`, and a nested `book` directory.\n  - `reference_discovery_skips_evidence_snapshots_and_build_output` in `evidence.rs` covers nested `book` and `evidence`, `target`, `.git` and binary files.\n  - `tests/references.rs::disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file` covers disallow rules and the non-Git case.\n  - `untracked_sources_are_not_validated_until_staged_and_status_lists_them` covers staging.\n  - `references_report_only_sites_in_considered_sources` and the `authoring/inputs.rs` tests cover how discovery feeds authoring.\n- **Roles.**\n  - The `lib.rs` tests cover escaped and code literals, raw HTML, invalid names, and requirement bodies scanned as Markdown.\n  - `every_markdown_extension_keeps_escaped_and_code_roles_literal` covers `.md`, `.markdown` and mixed-case extensions, with a `.txt` contrast.\n- **Fences.**\n  - `opening_fences_take_a_role_and_one_valid_or_built_in_name` covers valid and invalid openers, including the indentation boundary.\n  - `markdown_fences_close_with_enough_colons_and_skip_code` covers colon-count nesting, unclosed fences, and code protection.\n  - `comment_delimiters_are_removed_per_line` and `comment_fences_close_within_one_comment_run` cover delimiter stripping, a later run not closing an earlier fence, block comments, and node ownership.\n  - `fenced_references_in_comments_and_built_in_rules_are_validated` checks the unclosed-fence error with its `file:line`.\n- **Failures and edges.**\n  - `reports_unknown_references_and_uncovered_lines` checks the `file:line` error for a missing definition.\n  - `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks that `{cite}` is excluded from coverage while `{impl}` and `{test}` are covered.\n\n## Minor note\n\nDiscovery skips symbolic links. It does so both for indexed files and in the non-Git walk. The doc comment gives the reason: it avoids counting a source twice through an alias. The requirement text does not mention this, and a literal reading of \"files present in the Git index\" could include indexed symlinks. I treat it as a reasonable, documented reading and not a gap.",
+  "rationale": "**Judgment:** the implementation and tests satisfy `requirements.references.targets`. I found no unmarked implementation or unspecified behavior.\n\n**Implementation**\n\n- **Inline roles.**\n  - `reference_roles` in `src/lib.rs` finds `{impl}`, `{cite}` and `{test}` roles with backtick-delimited names.\n  - It accepts a valid full name or a built-in name.\n  - It skips escaped roles (`is_escaped`) and roles in Markdown code or raw HTML (`protected_ranges`, `is_protected`).\n  - `is_markdown_path` in `src/outline/profile.rs` decides which files get Markdown treatment.\n- **Fenced form.**\n  - `opening_fence` takes a role and exactly one valid or built-in name. It allows at most three spaces of indentation through `colon_fence`.\n  - `find_fences` closes a fence at the next colon-only line with at least as many colons, so nested fences work.\n  - `markdown_fences` handles Markdown and plain text.\n  - `comment_fences` removes comment delimiters per line (`strip_comment_delimiters`) and looks for fences only within one comment run. `source_fences` dispatches by file type.\n- **Unclosed fence.** `validate_references` in `src/evidence.rs` reports `fenced {role} reference to X has no closing fence ... within its comment run or file`.\n- **Unknown names.** The same function reports `file:line: {role}`name` has no matching requirement or example`. This includes a `{impl}` or `{test}` reference that names a term. Built-in names go through the built-in check instead.\n- **Edge direction.** `{cite}` references are excluded from the definition's evidence-coverage check, so they stay an edge from source to definition. `{impl}` and `{test}` are collected per definition.\n- **Source set.**\n  - `DiscoverySources` in `src/authoring/access.rs` uses the Git index when in a worktree, so staged new files count and deleted files are dropped.\n  - Outside Git it walks every file without following symlinks.\n  - `excluded_from_discovery` excludes root `book` and `evidence` and any `.git` or `target` directory at any depth.\n  - `considers` applies the workspace `[evidence]` disallow rules to both the path and its symlink target.\n  - `collect_references_with_progress` skips binary files and reports unreadable ones.\n- **Marking.** The helpers and types involved carry `{impl}` markers for this requirement. They are `SourceReference`, `ReferenceKind`, `ReferenceMatch`, `FenceLine`, `Fence`, `SourceFence`, `body`, `split_lines`, `text_fences`, `text_references` and `discovered_files`. Shared helpers such as `colon_fence`, `closes`, `valid_name` and `tracked_sources` are marked for the requirements they implement (`ci.span`, `ci.fence_lengths`, `ci.identifiers`, `authoring.source_tools`), and this requirement cites those definitions. Behavior not specified here, such as `{term}` roles and badge rendering, is implemented under other requirements.\n\n**Tests**\n\n- **Source set.**\n  - `discovery_considers_indexed_files_except_exclusions_...` (`access.rs`) covers staged, deleted and untracked files, plus `target`, `evidence` and nested `book`.\n  - `reference_discovery_skips_evidence_snapshots_and_build_output` (`evidence.rs`) covers the root-only `book` and `evidence` exclusions, nested `target` and `.git`, and binary files.\n  - `tests/references.rs::untracked_sources_are_not_validated_until_staged...` covers untracked files.\n  - `tests/references.rs::disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file` covers disallow rules and the no-Git case.\n  - `references_report_only_sites_in_considered_sources` (`tools.rs`) and `mandatory_git_inputs_require_staging_...` (`inputs.rs`) cover the same rules in the authoring tools.\n- **Markdown literals.**\n  - `every_markdown_extension_keeps_escaped_and_code_roles_literal` covers `.md`, `.markdown`, `.MD` and `.Markdown`, and shows `.txt` is not Markdown.\n  - The `lib.rs` tests cover escaped roles, backslash parity, and code blocks inside requirement bodies.\n- **Fence parsing.**\n  - The `fenced.rs` tests cover valid and invalid opening fences. Cases include four-space indentation, missing whitespace, bad names, an unknown built-in name, and `{term}`.\n  - They cover nested colon lengths, Markdown code skipped, and an unclosed fence.\n  - They cover per-line delimiter removal, and a comment fence closing only within its own run (a later run's `:::` does not close it).\n  - They check the owning node for fences in both line comments and block comments.\n- **Validation errors.**\n  - `reports_unknown_references_and_uncovered_lines` asserts the `file:line` error for an unmatched name.\n  - `fenced_references_in_comments_and_built_in_rules_are_validated` asserts the unclosed-fence error and the built-in role and form errors.\n  - `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks that `{cite}` is not an evidence-coverage edge while `{impl}` and `{test}` are.\n\nThe tests cover boundaries and failure cases across the design space of this requirement.",
   "references": "b207aa4bf5337473d56732727679d09cef0be5354d5fa7d192e5e8ab7d1e3c0b",
   "inputs": [
     {
@@ -503,79 +503,9 @@
       "hash": "d09719b14ac3208edf5599f7e2f5b8bbd747f46e290bfa37f74e1f88c60a3e9d"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "use@4acd7fec4c4a",
-      "hash": "4acd7fec4c4a06f684055207db032e20d650cbfd84049329791caa29f3d7944a"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_citation]",
-      "hash": "da1ac8c3f2775d444caef1f575a986564bbcd5936b7770e5e45248b423b2b9b8"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "ad06e3cf141924e5418394d409c18d51b5628a36a0865c4db89d7ef4bbc1b391"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[example_references_requirement]",
-      "hash": "cd0db348290f0a4c14fd0a8bbb4ed9184afdadf33154ce507680fb5844dc140f"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest_for]",
-      "hash": "1928a8d338ff5dae6a6dfefeb2599a172e4b76c67b9ab7445c2454b25d6c469b"
-    },
-    {
       "file": "src/fenced.rs",
-      "item": "fn[justification]",
-      "hash": "5b4f2ef571bcb35856854462484939526a86ce9b4938eb46daad1dcd047cec11"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DefinitionEdges]/fn[current]",
-      "hash": "702526d29352d4816fa00ddc14bed815cf62f7adc34830949ca206c0b29c15dc"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[replace_references]",
-      "hash": "236568b2fd4f8a76f4b2514fca54606e83de5ee398b43e978104462f3b519e54"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[replace_inline_references]",
-      "hash": "6911063d11957b6a60f8c6be761507c9044c7566d9652204820729dff5a953cd"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[invalid_names_remain_literal]",
-      "hash": "6fa8e9e43955295ed3e02fc3eab6764fbc52e74ab922cc0b542ec3c847abde0b"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]/fn[roles_in_raw_html_stay_literal]",
-      "hash": "2e3da80022ff4ce62041fe2d87be7a97d548b68e1ad7e0462a3d64fcff90e8ba"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "fn[missing_function_references]",
-      "hash": "bcab391793125a9f9a372c28d1755bfc6439d01ba47ac9d452f6e51b9f35ac0e"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[referenced_terms]",
-      "hash": "0aab2e43df6313b72cfc090e621dbcad8e2a53aba6fe450675577ad8a76bd217"
+      "item": "",
+      "hash": "34d005730cdf3b34d2cec459f89027e8ecde93d41c6a760db4621d8fe5e4f460"
     },
     {
       "file": "src/authoring/access.rs",
@@ -589,16 +519,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_os_denial]",
-      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "fn[resolve]",
       "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
     },
@@ -608,56 +528,29 @@
       "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
     },
     {
-      "file": "md/reference.md",
-      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
-      "hash": "a89cf9052fb768360dcb975d6bb3edc2a897cac0c27eda6e085c5db292a87fbe"
+      "file": "src/lib.rs",
+      "item": "fn[without_options]",
+      "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Request%20evidence%20inputs:%20`habeas`]",
-      "hash": "b9aec0604376cc3e223a5e1b340c8af0688165be60e7e223073372f4d24b1d2a"
+      "file": "src/lib.rs",
+      "item": "fn[colon_fence]",
+      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Initial%20prompt]/section[Mandatory%20inputs]",
-      "hash": "6eb1cb5574a10d12fa9b9b20f094da7b3517769356fe1f98aa77a0c4710fd38d"
+      "file": "src/lib.rs",
+      "item": "fn[overlaps_protected]",
+      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
     },
     {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]",
-      "hash": "e5de551ab6804186da247de37ae808e023c84b142803f9241241e8b042aef559"
+      "file": "src/lib.rs",
+      "item": "fn[valid_name]",
+      "hash": "d3113ad1c2701c9b8d3b9b044da3c1fc8d798d3c5628bc382138925bbc970a6e"
     },
     {
-      "file": "md/requirements/configuration.md",
-      "item": "section[Configuration]/section[Common%20data%20structures]",
-      "hash": "e0f353a023ff47a263243f1cff5014bc168680e882248cb60dbfb2b08fa46839"
-    },
-    {
-      "definition": "requirements.ci.validation_error",
-      "text": [
-        ":::{definition} validation_error",
-        ":phrase: validation error",
-        "",
-        "One message in a repository validation report, describing a single failed check.",
-        "It begins with the affected evidence file, requirement, or source location, names",
-        "the failed check, and states the specific missing, invalid, or changed value,",
-        "with the expected value when available. It is concise because agents are its",
-        "primary readers.",
-        ":::"
-      ]
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/lib.rs",
+      "item": "fn[escape_html]",
+      "hash": "6957779eaea2a004ad19afb83132699cd61b174640c47ff4aa58e59960bd3653"
     }
   ]
 }

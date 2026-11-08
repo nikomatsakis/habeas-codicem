@@ -414,6 +414,7 @@ fn validate_review(
 
 /// Parses one recorded citation.
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.ci.errors`
 fn parse_citation(value: &Value, label: &str, errors: &mut Vec<String>) -> Option<Citation> {
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
