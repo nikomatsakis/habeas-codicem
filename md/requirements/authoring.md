@@ -231,9 +231,9 @@ resolving symlinks; in a Git worktree, both the requested file and its resolved
 target MUST be present in the Git index. Projects outside Git MUST use the same
 containment rules without requiring an index. Failure to read an existing
 repository's index MUST be reported as an error.
-The project-root `evidence/` directory and an active workspace configuration
-containing literal credentials MUST be excluded from model reads by default,
-including symlink aliases. Generated build outputs MUST follow
+The project-root `evidence/` directory MUST be excluded from model reads by
+default, including symlink aliases. Every source the harness supplies to the
+model MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow
 {cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST
 follow {cite}`requirements.configuration.evidence_paths`, including explicit
 permission for otherwise excluded inputs. A denied mandatory input or explicit
@@ -725,6 +725,29 @@ named variable MUST supply the credential; a missing or empty value MUST produce
 an error before a model request.
 :::
 
+:::{req} redaction
+Every source text the harness supplies to a model, including mandatory inputs,
+`habeas` reads, and `ripgrep` results, and every source text Habeas displays in
+the book or `habeas info`, MUST be redacted:
+
+1. In a workspace `habeas.toml` or user configuration file, the value of every
+   explicit credential field defined by {cite}`requirements.authoring.credentials`
+   MUST be replaced.
+2. In every source, each match of a built-in rule of the `secretshape` crate MUST
+   be replaced. The replaced region MUST be extended through each adjacent region
+   that the crate's entropy heuristic flags and that only whitespace separates
+   from the region, repeating until no flagged region is adjacent. The heuristic
+   MUST NOT cause redaction on its own.
+
+A replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential
+field or the rule's name, and MUST keep every line break within the replaced
+text, so line numbers are unchanged. Outlines MUST be built from the original
+source, and the structural hash MUST hash each text piece that overlaps a
+redacted region in its redacted form, so evidence never depends on a credential's
+value and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading
+it MAY change redaction and hashes and MUST be treated as a deliberate change.
+:::
+
 :::{req} credentials
 Bedrock configurations MAY supply `credentials` containing nonempty
 `access_key_id`, `secret_access_key`, and optional nonempty `session_token`.
@@ -737,10 +760,12 @@ changing process environment variables or writing credential files. Saved
 explicit values MUST round-trip; credentials resolved from profiles or the
 environment MUST NOT be serialized back. Debug output, configuration diagnostics,
 usage records, and initial prompts MUST NOT include credential values. TOML
-diagnostics MUST NOT echo credential-containing source lines. An active workspace
-file containing explicit credentials MUST be excluded from model source reads by
-default under {cite}`requirements.authoring.source_tools`; explicit workspace path
-overrides still apply.
+diagnostics MUST NOT echo credential-containing source lines. A configuration
+file containing explicit credentials MAY be read as source; its credential
+values MUST be redacted under {cite}`requirements.authoring.redaction`.
+Validation MUST report a workspace `habeas.toml` present in the Git index that
+contains explicit credentials, naming the file and the credential fields and
+recommending credential-source references, because committed credentials leak.
 
 Documentation MUST discourage literal credentials in workspace files and
 recommend AWS profiles or environment-variable references. Examples MUST use
@@ -927,9 +952,10 @@ api_key = "OLLAMA_API_KEY_VALUE"
 ```
 
 Do not combine `credentials` with `aws_profile`, or `api_key` with `api_key_env`.
-The active workspace file is excluded from model source reads when it contains
-literal credentials, unless you explicitly allow it. Such an allow exposes its
-contents to the model and records them as evidence inputs.
+When the model reads a configuration file, its credential values are replaced
+with `[REDACTED:<field>]`. Validation reports a committed workspace file that
+contains literal credentials; keep such files out of version control or use
+credential sources instead.
 {impl}`requirements.authoring.credentials`
 
 ## Recording results
