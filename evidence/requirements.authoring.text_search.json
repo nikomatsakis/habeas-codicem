@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST expose a `ripgrep` tool with this interface:\n\n```text\nripgrep({ pattern: String, path: String = \".\", context: Integer = 5 }) -> SearchResult\n\nSearchResult {\n    inputs: Array<EvidenceInput>,\n    definitions: Array<DefinitionInput>,\n}\n```\n\nThe tool MUST search the requested permitted file or directory using\nripgrep's regular-expression syntax and default case-sensitive search and ignore\nrules. It MUST search in process using ripgrep's library crates, without\nrequiring an external `rg` executable, and MUST apply source-access policy while\nwalking files rather than filtering results afterwards. It MAY search files in\nparallel; results MUST be ordered by path and then line regardless of\nparallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST\nbe searched even when ignored or hidden; workspace disallow rules still apply.\nIts model-facing description MUST explain those conventions. `context`\nMUST be nonnegative and specify how many lines before and after each matching\nline to include, defaulting to five on each side. Windows MUST stop at file\nboundaries, and overlapping windows in the same file MUST be merged. Each match and its context lines MUST be returned and\nrecorded as the innermost outline nodes containing them, under\n{cite}`requirements.ci.outline_inputs`; a match in a comment belongs to the node\nthe comment belongs to under {cite}`requirements.references.outline_comments`.\nEach result MUST include the selected source text for the model.\nSetting `context` to zero MUST return only matching lines.\nSearch results MUST exclude files disallowed by\n{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded\npath MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.\nRequired terminology MUST be included under\n{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied\nto the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.\nNo matches MUST return empty arrays; invalid arguments or a failed search MUST\nreturn an explanatory tool error.",
   "determination": true,
-  "rationale": "**Judgment: the `ripgrep` tool meets `requirements.authoring.text_search`.** I checked the implementation and tests against each obligation. I did not run the tests.\n\n**Implementation**\n\n- **Interface and arguments.** `definitions()` in `src/authoring/tools.rs` advertises `ripgrep` with `pattern` (required), `path` (default \".\"), and `context` (integer, minimum 0, default 5), with `additionalProperties:false`. `search()` enforces this:\n  - `check_keys` rejects unexpected keys.\n  - `string` rejects a non-string `pattern`.\n  - `integer` rejects a negative or non-integer `context`.\n  - `optional_path` defaults `path` to \".\".\n  - `context` defaults to 5.\n- **In-process search with ripgrep's crates.** It uses `grep_regex::RegexMatcherBuilder` with `case_insensitive(false)`, `grep_searcher`, and `ignore::WalkBuilder::build_parallel`, so no external `rg` is needed. Normal ignore, hidden, and `.gitignore` rules apply by default.\n- **Access policy applied while walking.** Each walked entry goes through `sources.access.file(...)`, and denied entries are skipped before they are opened. The requested path itself goes through `project_path` → `SourceAccess::path`:\n  - Explicitly requesting a denied path (evidence/, untracked, disallowed, symlink out of the project) returns a `PermissionDenied` policy error.\n  - `converse` turns that error into an abort.\n  - Outside-project requests that no rule permits become recoverable tool errors via `recoverable_outside_request`.\n- **Allowed and generated paths.** For `extra_roots()` (allow rules and generated build-output directories), `search()` adds extra walks with hidden and ignore filters turned off. Disallow rules still apply through `file()`.\n- **Deterministic ordering.** Matches are collected into a `BTreeMap` keyed by file, and line numbers are sorted and deduplicated per file. Results therefore do not depend on scheduling. Ordering is by string path, not by path component. That is deterministic and acceptable.\n- **Context windows.** The window is `[line-context, line+context]`, clamped to 1 and the file's line count. Overlapping (and adjacent) windows are merged. Context 0 gives the matching lines only.\n- **Innermost outline nodes.** Each window goes through `read_lines(..., comments=true)` → `nodes_for_range` → `Outline::nodes_for_lines`. This returns the innermost nodes, maps comment lines to their owner nodes, and includes the source text. The model-facing input comes from `to_model_input`.\n- **Terminology and recording.** `additional_definitions` supplies the terminology, and `ToolDelivery.inputs` includes both the nodes and the definitions. `converse` records them as pending inputs once the next provider response arrives, which is the delivered-inputs behaviour.\n- **No matches and errors.** No matches give `{\"inputs\":[],\"definitions\":[]}`. A bad regex, bad arguments, a search failure, or a matched file that cannot be parsed each return an explanatory error.\n- **Description.** The tool description states the conventions the requirement lists: regex syntax, case-sensitive, ignore rules, default context, merged windows, innermost nodes, comment ownership, terminology, empty arrays, allowed and generated paths, and disallow/denial behaviour.\n- **Marking.** The supporting functions carry `{impl}` markers. I found no unmarked implementing code: `recoverable_os_denial` and `denied` are marked for `read_denial`, which is a different requirement.\n\n**Tests** (`src/authoring/tools.rs`, plus `tests/authoring_cli.rs`)\n\n- `search_merges_context_windows_and_respects_ignore_rules` covers:\n  - merged windows;\n  - the start-of-file clamp;\n  - context 0;\n  - case-sensitivity (no matches for \"NEEDLE\");\n  - empty arrays;\n  - an invalid regex;\n  - a negative context;\n  - gitignored and hidden files.\n- `search_supplies_terminology_clamps_at_eof_and_reports_failures` covers:\n  - the end-of-file clamp;\n  - terminology supplied and recorded;\n  - an allowed hidden directory searched while an unallowed one is not;\n  - each invalid-argument error message;\n  - an unparseable matched file.\n- `parallel_search_orders_results_by_path_and_line` checks ordering across 40 files and repeat-run stability.\n- `search_returns_innermost_nodes_and_comment_owners` covers innermost nodes and comment ownership.\n- `ripgrep_tool_is_advertised_with_its_interface_and_conventions` checks the schema and the description phrases.\n- Access-policy cases:\n  - evidence/ exclusion, including symlinks;\n  - outside symlinks;\n  - git-untracked files and the `git add` message;\n  - symlink alias and target tracking;\n  - allow/disallow rules and external paths;\n  - Cargo build-output directories;\n  - symlinked parent components;\n  - outside-project recoverable errors versus aborts.\n- `tests/authoring_cli.rs` has an end-to-end test that an explicit untracked `ripgrep` request aborts the assessment, with no further model request, no evidence write, and the failure recorded.\n\n**Gaps.** I found none, and no FIXME markers apply. Two details go slightly beyond the text but are harmless:\n\n- Adjacent windows are merged as well as overlapping ones.\n- A matched file that cannot be parsed fails the whole search, which the requirement's \"failed search\" error clause allows.",
-  "references": "c1a4e3de9d17c704820481c0b9333e903562394450287a65352b868aee70efb2",
+  "rationale": "**Judgment:** `requirements.authoring.text_search` is satisfied. Each obligation is implemented in code marked `{impl}`, and tests cover the main points and failure cases. I did not run the tests; this judgment rests on reading the supplied code and test sources.\n\n**Implementation** (mainly `search` in `src/authoring/tools.rs`)\n- **Interface:** `definitions()` advertises `ripgrep` with `pattern`, `path` (default \".\"), and `context` (integer, minimum 0, default 5). `search` returns `{inputs, definitions}`.\n- **In-process search:** the search uses `grep_regex`, `grep_searcher` and `ignore::WalkBuilder`, so no external `rg` is needed. The matcher is built with `case_insensitive(false)`. Hidden and ignore handling is the default, and `.rgignore` is added.\n- **Access policy while walking:** each walked file goes through `sources.access.file(...)`, and denied files are skipped before they are opened. The requested path goes through `access.path`. That returns a `PermissionDenied` abort for explicit denied requests (evidence, untracked, disallowed, symlink-escaping paths), and a recoverable tool error for unpermitted paths outside the project (`recoverable_outside_request`).\n- **Allowed and generated paths:** `extra_roots()` (allow rules plus Cargo output directories) are searched in a separate walk with hidden and ignore filters off. Disallow rules still apply, because each file passes the `access` check.\n- **Ordering:** matches are collected in a `BTreeMap` keyed by relative path, and lines are sorted and deduplicated. Results are deterministic despite `build_parallel`.\n- **Context windows:** the window is `line ± context`, clamped to `[1, count]` so it stops at file boundaries. Overlapping windows are merged (adjacent ones too, which changes nothing in the resulting node set). `context` 0 gives only the matching lines.\n- **Outline nodes:** each window goes through `read_lines(..., comments=true)`, which uses `nodes_for_range` and `nodes_for_lines`. These pick the innermost nodes, with comment lines mapped to their owner node. Each input carries the selector, kind, line range and source text via `to_model_input`.\n- **Terminology:** `additional_definitions` supplies definitions for the matched inputs. `ToolDelivery.inputs` includes both the nodes and the definitions, and `converse` records them as pending inputs.\n- **Redaction:** the tests show redaction of search results.\n- **Errors:** an empty result is `{\"inputs\":[],\"definitions\":[]}`. A bad pattern, a non-string `pattern` or `path`, a non-integer or negative `context`, an unknown key, an unparsable matched file, or a search I/O failure each return an explanatory error.\n- **Markings:** the supporting helpers (`check_keys`, `string`, `integer`, `optional_path`, `project_path`, `relative_path`, the access functions, `nodes_for_lines`, and others) carry `{impl}` markers. I found no unmarked code implementing the requirement and no unspecified behaviour in the marked code.\n\n**Tests**\n- `search_merges_context_windows_and_respects_ignore_rules`: window merging, `context` 0, case sensitivity (`NEEDLE` gives no matches), invalid regex, negative context, and ignored and hidden files.\n- `search_returns_innermost_nodes_and_comment_owners`: innermost nodes and comment ownership.\n- `search_supplies_terminology_clamps_at_eof_and_reports_failures`: terminology supplied and recorded, clamping at EOF, allowed hidden directory searched while an unallowed one is not, each invalid-argument error, and an unparsable matched file.\n- `parallel_search_orders_results_by_path_and_line`: ordering across 40 files, repeated for determinism.\n- `ripgrep_tool_is_advertised_with_its_interface_and_conventions`: schema and description content.\n- Access-policy tests cover evidence exclusion (including symlink aliases), outside symlinks, untracked files, symlink alias and target tracking, allow and disallow rules, Cargo output, and `alias/../` path validation.\n- `unpermitted_requests_outside_the_project_are_recoverable_tool_errors`: outside-project requests are recoverable errors, while a matching disallow still aborts.\n- `explicit_untracked_reads_abort_without_another_request_or_evidence_write` in `tests/authoring_cli.rs`: the end-to-end abort.\n- The redaction test covers redaction of search results.\n\nNo acknowledged gaps (FIXMEs) are present.",
+  "references": "70de796b99077cdad0fe26913b8894ec85dcf2e1e47c84de0d5382acca1f4ec1",
   "inputs": [
     {
       "requirements": "requirements.authoring.text_search",
@@ -119,9 +119,9 @@
         "target MUST be present in the Git index. Projects outside Git MUST use the same",
         "containment rules without requiring an index. Failure to read an existing",
         "repository's index MUST be reported as an error.",
-        "The project-root `evidence/` directory and an active workspace configuration",
-        "containing literal credentials MUST be excluded from model reads by default,",
-        "including symlink aliases. Generated build outputs MUST follow",
+        "The project-root `evidence/` directory MUST be excluded from model reads by",
+        "default, including symlink aliases. Every source the harness supplies to the",
+        "model MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow",
         "{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST",
         "follow {cite}`requirements.configuration.evidence_paths`, including explicit",
         "permission for otherwise excluded inputs. A denied mandatory input or explicit",
@@ -233,7 +233,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "ef98601c16475681510bfef02215408a4462718be27f28c44e7cd7623573b6ef"
+      "hash": "0150396844273da1aa3e490d9555b75ce3d48d31e49955e22bf209ba9e82f5b9"
     },
     {
       "file": "src/authoring/access.rs",
@@ -293,7 +293,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "aa14a49b4870c3defa4253018d1624300934052ebdef5d5a9199570c18a0a7b8"
+      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -334,6 +334,11 @@
       "file": "src/authoring/tools.rs",
       "item": "fn[relative_path]",
       "hash": "d11bb66e10aa0c2adb18a9611df876050061c2e445729f63c04b260bb89f7c00"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]",
+      "hash": "86cff07f4068f6c30d43546bc33c8d1ba47e7fce2823d838bbbfa951455a13d1"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -419,26 +424,6 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_untracked_reads_abort_without_another_request_or_evidence_write]",
       "hash": "dac087a4dc68c347eedcde7da1f619ed2112a8149a8fa311f3abb3b577facc85"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PolicyDenial/std::fmt::Display]",
-      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PolicyDenial/std::error::Error]",
-      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_os_denial]",
-      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
     }
   ]
 }

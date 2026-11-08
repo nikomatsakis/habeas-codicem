@@ -1,7 +1,7 @@
 {
   "requirement": "Evidence inputs MAY have a definition form containing exactly `definition` and `text`. `definition` MUST identify one named definition; `text` MUST contain its complete raw fenced declaration as source lines, including its phrase option and explanatory body.\n\nValidation MUST reject missing definitions and changed snapshot text, identifying the definition and showing a compact diff when available. Moving an unchanged definition within its chapter MUST NOT invalidate its snapshot. Evidence displays MUST show the definition name, current source location, and recorded text.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation and is marked `{impl}`. The tests cover the main cases and the failure cases.\n\n**Implementation**\n\n- **Shape.** `validate_input` (src/evidence.rs) routes any object with a `definition` key to the definition form. `check_keys(.., [\"definition\",\"text\"])` rejects any other field with an \"unexpected field\" error. `string_field` requires `definition` to be a string. `text_field` requires `text` to be a nonempty array of strings.\n- **Identifies one named definition.** `InputSelector::resolve` (src/inputs.rs) looks the name up in the definitions map and keeps only `DefinitionKind::Term`. Otherwise it returns `\"<name>: no matching named definition\"`. So a missing definition, or a name that is not a named definition, is rejected with the definition identified.\n- **Recorded text is the full raw fenced declaration.** The resolved text is `Declaration.raw_lines`. `collect_definitions` builds `raw_lines` from the whole block (`block.start..block.end`), which includes the opening and closing fence, the `:phrase:` option and the body. For term blocks, `definition_blocks` does not parse options as strippable, so `:phrase:` stays in the text. `to_input` writes `{definition, text}` when a definition input is captured.\n- **Changed text.** `validate_resolved_input` compares the recorded `text` with `resolved.text`. On mismatch it reports `\"input text changed for Definition { definition: \"…\" }\"` followed by `compact_diff`, which shows only the changed lines with `-`/`+` markers and truncates long runs. The diff output identifies the definition and is compact.\n- **Moving a definition.** Snapshot text is the raw lines only. Line numbers are not part of the comparison, so an unchanged definition that moves still validates.\n- **Display.** `InputLocation::resolve` and `render_input` (src/index.rs) show `definition <name>`, the current `file:start–end` range from the live definition, and the recorded text in a Markdown block. When the selector is unresolved, they report the error and keep the recorded text.\n- **Marking.** All the involved functions carry `{impl}` markers: `validate_input`, `validate_resolved_input`, `InputSelector::from_input`, `to_input`, `resolve`, `InputLocation::resolve` and `render_input`. I found no unmarked code implementing this requirement.\n\n**Tests**\n\n- `cyclic_dependencies_are_captured_once_and_changes_require_review` covers these cases:\n  - Prepending blank lines to the glossary (moving the definitions) leaves validation clean.\n  - Changing the `:phrase:` option or the body produces an \"input text changed\" error that names the glossary definition.\n  - A missing input and a duplicated input are each reported.\n  - Recapturing repairs the record.\n- `changed_definition_snapshots_show_a_compact_diff_and_text_is_required` asserts the exact compact diff, one `-` line and one `+` line. It also checks that a missing, empty or non-array `text` is rejected.\n- `definition_schema_deletion_and_literal_references_are_checked` covers three cases:\n  - An unexpected extra field is rejected.\n  - Deleting the defining file gives \"glossary.a … no matching named definition\".\n  - Literal `{term}` references in code or escaped contexts create no definition inputs.\n- `detail_page_shows_recorded_text_locations_and_first_matching_group` (src/index.rs) checks that a definition input shows its name, its current location (`md/rules.md:9–13`) and its recorded text, in that order. It also checks that an unresolved selector is reported while the recorded text is kept.\n\nI found no uncovered point of the requirement and no unspecified behaviour in the `{impl}` code that needs another definition to justify it.",
+  "rationale": "**Verdict: the requirement is satisfied.** The implementation covers each obligation, it is marked `{impl}`, and tests exercise the main cases and failure modes. I found no unmarked implementing code and no acknowledged FIXME gaps.\n\n**Implementation**\n- **Definition form.** `validate_input` in `src/evidence.rs` takes the definition branch when a `definition` key is present.\n  - `check_keys([\"definition\",\"text\"])` enforces the \"exactly `definition` and `text`\" shape and rejects any other field.\n  - `string_field` requires `definition` to be a string.\n  - `text_field` requires `text` to be a nonempty array of strings.\n- **One named definition.** `InputSelector::Definition` in `src/inputs.rs` resolves through `definitions.get(name)` filtered to `DefinitionKind::Term`. Otherwise it returns `\"{definition}: no matching named definition\"`.\n- **Complete raw declaration.** Resolution returns the term's `raw_lines`, redacted via `redaction::redact_lines`. Redaction is covered by `requirements.authoring.redaction`, which the code also marks. `to_input` records `{definition, text}`, and `from_input` parses that form.\n- **Rejecting missing definitions.** A definition that no longer resolves produces a labelled error that names it, for example `inputs[0]: rules.gone: no matching named definition`.\n- **Rejecting changed text.** `validate_resolved_input` compares the recorded text with the freshly resolved text. On a mismatch it reports `input text changed for Definition { definition: … }` followed by `compact_diff` output.\n  - The diff keeps only the changed lines, marked `-` and `+`, and truncates runs longer than eight lines.\n- **Moving a definition.** The snapshot holds only the raw declaration lines, with no line numbers or file offsets. Moving an unchanged definition therefore leaves the comparison unchanged.\n- **Displays.**\n  - `render_input` in `src/index.rs` labels the input `definition <name>`, so the name appears even when resolution fails.\n  - It shows each resolved range through `render_source_location`, giving the name and current `file:start–end`.\n  - It then shows the recorded text, falling back to the recorded text when the selector is unresolved.\n  - `InputLocation::resolve` supplies the current location.\n- **Marking.** The functions that carry out the requirement all carry `{impl}`: `validate_input`, `validate_resolved_input`, `from_input`, `to_input`, `InputSelector::resolve`, `InputLocation::resolve` and `render_input`.\n  - Other code that builds or reads definition inputs implements different requirements and is marked for those: `update_inputs` (capture), the authoring tools (`authoring_inputs`), and `validate_dependencies` (dependencies).\n\n**Tests**\n- **Display.** `index::detail_page_shows_recorded_text_locations_and_first_matching_group` checks four things:\n  - the definition label appears;\n  - the location line `md/rules.md:9–13` appears;\n  - the recorded text appears (not the current text);\n  - the ordering is correct.\n- **Capture, move, and missing or duplicate inputs.** `tests/definitions.rs::cyclic_dependencies_are_captured_once_and_changes_require_review` captures the three inputs and checks that validation passes. It then prepends blank lines to the chapter, which moves the definitions, and validation still passes. Next it changes a phrase option and a body line, and each change is reported as `input text changed`, naming the `glossary.*` definition. It also checks the missing and duplicate definition-input counts.\n- **Compact diff and `text` schema.** `changed_definition_snapshots_show_a_compact_diff_and_text_is_required` asserts that the diff is exactly one `-` line and one `+` line. It also checks that a missing, empty, or non-array `text` is rejected.\n- **Missing definition and extra field.** `definition_schema_deletion_and_literal_references_are_checked` checks that an unexpected field is rejected. It also checks that deleting the glossary file yields `glossary.a … no matching named definition`.\n- **Schema variants.** `evidence::schema_rejects_each_malformed_field_and_input_form` and `configuration_and_dependency_failures_do_not_stop_later_checks` cover non-string definitions, an empty `text`, mixed definition and requirements keys, and an unresolvable definition.",
   "references": "5f27461ed46183dca8e240ed4e7780d7ea9614bfaabbece36921a4b4d7fbba30",
   "inputs": [
     {
@@ -25,7 +25,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_resolved_input]",
-      "hash": "1f2cccc74a111d9173771fbe3c693bac16b47809a612063b9fcddbd6840dd7d3"
+      "hash": "6420c858ddefc5fff915aff05d3853ca7979fe1e7780fc0cabc670259ae6a51e"
     },
     {
       "file": "src/index.rs",
@@ -35,7 +35,7 @@
     {
       "file": "src/index.rs",
       "item": "fn[render_input]",
-      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+      "hash": "d9de115b90fe0cdac7a7972a76b17e61c083627ef27d40859f4e2de9dbb8232d"
     },
     {
       "file": "src/index.rs",
@@ -55,7 +55,7 @@
     {
       "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "0e7d0df904d0916b85ef7fa01ed406520e46927b5dadb68db0e4cb71281f0b59"
+      "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
     },
     {
       "file": "tests/definitions.rs",
@@ -73,6 +73,46 @@
       "hash": "8ae4ea21d6333d2f0387bbde69364509558488d4672f0608a66b99709b8188e8"
     },
     {
+      "file": "src/add_input.rs",
+      "item": "fn[update_inputs]",
+      "hash": "f52292ad7119fd0e7af60048f3e28ae8aa74fab808d14ea01bcd431923df7622"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[generated_evidence_selector]",
+      "hash": "c1fc4d067de7897fd93bd34fa46838bcf355e51d5792b46bb947064b651ffef0"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[reference_selector]",
+      "hash": "75fcd50d474e901c1fad0e540f035103e29f98a664b9329b70a5843917c9723f"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "fn[definition_inputs]",
+      "hash": "cd3f67cdd56cbd6d5733e8033921f0c837d23f6bd725097b44171ffe48a317ba"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]",
+      "hash": "369f7616e6fcbb94b3aab5ce387fa9816667a88766cd73b7261fa6dc8df1003e"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[outline]",
+      "hash": "151c20d5b37092813567720eafdd02d281a0720b261fd626ee9491c7d93507d9"
+    },
+    {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
       "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
@@ -86,11 +126,6 @@
       "file": "src/authoring/tools.rs",
       "item": "fn[string]",
       "hash": "28e84ccff6e9bd409feed5343425d2b30375117beb27cf5251fcec7684f1167d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[integer]",
-      "hash": "bcd5395853965f714473c22a608b4175392cd69257e606a1246598e5b67b6545"
     },
     {
       "file": "src/evidence.rs",
@@ -114,16 +149,6 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[string_field]",
-      "hash": "5e6e52a3d31d4ca5ee9b6b7c5db1131fd23eed72201337c5ec5f2deff0101806"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[array_field]",
-      "hash": "2eebdc599a26a3f546a2b0e7f22d2e4f9e14b00491da2482e462cd817dc9d7e8"
-    },
-    {
-      "file": "src/evidence.rs",
       "item": "mod[tests]/fn[changed_requirement_text_names_the_record_and_location_with_a_diff]",
       "hash": "442781e8cf4b0bf058e05036291478774ec9fa0cb5f6f24ebbc06007e71479b1"
     },
@@ -133,114 +158,299 @@
       "hash": "5c37ad2b6be228e17ddeba522a492a9c4f46084c64740eca038a43a07e9ea6d7"
     },
     {
+      "file": "src/index.rs",
+      "item": "impl[DefinitionEdges]",
+      "hash": "0c9a9d327cb0b73f7850deaf0beadc7b07372d7bb7ce5923db7857ab4334f438"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_detail_sections]",
+      "hash": "99f2d71104c1973f5af2103efe4e59858c87722227ff88f9d456c5fb9859168f"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[direct_references]",
+      "hash": "95af724648a6d7edc37e268e348db3c74fad4d48c0fcaabe85f24e9b511cf2f8"
+    },
+    {
+      "file": "src/add_input.rs",
+      "item": "fn[add_definition_inputs]",
+      "hash": "33aa1e4cace467d8d1511df506c97eaeb407f8bc776d6a4f843dd3fb56f38d89"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
+      "hash": "0c52830b423f401c96a00da36f12bc4109085ca4e58d26e68a6593f3be2ef698"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
+      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[earlier_evidence_inputs_and_judgments_are_not_carried_forward]",
+      "hash": "da938c2ee0193b4604807787117ba717d52c0b6f3d030dc0cc7f152ec287f5ab"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[record]",
+      "hash": "0a005949d75be310771a207c2f340d09c147eee87c0fb4b4d0f88ad08bc6421b"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]",
+      "hash": "37e48cc1515b97a14a38ca10ba6cbcbc9388841b3da9abc899d1466ae928e302"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
+      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "hash": "7449f6ef42af4fda0582a4da908f6f04f0a9f45e6606834b8a1a599a7c5bd5d9"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
+      "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_submission_finishes_the_assessment_wherever_it_arrives]",
+      "hash": "b5421960bc2d3e3308482c6e72a92d6841fc033381537dcc7f11caf641d7f357"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
+      "hash": "093c6a6a626fb34de7209772edeb2ff1c84d48398b03bfcd04b863245a6ad272"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
+      "hash": "1549d324033cfafeb2ecb0b02619327b33856c95477886a13a0185a8000a47da"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
+      "hash": "704deb5dcc0e7b9817c8a739aa06ae516bf1209e8fb6fcb673d2fb4a47899103"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
+      "hash": "2fa8051cca2d46d6337e91a9309b9dfa14423c3c4a83ad4f363cf70d035f5977"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]",
+      "hash": "08583f23946eb7085fb5a79bb8d14093f26db46726ea0931050796bf63739435"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
+      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
+      "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[parallel_search_orders_results_by_path_and_line]",
+      "hash": "7c4b2836cfc2b22f56e6d8a23e39c7c1e9588ae66d23b22716397464baa7077d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
+      "hash": "34dc54dc4a7fed9629c6d6503a6a2b694e4a411039b9a1fdb1c371c52ac92eea"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]",
+      "hash": "3ccf9af34dbd89804259953f2034d4d0108fc3522e3a28bc4792632d72ac5865"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
+      "hash": "e790b3d7c7430f6b8465159541f7048ff733c4872f04b86eca9dbb17f2cfee8e"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "708f378114a84730232437f4a9abe3571dac9a8edb82002fffa2d3d607fd6f3d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
+      "hash": "37588f8c9898b87e7bf916d29d4e976c7fd477d38b5eadc671dda7e03d866e0e"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate_review]",
+      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "38d4022dff717f3d4a0b045e09870a330c39a8d9df26be52d6df9fdec6545920"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "9e0e254bf3c3f25d1e8e15e2f6cead7754c0508ee4afdb9561776ad7ff6a8c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
+      "hash": "d786929a98bd067cf7e7d36e66e5d96d07a71ad18adb5c1ed8ef357d446685ad"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[validates_full_names_requirement_text_and_input_lines]",
+      "hash": "5d0928cbdeb6b36d33988b6bfca1b888ee083a1856d238c6856a16344ef82cc1"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[source_references_are_covered_by_evidence_inputs]",
+      "hash": "eedc00fcdd354c6784ef006108e911227325dcbfa775d538f3c8d81c814a669d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
+      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
+      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
+      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
+      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[a_false_determination_fails_only_its_own_record_with_its_rationale]",
+      "hash": "e462067423cb9ee5d18cc29623b31ead903a22123ce8961a62a5446fa790b2cd"
+    },
+    {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[requirement_bodies_are_compared_without_surrounding_whitespace]",
       "hash": "e113eb48763e0c67a3bbc7a55fb0b1a678848c9d22d2bd5af76d94377cbb9f6b"
     },
     {
       "file": "src/evidence.rs",
-      "item": "struct[Declaration]",
-      "hash": "5b7addc906a3fae054cc3f35d45bfbad8d504dc80e8ed3828de5a19606713d7b"
+      "item": "mod[tests]/fn[colon_requirement_span_includes_markdown_and_excludes_following_text]",
+      "hash": "ca0ffcd00164e0ebe3d50d787c9605e3db025b6e49d19ccdce46070a0be1a775"
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+      "item": "mod[tests]/fn[reports_a_missing_closing_colon_fence]",
+      "hash": "19b3ac6850dfc44a2c723659bed481f9b0dd98ade185280faae0563ce5a9ccc5"
     },
     {
       "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_omit_option_lines]",
-      "hash": "161ef687a2aea650d27c2ea3ec89cd5bd40a9e1f950934bf966e768d1adce8c6"
+      "item": "mod[tests]/fn[validates_four_or_more_colon_fences_and_longer_closers]",
+      "hash": "7e492812653aafa4ab5a4f003afc2dd8737981db76d408aa9e1391920a656a2e"
     },
     {
       "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
-      "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
+      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
+      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
     },
     {
-      "file": "src/outline/tests.rs",
-      "item": "fn[anonymous_selectors_use_identity_hashes]",
-      "hash": "3b8ce2033af0eabfb93fa3242d82e70aeb880f0507210431d1b3f6c345f46731"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are]",
+      "hash": "8438b66760683bc3ebb8338901de592dc71751d1e7c7de59fd6a0713b0a4f456"
     },
     {
-      "file": "src/outline/tests.rs",
-      "item": "fn[hashes_skip_whitespace_and_plain_comments_but_not_doc_comments]",
-      "hash": "9542cefc7e015427e3b771eea77d2244ed2232e0bc3ea41296f3a63f1c479e63"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[example_errors_include_duplicates_invalid_bodies_and_missing_tests]",
+      "hash": "9f02ce33a1d46580a920cfca89d4b49954da52eb4092e9dbf1afd16cb6d8def4"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[definitions]",
-      "hash": "65866836139f2ff410592e6c4fc6ada7bb4a9e75b97d2d530245e9c204bb2709"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
+      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
     },
     {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[an_example_counts_only_when_it_references_a_requirement]",
-      "hash": "c65d65ed91711c7879e9394dee4f6a6af6c5d95e22c39cae3f669b9f9f3ce00b"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
+      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[definition_blocks]",
-      "hash": "2b0bdec0c2df2d264c66f04e02823f8678591d3528764db7aad61bfdde467717"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[validation_requires_a_current_reference_set_digest]",
+      "hash": "353b453b0a20219212386d36d056af2563a26be0805477dadedb44c06d7747bf"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[option_line]",
-      "hash": "5e4135e7c92fcfcb4c145c36dbb27c5ce491f47e55f23346ff491303c4c207a4"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_shows_evidence_states_and_links_generated_chapters]",
+      "hash": "ce8b8ca782707df7e432b68042d6224595de1cfacffc8a47446ca3eb126200db"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[without_options]",
-      "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_pages_and_info_display_redacted_source]",
+      "hash": "38e21b2ac47d69c2ee6c8bf8b24a47684ad609d06a0c90ea44f2d9c90cfa497c"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[colon_fence]",
-      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
+      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[fixture]",
-      "hash": "cf3a1ca69d526c80993146d2df62c3de65c2237e886a1e07f8e5dee78c0d7e46"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
+      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[globs_exclude_terms_but_capture_referenced_terms_outside_the_glob]",
-      "hash": "d08988203be450c67ad8a7f362c87595e98d7cc3c6640f1eb0bf711af7a97e42"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[findings_make_false_and_fixme_records_invalid]",
+      "hash": "4b36a11e4def531d3cdc3ae79164eabfaf3109619aee0c45a90f94c7f1e1057d"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[selections_match_requirements_and_examples_but_never_named_definitions]",
-      "hash": "29e39452b0bf1dfc6b58fc138d777832df87e15d702f639c68d732ed2d38495e"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_and_detail_pages_show_each_example_evidence_state]",
+      "hash": "1e536dc2d81a9b43f74a69aae0df5341769ce812b1f99abca9621392d049c4c6"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[invalid_declarations_and_reference_targets_are_reported]",
-      "hash": "5d4651a4d38d578ac0c08d790248b90adc6c6c2981f131b654780a6eb3d9d1fa"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[index_lists_examples_and_links_their_detail_pages]",
+      "hash": "bafc79c7bb875eb9b12c4d634cecd9701d138d4211ba998d58acc0aa292455e7"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[phrases_are_plain_links_and_markdown_literals_are_preserved]",
-      "hash": "6676dec9f409e7e70839a3dcc1bf4ccc2659da1f7127c73f9bc45d900df38b8e"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
+      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[a_term_reference_renders_only_its_phrase_as_a_plain_link]",
-      "hash": "40adf53e2a080969c972d815e6a554bdb2fd6957fa42f7b68b0beef5dc0ece1c"
+      "file": "src/terms.rs",
+      "item": "fn[validate_dependencies]",
+      "hash": "384460cdf651e0a04222f97e6b6f61287c7fc9cc42f7c5ac81b45e282d3cd216"
     },
     {
-      "file": "tests/definitions.rs",
-      "item": "fn[markdown_and_plain_text_inputs_contribute_their_term_references]",
-      "hash": "2f68053776a1c3cf7da52c46fd96a43b80d2698e17a8ca218cb27c4cd8fe1751"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
-      "hash": "f92f368c46a0c959eb5bae0e823c313badde42e78b1e045a5e80421a31db0f02"
-    },
-    {
-      "file": "tests/definitions.rs",
-      "item": "fn[example_subject_and_definition_display_use_the_same_dependencies]",
-      "hash": "8837e87dd6d9951838dd5e813079052e350aafc19fb79dca8e6243459e4e53be"
+      "file": "src/terms.rs",
+      "item": "mod[tests]/fn[term_dependencies_of_every_markdown_extension_skip_literal_roles]",
+      "hash": "c51b072ed1253c7ad11d986f565d9ac6da0bb9c68fc3ab02dc51273875d004e6"
     }
   ]
 }

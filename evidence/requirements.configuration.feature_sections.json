@@ -1,7 +1,7 @@
 {
   "requirement": "Each configurable feature MUST define the name and typed data structure of its\nuser section and any supported project section, citing these common configuration\nrequirements. The feature MUST specify its supported keys, value types, defaults,\nvalidation rules, and the precedence or combination rules for user settings,\nproject settings, and invocation options. It MUST specify the behavior of an\nabsent section and which operations require that section.\n\nFeature-specific fields MUST stay within the feature's section. A feature MUST\nNOT reinterpret another feature's settings or change the shared file locations\nor schema version. A feature MAY define a provider-owned options map, but MUST\ndocument that boundary and how those options are validated.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** `feature_sections` is a meta-requirement. Each configurable feature must define its own sections and rules, and the features here do. There are two, authoring and evidence. The spec text and the code both tie back to `feature_sections`, and a test covers the main points.\n\n**Spec side (feature definitions marked `{impl}`)**\n- `requirements.authoring.configuration` is marked `{impl}` of `feature_sections`. It sits in `md/requirements/authoring.md` near line 582 and cites `user_location`, `structure`, `workspace_location` and `workspace_structure`.\n  - It names the `[authoring]` user and workspace sections.\n  - It says which operations require the section. Only `habeas author` that needs at least one assessment does. Batches with no work and deterministic validation do not. Either file's section may be absent.\n  - Its sibling requirements supply the rest:\n    - `configuration_structure` gives the typed structures.\n    - `configuration_serialization` gives defaults and omitted-map behaviour.\n    - `configuration_storage` gives validation rules and the `options` boundary. Options are backend-defined, passed through to Rig, and must not replace the model, prompt or tools.\n    - `configuration_precedence` gives the order: `--config`, then project selection, then workspace default, then user default. It also covers record-level override and absent-configuration errors.\n    - `credentials` and `concurrency` cover their own keys.\n- `requirements.configuration.evidence_paths` is marked `{impl}` of `feature_sections`. It defines the typed `EvidenceConfig` and `[evidence]` as a workspace-only table. It sets the defaults: omitted arrays and an absent table both mean empty. It says no operation requires the section, there is no user counterpart, and there are no invocation options. It also gives the precedence rules for allow and disallow.\n- The common structure schema in `md/requirements/configuration.md` shows the typed optional field for each feature. It states that feature settings must not occupy root keys.\n\n**Code side (marked `{impl}`)**\n- `UserConfig`, `WorkspaceConfig`, `WorkspaceAuthoringConfig`, `UserAuthoringConfig` and `EvidenceConfig` in `src/config.rs` are marked `{impl}`.\n  - Each is a typed section with `deny_unknown_fields`.\n  - Optional sections are `Option` with `#[serde(default)]`, so absence is distinguishable from explicit settings.\n  - Authoring `projects` exist only in the user structure.\n  - `evidence` exists only in the workspace structure.\n  - `version` is fixed to 1.\n- `validate_workspace_common` rejects unknown top-level keys and any version other than 1. This keeps features from adding root keys or changing the schema version.\n- `load_workspace_evidence` treats an absent `[evidence]` as the default (empty arrays). It does not validate unused authoring settings.\n- `BackendConfig::validate` enforces the provider-owned `options` boundary. It rejects reserved keys (model, prompt, tools and similar) and runs per-value option validation. It also enforces the credential conflict rules.\n- `resolve_authoring*` implements the absent-section error and the precedence order. It is marked for `authoring.configuration` and `authoring.configuration_precedence`.\n- I found no `{impl}` code that does something this requirement does not specify. The extra validation is covered by `configuration_storage`, `credentials` and `loading`.\n\n**Tests**\n- `tests/configuration.rs::feature_sections_are_scoped_and_absent_sections_use_defaults` carries `{test}` for `feature_sections`. It covers:\n  - Absent `[evidence]` and omitted arrays both give empty defaults, and `authoring` and `evidence` are `None` when absent.\n  - Cross-section leakage fails: a root `allow` or `default`, `allow` under `[authoring]`, `default` under `[evidence]`, and `[evidence]` in the user file.\n  - Evidence loading does not reinterpret or validate authoring settings, even with a bad default and an unknown key there.\n  - An unknown field in an authoring config fails, and a reserved `options.model` is rejected, in both the user and workspace parsers.\n  - An absent user authoring section configures nothing.\n- Other tests cover precedence and missing-section behaviour. `workspace_defaults_and_configs_combine_with_existing_user_selections` covers precedence and whole-record override. `authoring_uses_nearest_workspace_configuration_without_a_user_file` covers workspace-only authoring.\n- Coverage is good. A test of the \"other operations don't require `[authoring]`\" claim is not in the supplied inputs, so I did not assess it.\n\nI found no acknowledged gaps and no unmarked implementation.",
+  "rationale": "**Verdict:** the implementation and the tests meet `requirements.configuration.feature_sections`. I found no unmarked implementation and no unspecified behavior in the marked code.\n\n**Features covered.** Habeas has two configurable features: authoring and evidence. Each is a refinement of this requirement, and I checked the requirement text for each.\n\n- **Authoring** (`requirements.authoring.configuration`, `md/requirements/authoring.md`):\n  - It names the `[authoring]` sections in the user file and in `habeas.toml`.\n  - It says an `[authoring]` section is required only for assessing with `habeas author`, and that either file's section may be absent.\n  - `configuration_structure`, `configuration_serialization` and `configuration_storage` define the keys, types, defaults, validation rules and name rules.\n  - `configuration_precedence` defines the combination of `--config`, project selection, workspace default and user default.\n  - `configuration_storage` documents the provider-owned `options` map. The map is backend-defined and passed to Rig, with rejection reported by Rig or the provider. It cannot replace the model, prompt or tools.\n- **Evidence** (`requirements.configuration.evidence_paths`, `md/requirements/configuration.md`):\n  - It defines `[evidence]` as `EvidenceConfig` with `allow` and `disallow` arrays and their defaults.\n  - It states that there is no user-file counterpart and no invocation options.\n  - It states what an absent section means, and that no operation requires the section.\n  - It states that loading must not validate unused authoring settings.\n\n**Implementation.**\n- **Typed structures** (`src/config.rs`): `UserConfig` (with `authoring`), `WorkspaceConfig` (with `authoring` and `evidence`), `WorkspaceAuthoringConfig`, `UserAuthoringConfig` and `EvidenceConfig` all use `#[serde(deny_unknown_fields)]`. The sections are optional and each carries the `{impl}` marker. Feature fields therefore cannot leak to the root or into another feature's table.\n- **Root keys and version** (`validate_workspace_common`): It allows only `version`, `authoring` and `evidence` at the root, and requires `version = 1`. Features therefore cannot change the schema version or the shared structure.\n- **Feature-level validation:**\n  - `BackendConfig::validate` checks the provider-owned `options` boundary. It rejects reserved keys such as `model`, `prompt`, `tools` and `toolConfig`. It also rejects non-finite floats and invalid credential combinations.\n  - `EvidenceConfig::validate` checks the evidence paths.\n- **Absent sections:** `load_workspace_evidence` defaults an absent `[evidence]` table to empty arrays. It does not validate the authoring settings. `resolve_authoring_with_workspace_from` raises \"no authoring configuration\" only when authoring is resolved and neither file has a section. That check belongs to `requirements.authoring.configuration`.\n\n**Tests.** `tests/configuration.rs::feature_sections_are_scoped_and_absent_sections_use_defaults` covers:\n- an absent `[evidence]` table or omitted arrays, which give empty allow and disallow lists;\n- an absent `[authoring]` section, which parses as `None`;\n- feature keys placed at the root, or in the wrong feature's table, being rejected;\n- `[evidence]` in the user file being rejected;\n- evidence loading ignoring invalid or unused authoring settings;\n- an unknown key inside an authoring config being rejected;\n- a reserved key (`model`) in `options` being rejected.\n\nThese tests are supported by `explicit_project_and_default_selections_choose_whole_configs`, which also checks the \"no authoring configuration\" error. They are also supported by `configurations_without_any_selection_report_how_to_choose_one` and the `authoring_batch` tests, which check that operations which do not need a configuration don't report the missing-section error.\n\n**Gaps.** None. There are no FIXME markers.",
   "references": "891e7dd88784ea23683a983532bf2d8d1f6871451fd72636d211a056f5a21cbc",
   "inputs": [
     {
@@ -129,34 +129,244 @@
       "hash": "dc081af3df89c9eea64bd1a339bc22ee8a83c6bdd2ccaac85987f6c65b68a8bd"
     },
     {
-      "file": "audits/requirement-rewordings/authoring.md",
-      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.configuration`%20—%20refine%20feature_sections]",
-      "hash": "14b61797ddb667c759e5fe1a10ffe70203d5242b8eb796c47687cc82ac4718b8"
+      "file": "src/config.rs",
+      "item": "struct[ProjectConfig]",
+      "hash": "487c2320263d6102d8c2df7c36cd39e87151d924b0897184bf6a5b5f30122729"
     },
     {
-      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
-      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.workspace_structure`]",
-      "hash": "15bbc31dcd1cb1bb5efe385df1d80e5837a712cfb60d9fcb15b21da18d983b8b"
+      "file": "src/config.rs",
+      "item": "struct[LoadedWorkspaceConfig]",
+      "hash": "4b8838291dc0d39b581ee5dfc82764501ab9e0f8357cc1a89d4fde699d081959"
     },
     {
-      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
-      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.evidence_paths`]",
-      "hash": "8aab1abc43506449d6fb723829f42b662ab6320dadcd885173d4bd98b1aeba98"
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceEvidenceConfig]",
+      "hash": "6ef8de3f201aaf71b6e3a15d9166541b8fe0d1f660887a80b27c5672f87db379"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Configuration]",
-      "hash": "d1c2cf67daebe85855706aae757fdf919f9068ff47f4bca2a32a62117f5110fc"
+      "file": "src/config.rs",
+      "item": "struct[SecretString]",
+      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
     },
     {
-      "file": "md/requirements/configuration.md",
-      "item": "section[Configuration]/section[Common%20data%20structures]",
-      "hash": "e0f353a023ff47a263243f1cff5014bc168680e882248cb60dbfb2b08fa46839"
+      "file": "src/config.rs",
+      "item": "impl[SecretString]/fn[expose_secret]",
+      "hash": "c59e21f16c756328a27b1ef698ca9aacf1afd4fe4ce4776e91ee34737a2a296c"
     },
     {
-      "file": "md/requirements/configuration.md",
-      "item": "section[Configuration]/section[Feature%20sections]",
-      "hash": "d75f26dd7bb57fbc8bcb9d10671c37390db6c0a40da4f4c8b6d07225e4cbf82d"
+      "file": "src/config.rs",
+      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
+      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockCredentials]",
+      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ProjectSelection]",
+      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "4d7ec0f5dcd101555fbb0961da4fed600b249998018f1cd59ded88e010ee0246"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendConfig]",
+      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockConfig]",
+      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OllamaConfig]",
+      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[OptionValue]",
+      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendKind]",
+      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ModelRef]",
+      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ResolvedAuthoringConfig]",
+      "hash": "75bdbf9fba8779579c42bb2ae80184f6652737689884a1a3336bee278ecb911c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[ConfigPlatform]",
+      "hash": "a5de749a21f55c086f8e53b4112ba7f24db76ce29c826cf05dddd6e59c5ba7d5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ConfigPlatform]/fn[current]",
+      "hash": "5bfa8548bd5559ec166ddbb9e111c070fed9784132a346dfc55f8c6cca54281b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]/fn[parse]",
+      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]/fn[to_toml]",
+      "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]/fn[validate]",
+      "hash": "9d47228e0c5a1d9a1681eb79f95a62e082f16ff1f218268f1d1c0e8f85b2c9e1"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[parse]",
+      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[to_toml]",
+      "hash": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[validate]",
+      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[EvidenceConfig]/fn[validate]",
+      "hash": "a4c81ffd7d637673106ccb371ad8a87bae9341db666df8444fdd36e5d0952ecc"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ProjectConfig]/fn[from_book_toml]",
+      "hash": "04e0bdc01fe59736d2feec995e4632d104c4e945854efe867a35b57b67cc3f62"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]/fn[validate]",
+      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[model_ref]",
+      "hash": "08850ef1baf39ed65e13526a9d8d96e20a2e11a66b6033ffac04b58119c63ee9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[options]",
+      "hash": "8ce0d90f10ed65ab98d87a32e12e29b8f8740a99ca0d5626b652b192e9c1ca3c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[options_json]",
+      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OptionValue]/fn[validate]",
+      "hash": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[endpoint]",
+      "hash": "c415f1dc83d441fc82a14831a6748729838d6249d7b6bb4dffe78b73f305610b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key]",
+      "hash": "5228ff96233c473974cb95a01d0d0dff8815da735dd6d667287a1fc5293176ee"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]/fn[api_key_from]",
+      "hash": "5ba74dfd70cff06aeb97d6c95de7432de9eb7024c7882e434fc214c41eb3897b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]/fn[model_ref]",
+      "hash": "ba39e0c3fba8e179a3f196296995e9c83d9a2e635529c978684d03d345962237"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]/fn[effective_concurrency]",
+      "hash": "8379185dedc15d5caec74e7062d97dd212b9e463425f44c3e770169f17dffd2c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path]",
+      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path_from]",
+      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root]",
+      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root_from]",
+      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[absolute_directory]",
+      "hash": "82024e470bc377bbc0fc64f0702e8c445d30df5022d152673e1130e82fb5d222"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[required_directory]",
+      "hash": "7fd086d548e3f55c4cd745817f63b4e4a11a1706958da3fa786d8de1c9499a72"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_user_config]",
+      "hash": "fb6beac422c9a07a4bc186611b17ae623dba820488816044ae927690d59bf1c8"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_workspace_config]",
+      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[parse_document]",
+      "hash": "0287b1717cba7e77c7d4c3f8b5264f202094f1b27303f52f763c36a782efbc70"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[decode]",
+      "hash": "18c77225e202f5ac560723436ec3878e6b588615de9c83ab7a18e5008a3db1eb"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[decoded_setting]",
+      "hash": "5e1b71d9894d744a325566cd5baf422130ba6f2006a66db39941b435eb491520"
     },
     {
       "file": "src/config.rs",
@@ -179,19 +389,49 @@
       "hash": "ca008e63fdef9e70314dd40b9bd0e611918e0179ee41125bb36ec027fdd019a6"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "impl[Fixture]/fn[new]",
-      "hash": "0a96b72ae64617276f724c51a55241d780a54133dd28ccd76a9d8302d02dd468"
+      "file": "src/config.rs",
+      "item": "fn[validate_name]",
+      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
-      "hash": "4682a1c95ac85718935f1342508f0d5a28acba4f4ed39f9de1d7c6d9d7d4e919"
+      "file": "src/config.rs",
+      "item": "fn[invalid]",
+      "hash": "c0f6cd2771b08d4c6edca4148d7cd4d9928d07ceeb0e04d11867d60c85592c41"
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "item": "section[Configuration]/section[Common%20data%20structures]",
+      "hash": "e0f353a023ff47a263243f1cff5014bc168680e882248cb60dbfb2b08fa46839"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]",
+      "hash": "910de702854dd5cfe558722d00b8aa457cd8a43a33756b5347ccf32282fd9ded"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
+      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
+      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
     },
     {
       "file": "tests/configuration.rs",
-      "item": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]",
-      "hash": "2f7d90c5cd6ac721390861eb6e8760d9b35646f1306b8856b5009ca5a3e1b8b2"
+      "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
+      "hash": "eae9d7ae7e419e4c87f6d4f1cd77a36df6e6a94d7fa839eac97846478aa578c0"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[configurations_without_any_selection_report_how_to_choose_one]",
+      "hash": "2c76e33338d66e1745be1c2cc335dd05a9c30a145bec6bedfa14341ec6e49943"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]",
+      "hash": "faac10d0f6016f3f8f3edd34c2304e4930eed364a0b115faeef738c38bf019f9"
     }
   ]
 }

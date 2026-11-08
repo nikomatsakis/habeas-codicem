@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
   "determination": true,
-  "rationale": "**Judgment:** the implementation meets every obligation in `workspace_location`, and the tests cover the main cases and failures. I found no unmarked implementation or unspecified behavior.\n\n**Implementation**\n\nAll discovery goes through `workspace_document` (`src/config.rs:749`). `load_workspace_config` and `load_workspace_evidence` both call it, and I found no other place that locates `habeas.toml`.\n\n- **Nearest file, used alone.**\n  - It walks `start.ancestors()` and returns the first `habeas.toml` it finds.\n  - Only that file is parsed and validated. Nothing merges in an ancestor's file.\n- **Library start directory.**\n  - It canonicalizes the given root. It starts from the current directory if that is inside the root, and otherwise from the root.\n  - That is the stated rule, and the walk then continues upward.\n- **Invocation directory.**\n  - `main` calls `load_workspace_evidence(&std::env::current_dir()?)` (`src/main.rs`).\n  - `status` and `info` reach discovery through `inspect_repository_with_progress`, which loads it from the project root (`src/evidence.rs`).\n  - When the current directory is inside that root, the walk starts there.\n- **Base for relative paths versus project root.**\n  - The loaded value records `root` as the parent directory of the selected file. `PathPolicy::load` joins evidence paths against it (`src/authoring/access.rs`).\n  - The Cargo and mdBook project root still comes from `setup::project_root` and `find_project_root`, which look for `Cargo.toml` and `book.toml`.\n  - Inspection canonicalizes the root it was given, not the config root. So the config root does not replace the project root.\n- **Missing file.** A `NotFound` error moves to the next ancestor. If no file is found, the result is `Ok(None)`, which callers treat as absent settings (`Self::default()` in `PathPolicy::load`).\n- **Unreadable candidates.**\n  - `symlink_metadata` errors other than `NotFound` return an error that names the path.\n  - A failed read or parse of a found file also returns an error naming the path. The walk never falls through to an ancestor.\n- **No creation.** The loaders only read. Nothing on this path writes a file.\n\n**Tests**\n\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (`tests/configuration.rs:343`):\n  - From the project root, it inherits an ancestor's file.\n  - From `nested`, the nearer file wins, with no merge, and its `root` is that file's directory.\n  - The file is not rewritten.\n  - An invalid nearest file gives an error naming its path.\n  - With no files at all, the result is `None`.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (`tests/configuration.rs:1054`):\n  - A directory named `habeas.toml` in the project, with a valid ancestor file present, gives an error naming that path for both loaders. It does not select the ancestor.\n  - An absent file gives `None` and leaves the directory empty, so nothing is created.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs:199`) runs the CLI from a nested directory:\n  - The nearer file shadows an invalid ancestor file.\n  - A broken nested file is reported by its path.\n  - Evidence checks still run against the project root.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (`tests/authoring_cli.rs:489`) shows the nested file's settings are used and the parent's bad default is ignored.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs:479`) covers validation of the located file.\n\n**Gaps**\n\nI found no source comments acknowledging gaps, and I see none that need acknowledging.",
+  "rationale": "I judge the requirement satisfied: the discovery logic implements each obligation, the marking is complete, and the tests cover the main cases and failures. I did not trace how authoring settings use the selected file's directory for relative paths beyond the evidence path policy.\n\n**Implementation**\n\nAll workspace file loading goes through `workspace_document` in `src/config.rs`, called by `load_workspace_config` and `load_workspace_evidence`. Every `src` caller I found goes through these two functions.\n\n- **Search and nearest file:** `workspace_document` canonicalizes the root and walks `start.ancestors()`. It returns the first `habeas.toml` it finds and never reads or merges an ancestor's file after that.\n- **Start directory:** It starts at the current directory when that directory is inside the project root. Otherwise it starts at the given root. This is the rule for a library operation given a project root.\n- **Invocation directory:** `main` calls `load_workspace_evidence(&current_dir()?)`, so the CLI searches from where it was invoked.\n- **Base for relative paths:** `LoadedWorkspaceConfig` and `WorkspaceEvidenceConfig` set `root` to the selected file's parent. `PathPolicy::load` in `src/authoring/access.rs` joins evidence allow and disallow paths onto that `config.root`. The Cargo and mdBook root is still the project root, as `inspect_repository_with_progress` shows.\n- **Missing file:** If no file is found, the loaders return `Ok(None)`. `PathPolicy::load` then falls back to `Self::default()`.\n- **Unreadable candidates:** `workspace_document` uses `symlink_metadata`, and only `NotFound` moves on to the parent directory. Any other error, and any failure to read the file, is returned with the path, so an ancestor is never silently chosen.\n- **No file creation:** The code only reads and never writes.\n- **Marking:** The `{impl}` markers sit on the discovery and loading functions and on their consumers: `main`, `inspect_repository*`, and `PathPolicy::load`. `resolve_authoring` is marked for other requirements and calls `load_workspace_config`, so it adds no unmarked location logic. I found no behavior in the marked code that this requirement doesn't specify.\n\n**Tests**\n\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (`tests/configuration.rs`):\n  - An outer file is found from a nested root.\n  - A nearer file wins and the outer file's settings are not merged in.\n  - The selected file's directory becomes `root`.\n  - The file is not rewritten.\n  - A malformed nearest file is an error that names its path.\n  - With both files removed, the result is `None`.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (`tests/configuration.rs`): A directory named `habeas.toml` in the project, with a valid file in an ancestor, produces an error naming the path from both loaders instead of selecting the ancestor. The same test checks that loading from an empty directory returns `None` and creates no file.\n- `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs`): Running from a nested directory selects the nested file. The final `status` run puts the nested file's path in its output, even though the parent is valid.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (`tests/authoring_cli.rs`): A nested `habeas.toml` run from the nested directory overrides a parent file whose settings are invalid. The model and API key come from the nested file.\n- `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` (`tests/evidence_boundaries.rs`): Invalid workspace files at the root are reported as validation errors that name `habeas.toml`.\n\nThe cwd-inside-project start is exercised through the CLI tests. The root-start case with the cwd outside the project is exercised by the library tests, which run from the crate directory while the temp project sits elsewhere.\n\nNo gaps, and no FIXMEs.",
   "references": "d303ae30c072c0ffc067c3236de4700a7562c21cdc1aedcfd5e7589ddfc663c9",
   "inputs": [
     {
@@ -25,7 +25,7 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[PathPolicy]/fn[load]",
-      "hash": "35a027acfa5aabc36215ae643a316ffcef92f7dd33cd4e635b6f1be457564ae3"
+      "hash": "5950faed829db1612f97208c49aeb78c93701c73e400754bf51198366e39fd31"
     },
     {
       "file": "src/config.rs",
@@ -55,7 +55,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "e348793889dd657daad2ab52847980358629480e82362f28f7b3a782f1db1735"
+      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
     },
     {
       "file": "src/main.rs",
@@ -95,12 +95,12 @@
     {
       "file": "src/authoring/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "ef98601c16475681510bfef02215408a4462718be27f28c44e7cd7623573b6ef"
+      "hash": "0150396844273da1aa3e490d9555b75ce3d48d31e49955e22bf209ba9e82f5b9"
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[discovery_considers_indexed_files_except_exclusions_and_credentials]",
-      "hash": "0a8c9f992e0d8b3dfdbe492d1e650a437b47a6e0e77ef681abd8737ce967c8cf"
+      "item": "mod[tests]/fn[discovery_considers_indexed_files_except_exclusions_including_credential_configuration]",
+      "hash": "c0f7459b67b4ef4b9ee2ff850d2265e3c0a3e5c689ffa80be01eb7c0b2aad331"
     },
     {
       "file": "src/authoring/access.rs",
@@ -109,8 +109,8 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[workspace_credentials_are_excluded_unless_explicitly_allowed]",
-      "hash": "25a7cf93b97d48043db996817b63498851afbaf72961251c358e0d474570b286"
+      "item": "mod[tests]/fn[workspace_configuration_with_credentials_is_readable_unless_disallowed]",
+      "hash": "3af28e1800a227c7f0da97cd73d5ea446179f3c04577931bf6971b33a6939463"
     },
     {
       "file": "src/authoring/access.rs",
@@ -145,7 +145,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "aa14a49b4870c3defa4253018d1624300934052ebdef5d5a9199570c18a0a7b8"
+      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]",
+      "hash": "86cff07f4068f6c30d43546bc33c8d1ba47e7fce2823d838bbbfa951455a13d1"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -199,38 +204,48 @@
     },
     {
       "file": "src/evidence.rs",
+      "item": "fn[validate_committed_credentials]",
+      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[committed_workspace_credentials_are_reported_but_untracked_ones_are_not]",
+      "hash": "efb57dabb0468badee0a24eda056d3c05252368917afa72a67ad18cfcfc1a3d1"
+    },
+    {
+      "file": "src/evidence.rs",
       "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[allowed]",
-      "hash": "5960d03100435ec0b4494b19a912cfe60ddb53c1f34b28300122bc37ac969d5b"
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_pages_and_info_display_redacted_source]",
+      "hash": "38e21b2ac47d69c2ee6c8bf8b24a47684ad609d06a0c90ea44f2d9c90cfa497c"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[untracked]",
-      "hash": "264ffecefb7f2a7b3a2182087f99953a5e3df83794f70817b6e8f97fff32e2d3"
+      "file": "src/redaction.rs",
+      "item": "impl[Redaction]/fn[of_file]",
+      "hash": "4aad26e9ad0448cfc7c125b41ab45cbc8114b9ce97356c45b820f8d0b0d5cb5f"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[considers]",
-      "hash": "92ddc7a3a253aaac1783ed4d42607418666204eab2328c30c55702248ff13f0e"
+      "file": "src/redaction.rs",
+      "item": "fn[is_configuration_file]",
+      "hash": "d8527164ce99e6c20b81a95049b152538a6b3e20ad7e8d947513d3f5be66faa1"
     },
     {
-      "file": "src/setup.rs",
-      "item": "fn[find_project_root]",
-      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
+      "file": "src/redaction/tests.rs",
+      "item": "fn[configuration_credential_fields_are_redacted_by_name_whatever_their_values]",
+      "hash": "412e09d365440e96d3084a37a15e6af17d97a411f07a0601ad9234d420d45481"
     },
     {
-      "file": "src/setup.rs",
-      "item": "fn[project_root]",
-      "hash": "c0707987d208670061b30eb531a4c5a6640c2f948a3a1ea81dceca0fecc42807"
+      "file": "src/redaction/tests.rs",
+      "item": "fn[hashes_do_not_depend_on_credential_values]",
+      "hash": "495c27757733832de498936ab966e65023bd9caf2eadd297f66ef59f09624e82"
     },
     {
-      "file": "src/setup.rs",
-      "item": "fn[write_new_or_same]",
-      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
+      "file": "src/redaction/tests.rs",
+      "item": "fn[redaction_never_changes_an_outline]",
+      "hash": "dcfe1714ddf0adf050e96e43fc3499b40e0338419024db0680e7681f8e6b80db"
     }
   ]
 }

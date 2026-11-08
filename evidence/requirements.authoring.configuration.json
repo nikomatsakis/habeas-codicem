@@ -1,7 +1,7 @@
 {
   "requirement": "Authoring MUST use the `[authoring]` sections of the shared user configuration\nand the selected workspace's `habeas.toml`, refining\n{impl}`requirements.configuration.feature_sections` for the authoring feature.\n{cite}`requirements.configuration.user_location`\n{cite}`requirements.configuration.structure`\nAssessing a subject with `habeas author`, singly or in a batch that needs at\nleast one assessment, MUST require an `[authoring]` section in at least one of\nthese files; either section MAY be absent. No other operation requires the\nsection, including a batch with no assessments needed and the operations in\n{cite}`requirements.authoring.deterministic_validation`.\nIt MUST support named configurations, workspace defaults, and a user-local\nselection for each project. Credential-source references SHOULD be used;\nexplicit credentials MUST be supported under {cite}`requirements.authoring.credentials`.\n{cite}`requirements.configuration.workspace_location`\n{cite}`requirements.configuration.workspace_structure`",
   "determination": true,
-  "rationale": "**Verdict:** the sources satisfy `requirements.authoring.configuration`. I found no unacknowledged gaps.\n\n**Implementation**\n- `resolve_authoring` (`src/config.rs:890`) loads the nearest workspace `habeas.toml` and the user config. It passes both to `resolve_authoring_with_workspace_from` (`src/config.rs:926`), which reads the `[authoring]` table of each file. This is how the requirement's \"use both sections\" obligation is carried out.\n- Either file or section may be absent. The only failure on that path is `authoring.is_none() && local.is_none()`, which produces a \"no authoring configuration (searched …)\" error.\n- Named configurations are looked up by name, with workspace configurations taking precedence over user ones. Selection order is explicit `--config` name, then the user's per-project entry (`projects`, keyed by canonical root), then the workspace `default`, then the user `default`. Errors name the file that made the selection. This covers \"named configurations, workspace defaults, and a user-local selection for each project\".\n- Only two call sites need the section: `configured_assessment` (single-subject `author`, `src/authoring/mod.rs`) and `author_all_with_options` (batch). The batch function returns early when `subjects.is_empty()`, before calling `resolve_authoring`. A repository search finds no other caller in `src`, so validation, status and rendering never require the section. This matches \"no other operation requires the section, including a batch with no assessments needed\".\n- Explicit credentials are supported and secret-handling is specified by `requirements.authoring.credentials`. The workspace test below shows a literal `api_key` in a workspace file reaching the provider as a header only. It does not appear in the request body, usage record, stdout or stderr.\n- The remaining behavior in the `{impl}` code (precedence, error reporting, concurrency) is specified by other requirements the same functions implement: `configuration_precedence`, `configuration_storage`, `workspace_structure` and `loading`. I found no unspecified behavior.\n\n**Tests**\n- `tests/configuration.rs::workspace_defaults_and_configs_combine_with_existing_user_selections` covers:\n  - the workspace default;\n  - workspace configs replacing user configs of the same name;\n  - the user's per-project selection winning over the workspace default;\n  - an explicit name;\n  - a workspace default that refers to a user config;\n  - fallback to the user default;\n  - workspace-only operation with no user config;\n  - an unknown name naming the workspace file.\n- `tests/authoring_cli.rs::authoring_uses_nearest_workspace_configuration_without_a_user_file` runs the CLI end to end. It has no user file, uses the nearest nested `habeas.toml` (a parent `habeas.toml` is not merged in), and uses a literal key that never leaks.\n- `Fixture::new` in `tests/authoring_cli.rs` covers the user-file-only path.\n- `resolve_authoring_from(..., None, ...)` in `tests/configuration.rs::explicit_project_and_default_selections_choose_whole_configs` checks the \"no authoring configuration\" failure.\n- Related tests cover the other edges:\n  - `unknown_selections_name_the_file_that_made_them` and `configurations_without_any_selection_report_how_to_choose_one` cover the error cases.\n  - `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` in `tests/authoring_batch.rs` runs `author --all` with an invalid or missing user config when nothing needs assessing, and it succeeds. That test is not tagged with this requirement name, but it does exercise the \"no assessments needed\" exemption.\n  - `discovery_errors_fail_before_configuration_or_inference` and `unreadable_reference_sources_fail_the_batch_before_inference` check that batch failures happen before configuration is required.\n\n**Minor observation:** I found no CLI-level test where both files exist but neither has an `[authoring]` section. The code path is a single, simple condition and is exercised through the `None` user config case, so I do not count this as a gap.",
+  "rationale": "**Judgment: the implementation and tests satisfy `requirements.authoring.configuration`.** The one gap I found is minor and described under Implementation.\n\n**Implementation**\n\n- `resolve_authoring` (src/config.rs:890) loads the nearest workspace `habeas.toml` and the user file. It then calls `resolve_authoring_with_workspace_from` (src/config.rs:926). It is marked `{impl}` for this requirement, as are `resolve_authoring_from` and `resolve_authoring_with_workspace_from`.\n- **Both files are used.** `resolve_authoring_with_workspace_from` validates the user `[authoring]` and workspace `[authoring]` tables separately and uses either or both.\n- **Required in at least one file.** It fails with \"no authoring configuration (searched … and …)\" only when both sections are absent. Either section may be absent on its own.\n- **Named configurations.** A name is looked up in the workspace `configs` first, then in the user `configs`.\n- **Workspace defaults and user-local selection.** The selection order is: explicit `--config`, then the user's per-project selection (keyed by canonical root), then the workspace default, then the user default. Unknown names are reported against the file that made the selection and list every file searched.\n- **No other operation requires the section.**\n  - Only `configured_assessment` (src/authoring/mod.rs:378) and `author_all_with_options` (src/authoring/batch.rs) call `resolve_authoring`.\n  - The batch returns early when `subjects.is_empty()`, before it resolves configuration.\n  - Validation, status and rendering never call it.\n- **Credentials.** The explicit-credential and credential-source obligations are delegated to `requirements.authoring.credentials` and its own `{impl}` sites. This requirement's text only cites it.\n- **Minor gap.** `resolve_authoring` computes `user_config_path()` unconditionally. With neither HOME nor XDG usable it fails even if the workspace file alone would suffice. I read this as acceptable under `user_location`, because authoring is an operation that uses the user configuration.\n\n**Tests**\n\n- `workspace_defaults_and_configs_combine_with_existing_user_selections` (tests/configuration.rs:440) covers:\n  - workspace default selection;\n  - a workspace config replacing a same-named user config as a whole;\n  - a user project selection outranking the workspace default;\n  - an explicit name;\n  - a workspace default naming a user config;\n  - falling back to the user default;\n  - a workspace-only setup with no user file;\n  - an unknown name, with the error naming the file.\n- `explicit_project_and_default_selections_choose_whole_configs` and `unknown_selections_name_the_file_that_made_them` cover the failure cases. These include the \"no authoring configuration\" error when neither file has the section and the \"no configuration selected\" error.\n- `authoring_uses_nearest_workspace_configuration_without_a_user_file` (tests/authoring_cli.rs:489) is an end-to-end run with no user file. It uses the nearest workspace file, not an ancestor's, and an explicit `api_key` from that file. The key is sent to the provider but never appears in the request body, usage record or output.\n- `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` (tests/authoring_batch.rs:443) runs `author --all` with an invalid user file and then with no user file. It shows a batch with nothing to do does not require configuration. Related tests cover discovery errors failing before configuration is loaded.\n- `ordinary_status_ignores_invalid_user_authoring_configuration` (tests/authoring_cli.rs:1224) and `missing_or_stale_evidence_fails_validation_without_contacting_the_provider` show that validation and status do not need the section.\n\nThe tests cover the main design space and its boundaries, and the implementation is marked completely.",
   "references": "a658228bbdae0a8c7124e123e9f53626a5f8a2150d0b3eced2b946164caad2e2",
   "inputs": [
     {
@@ -104,10 +104,12 @@
         "explicit values MUST round-trip; credentials resolved from profiles or the",
         "environment MUST NOT be serialized back. Debug output, configuration diagnostics,",
         "usage records, and initial prompts MUST NOT include credential values. TOML",
-        "diagnostics MUST NOT echo credential-containing source lines. An active workspace",
-        "file containing explicit credentials MUST be excluded from model source reads by",
-        "default under {cite}`requirements.authoring.source_tools`; explicit workspace path",
-        "overrides still apply.",
+        "diagnostics MUST NOT echo credential-containing source lines. A configuration",
+        "file containing explicit credentials MAY be read as source; its credential",
+        "values MUST be redacted under {cite}`requirements.authoring.redaction`.",
+        "Validation MUST report a workspace `habeas.toml` present in the Git index that",
+        "contains explicit credentials, naming the file and the credential fields and",
+        "recommending credential-source references, because committed credentials leak.",
         "",
         "Documentation MUST discourage literal credentials in workspace files and",
         "recommend AWS profiles or environment-variable references. Examples MUST use",
@@ -210,14 +212,29 @@
       "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
-      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]",
+      "hash": "a436e51ccb4fe213290a40ac0af45e0175a792038893d08e534cef2dd0138006"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
-      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
+      "file": "src/config.rs",
+      "item": "fn[user_config_path]",
+      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path_from]",
+      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_workspace_config]",
+      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
+    },
+    {
+      "file": "src/redaction.rs",
+      "item": "fn[is_configuration_file]",
+      "hash": "d8527164ce99e6c20b81a95049b152538a6b3e20ad7e8d947513d3f5be66faa1"
     },
     {
       "file": "tests/configuration.rs",
@@ -246,13 +263,48 @@
     },
     {
       "file": "tests/configuration.rs",
+      "item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
+      "hash": "4a1e5484da50abc6d54cccb531029d25ed1996e173f5eb014ecdfa9e69dcc20f"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
+      "hash": "1c52e2de8994a9792a83f6f9e2c6f2861d432ea65327adca6a9ec5dd4c477f1e"
+    },
+    {
+      "file": "tests/configuration.rs",
       "item": "fn[unknown_selections_name_the_file_that_made_them]",
       "hash": "6c888f7660d28b9c4321353b4aef55a3aef6e320cc0b21f3c404e8fe7bea5e94"
     },
     {
       "file": "tests/configuration.rs",
+      "item": "fn[user_and_workspace_authoring_tables_round_trip_every_map]",
+      "hash": "34fae851fb0afe1cf07314e2d97f3941995a972552b06b666bf52e300391ce8a"
+    },
+    {
+      "file": "tests/configuration.rs",
       "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
       "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_diagnostics_identify_the_file_and_setting]",
+      "hash": "dccb1251c9cfbce8b54916a0fd765df53e571db726a6d998a785857bfe04bc33"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]",
+      "hash": "faac10d0f6016f3f8f3edd34c2304e4930eed364a0b115faeef738c38bf019f9"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[base_directories_must_be_absolute_and_nonempty]",
+      "hash": "d39c832e45087b364c39229e2def514e750e168eab7df427f9fe2cf94a46dc8f"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[selected_config]",
+      "hash": "741f598266f20c82b51f5df06ebcfab4ce5fcc3f0f80a763c1c568a0542f52e6"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -296,6 +348,16 @@
     },
     {
       "file": "tests/authoring_batch.rs",
+      "item": "fn[discovery_errors_fail_before_configuration_or_inference]",
+      "hash": "569074f93d1ab91fac4f202e465d6924b81a04ea750055c59c132198fac69034"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[unreadable_reference_sources_fail_the_batch_before_inference]",
+      "hash": "57d17781448ec36e798f426ca087a752e11e37aec67da7e50502febd6c419dae"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
       "item": "fn[batch_authors_citation_reviews_and_preserves_current_ones]",
       "hash": "7cc2bfeb5579c4287fa234d391fda1029988d13401efcc3aa9d96dd764387d0d"
     },
@@ -318,11 +380,6 @@
       "file": "tests/commands.rs",
       "item": "fn[add_input_requires_one_target_and_mode_and_resets_changed_records]",
       "hash": "80ca3b46648359ab84fccedb9c2ef70e7e0cd4b7f8df90810a93e7d1aa577fde"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]",
-      "hash": "faac10d0f6016f3f8f3edd34c2304e4930eed364a0b115faeef738c38bf019f9"
     }
   ]
 }

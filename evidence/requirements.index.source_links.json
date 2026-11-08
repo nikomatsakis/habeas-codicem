@@ -1,7 +1,7 @@
 {
   "requirement": "When `output.html.git-repository-url` names a GitHub repository and `output.html.edit-url-template` uses that repository's `/edit/<branch>/{path}` form, each safely resolved source location displayed for an evidence input MUST link its repository-relative file and inclusive line range to `/blob/<branch>/<file>#L<start>-L<end>`. A source location MUST remain plain text when a safe URL cannot be derived. A generated detail page MUST use its evidence JSON file as the mdBook edit target when the file exists, or its requirement chapter when the evidence file is missing.",
   "determination": true,
-  "rationale": "**Judgment: the implementation and tests satisfy `requirements.index.source_links`.**\n\n**Implementation**\n- `SourceLinks::from_config` (src/index.rs:46) reads `output.html.git-repository-url` and `output.html.edit-url-template`.\n  - It returns no links unless both settings exist.\n  - It accepts only `https://github.com/<owner>/<project>`. Owner and project characters are validated, and trailing `/` is trimmed.\n  - It requires the template to be exactly `<repo>/edit/<branch>/{path}` with a non-empty branch. A template for another repository, a non-GitHub URL such as `javascript:` or a malformed template gives `None`, so the locations stay plain text.\n  - It stores `<repo>/blob/<branch>` as the link prefix.\n- `SourceLinks::input_url` (src/index.rs:88) builds `/blob/<branch>/<file>#L<start>-L<end>`.\n  - It rejects line 0 and ranges where end is before start.\n  - It rejects absolute and `..` paths and non-UTF-8 paths, and skips `.` components.\n  - It percent-encodes each path segment through `encode_url_segment`.\n- `render_input` and `render_source_location` (src/index.rs:803 and 889) link every resolved range with the inclusive `file:start–end` text. They fall back to plain `<code>` text when there is no URL. URLs and text are HTML-escaped.\n- `populate` (src/index.rs:340) builds `SourceLinks` once from the book config and passes it to rendering.\n  - It sets each generated page's `source_path` to `evidence_edit_path(...)` (`../evidence/<name>.json`, adjusted for `book.src` depth) when the evidence file exists.\n  - Otherwise it uses the defining chapter path (`definition.path`).\n- The `{impl}` marker on the `for_each_chapter_mut` block in `preprocess_book` (src/lib.rs:235) is justified. Detail pages now carry a `source_path`, so that block must keep them from being treated as definition chapters.\n- The CLI `info` command passes `source_links: None` (src/commands.rs). The requirement is conditioned on mdBook `output.html` settings, so I read it as covering the mdBook output only.\n- Behavior not in the requirement: none that I found. All the code involved carries `{impl}` markers.\n\n**Tests**\n- `source_links_use_configured_repository_and_branch` checks:\n  - a non-default branch (`release`);\n  - exact blob URL and line anchor;\n  - percent-encoding of a path with space and `#`;\n  - rejection of a `../` path and of line 0;\n  - the evidence edit path for a nested `book.src`;\n  - the end-to-end anchor in a rendered detail page, with the range text linked;\n  - a template for a different repository giving `None`;\n  - an unsafe `javascript:` URL giving `None`.\n- `index_shows_evidence_states_and_links_generated_chapters` checks the edit target: the evidence JSON when the file exists (`../evidence/requirements.core.ready.json`), and the requirement chapter (`requirements/core.md`) when it is missing.\n\n**Minor gaps**\n- Trailing-slash repository URLs, a missing `{path}` suffix, an empty branch and `end < start` have no explicit tests, though the code handles them.\n- Branch names are not URL-encoded. A branch containing `?` or `#` would produce an odd link, though it cannot inject HTML because the URL is escaped. This is minor and does not breach the stated obligations.\n\nNone of these gaps is large enough to change the judgment.",
+  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation and the tests cover the main cases. A few edge cases are untested, but I don't count them as gaps.\n\n**Implementation**\n\n- **Config gating (`SourceLinks::from_config`, src/index.rs:46-86):**\n  - It reads `output.html.git-repository-url` and `output.html.edit-url-template`, and returns `None` if either is absent.\n  - It requires `https://github.com/<owner>/<project>`, with a restricted character set for owner and project.\n  - It requires the edit template to be exactly `<repo>/edit/<branch>/{path}` with a non-empty branch.\n  - It then builds the prefix `<repo>/blob/<branch>`.\n  - Anything else, such as a different repository, a `javascript:` URL, or a missing branch, yields `None`, so locations stay plain text.\n- **URL derivation (`input_url`, `encode_url_segment`, src/index.rs:88-124):**\n  - It produces `<blob_prefix>/<file>#L<start>-L<end>`, which is the inclusive range form the requirement asks for.\n  - It rejects `start == 0` and `end < start`.\n  - It rejects `..`, absolute and prefix path components, and non-UTF-8 names, so only safely resolved repository-relative files get a link.\n  - It percent-encodes each path segment.\n- **Rendering (`render_input` → `render_source_location`, src/index.rs:806-922):**\n  - Every resolved range displayed for an input goes through `render_source_location`.\n  - A range becomes an HTML-escaped `<a href>` when a URL exists. Otherwise it is plain `<code>` text.\n- **Edit target (`populate`, `evidence_edit_path`, src/index.rs:340-473):**\n  - `populate` sets the generated page's `source_path` to `../…/evidence/<name>.json` when that file exists. It computes the `..` count from `book.src`.\n  - When the file is missing it uses `definition.path`, the requirement chapter.\n- **`lib.rs` marker:** the `{impl}` marker in `preprocess_book` (src/lib.rs:236) covers the `for_each_chapter_mut` pass. Generated detail pages now carry a `source_path`, so that pass has to skip them explicitly via `plan.is_detail_path`. This is a legitimate consequence of the edit-target obligation.\n- **Unspecified behavior:** I found none. The other `{impl}` markers on `render_input` and `render_source_location` are for `detail_format` and related requirements, not extra behavior.\n- **CLI output:** `info_markdown` passes `source_links: None`. That is outside this mdBook-book requirement.\n\n**Tests**\n\n- **`source_links_use_configured_repository_and_branch` (src/index.rs:1402):**\n  - Checks that a non-default branch gives `blob/release/src/evidence.rs#L26-L37`.\n  - Checks percent-encoding of `a b#c.rs`.\n  - Checks plain text for `../outside.rs` and for a zero start line.\n  - Checks `evidence_edit_path` for a nested `book.src` (`docs/md`).\n  - Renders a detail page from a real outline input and asserts the exact `<a href=…><code>src/evidence.rs:26–37</code></a>`.\n  - Checks that a mismatched edit-template repository gives `None`.\n  - Checks that a `javascript:` URL gives `None`.\n- **`index_shows_evidence_states_and_links_generated_chapters` (src/index.rs:1055):**\n  - Goes through `preprocess_book`.\n  - Asserts that a requirement with an evidence file gets `source_path` `../evidence/requirements.core.ready.json`.\n  - Asserts that a requirement without one gets `requirements/core.md`.\n  - This covers both edit-target branches.\n- **Untested edge cases:** `end < start`, a missing branch, a trailing slash on the repository URL, and `./` components. These are small branches of simple code, and the main success and failure paths are covered.",
   "references": "2b1b452b4ad0edc88c3730d4e7ff0ee6e095724e50c2c7ac73a50bc2cf2a28b0",
   "inputs": [
     {
@@ -48,7 +48,7 @@
     {
       "file": "src/index.rs",
       "item": "fn[render_input]",
-      "hash": "a659c55ec549ba53cdfd501e05d5030d1cbcabf50003d13a70f2559486dda698"
+      "hash": "d9de115b90fe0cdac7a7972a76b17e61c083627ef27d40859f4e2de9dbb8232d"
     },
     {
       "file": "src/index.rs",
@@ -81,6 +81,11 @@
       "hash": "40336d8815340b51168acc955c9fcb85ad7a481f867a51755fe4b7934d6471e0"
     },
     {
+      "file": "book.toml",
+      "item": "table[output.html]/pair[edit-url-template]",
+      "hash": "a0acfbca57b3b2d4e6ab9b628dfb075fb4f83db9753e8ef2ea2704a33af22e67"
+    },
+    {
       "file": "md/requirements/index/README.md",
       "item": "section[Book%20rendering]",
       "hash": "8e4ffc8ecb6c9c18d92c14b3c962c3ef8d4e97c41bac4cfd8e5cabf817ccaaa5"
@@ -107,6 +112,11 @@
     },
     {
       "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_pages_and_info_display_redacted_source]",
+      "hash": "38e21b2ac47d69c2ee6c8bf8b24a47684ad609d06a0c90ea44f2d9c90cfa497c"
+    },
+    {
+      "file": "src/index.rs",
       "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
       "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
     },
@@ -114,6 +124,11 @@
       "file": "src/index.rs",
       "item": "mod[tests]/fn[invalid_evidence_detail_remains_readable]",
       "hash": "7c2c957ce29dc4ed7d97b8eebdf072ef96bf9cbffa3b39c959465690efdcc9bb"
+    },
+    {
+      "file": "tests/repository.rs",
+      "item": "fn[book_links_to_the_repository_and_main_branch_edit_pages]",
+      "hash": "afdafec26468096817966df5b29e2e604fdacf4ec37ac096722b264e1bce1f20"
     }
   ]
 }
