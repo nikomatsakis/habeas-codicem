@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use crate::definition_glob;
 use crate::evidence::Declaration;
 use crate::outline::{self, Outline, ResolveError};
+use crate::redaction::Redaction;
 
 // {impl}`requirements.ci.schema`
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +56,9 @@ pub(crate) struct ParsedSource {
     /// Canonical path.
     pub(crate) path: PathBuf,
     pub(crate) source: String,
+    /// The source as models receive it and Habeas displays it, with the same
+    /// lines as `source`.
+    pub(crate) redacted: String,
     pub(crate) outline: Outline,
 }
 
@@ -70,19 +74,21 @@ impl OutlineCache {
     // {impl}`requirements.ci.outline_inputs`
     // {impl}`requirements.ci.input_containment`
     // {impl}`requirements.references.outlines`
+    // {impl}`requirements.authoring.redaction`
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
         if let Some(parsed) = self.files.lock().expect("outline cache lock").get(&key) {
             return parsed.clone();
         }
         let parsed = Arc::new(read_project_file(root, file).and_then(|(path, source)| {
-            let outline = outline::parse(&path, &source).map_err(|error| {
-                format!(
-                    "{file}: cannot parse {} source: {error}",
-                    outline::profile_for_path(&path).name
-                )
-            })?;
+            let redaction = Redaction::of_file(&path, &source);
+            let profile = outline::profile_for_path(&path);
+            let outline =
+                outline::parse_redacted(profile, &source, &redaction).map_err(|error| {
+                    format!("{file}: cannot parse {} source: {error}", profile.name)
+                })?;
             Ok(ParsedSource {
+                redacted: redaction.apply(&source).into_owned(),
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,
                 outline,
@@ -153,8 +159,9 @@ impl ParsedSource {
         }
     }
 
-    /// A node's current inclusive line range and source text.
+    /// A node's current inclusive line range and redacted source text.
     // {impl}`requirements.ci.outline_inputs`
+    // {impl}`requirements.authoring.redaction`
     pub(crate) fn node_range(&self, file: &str, index: usize) -> (SourceRange, Vec<String>) {
         let node = &self.outline.nodes[index];
         (
@@ -164,7 +171,7 @@ impl ParsedSource {
                 line_end: node.line_end.max(node.line_start),
                 name: None,
             },
-            self.outline.node_lines(&self.source, index),
+            self.outline.node_lines(&self.redacted, index),
         )
     }
 }
@@ -245,6 +252,7 @@ impl InputSelector {
     // {impl}`requirements.cli.add_input_requirements`
     // {impl}`requirements.references.definition_globs`
     // {impl}`requirements.ci.input_containment`
+    // {impl}`requirements.authoring.redaction`
     pub(crate) fn resolve(
         &self,
         root: &Path,
@@ -283,7 +291,7 @@ impl InputSelector {
                         line_end: target.line_end,
                         name: Some(definition.clone()),
                     }],
-                    text: target.raw_lines.clone(),
+                    text: crate::redaction::redact_lines(&target.raw_lines),
                     matches: Vec::new(),
                     node: None,
                 })
@@ -303,7 +311,7 @@ impl InputSelector {
                     if !text.is_empty() {
                         text.push(String::new());
                     }
-                    text.extend(definition.raw_lines.iter().cloned());
+                    text.extend(crate::redaction::redact_lines(&definition.raw_lines));
                     ranges.push(SourceRange {
                         file: definition.file.clone(),
                         line_start: definition.line_start,

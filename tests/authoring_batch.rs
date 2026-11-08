@@ -125,7 +125,11 @@ fn serve(
     let mut length = None;
     loop {
         let mut line = String::new();
-        assert!(reader.read_line(&mut line).unwrap() > 0);
+        // A client cancelled by an interruption may close a connection it
+        // opened before sending a request; that connection is abandoned.
+        if !matches!(reader.read_line(&mut line), Ok(read) if read > 0) {
+            return;
+        }
         if line == "\r\n" {
             break;
         }

@@ -658,6 +658,7 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.citation_prompt`
+// {impl}`requirements.authoring.redaction`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
     let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
     Ok(match &sources.subject_kind {
@@ -676,7 +677,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
                 ("item_selector", item.selector_label()),
                 (
                     "citations",
-                    &serde_json::to_string(&item.citations_value())?,
+                    &serde_json::to_string(&item.model_citations_value())?,
                 ),
                 ("mandatory_inputs", &mandatory),
             ],

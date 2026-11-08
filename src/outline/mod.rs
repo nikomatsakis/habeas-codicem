@@ -19,10 +19,10 @@ mod yaml;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::path::Path;
 
 use tree_sitter::{Node, Parser, Tree};
 
+use crate::redaction::Redaction;
 use hash::Encoder;
 use profile::{NameRule, text};
 pub(crate) use profile::{Profile, is_markdown_path, profile_for_path};
@@ -135,18 +135,40 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// Parses a source with the profile its path selects.
+/// Parses a source with the profile its path selects. Hashes use the
+/// source's redacted text pieces; the outline itself is built from the
+/// original source.
 // {impl}`requirements.references.outlines`
-pub(crate) fn parse(path: &Path, source: &str) -> Result<Outline, OutlineError> {
-    parse_with(profile_for_path(path), source)
+// {impl}`requirements.authoring.redaction`
+#[cfg(test)]
+pub(crate) fn parse(path: &std::path::Path, source: &str) -> Result<Outline, OutlineError> {
+    parse_redacted(
+        profile_for_path(path),
+        source,
+        &Redaction::of_file(path, source),
+    )
 }
 
-/// Parses a source with a given profile.
+/// Parses a source with a given profile, redacting by `secretshape` rules.
 // {impl}`requirements.references.outlines`
+// {impl}`requirements.authoring.redaction`
 pub(crate) fn parse_with(profile: &'static Profile, source: &str) -> Result<Outline, OutlineError> {
+    parse_redacted(profile, source, &Redaction::of_text(source))
+}
+
+/// Parses the original source with a given profile, hashing each text piece
+/// that overlaps a redacted region in its redacted form.
+// {impl}`requirements.references.outlines`
+// {impl}`requirements.authoring.redaction`
+// {impl}`requirements.references.structural_hash`
+pub(crate) fn parse_redacted(
+    profile: &'static Profile,
+    source: &str,
+    redaction: &Redaction,
+) -> Result<Outline, OutlineError> {
     let lines = LineIndex::new(source);
     let Some(language) = profile.language else {
-        return Ok(plain_text(profile, source, &lines));
+        return Ok(plain_text(profile, source, redaction, &lines));
     };
     let mut parser = Parser::new();
     parser
@@ -160,7 +182,7 @@ pub(crate) fn parse_with(profile: &'static Profile, source: &str) -> Result<Outl
         message: "parser produced no tree".to_owned(),
     })?;
     check_errors(&tree, &lines)?;
-    Ok(Builder::new(profile, source, &tree).finish(&lines))
+    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
 }
 
 /// Reports the first syntax error in a tree.
@@ -245,7 +267,13 @@ impl LineIndex {
 // {impl}`requirements.references.outline_selectors`
 // {impl}`requirements.references.structural_hash`
 // {impl}`requirements.cli.add_input_item`
-fn plain_text(profile: &'static Profile, source: &str, lines: &LineIndex) -> Outline {
+// {impl}`requirements.authoring.redaction`
+fn plain_text(
+    profile: &'static Profile,
+    source: &str,
+    redaction: &Redaction,
+    lines: &LineIndex,
+) -> Outline {
     let mut root_hash = Encoder::new();
     let mut nodes = vec![root_node(source, lines, String::new(), String::new())];
     for (index, start) in lines.starts.iter().take(lines.count).enumerate() {
@@ -253,10 +281,11 @@ fn plain_text(profile: &'static Profile, source: &str, lines: &LineIndex) -> Out
             .starts
             .get(index + 1)
             .map_or(source.len(), |next| next - 1);
-        let line = source[*start..end].trim();
-        if line.is_empty() {
+        if source[*start..end].trim().is_empty() {
             continue;
         }
+        let redacted = redaction.slice(source, *start..end);
+        let line = redacted.trim();
         root_hash.kind("line");
         root_hash.words(line);
         root_hash.end();
@@ -339,6 +368,7 @@ struct DraftComment {
 struct Builder<'tree, 'source> {
     profile: &'static Profile,
     source: &'source str,
+    redaction: &'source Redaction,
     drafts: Vec<Draft<'tree>>,
     comments: Vec<DraftComment>,
     /// Grammar node id of each draft's core and attached siblings.
@@ -347,11 +377,17 @@ struct Builder<'tree, 'source> {
 
 impl<'tree, 'source> Builder<'tree, 'source> {
     // {impl}`requirements.references.outlines`
-    fn new(profile: &'static Profile, source: &'source str, tree: &'tree Tree) -> Self {
+    fn new(
+        profile: &'static Profile,
+        source: &'source str,
+        redaction: &'source Redaction,
+        tree: &'tree Tree,
+    ) -> Self {
         let root = tree.root_node();
         let mut builder = Self {
             profile,
             source,
+            redaction,
             drafts: vec![Draft {
                 kind: "",
                 name: None,
@@ -528,7 +564,8 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
         if self.is_comment(node) {
             if (self.profile.hashes_comment)(node, self.source) {
-                let (group, prose) = (self.profile.comment_prose)(node, self.source);
+                let body = self.piece(node.start_byte(), node.end_byte());
+                let (group, prose) = (self.profile.comment_prose)(node, &body);
                 encoder.prose(group, &prose);
             }
             return;
@@ -537,7 +574,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             encoder.kind(node.kind());
         }
         if node.child_count() == 0 {
-            encoder.words(text(node, self.source));
+            encoder.words(&self.piece(node.start_byte(), node.end_byte()));
         } else {
             // Text inside a node that no child token covers, such as TOML
             // string contents, YAML block scalars, or Markdown inline text,
@@ -545,19 +582,26 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             let mut position = node.start_byte();
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if let Some(gap) = self.source.get(position..child.start_byte()) {
-                    encoder.words(gap);
+                if position <= child.start_byte() {
+                    encoder.words(&self.piece(position, child.start_byte()));
                 }
                 self.encode(encoder, child, index, identity);
                 position = position.max(child.end_byte());
             }
-            if let Some(gap) = self.source.get(position..node.end_byte()) {
-                encoder.words(gap);
+            if position <= node.end_byte() {
+                encoder.words(&self.piece(position, node.end_byte()));
             }
         }
         if node.is_named() {
             encoder.end();
         }
+    }
+
+    /// A text piece of the source in its redacted form.
+    // {impl}`requirements.authoring.redaction`
+    // {impl}`requirements.references.structural_hash`
+    fn piece(&self, start: usize, end: usize) -> std::borrow::Cow<'source, str> {
+        self.redaction.slice(self.source, start..end)
     }
 
     /// Builds the root and outline nodes, linking parents and children, and

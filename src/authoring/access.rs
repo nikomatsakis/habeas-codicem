@@ -7,19 +7,16 @@ use std::process::Command;
 use super::inputs::generated_evidence_path;
 
 // {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.credentials`
 #[derive(Default)]
 pub(crate) struct PathPolicy {
     allow: Vec<PathBuf>,
     disallow: Vec<PathBuf>,
-    credential_file: Option<PathBuf>,
 }
 
 impl PathPolicy {
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.configuration.workspace_location`
     // {impl}`requirements.configuration.loading`
-    // {impl}`requirements.authoring.credentials`
     pub(crate) fn load(root: &Path) -> io::Result<Self> {
         let Some(config) = crate::config::load_workspace_evidence(root)? else {
             return Ok(Self::default());
@@ -37,7 +34,6 @@ impl PathPolicy {
                 .iter()
                 .map(|path| config.root.join(path))
                 .collect(),
-            credential_file: config.contains_credentials.then_some(config.path),
         })
     }
 
@@ -74,16 +70,6 @@ impl PathPolicy {
         }
         Ok(())
     }
-
-    // {impl}`requirements.authoring.credentials`
-    // {impl}`requirements.authoring.source_tools`
-    fn contains_credentials(&self, requested: &Path, target: &Path) -> bool {
-        self.credential_file.as_ref().is_some_and(|path| {
-            requested == path
-                || target == path
-                || fs::canonicalize(path).is_ok_and(|path| target == path)
-        })
-    }
 }
 
 // {impl}`requirements.authoring.source_tools`
@@ -112,18 +98,11 @@ impl SourceAccess {
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.authoring.generated_inputs`
-    // {impl}`requirements.authoring.credentials`
     pub(crate) fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let (requested, target) = resolve(root, relative)?;
         self.policy.check_disallow(&root.join(relative), &target)?;
         if self.policy.allowed(&requested, &target) {
             return Ok(target);
-        }
-        if self.policy.contains_credentials(&requested, &target) {
-            return Err(denied(format!(
-                "{} contains workspace credentials and is excluded from model inputs",
-                relative.display()
-            )));
         }
         if generated_evidence_path(root, &requested) {
             return Err(denied(format!(
@@ -236,7 +215,7 @@ impl SourceAccess {
 
 /// The project files reference discovery and Rust item coverage consider: the
 /// sources [`SourceAccess`] would let authoring read by default, found without
-/// authoring configuration, credentials, or Cargo metadata.
+/// authoring configuration or Cargo metadata.
 // {impl}`requirements.references.targets`
 // {impl}`requirements.authoring.deterministic_validation`
 pub(crate) struct DiscoverySources {
@@ -285,6 +264,13 @@ impl DiscoverySources {
         files
     }
 
+    /// The files in the Git index, including staged and deleted ones; `None`
+    /// outside Git.
+    // {impl}`requirements.authoring.credentials`
+    pub(crate) fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
+        self.tracked.as_ref()
+    }
+
     /// Untracked files a Git worktree's ignore rules do not exclude, with the
     /// same exclusions as [`Self::files`]; empty outside Git.
     // {impl}`requirements.cli.status`
@@ -323,18 +309,15 @@ impl DiscoverySources {
     }
 
     /// Whether a project file outside the fixed exclusions is permitted by the
-    /// workspace rules: not disallowed and not a configuration file holding
-    /// literal credentials.
+    /// workspace rules: not disallowed.
     // {impl}`requirements.references.targets`
     // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.credentials`
     fn considers(&self, path: &Path, directory: bool) -> bool {
         if excluded_from_discovery(&self.root, path, directory) {
             return false;
         }
         let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
         self.policy.check_disallow(path, &target).is_ok()
-            && !self.policy.contains_credentials(path, &target)
     }
 
     /// Lists every file outside Git, skipping excluded and disallowed
@@ -712,7 +695,7 @@ pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathB
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // {test}`requirements.authoring.source_tools`
@@ -749,7 +732,7 @@ pub(super) mod tests {
     // {test}`requirements.references.targets`
     // {test}`requirements.authoring.credentials`
     #[test]
-    fn discovery_considers_indexed_files_except_exclusions_and_credentials() {
+    fn discovery_considers_indexed_files_except_exclusions_including_credential_configuration() {
         let root = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(root.path()).unwrap();
         for file in [
@@ -786,6 +769,7 @@ pub(super) mod tests {
             files,
             [
                 Path::new("docs/book/page.md"),
+                Path::new("habeas.toml"),
                 Path::new("src/lib.rs"),
                 Path::new("src/staged.rs"),
             ]
@@ -892,27 +876,23 @@ pub(super) mod tests {
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.source_tools`
     #[test]
-    fn workspace_credentials_are_excluded_unless_explicitly_allowed() {
+    fn workspace_configuration_with_credentials_is_readable_unless_disallowed() {
         let root = tempfile::tempdir().unwrap();
         let config = "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'fixture'\napi_key = 'TEST_KEY'\n";
         fs::write(root.path().join("habeas.toml"), config).unwrap();
         let access = SourceAccess::load(root.path()).unwrap();
-        let error = access
+        assert!(access.file(root.path(), Path::new("habeas.toml")).is_ok());
+        fs::write(
+            root.path().join("habeas.toml"),
+            format!("{config}\n[evidence]\ndisallow = ['habeas.toml']\n"),
+        )
+        .unwrap();
+        let error = SourceAccess::load(root.path())
+            .unwrap()
             .file(root.path(), Path::new("habeas.toml"))
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(!error.to_string().contains("TEST_KEY"));
-        fs::write(
-            root.path().join("habeas.toml"),
-            format!("{config}\n[evidence]\nallow = ['habeas.toml']\n"),
-        )
-        .unwrap();
-        assert!(
-            SourceAccess::load(root.path())
-                .unwrap()
-                .file(root.path(), Path::new("habeas.toml"))
-                .is_ok()
-        );
     }
 
     // {test}`requirements.configuration.evidence_paths`

@@ -279,6 +279,7 @@ pub(crate) fn inspect_repository_with_progress(
     let files = discovered_files(&root, &mut errors);
     let references = collect_references_with_progress(&root, &files, &mut errors, &mut progress);
     discovery_errors.extend(errors[scanned..].iter().cloned());
+    validate_committed_credentials(&root, &mut errors);
     validate_references(
         &root,
         &definitions,
@@ -918,6 +919,7 @@ fn text_field(
 // {impl}`requirements.definitions.inputs`
 // {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.ci.input_containment`
+// {impl}`requirements.authoring.redaction`
 #[allow(clippy::too_many_arguments)]
 fn validate_resolved_input(
     root: &Path,
@@ -966,10 +968,11 @@ fn validate_resolved_input(
                 .iter()
                 .filter(|name| {
                     definitions.get(*name).is_some_and(|definition| {
+                        let lines = crate::redaction::redact_lines(&definition.raw_lines);
                         resolved.matches.contains(name)
                             && !text
-                                .windows(definition.raw_lines.len().max(1))
-                                .any(|window| window == definition.raw_lines.as_slice())
+                                .windows(lines.len().max(1))
+                                .any(|window| window == lines.as_slice())
                     })
                 })
                 .cloned()
@@ -1465,6 +1468,40 @@ pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<Pat
     }
 }
 
+/// Reports each workspace `habeas.toml` in the Git index that contains
+/// explicit credentials, naming its credential settings but never their
+/// values. Outside Git nothing is committed, so nothing is reported; a Git
+/// index that cannot be read is reported by discovery.
+// {impl}`requirements.authoring.credentials`
+fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
+    let Ok(sources) = crate::authoring::access::DiscoverySources::load(root) else {
+        return;
+    };
+    for file in sources
+        .indexed()
+        .into_iter()
+        .flatten()
+        .filter(|file| file.file_name().is_some_and(|name| name == "habeas.toml"))
+    {
+        let Some(fields) = fs::read_to_string(file)
+            .ok()
+            .and_then(|text| crate::redaction::credential_fields(&text))
+            .filter(|fields| !fields.is_empty())
+        else {
+            continue;
+        };
+        let settings = fields
+            .iter()
+            .map(|field| format!("`{}`", field.setting))
+            .collect::<Vec<_>>()
+            .join(", ");
+        errors.push(format!(
+            "{}: committed workspace configuration contains explicit credentials in {settings}; committed credentials leak, so remove them and use a credential source instead (`aws_profile` or the default AWS chain for Bedrock, `api_key_env` for Ollama), keeping literal credentials only in an untracked file",
+            display_path(root, file)
+        ));
+    }
+}
+
 /// Untracked files in a Git worktree, outside the discovery exclusions, that
 /// contain references discovery would otherwise find; empty outside Git.
 // {impl}`requirements.cli.status`
@@ -1679,6 +1716,43 @@ pub(crate) mod tests {
         )
         .unwrap();
         temp
+    }
+
+    // {test}`requirements.authoring.credentials`
+    #[test]
+    fn committed_workspace_credentials_are_reported_but_untracked_ones_are_not() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::create_dir_all(root.join("tools")).unwrap();
+        let config = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS'\nsecret_access_key = 'PRIVATE_SECRET'\n";
+        fs::write(root.join("habeas.toml"), config).unwrap();
+        fs::write(root.join("tools/habeas.toml"), config).unwrap();
+        crate::authoring::access::tests::git(root, &["init", "--quiet"]);
+        crate::authoring::access::tests::git(root, &["add", "book.toml", "src", "tools"]);
+        let committed = |errors: &[String]| {
+            errors
+                .iter()
+                .filter(|error| error.contains("contains explicit credentials"))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let report = super::validate_repository(root).unwrap();
+        let found = committed(&report.errors);
+        assert_eq!(found.len(), 1, "{:#?}", report.errors);
+        assert!(found[0].starts_with("tools/habeas.toml: "), "{}", found[0]);
+        assert!(found[0].contains("`authoring.configs.cloud.credentials.access_key_id`, `authoring.configs.cloud.credentials.secret_access_key`"), "{}", found[0]);
+        assert!(found[0].contains("aws_profile") && found[0].contains("api_key_env"));
+        assert!(!found[0].contains("PRIVATE_"), "{}", found[0]);
+        // Staging the workspace file reports it too; a credential-free one is fine.
+        crate::authoring::access::tests::git(root, &["add", "habeas.toml"]);
+        assert_eq!(
+            committed(&super::validate_repository(root).unwrap().errors).len(),
+            2
+        );
+        fs::write(root.join("tools/habeas.toml"), "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\naws_profile = 'dev'\n").unwrap();
+        let found = committed(&super::validate_repository(root).unwrap().errors);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].starts_with("habeas.toml: "));
     }
 
     // {test}`requirements.authoring.progress`

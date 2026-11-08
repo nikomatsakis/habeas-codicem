@@ -21,7 +21,6 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.credentials`
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 pub(crate) fn definitions() -> Vec<Value> {
@@ -30,7 +29,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ and a workspace habeas.toml containing credentials are excluded. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line numbers unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -41,7 +40,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
+            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/ and untracked files; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
@@ -49,7 +48,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources. Defaults exclude evidence/, untracked files, and workspace configuration containing credentials; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources, and their source text is redacted as habeas reads are. Defaults exclude evidence/ and untracked files; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
@@ -810,6 +809,77 @@ mod tests {
                 .to_string()
                 .contains("matches no requirement or example"),
             "{error}"
+        );
+    }
+
+    // {test}`requirements.authoring.redaction`
+    // {test}`requirements.authoring.credentials`
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.citation_prompt`
+    #[test]
+    fn model_inputs_reads_searches_and_citation_prompts_are_redacted() {
+        let root = project();
+        let token = crate::redaction::tests::github_token();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'plain ollama key'\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn client() -> &'static str {{\n    \"{token}\"\n}}\n\n// :::{} requirements.ready\n// Defaults to {token}.\n// :::\nfn helper() {{}}\n",
+                role("impl", "requirements.ready"),
+                "{cite}"
+            ),
+        )
+        .unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        let leaks = |value: &Value| {
+            let text = value.to_string();
+            text.contains(&token) || text.contains("plain ollama key")
+        };
+        // Mandatory inputs, and so the initial and verification prompts.
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let mandatory = Value::Array(sources.mandatory_inputs().to_vec());
+        assert!(!leaks(&mandatory), "{mandatory:#}");
+        assert!(mandatory.to_string().contains("[REDACTED:GitHub Token]"));
+        let prompt = super::super::initial_prompt(&sources).unwrap();
+        assert!(!prompt.contains(&token), "{prompt}");
+        // A habeas read of the configuration file and a line range.
+        let read = dispatch(&sources, "habeas", &json!({"file":"habeas.toml","item":""})).unwrap();
+        assert!(!leaks(&read.result), "{:#}", read.result);
+        assert!(
+            read.result["input"]["text"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("api_key = '[REDACTED:api_key]'"))
+        );
+        let lines = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":1}),
+        )
+        .unwrap();
+        assert!(!leaks(&lines.result), "{:#}", lines.result);
+        // Search results, even for a pattern matching the credential itself.
+        for pattern in ["ollama", "gh[p]_", "Defaults"] {
+            let search = dispatch(&sources, "ripgrep", &json!({"pattern": pattern})).unwrap();
+            assert!(!search.inputs.is_empty(), "{pattern}");
+            assert!(!leaks(&search.result), "{pattern}: {:#}", search.result);
+        }
+        // A citation review's inputs and its commentary in the prompt.
+        let citation =
+            AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]").unwrap();
+        assert!(!leaks(&Value::Array(citation.mandatory_inputs().to_vec())));
+        let prompt = super::super::initial_prompt(&citation).unwrap();
+        assert!(!prompt.contains(&token), "{prompt}");
+        assert!(
+            prompt.contains("Defaults to [REDACTED:GitHub Token]."),
+            "{prompt}"
         );
     }
 

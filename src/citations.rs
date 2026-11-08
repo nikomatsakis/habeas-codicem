@@ -77,6 +77,21 @@ impl CitationItem {
     pub(crate) fn citations_value(&self) -> Value {
         Value::Array(self.citations.iter().map(Citation::to_value).collect())
     }
+
+    /// The citations as the model receives them, with each commentary redacted.
+    // {impl}`requirements.authoring.citation_prompt`
+    // {impl}`requirements.authoring.redaction`
+    pub(crate) fn model_citations_value(&self) -> Value {
+        let mut value = self.citations_value();
+        for citation in value.as_array_mut().into_iter().flatten() {
+            if let Some(commentary) = citation.get_mut("commentary")
+                && let Some(text) = commentary.as_str()
+            {
+                *commentary = Value::String(crate::redaction::redact_text(text).into_owned());
+            }
+        }
+        value
+    }
 }
 
 /// `evidence/citations/<file>/<selector>.json`, with `/` and `%` in the

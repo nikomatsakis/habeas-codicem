@@ -96,13 +96,12 @@ fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
 /// `///`, `//!`, `/**`, `/*!`, and `*/` delimiters or the leading `*` of a
 /// block comment's continuation lines.
 // {impl}`requirements.references.structural_hash`
-fn doc_prose(node: Node<'_>, source: &str) -> (&'static str, String) {
-    let group = if is_inner_doc_comment(node, source) {
+fn doc_prose(node: Node<'_>, body: &str) -> (&'static str, String) {
+    let group = if is_inner_doc_comment(node, body) {
         "inner_doc_comment"
     } else {
         "outer_doc_comment"
     };
-    let body = text(node, source);
     let prose = if let Some(line) = body.strip_prefix("//") {
         line.strip_prefix(['/', '!']).unwrap_or(line).to_owned()
     } else {

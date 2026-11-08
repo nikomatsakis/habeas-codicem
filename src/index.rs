@@ -671,6 +671,7 @@ impl DefinitionEdges {
 // {impl}`requirements.cli.info`
 // {impl}`requirements.index.state`
 // {impl}`requirements.examples.index`
+// {impl}`requirements.authoring.redaction`
 fn render_detail_sections(
     mut content: String,
     name: &str,
@@ -692,7 +693,7 @@ fn render_detail_sections(
             "Requirement"
         }
     ));
-    for line in definition_text.lines() {
+    for line in crate::redaction::redact_text(definition_text).lines() {
         content.push_str("> ");
         content.push_str(line);
         content.push('\n');
@@ -700,7 +701,9 @@ fn render_detail_sections(
 
     if !detail_evidence.errors.is_empty() {
         content.push_str("\n## Validation findings\n\n<pre><code>");
-        content.push_str(&escape_html(&detail_evidence.errors.join("\n\n")));
+        content.push_str(&escape_html(&crate::redaction::redact_text(
+            &detail_evidence.errors.join("\n\n"),
+        )));
         content.push_str("</code></pre>\n");
     }
 
@@ -766,7 +769,7 @@ fn render_detail_sections(
         && let Some(record) = detail_evidence.record
     {
         content.push_str("\n## Unreadable evidence record\n\n");
-        push_code_block(&mut content, record, "json");
+        push_code_block(&mut content, &crate::redaction::redact_text(record), "json");
     }
     content
 }
@@ -804,6 +807,7 @@ impl InputLocation {
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.definitions.inputs`
 // {impl}`requirements.ci.outline_inputs`
+// {impl}`requirements.authoring.redaction`
 fn render_input(
     content: &mut String,
     index: usize,
@@ -878,10 +882,11 @@ fn render_input(
             }
             _ => None,
         };
-        push_code_block(content, &lines.join("\n"), code_language(file));
+        let text = crate::redaction::redact_text(&lines.join("\n")).into_owned();
+        push_code_block(content, &text, code_language(file));
     } else {
         let raw = serde_json::to_string_pretty(input).expect("JSON values can be serialized");
-        push_code_block(content, &raw, "json");
+        push_code_block(content, &crate::redaction::redact_text(&raw), "json");
     }
     content.push_str("\n</details>\n\n");
 }
@@ -1221,6 +1226,89 @@ mod tests {
             absent.source_path.as_deref(),
             Some(Path::new("requirements/core.md"))
         );
+    }
+
+    // {test}`requirements.authoring.redaction`
+    // {test}`requirements.index.detail_format`
+    // {test}`requirements.cli.info`
+    #[test]
+    fn detail_pages_and_info_display_redacted_source() {
+        let token = crate::redaction::tests::github_token();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::create_dir_all(root.join("evidence")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            format!(":::{{req}} ready\nTokens such as {token} MUST be hidden.\n:::\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main.rs"),
+            format!("fn main() {{\n    println!(\"{token}\");\n}}\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("habeas.toml"),
+            "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'plain ollama key'\n",
+        )
+        .unwrap();
+        let record = json!({
+            "requirement": format!("Tokens such as {token} MUST be hidden."),
+            "determination": true,
+            "rationale": "Checked.",
+            "inputs": [
+                crate::inputs::outline_input(root, "src/main.rs", "fn[main]").unwrap(),
+                crate::inputs::outline_input(root, "habeas.toml", "").unwrap(),
+                {"requirements": "requirements.ready", "matches": ["requirements.ready"], "text": [format!("Tokens such as {token} MUST be hidden.")]},
+            ]
+        });
+        fs::write(
+            root.join("evidence/requirements.ready.json"),
+            record.to_string(),
+        )
+        .unwrap();
+        let definition = Definition {
+            path: Path::new("requirements.md").to_path_buf(),
+            text: format!("Tokens such as {token} MUST be hidden."),
+            kind: DefinitionKind::Requirement,
+        };
+        let record = record.to_string();
+        let page = render_detail_page(
+            "requirements.ready",
+            Path::new("appendix/requirements-index/requirements.ready.md"),
+            None,
+            &definition,
+            DetailEvidence {
+                state: EvidenceState::Valid,
+                record: Some(&record),
+                errors: &[],
+                fixme_entries: &[],
+            },
+            &RenderSources {
+                root,
+                definitions: &BTreeMap::new(),
+                references: &[],
+                source_links: None,
+                outlines: &crate::inputs::OutlineCache::default(),
+            },
+        );
+        let info = crate::commands::info_markdown(root, "requirements.ready").unwrap();
+        for page in [page, info] {
+            assert!(!page.contains(&token), "{page}");
+            assert!(!page.contains("plain ollama key"), "{page}");
+            assert!(
+                page.contains("Tokens such as [REDACTED:GitHub Token] MUST be hidden."),
+                "{page}"
+            );
+            assert!(
+                page.contains("    println!(\"[REDACTED:GitHub Token]\");"),
+                "{page}"
+            );
+            assert!(page.contains("api_key = '[REDACTED:api_key]'"), "{page}");
+        }
     }
 
     // {test}`requirements.index.detail_format`

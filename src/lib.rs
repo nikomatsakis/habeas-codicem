@@ -19,6 +19,7 @@ mod index;
 mod inputs;
 pub mod judgment;
 mod outline;
+mod redaction;
 mod rust_coverage;
 mod terms;
 
