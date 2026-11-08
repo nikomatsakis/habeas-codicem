@@ -454,8 +454,9 @@ references, ordered by name, file, and line. An anchor under
 {cite}`requirements.references.anchors` MUST be reported as a site for its
 anchored file without a line. A site in a supported language MUST give the
 selector of its smallest enclosing outline node under
-{cite}`requirements.references.outline_comments`. Sites in sources excluded by
-{cite}`requirements.authoring.source_tools` MUST be omitted without aborting.
+{cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
+{cite}`requirements.references.targets` MUST contribute sites. If reading such a
+source fails, the tool MUST return an explanatory tool error naming the source.
 An invalid selection or one matching no definition MUST return an explanatory tool
 error.
 
