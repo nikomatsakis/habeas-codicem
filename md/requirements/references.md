@@ -1,6 +1,6 @@
 # References and Rust items
 
-:::{req} targets
+:::{req} roles
 Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`, and MAY use the `{fixme}` role in fenced form. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. The roles MUST mean:
 
 - `{cite}`: the source relies on, supports, or refers to the definition. It is an
@@ -37,10 +37,20 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
   coverage, and does not count as a reference for Rust item coverage. Its
   issues are checked under {cite}`requirements.cli.fixme_issues`.
 
-`{impl}`, `{test}`, and `{fixme}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Reference discovery MUST consider exactly the project sources that source-access policy permits under {cite}`requirements.authoring.source_tools`: in a Git worktree, files present in the Git index, including staged new files; outside Git, all project files; in both cases excluding the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`. Evidence snapshots and generated build output MUST therefore not be counted as source references.
+`{impl}`, `{test}`, and `{fixme}` are edges from the definition to the source.
+Only requirements and examples are assessed; code is reviewed as part of the
+definitions it implements or tests.
 
-A source item MUST choose its references for each candidate definition by this
-procedure, and MAY carry several:
+```text
+{impl}`requirements.references.roles`
+{cite}`requirements.references.roles`
+{test}`requirements.references.roles`
+```
+:::
+
+:::{req} procedure
+A source item MUST choose its references under {cite}`requirements.references.roles`
+for each candidate definition by this procedure, and MAY carry several:
 
 1. If the item is a test or test helper designed to verify the definition, it
    MUST use `{test}`.
@@ -60,12 +70,20 @@ procedure, and MAY carry several:
 
 A `{fixme}` reference is added independently of this procedure, and MUST NOT
 count as an item's reference for {cite}`requirements.references.rust_item_coverage`.
+:::
 
-```text
-{impl}`requirements.references.targets`
-{cite}`requirements.references.targets`
-{test}`requirements.references.targets`
-```
+:::{req} discovery
+Habeas MUST find the references of {cite}`requirements.references.roles`
+throughout project source files and MUST fail with the source file and line if a
+name has no matching `{req}` or `{example}` definition. In Markdown, escaped
+roles and roles in code examples MUST remain literal. Reference discovery MUST
+consider exactly the project sources that source-access policy permits under
+{cite}`requirements.authoring.source_tools`: in a Git worktree, files present in
+the Git index, including staged new files; outside Git, all project files; in
+both cases excluding the project-root `book` and `evidence` directories, `.git`
+and `target` directories at any depth, and paths disallowed by
+{cite}`requirements.configuration.evidence_paths`. Evidence snapshots and
+generated build output MUST therefore not be counted as source references.
 :::
 
 :::{req} builtin_definitions

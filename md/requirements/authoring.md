@@ -71,33 +71,46 @@ the command MUST succeed without resolving model configuration or credentials.
 
 :::{req} confirmation
 Under the `confirm` policy of {cite}`requirements.authoring.policy`, authoring
-MUST assess each subject in an independent second conversation whenever the first
-assessment's
-determination is `true` or FIXME. The assessments agree when their outcomes are
-the same kind; then the first assessment MUST be recorded. When they disagree,
-the harness MUST verify the less favorable assessment, where `false` is less
-favorable than FIXME and FIXME than `true`, in a third independent conversation.
+MUST assess each subject in an independent second conversation whenever the
+first assessment's determination is `true` or FIXME. The assessments agree when
+their outcomes are the same kind; then the first assessment MUST be recorded.
+When they disagree, the harness MUST verify the less favorable assessment, where
+`false` is less favorable than FIXME and FIXME than `true`, in a third
+independent conversation under {cite}`requirements.authoring.verifier_prompt`,
+and record the outcome {cite}`requirements.authoring.verifier_outcome` derives.
 For a site review, assessments that differ only in `applies` MUST also count as
-disagreeing, the one with `applies` true being less favorable. The verifier MUST
-receive the subject, the mandatory inputs, that assessment's rationale, the same
-source tools, and a `submit_verification` tool accepting exactly
-`{ real: Boolean, acknowledged: Boolean, acknowledgments: Array<String>, rationale: String }`, plus
-`applies: Boolean` for a site review, in place of `submit_judgment`, with this
-prompt. The harness MUST replace `{{subject_kind}}` with `requirement`,
-`example`, `citation review`, or `site review`; `{{subject_name}}` with the full
-name, `citations:<file>#<selector>`, or `sites:<full-name>/<file>#<selector>`;
-`{{determination}}` with that assessment's determination as JSON;
-`{{rationale}}` with that assessment's rationale;
-`{{review_instructions}}` with the lines of that assessment's filled "# Task"
-section after its first paragraph, which name the subject, its citations or
-matches, and what to judge against, followed by, for a site review, the filled
-`{{distributed_background}}`, and then the filled "Your task" section;
-`{{site_step}}` with nothing, or, for a site review, the line
-`4. Also set applies to whether the requirement governs the site, as the reviewer's step 1 decides it; if it does not, set real to false.`;
-a verification with `applies` false and `real` true MUST be invalid; `{{habeas_background}}` and `{{reference_roles}}` under
-{cite}`requirements.authoring.habeas_background`;
+disagreeing, the one with `applies` true being less favorable. The recorded
+rationale MUST state that the assessments disagreed and what the verification
+concluded, so the disagreement remains visible for review under
+{cite}`requirements.cli.flip_guidance`. Each conversation MUST have its own
+usage record. Citation reviews under
+{cite}`requirements.references.citation_review` and site reviews under
+{cite}`requirements.references.site_review` that a command selects MUST be
+confirmed in the same way, with the review's target as the subject.
+:::
+
+:::{req} verifier_prompt
+The verifier under {cite}`requirements.authoring.confirmation` MUST receive the
+subject, the mandatory inputs, the less favorable assessment's rationale, the
+same source tools, and a `submit_verification` tool accepting exactly
+`{ real: Boolean, acknowledged: Boolean, acknowledgments: Array<String>,
+rationale: String }`, plus `applies: Boolean` for a site review, in place of
+`submit_judgment`, with this prompt. The harness MUST replace `{{subject_kind}}`
+with `requirement`, `example`, `citation review`, or `site review`;
+`{{subject_name}}` with the full name, `citations:<file>#<selector>`, or
+`sites:<full-name>/<file>#<selector>`; `{{determination}}` with that
+assessment's determination as JSON; `{{rationale}}` with that assessment's
+rationale; `{{review_instructions}}` with the lines of that assessment's filled
+"# Task" section after its first paragraph, which name the subject, its
+citations or matches, and what to judge against, followed by, for a site review,
+the filled `{{distributed_background}}`, and then the filled "Your task" section;
+`{{site_step}}` with nothing, or, for a site review, the line `4. Also set
+applies to whether the requirement governs the site, as the reviewer's step 1
+decides it; if it does not, set real to false.`; `{{habeas_background}}` and
+`{{reference_roles}}` under {cite}`requirements.authoring.habeas_background`;
 `{{judgment_rules}}` under {cite}`requirements.authoring.judgment_rules`; and
-`{{mandatory_inputs}}`:
+`{{mandatory_inputs}}`. A verification with `applies` false and `real` true MUST
+be invalid.
 
 ```text
 # Task
@@ -155,21 +168,16 @@ Call submit_verification exactly once. That tool call is your final answer.
 
 {{mandatory_inputs}}
 ```
+:::
 
+:::{req} verifier_outcome
 The harness MUST record the outcome the verification establishes: when `real` is
 false, the more favorable assessment, except that for a site review whose
 verifier's `applies` differs from that assessment's, a `true` determination with
-the verifier's rationale; when `real` and `acknowledged` are true, a
-FIXME determination listing the verifier's `acknowledgments`, which MUST then be
-nonempty; and otherwise `false` with the less
-favorable assessment's rationale. For a site review, the recorded `applies` MUST
-be the verifier's. The recorded rationale MUST state that the assessments
-disagreed and what the verification concluded, so the disagreement remains
-visible for review under {cite}`requirements.cli.flip_guidance`. Each
-conversation MUST have its own usage record. Citation reviews under
-{cite}`requirements.references.citation_review` and site reviews under
-{cite}`requirements.references.site_review` that a command selects MUST be
-confirmed in the same way, with the review's target as the subject.
+the verifier's rationale; when `real` and `acknowledged` are true, a FIXME
+determination listing the verifier's `acknowledgments`, which MUST then be
+nonempty; and otherwise `false` with the less favorable assessment's rationale.
+For a site review, the recorded `applies` MUST be the verifier's.
 :::
 
 :::{req} habeas_background
@@ -898,10 +906,12 @@ or `example`, `{{subject_name}}` with the full subject name,
 under {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
 {cite}`requirements.authoring.judgment_rules`, and `{{mandatory_inputs}}` with the
 complete mandatory inputs as a JSON array using
-the existing evidence-input formats. It MUST replace `{{subject_task}}` with the
-requirement task below for a requirement, followed by the distributed task for a
-distributed requirement, or with the example task for an example. The templates
-MUST otherwise be used as written. Their review guidance MUST follow
+the existing evidence-input formats. It MUST replace `{{subject_task}}`, for a requirement, with the text of
+{cite}`requirements.authoring.requirement_task` followed by that of
+{cite}`requirements.authoring.testing_bar` and, for a distributed requirement,
+that of {cite}`requirements.authoring.distributed_task`; for an example, with the
+text of {cite}`requirements.authoring.example_task`. The template MUST otherwise
+be used as written. Their review guidance MUST follow
 {impl}`requirements.ci.review_criteria`, {cite}`requirements.examples.evidence`,
 and {cite}`requirements.ci.outcomes`.
 
@@ -956,8 +966,12 @@ determination and rationale. That tool call is your final answer.
 
 {{mandatory_inputs}}
 ```
+:::
 
-Requirement task:
+:::{req} requirement_task
+The requirement task of {cite}`requirements.authoring.initial_prompt` MUST be
+this text, the steps a requirement's review follows for its obligations,
+marking, and unspecified behavior:
 
 ```text
 1. List each MUST, MUST NOT, and SHOULD clause as an obligation. Split a clause
@@ -980,22 +994,36 @@ Requirement task:
    Behavior within what the text describes, even where its examples do not show
    it, is specified, and so are the headings, layout, and wording the code
    chooses for output the text requires.
-5. Testing: every obligation, and every boundary or failure case the text names,
-   needs a test that runs the code carrying it out and asserts its outcome;
-   calling that code directly counts. Branches for cases the text does not
-   distinguish need no test of their own, but when the code produces output the
-   text governs along separate paths, such as verbose and default modes, each
-   path needs a test. An untested obligation is a gap unless the code carrying
-   it out has no conditional and no transformation of its own, such as passing a
-   value through unchanged, or running it would need network services, real
-   elapsed time, or process-wide state such as environment variables or the
-   current directory, and no test in the project sets that up; say which, and
-   why. Files and directories a test can create do not qualify. The exemption
-   does not cover an obligation that itself states that a value stays unchanged,
-   distinct, or present; such an obligation needs a test.
 ```
+:::
 
-Distributed task:
+:::{req} testing_bar
+The requirement task MUST continue with this step, which sets when a
+requirement's obligations need tests:
+
+```text
+5. Testing:
+   - Every obligation, and every boundary or failure case the text names, needs
+     a test that runs the code carrying it out and asserts its outcome; calling
+     that code directly counts.
+   - Branches for cases the text does not distinguish need no test of their
+     own, but when the code produces output the text governs along separate
+     paths, such as verbose and default modes, each path needs a test.
+   - An untested obligation is a gap unless the code carrying it out has no
+     conditional and no transformation of its own, such as passing a value
+     through unchanged, or running it would need network services, real elapsed
+     time, or process-wide state such as environment variables or the current
+     directory, and no test in the project sets that up; say which, and why.
+     Files and directories a test can create do not qualify.
+   - That exemption does not cover an obligation that itself states that a value
+     stays unchanged, distinct, or present; such an obligation needs a test.
+```
+:::
+
+:::{req} distributed_task
+For a distributed requirement under {cite}`requirements.references.distributed`,
+the requirement task MUST continue with this text, which assesses the
+requirement's queries:
 
 ```text
 {{distributed_background}} Each query is an ast-grep rule with match and
@@ -1028,8 +1056,11 @@ outside the requirement's scope, is a gap; a form that does not occur in the
 sources is not. A violation query that misses constructs is not a gap; note what
 it misses.
 ```
+:::
 
-Example task:
+:::{req} example_task
+For a named example, the task of {cite}`requirements.authoring.initial_prompt`
+MUST be this text:
 
 ```text
 The subject is a named example. Check that tests' setup and assertions cover its
