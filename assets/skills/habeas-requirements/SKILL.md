@@ -36,8 +36,9 @@ that implement and verify them. `habeas author` has a model assess each one;
 - [ ] 4. Make sure the book contains exactly the approved text and report the
       full names.
 - [ ] 5. Implement, add tests, and add references (below).
-- [ ] 6. Run `habeas author --all`, then `cargo test --workspace`, and fix the
-      reported gaps, following the habeas-evidence skill.
+- [ ] 6. Follow the habeas-evidence workflow: `git add` new files, run
+      `habeas author --all` and `cargo test --workspace`, and fix the reported
+      gaps.
 
 If implementation shows that an approved obligation must change substantively,
 review the revised text with the user before coding the change. A bug fix whose
@@ -70,7 +71,7 @@ opening line of three or more colons followed by `{req} name`, the body, and a
 closing line of at least as many colons. Its full name is the chapter path
 relative to that directory, without `.md`, with `/` changed to `.`, followed by
 the directive name; omit a leading `reqs/` and a trailing `/index` or `/README`.
-In `md/requirements.md`:
+With `[book] src = "md"`, in `md/requirements.md`:
 
 ```text
 :::{req} forwarding.quit
@@ -85,7 +86,8 @@ Everything between the fences is the body, including headings and diagrams.
 State obligations with BCP 14 terms (MUST, SHOULD, MAY); an unmet SHOULD is a gap
 unless a source comment explains why, and wording a reviewer could read two ways
 is a gap too. Give the outer directive a longer fence, such as `::::{req}`, when
-its body contains a nested colon directive.
+its body contains a nested colon directive, including a fenced reference;
+otherwise the inner closing `:::` ends the directive.
 
 Write a concrete case as an `{example}` directive, named and fenced the same
 way. Its body must reference at least one requirement it illustrates: `{test}`
@@ -199,5 +201,3 @@ the habeas-evidence skill.
   helpers, and every struct, enum, and union needs its own reference in an
   attached comment or its body. A reference on an enclosing module or `impl`
   does not cover it, and there is no waiver.
-- Inside a `{req}` or `{example}`, a fenced reference's closing `:::` ends the
-  directive unless the directive has a longer fence.

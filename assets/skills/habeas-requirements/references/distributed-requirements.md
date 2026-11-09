@@ -16,8 +16,9 @@ fenced `yaml` block and a name unique within the requirement:
   `return`, `continue`, or `break` in a function that must keep going after a
   failed check. With `within: <site query>`, naming a site query of the same
   requirement, only matches inside that query's sites count. Violation queries
-  are optional and only point site reviews at likely problems; each site's
-  review judges the whole site anyway.
+  point site reviews at likely problems; each site's review still judges the
+  whole site, and a violation query that misses a construct does not by itself
+  make the requirement false.
 
 Each body has these keys: `language` (`rust`, `python`, `typescript`, `tsx`,
 `css`, `markdown`, `toml`, or `yaml`); optional `paths` and `exclude`, lists of
@@ -54,6 +55,11 @@ match:
     }
 no_match:
   - "fn check(value: &str, problems: &mut Vec<String>) {}"
+  - |
+    fn run() {
+        let mut problems = Vec::new();
+        check("", &mut problems);
+    }
 ```
 :::
 
@@ -84,6 +90,10 @@ no_match:
         let n = v.as_u64()?;
         Some(n as u8)
     }
+  - |
+    fn check(v: &Value, errors: &mut Vec<String>) {
+        if v.is_null() { errors.push("null".into()); }
+    }
 ```
 :::
 ::::
@@ -108,7 +118,13 @@ that contains it.
 - Give every query a `match` snippet for each alternative way it selects, and a
   `no_match` near miss for each selection condition: a construct that differs
   from a match only in failing that condition, such as the right type with the
-  wrong name.
+  wrong name. Each part of a rule that an otherwise matching construct could
+  fail is a selection condition: the top-level kind, each `has`, `inside`, and
+  `not` clause, each regex, and each `any` alternative. This applies to
+  violation queries too.
+- Write a violation query, with `within` naming the site query, for every kind
+  of construct that could break the obligation, such as each early exit in a
+  function that must keep going.
 - Before review, think about the places the site queries could miss, such as a
   list held in a local variable or under another name, and widen the query or
   state the convention as an obligation, so a miss becomes a code gap. The
@@ -124,7 +140,8 @@ that contains it.
 - Don't state a per-site obligation that a reviewer can check only by reading
   other sites, such as "not reported by another check"; narrow it to the site,
   such as "does not report one failure twice".
-- Don't mark sites `{impl}` for the distributed requirement.
+- Don't reference the distributed requirement from its sites, with `{impl}` or
+  `{cite}`; sites need no reference to it.
 
 ## Gotchas
 

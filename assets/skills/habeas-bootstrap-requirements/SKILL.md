@@ -19,9 +19,10 @@ to a subagent to keep it out of your context.
 - [ ] 1. Read the habeas-requirements skill; it defines the directive syntax,
       the reference procedure, and the review criteria. Aim for accurate
       references, not a coverage number. Then check the setup. If the project has no `habeas.toml`, ask before
-      running `habeas setup`. Confirm authoring works by running
-      `habeas author <full-name>` on one definition; if it fails, see the
-      habeas-evidence skill. Use one chapter file per area, such as
+      running `habeas setup`. If a requirement already exists,
+      confirm authoring works by running `habeas author <full-name>` on it;
+      otherwise do this after installing the first agreed requirement in step
+      5. If it fails, see the habeas-evidence skill. Use one chapter file per area, such as
       `md/requirements/cli.md` for `requirements.cli.*`; add each to
       `SUMMARY.md` and `git add` it.
 - [ ] 2. Read the existing requirements, documentation, public entry points,

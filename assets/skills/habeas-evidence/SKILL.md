@@ -96,9 +96,10 @@ judged true, so a false review means the reviewer found the requirement applies
 and is broken:
 
 1. If it does apply, fix the code at the site.
-2. If the reviewer misread whether it applies, tighten the requirement text or
-   narrow the site query so the site's status is unambiguous. Query and text
-   changes edit the requirement; review them with the user.
+2. If the site should not be covered, narrow the site query or tighten the text
+   describing sites; if the obligation's text admits a reading under which the
+   site fails, tighten that text. Query and text changes edit the requirement;
+   review them with the user.
 
 If `habeas info <full-name>` reports many sites the requirement does not apply
 to, the site query selects too much.
