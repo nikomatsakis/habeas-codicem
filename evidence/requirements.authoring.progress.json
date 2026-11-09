@@ -1,8 +1,8 @@
 {
   "requirement": "When stderr is an interactive terminal, `habeas author --all` MUST display an\nupdating progress bar with elapsed time, percentage, finished and total assessment\ncounts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,\nand authoring errors. The total MUST count only subjects selected for assessment;\ncurrent accepted records remain in the unchanged count. A finished assessment\nMUST advance progress whether it writes a judgment or reports an authoring error.\nProgress measures completed work, not satisfaction of requirements.\n\nInspection MUST also show a progress bar for each phase with a known amount of\nwork, including evidence files, reference source files and coverage, Rust\nfunction coverage, and assessment selection. The display MUST label the current phase\nand show its completed and total checks; its percentage measures that phase's\nchecks, not estimated time or overall inspection completion. Discovery and other\nphases whose totals are not yet known MUST use an indeterminate activity display.\nInspection progress MUST NOT change validation results or invoke inference.\nEnabled reports MUST remain readable alongside progress. An\ninterrupted batch MUST retain its actual progress without counting unstarted\nassessments as finished. Empty batches and early errors MUST clear the temporary\ndisplay. When stderr is redirected or `TERM=dumb`, the command MUST retain its\nplain line-oriented reports without terminal control sequences. `NO_COLOR` MUST\ndisable color without disabling progress on a supported terminal. The existing\nstdout completion summary and exit-status rules MUST remain unchanged.\n{cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.reporting`",
   "determination": true,
-  "rationale": "I found no gaps. Every obligation has marked implementing code and a test that runs it.\n\n**Batch bar on an interactive stderr** (`src/authoring/progress.rs`, `src/authoring/batch.rs`)\n- `BatchProgress::new` creates the bar only when stderr is a terminal and `TERM` is not `dumb`.\n- `start` sets a template with elapsed time, percentage and `pos/len finished`.\n- `refresh` sets the message \"N active · M queued | true · false · FIXME · errors\". `author_all_with_options` calls it with `tasks.len()` and `subjects.len()`.\n- The total is `subjects.len()`, which holds only the subjects that need an assessment. Current records go into `unchanged` in `select_subjects`.\n- `completed` increments the true, false and FIXME counters. `failed` increments the error counter. `refresh` sets the position to the sum of the four counters, so any finished assessment advances progress.\n- `write_percentage` keeps unfinished work below 100%.\n- Tests: `terminal_progress_distinguishes_judgments_from_authoring_errors` runs in a PTY and checks \"6/6 finished\", 100%, the final true/false/FIXME/errors/active/queued counts, and unchanged stdout. `percentage_does_not_round_unfinished_work_up_to_one_hundred` covers the percentage rule.\n\n**Inspection phases**\n- The phases with a known amount of work are:\n  - `evidence files` and `reference source files` in `src/evidence.rs`\n  - `reference coverage` in `validate_references`\n  - `citation reviews` in `citations::validate`\n  - `Rust function coverage` in `validate_rust_functions`\n  - `selecting assessments` in `select_subjects`\n- Each reports `completed` and `total`. Discovery phases report `total: None`.\n- `BatchProgress::inspect` labels the phase (\"Phase: …\"). It uses a counted bar template with the phase's own percentage and `pos/len`, or an indeterminate spinner template when the total is unknown.\n- Tests:\n  - `inspection_progress_preserves_validation_and_finishes_each_phase` compares the validation results with and without progress, and checks the counts for each phase.\n  - `citation_review_validation_reports_counted_progress`, `inspection_progress_reports_empty_phases_as_complete`, `rust_function_coverage_reports_counted_progress_per_file` and `selection_counts_definitions_and_citation_reviews_in_one_phase` check the counts for the other phases.\n  - `inspection_displays_counts_when_same_phase_discovers_its_total` checks the indeterminate-to-counted display.\n- Inspection never calls inference. The progress callback is a pure observer, and the first test above shows the results are unchanged.\n\n**Reports alongside progress**\n- `println` uses `bar.println` when a bar is active and `eprintln!` otherwise.\n- `verbose_false_rationale_is_readable_above_terminal_progress` and `batch_reports_false_rationales_only_when_verbose` cover this.\n\n**Interruption**\n- `finish(interrupted, …)` calls `abandon()` and does not call `finish()`, so unstarted assessments are not counted as finished.\n- `assert_interruption_stops_the_batch` checks \"Stopped\", no \"100%\" and no \"6/6 finished\".\n\n**Empty batches and early errors**\n- An empty batch, a discovery error or a configuration error returns early. `Drop` for `BatchProgress` then calls `finish_and_clear`.\n- `empty_batches_and_early_errors_clear_the_terminal_display` replays the terminal screen for all three cases.\n\n**Plain output, `NO_COLOR`, summary and exit status**\n- With no bar, `eprintln!` produces plain lines. `failed_assessment_keeps_other_results_and_reports_failure` asserts there is no `\\x1b` and no `\\r`. `dumb_terminal_keeps_plain_batch_diagnostics` covers `TERM=dumb`.\n- `progress_style` strips the color styling when `NO_COLOR` is set, and the bar is still created. The PTY test sets `NO_COLOR` with `CLICOLOR_FORCE` and asserts there are no SGR color sequences while the redraw escapes are still present.\n- `main.rs` is unchanged apart from printing the stdout summary and returning an error on failures. The tests assert the summary text and the nonzero exit status.\n\nNo unspecified behavior and no unacknowledged gaps.",
-  "references": "8c140cfa0b5061b50d3fcb7581b076929719600da2e548de018162cb3928e4d8",
+  "rationale": "I found no gaps. Each obligation maps to marked code and, where it needs one, a test. Both the code and the tests carry references to `requirements.authoring.progress`.\n\n**Batch bar on an interactive terminal**\n- `BatchProgress::new` (`src/authoring/progress.rs`) builds the bar only when stderr is a terminal and `TERM` is not `dumb`.\n- `start` sets the template: elapsed time, percentage, `pos/len finished`, and a message line.\n- `refresh` fills that message with active and queued counts and separate true, false, FIXME and errors counts. It sets the position to the sum of those four counters, so a finished assessment advances the bar whether it wrote a judgment or reported an error.\n- `completed` and `failed` update the counters.\n- `run_batch` calls `progress.start(subjects.len())`, and `select_subjects` has already dropped current records into `unchanged`. The total therefore counts only selected subjects.\n- `terminal_progress_distinguishes_judgments_from_authoring_errors` runs in a PTY. It asserts `6/6 finished`, 100%, `true 3`, `false 1`, `FIXME 1`, `errors 1`, `0 active` and `0 queued`. It also checks the stdout summary.\n- `percentage_does_not_round_unfinished_work_up_to_one_hundred` checks the percentage calculation.\n- No PTY test mixes current and selected records. The selected-only total is a direct pass-through of `subjects.len()`, and the mixed counts are verified through the stdout summary (\"1 authored; 5 skipped as current\") in `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`. I did not count this as a gap.\n\n**Inspection phases**\n- `inspect_repository_with_progress`, `collect_references_with_progress`, `validate_references`, `citations::validate`, `sites::validate`, `validate_rust_functions` and `select_subjects` emit `InspectionProgress` updates.\n- The phases are: evidence files, reference source files, reference coverage, citation reviews, site reviews, Rust function coverage and assessment selection.\n- Discovery phases emit `total: None`.\n- `BatchProgress::inspect` labels the phase as \"Phase: …\" and shows `pos/len` with a phase-local percentage. Phases with no known total get a spinner-only style.\n- Tests:\n  - `inspection_displays_counts_when_same_phase_discovers_its_total` checks the phase label, that an unknown total shows no `%`, and the later `50% 2/4`.\n  - `inspection_progress_preserves_validation_and_finishes_each_phase` checks the per-phase counts.\n  - The citation-review, Rust coverage, selection and empty-phase tests check their own counts.\n- The same evidence test compares reports and discovery errors with and without progress. Progress is only a callback and no inference is involved.\n\n**Reports, interruption, empty batches, plain output and color**\n- Reports go through `bar.println` when the bar is active and `eprintln!` otherwise. `verbose_false_rationale_is_readable_above_terminal_progress` checks readability in a PTY.\n- `finish` uses `bar.abandon()` with a \"Stopped\" prefix when interrupted, so unstarted work is not counted. `assert_interruption_stops_the_batch` asserts no `100%` or `6/6 finished` after \"Stopped\".\n- `Drop` clears an unfinished bar, which covers empty batches and early errors. `empty_batches_and_early_errors_clear_the_terminal_display` replays the screen for the empty, configuration-error and discovery-error cases.\n- Without a bar, output is plain `eprintln!`. `failed_assessment_keeps_other_results_and_reports_failure` asserts no `\\x1b` or `\\r` for redirected stderr, and `dumb_terminal_keeps_plain_batch_diagnostics` does the same for `TERM=dumb`.\n- `progress_style` strips color from the template when `NO_COLOR` is set but keeps the bar. The PTY test runs with `NO_COLOR` and `CLICOLOR_FORCE` set, expects escape sequences for redraws, and asserts no SGR color sequences.\n- The stdout summaries and exit statuses are asserted in the same tests.",
+  "references": "7c1deae68fb1307f997e5b65282262a70b8945f71ac618b05420b36ee032f897",
   "inputs": [
     {
       "requirements": "requirements.authoring.progress",
@@ -121,17 +121,22 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "fde1da6692ee04c351070f57cecfa5b43fd8bbf8e38c7cfcadf20be98c184699"
+      "hash": "aea9f722b85eb5d818e19b7c79c25ba16cc940ec4ee182bf29469550c7abf00c"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[run_batch]",
+      "hash": "c51082d5741a03e2bdab470c43b63fba478f3552db0c2f8e5a27cbf1e320328c"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[select_subjects]",
-      "hash": "f2db0760802275ac8efa296f1fa47ff19407b17a4f24361318e17388049dde2a"
+      "hash": "ed11f5b5c04721b95d9ed4011b06990000a8001164569876b49b50bb04f08814"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "mod[tests]/fn[selection_counts_definitions_and_citation_reviews_in_one_phase]",
-      "hash": "d46682419e826c3e3e148cb1243162ae1a64d418786bbf260dd69a20861eb049"
+      "hash": "791858fd9a6d6dad77893e479f36f7c67de4e8e32b9e9b0f4c82236a0d2e5b38"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -261,7 +266,7 @@
     {
       "file": "src/citations.rs",
       "item": "fn[validate]",
-      "hash": "ab65a72f40933e45b7a6d3bbb3c455bcfafa6fe438b47e72c58305d0eb6fe211"
+      "hash": "02fabf643b64cacc8c98be398fd3127ffc488052d93355fd4611458876421930"
     },
     {
       "file": "src/evidence.rs",
@@ -271,17 +276,17 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
+      "hash": "435e07a5d5ed2a3c1c5786826b36f87d0bd1e0e6096f593374804b0c06e38e37"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
-      "hash": "f274cfd815afbc121a3f12dbcf54d9079d25f8f69f79f92f34af80cf473a7420"
+      "hash": "f4651e1065e668e3b6f660f1075c16f6aa94e1e71d8aa64d41ff0bf2da7d1b43"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[collect_references_with_progress]",
-      "hash": "2b060aeac9806d5bd1566f2ffad63c74a9937fcbc2cfc085636aa462d105ccec"
+      "hash": "f2abe5fd3c8e90bd70018661c23d45808592de985e4f2e24859dac2d0d71ea81"
     },
     {
       "file": "src/evidence.rs",
@@ -314,6 +319,16 @@
       "hash": "3fa2191010c73bd792eccf76af96c8f7509cf08c9351cd0f62d77518523b502e"
     },
     {
+      "file": "src/sites.rs",
+      "item": "const[SITE_STAGE]",
+      "hash": "23319e93146866d4ff720cf20aa6c70e991708c1af2197e941cc44261816383e"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "fn[validate]",
+      "hash": "01d48a473708794a755f90987cccd1fefc091957222a149948157156f886ddef"
+    },
+    {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Server]/fn[start_with]",
       "hash": "1b354fd94cb0193f19cb5a86ceadc69d382a437dc6847142cb4aa91e7ad2cefb"
@@ -321,7 +336,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[serve]",
-      "hash": "b3b7a12a0c91e4e95043fc6d37522946eeebbd44235a5a59690f2d441a26f690"
+      "hash": "49528b45f3fa9736e17d16649697d1e13811f99967f85288b3ce78f9976763f3"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -331,12 +346,12 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Fixture]/fn[run_in_pty_with_args]",
-      "hash": "d5743ba8cc8ae65f67cc740181164483b659f6353914f5fbf6f10a224f249207"
+      "hash": "cb43404f19291494f0eb23cb1f3aa7df4150406665029381f6727bc52bc9556b"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
+      "hash": "1abc8f7ef8057ea5b0d68db79f285ee6e454694b02182cffcb2ad43e133f0459"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -346,22 +361,22 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
-      "hash": "6875494dd66dbcbedcdbc3696c6843224f1edade4c866f9faabf3223fbd08462"
+      "hash": "e128118a026f162aa77adffff342bb26b3be9dca8b4854a8b28f98c5b536ad23"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_reports_false_rationales_only_when_verbose]",
-      "hash": "7921c1deb2c83dd0f1516eaca86f9b8d4b933a0d6b3c56b05db80b260f649300"
+      "hash": "0055826c2cc294470108f9f32d47f184767e2510434ba3eb65078e666e804bc7"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[verbose_false_rationale_is_readable_above_terminal_progress]",
-      "hash": "e0d9ccf5ff084e1e67d97090fbdca5809cf56f51edacd9a62cd9f50e1cdd2dc2"
+      "hash": "a494b860b578158ae9b79ba2d4ec2fac0e94a55e62fea852258ac3cdcffa2e0c"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[dumb_terminal_keeps_plain_batch_diagnostics]",
-      "hash": "dc9ecf73c70789e9341ff68668d7578bfa0654076622487c5bafd839bb5e4149"
+      "hash": "5fbaeb720eca945fb48c4de9c6fa10502ee446a893bbf253e930dec79c0817d0"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -382,61 +397,6 @@
       "file": "tests/authoring_batch.rs",
       "item": "fn[empty_batches_and_early_errors_clear_the_terminal_display]",
       "hash": "2d71d38782fa0a7a19ff40b32128a9d2701a84167329df4d63572a8033076dac"
-    },
-    {
-      "file": "audits/requirement-rewordings/authoring.md",
-      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.batch`%20—%20interruption%20semantics]",
-      "hash": "cd5eda6d35e92e3cef373b0e1b9c73587ba4606eb13ce7f8b9f01ead1cb06a99"
-    },
-    {
-      "file": "audits/requirement-rewordings/authoring.md",
-      "item": "section[Requirement%20rewordings:%20`requirements.authoring.*`]/section[`requirements.authoring.batch`%20—%20read%20and%20scan%20failures]",
-      "hash": "eb016570e9041633fee24ccbbc2560ddd7fca1a8431f2dfda1ecb9bb6b8fbe3a"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@d3e0d9ac0ad2",
-      "hash": "d3e0d9ac0ad2ee9e013d5071a145d5488e0d5b5b2b58097bf4c7aeb5fd7b9f58"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@a9968c074203",
-      "hash": "a9968c07420370d4c23496cf012df352f182c9d64ba9a3600e530d06a9c96e45"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@781570f9932b",
-      "hash": "781570f9932b991a59c57f56ffd3c4d99d928730a55c3eb7c02d0569b66d6bcb"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@bf004211229c",
-      "hash": "bf004211229cb4035b27140a2de8e0971c31027846ff274d8fa94f471d8f26ae"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[usage]",
-      "hash": "40ca87a3fbe5fbb183d3d44eb5f7442b5338a50a0f3a1aa28b6da097dc23b935"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "use@e7a05394dba7",
-      "hash": "e7a05394dba7d463dd778ab5888740e8bc9e1854d0d78b9141f2bbb9801cd0e1"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository]",
-      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
     }
   ]
 }

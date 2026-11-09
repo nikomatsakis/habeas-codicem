@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `list_files` tool with this interface:\n\n```text\nlist_files({ path: String = \".\" }) -> Array<DirectoryEntry>\n\nDirectoryEntry {\n    path: String,\n    kind: \"file\" | \"directory\",\n}\n```\n\nThe tool MUST list the immediate children of the requested directory, returning\nproject-relative paths where possible and absolute paths for permitted external\nfiles. Its root listing MUST also expose available generated-output directories\nand configured external allow paths. The model can list a returned\ndirectory in another call to explore further. A failed listing MUST return an\nexplanatory tool error unless access was denied, which MUST be handled under\n{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.\nListings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.\nIn a Git worktree, directories MUST have at least one eligible source\ndescendant to be listed unless explicitly allowed or discovered as generated\noutput. Explicitly requesting an excluded path MUST return an\nauthoring error under {cite}`requirements.authoring.read_denial`.",
   "determination": true,
-  "rationale": "**Judgment:** the implementation and tests satisfy `requirements.authoring.file_discovery`. One small gap in test coverage is noted at the end.\n\n**Implementation**\n- **Interface.** `tools::definitions` (src/authoring/tools.rs) declares `list_files` with an optional `path` that defaults to \".\". `optional_path` supplies \".\" when the argument is missing, and `check_keys` rejects unknown arguments. `dispatch` routes `list_files` calls.\n- **Immediate children and path form.** `list_files` calls `fs::read_dir` on the resolved directory and returns `{path, kind}` entries with kind \"file\" or \"directory\". `relative_path` strips the project root, so project paths come back relative and external allowed paths stay absolute.\n- **Root listing.** When the listed directory is the root, `list_files` appends `access.extra_roots()`, which are the configured allow paths and the discovered generated-output directories. It skips any that `path()` rejects, such as disallowed ones.\n- **Not evidence.** The result carries `inputs: Vec::new()`. The first test asserts `listing.inputs.is_empty()`.\n- **Exclusions and eligible descendants.**\n  - Each child is filtered through `SourceAccess::path`, which denies the following:\n    - the `evidence/` directory, including symlink aliases;\n    - paths outside the project;\n    - symlinks that leave the project;\n    - paths that are disallowed or untracked;\n    - directories with no eligible source descendant, checked by `has_source_under`.\n  - Explicitly allowed paths and generated-output directories return early, so they are exempt from the descendant rule, as the requirement allows.\n- **Failed listings.** `resolve` and `list_files` wrap I/O failures in messages such as \"cannot open …\" and \"cannot list …\". Outside-project requests become ordinary tool errors with \"outside the project\" via `recoverable_outside_request`. OS permission errors become recoverable via `recoverable_os_denial`.\n- **Explicit denial.** A denied explicit request returns `PermissionDenied`, and `converse` aborts on that kind without making another request. This is the `read_denial` behaviour that the requirement cites.\n- **Marking.** The `{impl}` markers cover `path`, `has_source_under`, `extra_roots`, `resolve`, `generated_evidence_path`, `list_files`, `project_path`, `relative_path`, `optional_path`, `check_keys`, `dispatch`, `definitions` and `converse`. I found no unmarked file-discovery logic. Sorting and de-duplicating the entries is benign and does not add behaviour beyond the requirement.\n\n**Tests** (src/authoring/tools.rs, plus tests/authoring_cli.rs)\n- `reading_records_only_delivered_sources_and_their_terms` checks the entry shape and that no inputs are recorded.\n- `generated_evidence_is_excluded_from_reads_search_and_discovery` checks that `evidence/` and its symlink aliases are omitted from the root listing, and that listing them explicitly errors.\n- `outside_symlinks_are_excluded_from_reads_search_and_discovery` checks that symlinks leaving the project are omitted and that listing one explicitly errors.\n- `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` checks the exact root listing. Untracked files and untracked directories are absent, and listing an untracked directory is an error.\n- `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` checks symlink visibility in listings.\n- `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` checks that the root listing exposes an ignored allowed directory and an external allow path, and that a disallowed subdirectory returns `PermissionDenied`.\n- `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` checks that the generated-output directory appears in the root listing, and that a disallow rule removes it and makes explicit listing a denial.\n- `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` checks that an external listing is a recoverable \"outside the project\" error, and that a matching disallow aborts.\n- `search_merges_context_windows_and_respects_ignore_rules` checks that `../` is an error.\n- `explicit_untracked_reads_abort_without_another_request_or_evidence_write` is an end-to-end test. Listing an untracked directory aborts the run: nonzero exit, no evidence write, one request, and a recorded failure.\n\n**Gap:** there is no dedicated test for listing a plain nonexistent or non-directory path, or for listing children of an allowed external directory. The code paths are simple and covered by the general error wrapping, so this is not significant.",
+  "rationale": "I found no gaps. Each obligation maps to marked code, and each has a test.\n\n**Obligations, code and tests**\n\n1. **Expose `list_files({path = \".\"})`.**\n   - `definitions()` in `src/authoring/tools.rs` advertises it with a `path` parameter defaulting to `.`.\n   - `dispatch` routes it to `list_files`, and `optional_path` supplies the `.` default.\n   - Tests: `reading_records_only_delivered_sources_and_their_terms` lists `src`. The `generated_evidence…` and `git_tools…` tests list the root with no arguments. `ast_grep_tool_is_advertised…` checks the advertised tool names.\n\n2. **List immediate children as `{path, kind}`, with relative paths where possible and absolute for permitted external files.**\n   - `list_files` uses `fs::read_dir` and emits `file` or `directory`.\n   - `relative_path` strips the root prefix and otherwise keeps the absolute path.\n   - Tests: `reading_records…` asserts the exact output `[{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]`. `allowed_ignored_and_external…` asserts that the external directory appears as an absolute path in the root listing.\n\n3. **Root listing exposes generated-output directories and configured external allow paths.**\n   - The `if directory == sources.root` block iterates `access.extra_roots()`, which chains the policy's allow paths and the generated directories.\n   - Tests: `cargo_output_is_discovered…` finds `target/debug/build/fixture-hash/out`. `allowed_ignored_and_external…` finds `generated` and the external path.\n\n4. **A failed listing returns an explanatory tool error, unless access was denied.**\n   - `resolve` returns \"cannot open …\" and the outside-project error is recoverable. `read_dir` failures return \"cannot list …\".\n   - `dispatch` applies `recoverable_outside_request` and `recoverable_os_denial`.\n   - Tests: `unpermitted_requests_outside…` checks the \"outside the project\" message and that the error kind is not `PermissionDenied`. `operating_system_permission_failures…` checks a locked directory. `list_files {\"path\":\"../\"}` is checked as an error.\n   - Denials abort the assessment through `PermissionDenied` handling in `converse`. `explicit_untracked_reads_abort…` in `tests/authoring_cli.rs` covers this for `list_files`.\n\n5. **Listings never become evidence inputs.**\n   - `list_files` returns `inputs: Vec::new()`.\n   - Tests: `reading_records…` and `additional_read_flow…` assert `listing.inputs.is_empty()`. The CLI test asserts that no `list_files` input appears in usage inputs.\n\n6. **Omit files excluded under `source_tools`.**\n   - Each child is filtered through `access.path(...)`, and a failure means the entry is skipped. This covers `evidence/`, symlink aliases, outside symlinks, untracked files and disallowed paths.\n   - Tests: `generated_evidence_is_excluded…`, `outside_symlinks_are_excluded…`, `git_tools_allow_staged_and_dirty…` (exact root listing) and `git_symlink_reads…`.\n\n7. **In a Git worktree, a directory needs an eligible source descendant unless it is allowed or generated output.**\n   - `SourceAccess::path` checks `has_source_under` for directories, and `has_source_under` counts allow and generated roots.\n   - Tests: `git_tools…` shows `untracked-dir` missing from the root listing and an error when it is listed directly. `allowed_ignored…` shows the ignored but allowed `generated` directory is listed.\n\n8. **An explicitly requested excluded path returns an authoring error under `read_denial`.**\n   - `SourceAccess::path` returns `PermissionDenied` errors with explanatory messages (\"generated evidence…\", \"git add…\", \"disallowed\", \"resolves outside the project\").\n   - Tests: `generated_evidence…` checks the message for `list_files evidence`. `untracked_diagnostics…` checks the `git add` and allow-rule text. `allowed_ignored…` and `cargo_output…` check the disallow case. The CLI test `explicit_untracked_reads_abort…` checks the abort.\n\n**Marking.** The implementing items carry `{impl}` references to `file_discovery`: `list_files`, `dispatch`, `definitions`, `converse`, `SourceAccess::path`, `has_source_under`, `extra_roots`, `resolve`, `project_path`, `relative_path`, `optional_path`, `check_keys`, `generated_evidence_path` and `recoverable_outside_request`. The tests carry `{test}` references. I found no unmarked implementation.\n\n**Unspecified behavior.** `check_keys` rejects unknown arguments. This is argument validation within the tool interface, not a distinct observable behavior beyond the text.",
   "references": "c26553bb7371b9a53d0b99aeaa49365d3dbd5a76bc3d1e7182fc8918c16914ca",
   "inputs": [
     {
@@ -170,17 +170,17 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "f0871425d59d45d4602323d4ecac3a1335967a6301c2a7c8ebbf171f9ec7c89f"
+      "hash": "79e5e34ae451c703e11fc42faa9257a81c3208683a093270381310d74aeedf3a"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
+      "hash": "c1ff571dc348929bfef64c73a9e7efb0e423606e2d5a518af384a9844806c23e"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
-      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
+      "hash": "8f6e4f6da5c7638c5ac8d15fd16f663985e967d980ae9cbe92131e82d9141a93"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -220,7 +220,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
-      "hash": "9c95c514c5f455d77fd4480f3ab3ca24959b7b3233185d942d002983e4c6200c"
+      "hash": "7c11022476e7b82ec278f4a8e730b7e923e3216d4760f53057295bec03501281"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -255,27 +255,57 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_untracked_reads_abort_without_another_request_or_evidence_write]",
-      "hash": "dac087a4dc68c347eedcde7da1f619ed2112a8149a8fa311f3abb3b577facc85"
+      "hash": "917a481fee92cedc52d116a852238a147477a198d398c2e603847630372af815"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PolicyDenial/std::fmt::Display]",
-      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]",
+      "hash": "6ba74988b38323d56108368477c0f1ff43944a2468c7ac12cff65dff781da84e"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PolicyDenial/std::error::Error]",
-      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
+      "hash": "f1567a7dd680f333bac1f1a47bd6d5967d283e6728c2f9a1f97b82271f392588"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_os_denial]",
-      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[operating_system_permission_failures_are_ordinary_read_failures]",
+      "hash": "04c90934cac22abafe16c61ddf6e80ce32e927aa1d565952b234e0121df2e3e1"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[denied]",
-      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[untracked_diagnostics_name_git_add_and_an_allow_rule]",
+      "hash": "2676befc3221e3f4f737d578b1d19399bc5cff7888c411be92d8627359b73e0e"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[requests_through_symlinks_leaving_the_project_are_denials]",
+      "hash": "dbbce2b40958f4627e7ee64bb6fbca934f818daae21d35bb92b31e37f0ae0694"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax]",
+      "hash": "ba3cf05839e82082f664304734ac321862226263cef34e5ed6888fe89fca8d62"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "fn[tool_name]",
+      "hash": "d8353421029a537af355dc3902e96d00b054f99dc45a841ceeea810cb3b8b737"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
+      "hash": "1fe174e669a960b594539f9439ae08128fde9ad55f75b4b2b02fcb4cc7052a29"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "491ebae2d638e413df08f3db53806c1f5ecf39a5bad13a1096c514222b67211d"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
+      "hash": "b8257f604063b1413daa651bf8d41bcf97f9b579a86f804357688d6a83b6cafb"
     }
   ]
 }

@@ -1,0 +1,190 @@
+{
+  "requirement": "requirements.ci.errors",
+  "file": "src/evidence.rs",
+  "item": "fn[inspect_repository_with_progress]",
+  "queries": [
+    "early_exits",
+    "error_accumulators"
+  ],
+  "applies": true,
+  "fixmes": [],
+  "determination": true,
+  "rationale": "**Applies.** `inspect_repository_with_progress` (src/evidence.rs:180-355) sequences the repository's checks and holds its validation errors in a local `let mut errors = Vec::new()`. That is the shape the `error_accumulators` site query selects, and it is not authoring-only code.\n\n**Violation match: `fs::canonicalize(root)?` (line 194). It is harmless.**\n- It runs before `errors` exists, so it cannot cut short a check that follows an already-recorded failure.\n- Every later check needs the resolved repository root: `habeas.toml` loading, `book.toml`, the evidence directory, and source discovery. If the root cannot be resolved, no later check can run, so none of them is skipped for a reason the requirement forbids.\n- The failure returns as an `io::Result` error, not as a collected validation error. The requirement concerns continuing after a failed check, and no check has run at that point.\n\n**Later checks continue after failures.**\n- A `habeas.toml` load failure is pushed to `errors` and execution continues (lines 200-202).\n- `book_source_dir` records a malformed or unreadable `book.toml` and falls back to `md` (lines 357-411). Its early `return`s only choose the fallback path and still return a value. This matches the \"malformed file is one failed check\" rule.\n- `collect_definitions` uses `continue` for per-block or per-file problems and goes on to the other blocks and files.\n- The evidence-file loop records \"no matching requirement or example\" and still calls `validate_evidence_file`.\n  - Inside that function, the early `return`s after a read, JSON, or non-object failure are the \"first parse problem in the file\" case the requirement allows.\n- The missing-evidence loop, reference discovery, credentials, `sites::discover`, `validate_references`, `citations::validate`, `sites::validate`, and `rust_coverage::validate_rust_functions` all run in sequence. None is gated on an earlier failure and none is skipped by an early exit.\n\n**No duplicate reporting found.**\n- `load_workspace_evidence` reads only `habeas.toml`, while `book_source_dir` reads only `book.toml`.\n- The `no matching requirement` message and the per-file validation messages describe different conditions.\n- `discovery_errors` is a separate copy of selected errors. It does not add to `errors`.\n\nI found no gap.",
+  "inputs": [
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "435e07a5d5ed2a3c1c5786826b36f87d0bd1e0e6096f593374804b0c06e38e37"
+    },
+    {
+      "requirements": "requirements.ci.errors",
+      "matches": [
+        "requirements.ci.errors"
+      ],
+      "text": [
+        ":::::{req} errors",
+        "Repository validation MUST continue after a failed check and report every failed",
+        "check it finds in one run, each as a {term}`requirements.ci.validation_error`.",
+        "This is a convention for every validation error; the requirement for each check",
+        "states which conditions that check reports. A file that cannot be parsed, such as",
+        "a malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:",
+        "its error MAY report only the first parse or decoding problem in that file, and",
+        "checks that do not depend on its contents MUST still run.",
+        "",
+        "The code that sequences the repository's checks carries out the first paragraph.",
+        "A repository-validation function that collects validation errors MUST hold them",
+        "in a parameter or local variable named `errors`, and a function with such a",
+        "variable is a site below; authoring code that collects errors only to abort is",
+        "not one. After one of its checks fails, a site MUST still run every later check",
+        "that does not depend on the failed check's result, including later checks in the",
+        "same loop iteration, and MUST NOT report one failure twice.",
+        "",
+        "::::{sites} error_accumulators",
+        "```yaml",
+        "language: rust",
+        "paths: [src]",
+        "exclude: [src/authoring/inputs.rs, src/authoring/tools.rs]",
+        "rule:",
+        "  kind: function_item",
+        "  has:",
+        "    stopBy: { kind: function_item }",
+        "    any:",
+        "      - kind: parameter",
+        "        has: { field: pattern, regex: \"^errors$\" }",
+        "      - kind: let_declaration",
+        "        has: { field: pattern, regex: \"^errors$\" }",
+        "  not:",
+        "    inside:",
+        "      stopBy: end",
+        "      kind: mod_item",
+        "      has: { field: name, regex: \"^tests$\" }",
+        "match:",
+        "  - \"fn check(value: &str, errors: &mut Vec<String>) {}\"",
+        "  - |",
+        "    fn run() {",
+        "        let mut errors: BTreeSet<String> = BTreeSet::new();",
+        "        check(\"\", &mut errors);",
+        "    }",
+        "no_match:",
+        "  - \"fn check(value: &str, discovery_errors: &mut Vec<String>) {}\"",
+        "  - |",
+        "    fn run() {",
+        "        let mut problems = Vec::new();",
+        "        check(\"\", &mut problems);",
+        "    }",
+        "  - |",
+        "    mod tests {",
+        "        fn check(errors: &mut Vec<String>) {}",
+        "    }",
+        "```",
+        "::::",
+        "",
+        "::::{violations} early_exits",
+        "```yaml",
+        "language: rust",
+        "paths: [src]",
+        "within: error_accumulators",
+        "rule:",
+        "  any:",
+        "    - kind: try_expression",
+        "    - kind: return_expression",
+        "    - kind: continue_expression",
+        "    - kind: break_expression",
+        "match:",
+        "  - |",
+        "    fn check(v: &Value, errors: &mut Vec<String>) -> Option<u8> {",
+        "        let n = v.as_u64()?;",
+        "        if v.is_null() { errors.push(\"null\".into()); }",
+        "        Some(n as u8)",
+        "    }",
+        "  - |",
+        "    fn check(items: &[Value], errors: &mut Vec<String>) {",
+        "        for item in items {",
+        "            if !item.is_object() { errors.push(\"object\".into()); continue; }",
+        "            if item.is_null() { errors.push(\"null\".into()); }",
+        "        }",
+        "    }",
+        "  - |",
+        "    fn check(v: &Value, errors: &mut Vec<String>) {",
+        "        if !v.is_object() { errors.push(\"object\".into()); return; }",
+        "        if v.is_null() { errors.push(\"null\".into()); }",
+        "    }",
+        "  - |",
+        "    fn check(items: &[Value], errors: &mut Vec<String>) {",
+        "        for item in items {",
+        "            if !item.is_object() { errors.push(\"object\".into()); break; }",
+        "        }",
+        "        if items.is_empty() { errors.push(\"empty\".into()); }",
+        "    }",
+        "no_match:",
+        "  - |",
+        "    fn parse(v: &Value) -> Option<u8> {",
+        "        let n = v.as_u64()?;",
+        "        Some(n as u8)",
+        "    }",
+        "```",
+        "::::",
+        ":::::"
+      ]
+    },
+    {
+      "definition": "requirements.ci.validation_error",
+      "text": [
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "d74379ced653dde13c267f2f468733ca91147ed4cf67ebab9f62152ad7ab32e6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[files_with_extension]",
+      "hash": "4fab710823f8c96ba4bf9d890172091a4c3001a3c726298c099768d7c498073e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "38d4022dff717f3d4a0b045e09870a330c39a8d9df26be52d6df9fdec6545920"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_workspace_evidence]",
+      "hash": "55a4844bf88c98810c76d5486185af127d895626d83a9de141ce59be82bbd93d"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "682d26ee9171ec9d76183444c82d48e36efdb578d3e036f2a3c29c4476301659"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_workspace_config]",
+      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "75f28ab9453d12b34d5e949ff16ce37c6148eecf1bc37759faf1dad80937a250"
+    }
+  ]
+}

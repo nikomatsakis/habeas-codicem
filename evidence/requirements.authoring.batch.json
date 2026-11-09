@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas author --all [--config <name>] [--missing | --force] [-v|--verbose]` MUST author\nthe evidence of every current requirement and named example, together with the\nreviews {cite}`requirements.references.citation_review` and\n{cite}`requirements.references.site_review` include, under\n{cite}`requirements.authoring.refresh`.\n`--all` MUST be mutually exclusive with a subject name and `--stdout`. It MUST\nalso delete each orphaned citation review under\n{cite}`requirements.references.citation_review` and each orphaned site review\nunder {cite}`requirements.references.site_review`, and report each deletion; the\ndeletion MUST NOT require model configuration or credentials.\nFailure to discover declarations or to read, scan, or parse project sources MUST report an error,\nnot a successful empty batch.\n\nEach subject MUST receive an independent assessment with its own prompt, inputs,\njudgment, and usage record. The command MUST report aggregate completion and each\nauthoring error under {cite}`requirements.authoring.reporting`, and retain\nsuccessful writes when another assessment fails. It MUST return a nonzero\nexit status if any assessment fails. False judgments MUST still be written as\ncompleted assessments; they remain failures under ordinary evidence validation.\nAn access-policy denial MUST abort only the affected assessment under\n{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the\nwhole batch: queued assessments MUST NOT start, running assessments MUST be\ncancelled, and an assessment whose evidence has not been written when the\ninterruption arrives MUST NOT write it. Evidence already written MUST be\nretained, and the command MUST report the number of assessments not started as\na batch failure.\n\nThe bundled Habeas skills MUST direct the supervising agent to run this command\nto create or refresh evidence. They MUST leave judgments, rationales, and input\nsnapshots to the authoring harness; the supervising agent addresses findings by\nchanging requirements, source citations, implementation, or tests.\n{cite}`requirements.authoring.concurrency`\n{cite}`requirements.authoring.usage_storage`\n{cite}`requirements.authoring.persistence`",
-  "determination": false,
-  "rationale": "`author --all` does not meet several obligations of requirements.authoring.batch, and no `{fixme}` acknowledges any of them.\n\n**Gaps**\n\n1. **Orphan deletion and reporting.** The text says `--all` MUST delete each orphaned citation review and each orphaned site review, and report each deletion. It adds that the deletion MUST NOT require model configuration or credentials.\n   - `author_all_with_options` (src/authoring/batch.rs:37-168) never removes a file.\n   - `select_subjects` (batch.rs:170-241) only picks subjects to assess.\n   - `citations::validate` (src/citations.rs:197) reports an orphaned review as a validation error and does not delete it.\n   - A `ripgrep` over `src` for `remove_file` and `orphan` found no deletion path.\n   - The `habeas-evidence` skill tells the agent that `habeas author --all` deletes orphans, so the skill describes behavior the code lacks.\n   - No test covers deletion.\n\n2. **Site reviews.** The text says `--all` MUST author \"the reviews … `requirements.references.site_review` include\".\n   - `AuthoringSubject` handles only `Definition` and `Citation` (src/authoring/mod.rs, src/authoring/batch.rs).\n   - `select_subjects` never enumerates sites of distributed requirements.\n   - A search of `src` for `site_review` or `fn sites` found nothing.\n   - No test covers batch authoring of site reviews.\n\n3. **`--missing` and `--force`.** The batch syntax is `--all [--config <name>] [--missing | --force]`, and requirements.authoring.refresh says every `author` form MUST accept both flags, with `--missing` as the default.\n   - The `Command::Author` enum (src/main.rs) has no `missing` or `force` option, and `src/` has no such option.\n   - `select_subjects` implements only the `--missing` behavior.\n   - There is therefore no way to reassess every selected subject under `--all`.\n   - Neither the flags nor their mutual exclusion is tested.\n\n**Obligations that are met and tested**\n\n- `--all` is mutually exclusive with a subject name and with `--stdout`. This is tested in `author_rejects_unknown_subjects_and_conflicting_targets` and `batch_stdout_is_rejected_before_authoring`.\n- Discovery, read, scan and parse failures return an error rather than an empty batch. This is tested in `discovery_errors_fail_before_configuration_or_inference` and `unreadable_reference_sources_fail_the_batch_before_inference`.\n- Each subject gets its own prompt, usage record and write. When one assessment fails, the others' writes are kept, and the exit status is nonzero. This is tested in `failed_assessment_keeps_other_results_and_reports_failure`.\n- Access-policy denials abort only the affected assessment. This is tested in the two denied-read tests.\n- Interruption stops the batch. It cancels running assessments, starts no queued ones, skips unwritten evidence, and reports the \"assessments not started\" failure. This is tested in `assert_interruption_stops_the_batch`.\n- Verbose rationales and the other reporting behavior are tested.\n- Bundled skills direct the agent to run `habeas author --all`. This is tested in `bundled_skills_direct_the_agent_to_the_authoring_harness`.\n\nThe gaps above are enough on their own to fail the requirement.",
-  "references": "8b456b3784829e920fffd0b3418e479c483e75bb1ca373186dbcfbe300a8dd1e",
+  "determination": true,
+  "rationale": "I found no gaps. I judged this from the supplied inputs only and ran no extra searches. Each obligation maps to code with an `{impl}` reference and to a test with a `{test}` reference.\n\n**Authoring all subjects.**\n- `author_all_with_options` calls `run_batch` (src/authoring/batch.rs).\n- `select_subjects` selects every non-term definition, every citation-review item and every site, and skips current records unless `--force`.\n- `--config`, `--missing`, `--force` and `-v` are parsed in `Command::Author` and `main` (src/main.rs).\n- Tests: `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`, `missing_keeps_current_records_and_force_reassesses_every_selected_subject`, `batch_authors_citation_reviews_and_preserves_current_ones`, `site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all`, and the unit test `selection_includes_site_reviews_and_sites_of_selects_only_them`.\n\n**`--all` exclusive with a subject name and `--stdout`.**\n- The `author_target` `ArgGroup` and `conflicts_with = \"stdout\"` on `all` enforce this in `enum Command`.\n- Tests: `author_rejects_unknown_subjects_and_conflicting_targets` and `batch_stdout_is_rejected_before_authoring`.\n\n**Orphan deletion.**\n- `delete_orphaned_reviews` removes citation and site reviews that no longer name a current item or site.\n- `run_batch` prints \"Deleted orphaned review …\" for each deletion.\n- Deletion runs before model configuration is resolved.\n- Tests: the unit test `orphaned_citation_and_site_reviews_are_deleted`, and `site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all`. The latter removes the config file and checks both the deletion and the stderr report.\n\n**Discovery, read, scan and parse failures.**\n- `inspect_repository_with_progress` records `discovery_errors`.\n- `run_batch` returns an error if there are any, before configuration or inference.\n- Tests: `discovery_errors_fail_before_configuration_or_inference` (Rust parse error and unclosed fence) and `unreadable_reference_sources_fail_the_batch_before_inference`.\n\n**Independent assessments.**\n- Each subject goes through its own `prepare_assessment`, with its own prompt, conversation and usage record.\n- Tests: usage count assertions in the batch tests, and the serial-by-default and peak-concurrency checks.\n\n**Reporting, retained writes, nonzero exit, false judgments written as completed.**\n- `BatchProgress::failed` and `completed`, the summary line, and the error return when `failures` is non-empty in `main` cover reporting and exit status.\n- Test: `failed_assessment_keeps_other_results_and_reports_failure` checks the other results are kept and the exit status is nonzero.\n- Test: `terminal_progress_distinguishes_judgments_from_authoring_errors` and `batch_reports_false_rationales_only_when_verbose` check that false and FIXME judgments are written.\n\n**Read denial.**\n- A denial fails only the affected assessment.\n- `cancel_on_error` stops the batch only on an `Interrupted` error, so queued assessments continue.\n- Tests: `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence`.\n\n**Interruption.**\n- The ctrl-c listener, the `stop` watch channel and the launch loop condition (`cancellation.borrow().is_none()`) stop queued assessments from starting.\n- `prepare_assessment` cancels running ones.\n- The write step checks the stop reason before `write_record`, so an unwritten assessment is not persisted.\n- The \"N assessments not started\" failure is pushed into `outcome.failures`.\n- Test: `interrupted_terminal_progress_keeps_unstarted_work_incomplete` (via `assert_interruption_stops_the_batch`, at concurrency 2 and 1) checks:\n  - fewer than 6 requests reach the server;\n  - exactly one evidence file is written;\n  - a cancelled usage record has `evidence_written` false;\n  - \"assessments not started\" is reported;\n  - the exit status is nonzero.\n\n**Skills.**\n- The bundled skills under assets/skills direct the agent to run `habeas author --all` and to leave evidence JSON, determinations, rationales and inputs to the harness.\n- Test: `bundled_skills_direct_the_agent_to_the_authoring_harness` asserts these phrases.",
+  "references": "82abac9e5a1ae4054095d39fbae35c426fdb151e641c4fec24ed6e2768e99602",
   "inputs": [
     {
       "requirements": "requirements.authoring.batch",
@@ -276,7 +276,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "struct[BatchOutcome]",
-      "hash": "55dd549065b9fcb4f504bfdd8aebd152e5140cbabdd264afa3f42a0013dd6bc3"
+      "hash": "a2592b96b081eadccd140aa6d436e8b4f7c205047382f0840a9709d5c27c736e"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -286,12 +286,22 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_all_with_options]",
-      "hash": "fde1da6692ee04c351070f57cecfa5b43fd8bbf8e38c7cfcadf20be98c184699"
+      "hash": "aea9f722b85eb5d818e19b7c79c25ba16cc940ec4ee182bf29469550c7abf00c"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[run_batch]",
+      "hash": "c51082d5741a03e2bdab470c43b63fba478f3552db0c2f8e5a27cbf1e320328c"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[delete_orphaned_reviews]",
+      "hash": "8cb13a839b5da20495ea12d8493668e40fd8a32c9e759ee28e98670c39cb2ff3"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[select_subjects]",
-      "hash": "f2db0760802275ac8efa296f1fa47ff19407b17a4f24361318e17388049dde2a"
+      "hash": "ed11f5b5c04721b95d9ed4011b06990000a8001164569876b49b50bb04f08814"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -316,12 +326,22 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "mod[tests]/fn[selection_counts_definitions_and_citation_reviews_in_one_phase]",
-      "hash": "d46682419e826c3e3e148cb1243162ae1a64d418786bbf260dd69a20861eb049"
+      "hash": "791858fd9a6d6dad77893e479f36f7c67de4e8e32b9e9b0f4c82236a0d2e5b38"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "mod[tests]/fn[selection_includes_site_reviews_and_sites_of_selects_only_them]",
+      "hash": "78a15f048899f42c38b88dd4d5fc8ca33b0639bcdea3c4c9c966844a55a6a8f0"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "mod[tests]/fn[orphaned_citation_and_site_reviews_are_deleted]",
+      "hash": "0e8541bbb280daa5af576678b1e80c72cc99028d47a6e0a10cd17207dff0d377"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "impl[AuthoringSubject]/fn[label]",
-      "hash": "1f3d48c1d254c50b2a68a0a11fbc988fe82cc18900e745874fdf5eaf70b5e195"
+      "hash": "0a108c08221537914a0151a2918175b16b52ac6db1ff51685326091a3023949a"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -336,7 +356,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
-      "hash": "91b8abb2d031aba706e9031e447e3ca72800f3c04627a959a0c9f32f7b32d946"
+      "hash": "497e1717c341bc49193654b9cfeace5c2692e6860c68c6738edd77b4e591828a"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -356,7 +376,7 @@
     {
       "file": "src/evidence.rs",
       "item": "struct[RepositoryInspection]",
-      "hash": "c5cb61cfd3c70bb3c02672a99332a58f9522ca90086e52d95413436854ffca47"
+      "hash": "a64fbe4bb365b651700f3989d2f5b2e0da6b8792ba7c40f6def47a2ada000e56"
     },
     {
       "file": "src/evidence.rs",
@@ -366,22 +386,22 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
+      "hash": "435e07a5d5ed2a3c1c5786826b36f87d0bd1e0e6096f593374804b0c06e38e37"
     },
     {
       "file": "src/main.rs",
       "item": "enum[Command]",
-      "hash": "2a17d748f3a54f43735ce2c7da96a4a600ecab417469f3819459813f63d4f377"
+      "hash": "071d7e37d3ed89f5e75a46e9c819a9781597f6b5ce4ece6f0150adff4788a503"
     },
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
+      "hash": "75f28ab9453d12b34d5e949ff16ce37c6148eecf1bc37759faf1dad80937a250"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "enum[Behavior]",
-      "hash": "dfcc05e5d939a0164a18df57410fc6b272d00b0493a0569256aab3b151ab0d1c"
+      "hash": "e749489764b49fea81a00f7c6b1dea1cb7ad312f576d89d14cbc8d7914c81072"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -406,7 +426,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[serve]",
-      "hash": "b3b7a12a0c91e4e95043fc6d37522946eeebbd44235a5a59690f2d441a26f690"
+      "hash": "49528b45f3fa9736e17d16649697d1e13811f99967f85288b3ce78f9976763f3"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -416,7 +436,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Fixture]/fn[new]",
-      "hash": "2abd61bf181092cf6b92510567cd78b74e382e59f42483dfa9ac64be0690abd4"
+      "hash": "754d5af44389ccbd302e40664c81f565fc1fe701048c2a50bc1e5a091db42471"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -426,7 +446,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Fixture]/fn[command]",
-      "hash": "7967ba5df4f15dee0bdf3a56316dcc57f0e244f27c56dce5022a52c3c213844a"
+      "hash": "82d435921e8c124a4d3dbb98312ab39b77c709f6ae7d2c09fed9f94e30152931"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -436,7 +456,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Fixture]/fn[run_in_pty_with_args]",
-      "hash": "d5743ba8cc8ae65f67cc740181164483b659f6353914f5fbf6f10a224f249207"
+      "hash": "cb43404f19291494f0eb23cb1f3aa7df4150406665029381f6727bc52bc9556b"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -451,7 +471,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "hash": "6b7486ad63703581c63bcbeda89216559df3bbb2cc9ed2b79025cffd3709f8b1"
+      "hash": "1abc8f7ef8057ea5b0d68db79f285ee6e454694b02182cffcb2ad43e133f0459"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -466,17 +486,17 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[terminal_progress_distinguishes_judgments_from_authoring_errors]",
-      "hash": "6875494dd66dbcbedcdbc3696c6843224f1edade4c866f9faabf3223fbd08462"
+      "hash": "e128118a026f162aa77adffff342bb26b3be9dca8b4854a8b28f98c5b536ad23"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_reports_false_rationales_only_when_verbose]",
-      "hash": "7921c1deb2c83dd0f1516eaca86f9b8d4b933a0d6b3c56b05db80b260f649300"
+      "hash": "0055826c2cc294470108f9f32d47f184767e2510434ba3eb65078e666e804bc7"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[dumb_terminal_keeps_plain_batch_diagnostics]",
-      "hash": "dc9ecf73c70789e9341ff68668d7578bfa0654076622487c5bafd839bb5e4149"
+      "hash": "5fbaeb720eca945fb48c4de9c6fa10502ee446a893bbf253e930dec79c0817d0"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -501,12 +521,17 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
-      "hash": "9300f6549623070b5a2e95fd53360844a1c336981a2c4c32416a0a500db17d37"
+      "hash": "553c44e42f8cb7db568916b652c54605804266953a1dfa16b857a1b79e50b1cd"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_reauthors_a_false_judgment_when_its_reference_set_changes]",
-      "hash": "38cce00514890ab0fa69595e8a046395aa08a09ed3d85bf4f6886c27d1c55d07"
+      "hash": "2b619725fe309c9d92cea6698c1bcdd553f0bd9e258979e16c6eeb115625808f"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all]",
+      "hash": "d1bb150231e3d6cff4c5993ab1a44350114d0881ace9481d447746cb69014381"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -526,12 +551,22 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_authors_citation_reviews_and_preserves_current_ones]",
-      "hash": "7cc2bfeb5579c4287fa234d391fda1029988d13401efcc3aa9d96dd764387d0d"
+      "hash": "fd633c46dbc1d66ea99d2027e896570e49efbdbb16d0996b81f67561b8fe1eb4"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]",
-      "hash": "34b539d74d1c8d59face17e8291d0fb28b5383fa441ff4f8931a9edb27322f99"
+      "hash": "e423b22d139b7e2d2f83d2fd74643c8f9dd0b42f797291ea615994037e6daa5c"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[missing_keeps_current_records_and_force_reassesses_every_selected_subject]",
+      "hash": "9f3aea16b0426111d259890059fee209e1026935d547f781720839c48b3569dd"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed]",
+      "hash": "a0fe132a4b33a7fe3b4907aab0223d21faef58b9002990c507139aff8778fe2f"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -561,107 +596,12 @@
     {
       "file": "assets/skills/habeas-evidence/SKILL.md",
       "item": "",
-      "hash": "06d960146c6c5f374c3e77b31ac3e87139df147e7f525b995cbb417bd3fcc453"
+      "hash": "50a35f1106fa53aff6d6f680d77166dbb4398a8ef0125832541a113529a885dd"
     },
     {
       "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
       "item": "",
       "hash": "78f656ec0222f31b255e65ce3905c0536e32909a0209c3d4d6bdb38f3572fffb"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
-      "hash": "2fa8051cca2d46d6337e91a9309b9dfa14423c3c4a83ad4f363cf70d035f5977"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[validate]",
-      "hash": "ab65a72f40933e45b7a6d3bbb3c455bcfafa6fe438b47e72c58305d0eb6fe211"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[is_review_path]",
-      "hash": "f4171a8b8de3b714bc602983ca12a93f96c185a5f64011db1c778bb4586c1117"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[files_with_extension]",
-      "hash": "4fab710823f8c96ba4bf9d890172091a4c3001a3c726298c099768d7c498073e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[citation_review_validation_reports_counted_progress]",
-      "hash": "1d9236e0c3530c114732d9cabf4c589d43889f591ca6fe7aa65b47606c615107"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[DefinitionEdges]",
-      "hash": "a89483b9f3bacf30e6675a219463bfa5c8266304ddb66e85970a2d20a9b8a6e3"
-    },
-    {
-      "file": "src/rust_coverage.rs",
-      "item": "mod[tests]/fn[an_example_counts_only_when_it_references_a_requirement]",
-      "hash": "c65d65ed91711c7879e9394dee4f6a6af6c5d95e22c39cae3f669b9f9f3ce00b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[discovery_considers_indexed_files_except_exclusions_including_credential_configuration]",
-      "hash": "c0f7459b67b4ef4b9ee2ff850d2265e3c0a3e5c689ffa80be01eb7c0b2aad331"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[confirmed]",
-      "hash": "6f9debaffb229698e3a6807256655b99cc458eacdcf2a53f4ba497732feb245b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
-      "hash": "ab79f5f4d3673e062625824501b50a63d512db1126a198c2ccd9837526f1dfb0"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]/fn[inspect]",
-      "hash": "806361e900cd0bfccbfa8d51bda2d708d969d0b9d0dcff4c83e653b5eddfd4fd"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "e763ebf7b5bb7b8902276ca55929483f5019a9aee24b8b2760a97354ef874af3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_resolved_input]",
-      "hash": "6420c858ddefc5fff915aff05d3853ca7979fe1e7780fc0cabc670259ae6a51e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[book_source_defaults_only_when_absent_and_reports_invalid_configuration]",
-      "hash": "94b9c215d71325dd5702a2b7b12b1f360af99f2fd60aca395af6187990c7b118"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
-      "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
   "determination": true,
-  "rationale": "I found no gaps. I judged this from the supplied source items and did not run the tests. I did not search beyond the supplied inputs.\n\n**Obligations and the code that carries them out**\n\n1. **Search upward from the invocation directory for the nearest `habeas.toml`.**\n   - `workspace_document` (src/config.rs:749) walks `start.ancestors()` and returns the first `habeas.toml` it finds.\n   - `main` (src/main.rs:88) calls `load_workspace_evidence(&current_dir)` for commands that resolve evidence inputs.\n   - Tests: `status_loads_nearest_workspace_file_without_validating_authoring` (tests/commands.rs) runs the binary from a nested directory. The nested file is used and the invalid ancestor file is ignored.\n   - Tests: `authoring_uses_nearest_workspace_configuration_without_a_user_file` (tests/authoring_cli.rs) runs `author` from a nested directory and the nested config is used.\n\n2. **Use that file alone, with no merging of ancestor files.**\n   - `load_workspace_config` and `load_workspace_evidence` both read the single document that `workspace_document` returns.\n   - Tests: `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (tests/configuration.rs) shows the nearest file's `evidence.allow` is empty even though the outer file sets `allow`.\n\n3. **A library operation given a project root searches from that root, unless the current directory is inside the project, in which case it starts there.**\n   - `workspace_document` canonicalizes the root. It then uses the current directory as the start only if that directory starts with the root, and otherwise uses the root.\n   - Root branch: tests/configuration.rs calls `load_workspace_config(&project)` from outside the project and finds the outer file.\n   - Current-directory branch: the binary-level status test runs with the current directory inside the project, and the nested file wins over the root file.\n\n4. **The directory containing the selected file defines the base for relative paths, and does not replace the Cargo and mdBook project root.**\n   - `LoadedWorkspaceConfig.root` and `WorkspaceEvidenceConfig.root` are set to the file's parent directory.\n   - `PathPolicy::load` (src/authoring/access.rs) joins the evidence paths onto that `config.root`.\n   - `inspect_repository_with_progress` keeps its own canonical project `root` for the book and evidence work.\n   - Tests: tests/configuration.rs asserts `inherited.root` is the outer directory and `closest.root` is the file's parent.\n\n5. **A missing file means absent workspace settings.**\n   - `workspace_document` returns `Ok(None)` when no file is found.\n   - Tests: `load_workspace_config(&nested).is_none()` and the empty-directory checks in tests/configuration.rs.\n\n6. **Discovery reports unreadable candidate files rather than silently selecting an ancestor.**\n   - `workspace_document` returns an error that includes the path for any `symlink_metadata` failure other than `NotFound`. It does the same for a read failure.\n   - Tests: `unreadable_configuration_files_are_reported_instead_of_skipped` makes `habeas.toml` a directory with a valid ancestor file present. Both loaders return an error naming the path.\n\n7. **Loading does not create the file.**\n   - Nothing in the load path writes a file.\n   - Tests: the empty-directory check in the same test asserts that `habeas.toml` does not exist and the directory is still empty. tests/configuration.rs also asserts the file contents are unchanged after loading.\n\n**Marking and unspecified behavior**\n\nThe code that carries out these obligations (`workspace_document`, both loaders, the two structs, `PathPolicy::load`, `inspect_repository*`, and `main`) carries {impl} references. The tests carry {test} references. Validation of the file contents is specified by other requirements that the same code marks, so I do not count it as unspecified behavior.",
+  "rationale": "I found no gaps. Each obligation has marked implementing code and a test.\n\n**Implementation.** `workspace_document` (src/config.rs:819) is the single discovery routine behind `load_workspace_config` and `load_workspace_evidence`.\n\n| Obligation | Code | Test |\n|---|---|---|\n| Search upward from the invocation directory for the nearest enclosing `habeas.toml` | `workspace_document` walks `start.ancestors()` and returns the first `habeas.toml` it finds. `main` (src/main.rs) calls `load_workspace_evidence(current_dir)`. | `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` (tests/configuration.rs:401) finds the nearest file. `status_loads_nearest_workspace_file_without_validating_authoring` (tests/commands.rs:226) and `authoring_uses_nearest_workspace_configuration_without_a_user_file` (tests/authoring_cli.rs:509) check it through the CLI. |\n| Use that file alone, without merging ancestor files | Only the one selected document is parsed and decoded, then returned. | The configuration test above shows the nested file's `allow` is empty although the ancestor file sets one. The authoring CLI test uses the nested workspace model even though the ancestor file selects a missing default. |\n| A library operation given a project root searches from that root, unless the current directory is inside the project, in which case it starts there | `start` is the canonical current directory when it is under the canonical root, and the root otherwise. | The configuration test runs with the current directory outside the temp root. It starts at the root and, finding no file there, selects an ancestor. The commands test runs the binary from `src/nested` inside the project and selects the nested file. |\n| The selected file's directory is the base for relative paths and does not replace the Cargo and mdBook project root | `LoadedWorkspaceConfig.root` and `WorkspaceEvidenceConfig.root` are set to the file's parent. `PathPolicy::load` (src/authoring/access.rs:17) joins configured paths onto `config.root`. `inspect_repository_with_progress` (src/evidence.rs:180) keeps using its own canonical project root for book and Cargo discovery. | The configuration test asserts `closest.root` equals the file's parent and `inherited.root` equals the ancestor directory. |\n| A missing file means absent workspace settings | `NotFound` on every ancestor falls through to `Ok(None)`. | The configuration test ends with `is_none()`. `unreadable_configuration_files_are_reported_instead_of_skipped` (tests/configuration.rs:1112) checks `None` for an empty directory. |\n| Discovery reports unreadable candidate files rather than silently selecting an ancestor | Any metadata or read error other than `NotFound` returns an error that names the path. | `unreadable_configuration_files_are_reported_instead_of_skipped` makes `project/habeas.toml` a directory while a valid ancestor file exists. Both loaders must error and name that path. |\n| Loading MUST NOT create the file | The loaders only read. | The same test asserts the empty directory is still empty and has no `habeas.toml`. The configuration test also asserts the file text is unchanged after loading. |\n\n**Marking.** I found no implementing or testing code that lacks a reference. Every item the references tool reports for this requirement carries the matching `{impl}` or `{test}` role.\n\n**Unspecified behavior.** The one extra behavior I noticed is that `status` and `info` report an invalid workspace file as a finding instead of stopping. `main` (src/main.rs) marks that behavior with `requirements.ci.errors`, so it is specified elsewhere.",
   "references": "d303ae30c072c0ffc067c3236de4700a7562c21cdc1aedcfd5e7589ddfc663c9",
   "inputs": [
     {
@@ -55,17 +55,17 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
+      "hash": "435e07a5d5ed2a3c1c5786826b36f87d0bd1e0e6096f593374804b0c06e38e37"
     },
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
+      "hash": "75f28ab9453d12b34d5e949ff16ce37c6148eecf1bc37759faf1dad80937a250"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
-      "hash": "4682a1c95ac85718935f1342508f0d5a28acba4f4ed39f9de1d7c6d9d7d4e919"
+      "hash": "f5d43a4e5d9122b9105ae1506fe692b1fa530ba1989fe4273ec63dc94bf18b74"
     },
     {
       "file": "tests/commands.rs",
@@ -86,6 +86,111 @@
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[unresolvable_mandatory_inputs_fail_before_any_model_request]",
+      "hash": "68c77d46934b7a9e3b640d8b1f12d44d956d4d3d4535ac784c12c1be237115fe"
+    },
+    {
+      "file": "tests/commands.rs",
+      "item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
+      "hash": "49a37589f20de14d662421cdc3a473dc73813bfc2f4df71ab09846154d6d62d5"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
+      "hash": "1c52e2de8994a9792a83f6f9e2c6f2861d432ea65327adca6a9ec5dd4c477f1e"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]",
+      "hash": "2f7d90c5cd6ac721390861eb6e8760d9b35646f1306b8856b5009ca5a3e1b8b2"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[unknown_selections_name_the_file_that_made_them]",
+      "hash": "6c888f7660d28b9c4321353b4aef55a3aef6e320cc0b21f3c404e8fe7bea5e94"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]",
+      "hash": "83d83eed35412090e07521c2c8851864627ee5db7155321e6311b298b30462fc"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[user_and_workspace_authoring_tables_round_trip_every_map]",
+      "hash": "34fae851fb0afe1cf07314e2d97f3941995a972552b06b666bf52e300391ce8a"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[storage_rules_reject_each_invalid_field_with_its_setting]",
+      "hash": "1d5ec2ad2a1a63f42fae93daef815c9f78837090da51165a6e6dc9f7b95b8e57"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
+      "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[workspace_diagnostics_identify_the_file_and_setting]",
+      "hash": "dccb1251c9cfbce8b54916a0fd765df53e571db726a6d998a785857bfe04bc33"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]",
+      "hash": "dc081af3df89c9eea64bd1a339bc22ee8a83c6bdd2ccaac85987f6c65b68a8bd"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[commands_without_evidence_inputs_ignore_an_invalid_workspace_file]",
+      "hash": "4fe4fa5950371e89510c3d02132546ec6110a14fe158bdda16d722468fa00d42"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[documented_configuration_examples_name_the_file_to_edit]",
+      "hash": "83c697622264af4b75bc3d5be0a57dfb1ee83ef38287c9b48591427ebdf0cbf3"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[definition_and_requirements_inputs_obey_containment_for_declaring_files]",
+      "hash": "c40f0ea056a4480433c552d0e9acfafcfbee195deffe498d7bb2a9387744933e"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]",
+      "hash": "666c657e7eefe99ac693087326725a1c73db4fadef23e4ad1e85ca58269a8b9a"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
+      "hash": "4bce67c979ce5df2df09d50ba04e201158f7a36f139ad681b3aa57be31c5b6cf"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
+      "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "struct[LiveSelection]",
+      "hash": "30e728dc24c2d3ef1e2e6baacc7f35a064b7daa98203d8958da85ce96d00bf90"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[live_bedrock_authoring]",
+      "hash": "da14e3da79a188fc1766a1c63dbb6762d14388a983b3a35ed39899b77436c072"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "fn[live_configuration_selection_follows_authoring_precedence]",
+      "hash": "7246de93828d6355e5af279c79192cd7955ba10ca96ee01ed3c265759d3cc442"
+    },
+    {
+      "file": "tests/references.rs",
+      "item": "fn[disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file]",
+      "hash": "d09719b14ac3208edf5599f7e2f5b8bbd747f46e290bfa37f74e1f88c60a3e9d"
     }
   ]
 }

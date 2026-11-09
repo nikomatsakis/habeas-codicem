@@ -1,7 +1,7 @@
 {
   "requirement": "The user configuration file MUST be UTF-8 TOML serializing UserConfig. It MUST\ncontain `version = 1` and MAY contain the documented feature tables. The common\nroot MUST contain only the schema version and those feature tables; feature\nsettings MUST NOT occupy unscoped root keys. A user file containing only\n`version = 1` MUST be valid common configuration.\n\nWorkspace configuration MUST follow {cite}`requirements.configuration.workspace_structure`.\nThe absence of an optional feature section MUST be distinguishable\nfrom that feature's explicit settings and interpreted according to its own\nrequirements.",
   "determination": true,
-  "rationale": "**Judgment: `requirements.configuration.structure` is satisfied.** The implementation covers every obligation, it is marked, and the tests cover the main cases and failure cases.\n\n**Implementation**\n- **Type and root keys.**\n  - `UserConfig` (src/config.rs:15-24) has only `version` and an optional `authoring` table, and it carries `#[serde(deny_unknown_fields)]`.\n  - So the root holds only the schema version and feature tables. Any unscoped root setting, such as `allow`, `default` or `unknown`, is rejected.\n  - A table the user schema does not document, such as `[evidence]`, is also rejected.\n- **Parsing and version.**\n  - `UserConfig::parse` (:251-262) parses with `parse_document` and decodes into `UserConfig`. It then calls `validate`, which requires `version == 1` (:273-284).\n  - `version = '1'` fails in `decode` on the field type. `version = 2` fails in `validate`. A missing version fails because the field is required.\n  - A file containing only `version = 1` parses, and `authoring` is `None`.\n- **Absent versus explicit.**\n  - `authoring: Option<_>` with `skip_serializing_if` keeps an absent section distinct from explicit settings.\n  - `[authoring]` with `configs = {}` is a distinct, valid value. Nothing is materialized or rewritten on load.\n  - The feature section's own validation interprets the settings (`UserAuthoringConfig::validate`).\n- **UTF-8 and read errors.**\n  - `load_user_config` (:674-686) reads with `read_to_string`. A non-UTF-8 file or other read error is reported with the path, and a missing file is reported as `None`.\n  - `to_toml` validates, then serializes with `toml`.\n- **Workspace part (cited, `workspace_structure`).**\n  - `WorkspaceConfig` supports `authoring` and `evidence`, both optional, with `deny_unknown_fields`.\n  - `validate_workspace_common` checks the version and the allowed root keys.\n  - `parse_document` reports a TOML syntax error with the file and the line and column.\n  - `decode` and `decoded_setting` report the file and the setting.\n  - `ProjectConfig` with `from_book_toml` means `book.toml` needs no `[habeas]` table, and an empty `[habeas]` table is accepted.\n  - The text of `workspace_structure` is carried out by this code.\n- **Marking.** The code that implements the requirement carries `{impl}` markers: the struct, `parse`, `to_toml`, `validate`, `load_user_config` and `resolve_authoring`. I found no unmarked code implementing it, and no behavior beyond it that is not specified by another requirement.\n\n**Tests (tests/configuration.rs)**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` (:68):\n  - An absent file gives `None` and creates no file.\n  - A file with only `version = 1` loads, has `authoring == None`, is left byte-identical, and round-trips.\n  - It also covers the `book.toml` cases: no `[habeas]` table, an empty one, and a non-empty one.\n- `invalid_schema_and_feature_values_report_the_configuration_path` (:286) rejects each of these, with the path in the diagnostic:\n  - wrong version, wrong version type, and an empty document;\n  - an unknown root key;\n  - bad `[authoring]` contents;\n  - `[authoring]` with `configs = {}`, which is accepted.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (:1054) covers a directory in place of the user file and a non-UTF-8 user file. Both name the file.\n- `feature_sections_are_scoped_and_absent_sections_use_defaults` (:1091) covers:\n  - unscoped root keys and keys in the wrong section, both rejected;\n  - an `[evidence]` table in a user file, rejected;\n  - an absent authoring section, which gives `None`.\n- The shared TOML syntax-error line and column behavior is covered by the workspace diagnostic tests, which `workspace_structure` covers.\n\n**Gaps**\n- Beyond the cases above, these were not found: no explicit user-file test for a syntax-error line and column, and no `FIXME` or acknowledged gaps. Both are minor because the user and workspace paths share `parse_document`.",
+  "rationale": "I found no gaps. The code carries out each obligation and a test covers each one.\n\n**Obligations and the code that carries them out**\n- **UTF-8 TOML serializing UserConfig:**\n  - `UserConfig` (src/config.rs:15-25) is the serde type.\n  - `UserConfig::parse` and `parse_document` decode the text as TOML.\n  - `load_user_config` reads with `fs::read_to_string`, so non-UTF-8 content is rejected with the path in the error.\n  - `to_toml` validates and then serializes.\n- **MUST contain `version = 1`:**\n  - `version` is a required field.\n  - `UserConfig::validate` rejects any value other than 1.\n- **MAY contain the documented feature tables:** `authoring` is an optional field.\n- **Root has only the version and feature tables; feature settings not at unscoped root keys:** `#[serde(deny_unknown_fields)]` on `UserConfig` rejects any other root key, including a feature setting such as `default` placed at the root.\n- **A file containing only `version = 1` is valid:** `authoring` has `#[serde(default)]`, so the file parses and validates.\n- **Workspace configuration follows `workspace_structure`:** this is a cited requirement, so it is context and I did not reassess its implementation.\n- **Absent section distinguishable from explicit settings:**\n  - `Option<UserAuthoringConfig>` with `skip_serializing_if = \"Option::is_none\"` keeps an absent section absent.\n  - `resolve_authoring_with_workspace_from` interprets the absent section by the authoring feature's own rules, returning a \"no authoring configuration\" error when neither file has one.\n  - `load_user_config` returns `Ok(None)` for a missing file.\n\n**Tests**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` (tests/configuration.rs:68) checks these cases:\n  - A missing file gives `None`.\n  - A file with only `version = 1` loads with `authoring == None`.\n  - The file is left unchanged.\n  - The file round-trips through `to_toml` and `parse`.\n- `invalid_schema_and_feature_values_report_the_configuration_path` (:344) checks these cases:\n  - `version = 2`.\n  - `version = '1'`.\n  - An empty file.\n  - An unknown root key.\n  - Several invalid `[authoring]` forms.\n  - Each error names the file.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (:1112) covers a non-UTF-8 user file and a directory in place of the file. Both errors name the path.\n- `feature_sections_are_scoped_and_absent_sections_use_defaults` (:1149) checks these cases:\n  - `[evidence]` is rejected in a user file.\n  - A bare `version = 1` file has `authoring == None`.\n  - Feature settings placed at the root or in the wrong table are rejected.\n\n**Marking and unspecified behavior:** I found no code that implements the requirement without an `{impl}` reference. I found no unspecified behavior and no `{fixme}` references.",
   "references": "e4dfcf9117f39209660f030eae5b5562edaadba499a1c1a7427991064f4663f7",
   "inputs": [
     {
@@ -97,32 +97,17 @@
     {
       "file": "src/config.rs",
       "item": "",
-      "hash": "7de62507a0c835911fc10f2d09ced5682a29bac4b447c057cfdcf64a132cd2a9"
+      "hash": "dcb93584e804f0b6b39978ae808384eaed176201ef5c9ff589e9545f62f3e3e3"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]",
-      "hash": "9d9a20fc5bf46f4dd4df1bd3ec079246bd73834ca09664e5b6037bd0fb73803f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ProjectConfig]",
-      "hash": "e9e434f684e79be2fd86de660957fc5b92c3e773253bf6266ca40588706112fa"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]",
-      "hash": "21ee902d70fce92016589b493f2d0d2bf808661d27dbe0d4aee1ffc3b4c41cda"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
+      "item": "fn[validate_workspace_common]",
+      "hash": "7ece2487516745486dfc5e57d408e0ac2dabe0cbc3a56503173e60263743593b"
     },
     {
       "file": "src/config.rs",
@@ -141,8 +126,18 @@
     },
     {
       "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
+      "item": "fn[resolve_authoring_with_workspace_from]",
+      "hash": "78f64359f19af54cb5323bbe810082cbe8ccf6e628ae840ff81adca43e22c159"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[validate_name]",
+      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[invalid]",
+      "hash": "c0f6cd2771b08d4c6edca4148d7cd4d9928d07ceeb0e04d11867d60c85592c41"
     }
   ]
 }
