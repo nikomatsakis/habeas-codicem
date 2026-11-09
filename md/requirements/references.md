@@ -155,7 +155,7 @@ In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline 
 :::
 
 :::{req} evidence_coverage
-For every `{impl}`, `{test}`, and `{fixme}` reference in a project source file, including one in a requirement or example declaration, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
+For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, and every `{fixme}` reference except one inside a site under {cite}`requirements.references.site_review`, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
 :::
 
 :::{req} rust_item_coverage
@@ -377,8 +377,7 @@ to.
 Validation MUST require a current, accepted review for every site, MUST report
 a false review with its rationale, and MUST report stale, missing, or orphaned
 reviews; a review is orphaned when its file and selector no longer name a site of
-the requirement. A review MUST become stale when the site's hash, the
-requirement's declaration, a cited declaration, or its `queries` change. Each
+the requirement. A `{fixme}` naming the requirement inside a site acknowledges a gap at that site only: it MUST be an input to that site's review and MUST NOT contribute to the requirement's own review, coverage, or reference set. A review MUST become stale when the site's hash, the requirement's declaration, a cited declaration, its `queries`, or the `{fixme}` references naming the requirement inside the site, with the words of their bodies, change. Each
 site review's determination MUST be checked on its own, independently of the
 requirement's evidence. Authoring with `--all` MUST include site reviews,
 `habeas author sites:<full-name>` MUST author the site reviews of the named
@@ -401,7 +400,7 @@ MUST NOT contribute and remain discoverable under
 {cite}`requirements.authoring.reference_index`. A `{cite}` made by the subject
 contributes the cited definition's complete fenced declaration. An anchor under
 {cite}`requirements.references.anchors` contributes the complete anchored file.
-An in-source `{impl}`, `{test}`, or `{fixme}` reference to the subject contributes the source containing it: for a reference in a supported language, the smallest enclosing
+An in-source `{impl}`, `{test}`, or `{fixme}` reference to the subject, except a `{fixme}` inside one of the subject's sites under {cite}`requirements.references.site_review`, contributes the source containing it: for a reference in a supported language, the smallest enclosing
 outline node under {cite}`requirements.references.outline_comments`; for a reference in a Markdown requirement, example, or
 terminology declaration, that complete declaration; for other references, the
 complete containing source file. Literal references, evidence copies, and

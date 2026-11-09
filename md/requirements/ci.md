@@ -101,8 +101,7 @@ The JSON `determination` MUST be `true`, `false`, or an object containing exactl
 `{"FIXME": ["example/queue#125", "rust-lang/rust#123"]}`. A gap MUST count as
 acknowledged only by a `{fixme}` reference under
 {cite}`requirements.references.targets` whose body describes that gap and that
-references the assessed definition, or, for a citation or site review, the cited
-or distributed requirement; a plain
+references the assessed definition, or, for a site review, the distributed requirement from within that site; a citation review MUST NOT accept a `{fixme}`; a plain
 `FIXME` comment, another marker such as `TODO`, or prose MUST NOT. The strings
 MUST list each distinct issue reference the acknowledging `{fixme}` references
 name in their option lines, as written after `:github:`, and, for a `{fixme}`
@@ -118,7 +117,7 @@ See [FIXME examples](#fixme-examples) for concrete review judgments and CI resul
 
 
 :::{req} reference_set
-A definition's reference set MUST consist of its current incoming `{impl}`, `{test}`, and `{fixme}` edges under {cite}`requirements.references.targets` and
+A definition's reference set MUST consist of its current incoming `{impl}`, `{test}`, and `{fixme}` edges, except a `{fixme}` inside a site of the definition under {cite}`requirements.references.site_review`, under {cite}`requirements.references.targets` and
 {cite}`requirements.references.anchors`: for each edge, its role and the file and
 outline selector of the node the reference belongs to under
 {cite}`requirements.references.outline_comments`, or of the anchored file or

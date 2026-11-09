@@ -269,8 +269,7 @@ assessments judge by the same rules:
   robustness the text does not require, and silently ignoring input the text
   does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the inputs or in a
-  source you read, to the requirement or example your task judges against,
-  whose body describes that same gap, and whose named issues are open; a {fixme} naming a closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is not an acknowledgment. In a FIXME determination or an acknowledgments list, give each
+  source you read, to the requirement or example your task judges against, or, in a site review, to the distributed requirement within the site, whose body describes that same gap, and whose named issues are open; a {fixme} naming a closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is not an acknowledgment. In a FIXME determination or an acknowledgments list, give each
   distinct issue its :github: option names once, such as
   "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
   joined by single spaces. A {fixme} describing a gap that no longer exists is
