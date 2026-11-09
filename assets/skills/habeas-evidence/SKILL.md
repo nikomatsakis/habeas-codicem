@@ -33,8 +33,8 @@ Run commands from the project root, the directory with `book.toml` and
       step 2. Also check `habeas status` for recorded disagreements (see
       "Disagreeing assessments"). Stop and report to the user each finding that needs their
       decision, such as a new or changed requirement, a gap to defer, or a
-      blocker, and each false judgment expected because implementation is
-      pending; don't keep iterating on those. When you commit, include every change under
+      blocker, and each missing evidence record or false judgment expected because
+      implementation is pending; don't keep iterating on those. When you commit, include every change under
       `evidence/` (new, updated, and deleted records) with the source and
       requirement changes they assess; CI validates only the committed
       evidence.
@@ -69,7 +69,7 @@ Run commands from the project root, the directory with `book.toml` and
 | missing or stale evidence | `habeas author --all` |
 | false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
 | uncovered `{impl}` or `{test}` line | check the reference names the right definition, then re-author that definition |
-| unreferenced Rust item | add references by the procedure in the habeas-requirements skill |
+| unreferenced Rust item | add references by the procedure in the habeas-requirements skill, citing `habeas:none` in fenced form with a justification only when nothing applies |
 | orphaned citation or site review | `habeas author --all` deletes it |
 | orphaned requirement or example evidence | its definition was renamed or removed; `git rm` the file the finding names (removing an orphan is not editing evidence), then `habeas author --all` |
 | untracked file with references | `git add` it |

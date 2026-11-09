@@ -873,8 +873,8 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
     assert_phrases(
         "habeas-requirements",
         &[
-            "Run `habeas author --all`",
-            "following the habeas-evidence skill",
+            "`habeas author` has a model assess each one",
+            "Follow the habeas-evidence workflow to author evidence and fix the gaps it reports",
             "Never write evidence JSON, rationales, determinations, or inputs yourself, and never ask another agent to",
         ],
     );
@@ -882,8 +882,8 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
         "habeas-bootstrap-requirements",
         &[
             "`habeas author --all`",
-            "Follow the habeas-evidence skill",
-            "Never write evidence yourself or ask another agent to; only `habeas author` produces it",
+            "follow the habeas-evidence workflow for this area's definitions",
+            "Never write evidence yourself or ask another agent to",
         ],
     );
 }
@@ -897,10 +897,10 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
         "habeas-requirements",
         &[
             "Choose each item's references by this procedure",
-            "designed to verify the definition, use `{test}`",
-            "if fulfilling the definition depends on the item, use `{impl}`",
+            "designed to verify the requirement or example, use `{test}`",
+            "if fulfilling it depends on the item, use `{impl}`",
             "fields, variants, serialized form, or validation",
-            "re-checked or kept in sync when the definition changes, use `{cite}`",
+            "re-checked or kept in sync when the requirement or example changes, use `{cite}`",
             "cite the built-in `habeas:none` in fenced form, with a body justifying why the item exists",
         ],
     );
@@ -910,14 +910,15 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
             "propose a requirement stating the invariant and implement it with `{impl}`",
             "Don't propose grouping requirements that state no checkable obligation",
             "must not implement observable behavior that no requirement specifies",
+            "there is no waiver",
         ],
     );
     // The other skills refer to the procedure rather than restate it.
     assert_phrases(
         "habeas-evidence",
         &[
-            "Choose references by the procedure in the habeas-requirements skill",
-            "a fenced `{cite}` of `habeas:none` with a justification",
+            "references by the procedure in the habeas-requirements skill",
+            "citing `habeas:none` in fenced form with a justification only when nothing applies",
         ],
     );
     assert_phrases(
@@ -925,7 +926,6 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
         &[
             "references by the procedure in the habeas-requirements skill",
             "write a requirement for the invariant they check",
-            "Don't propose grouping requirements that state no checkable obligation",
         ],
     );
     for name in ["habeas-evidence", "habeas-bootstrap-requirements"] {
@@ -936,10 +936,6 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
     }
     for name in SKILLS {
         let text = bundled_skill(name);
-        assert!(
-            text.contains("there is no waiver"),
-            "{name} does not rule out waivers"
-        );
         for grouping in [
             "internal.config_parsing",
             "catch-all",
@@ -967,9 +963,16 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
             "## Disagreeing assessments",
             GOAL,
             "Assessments that disagree are findings against that goal",
-            "Read both rationales and decide whether one found a real gap or the requirement text admits more than one reading",
+            "Read both assessments",
+            "Decide whether one assessment found a real gap or the requirement text admits more than one reading",
             "Fix the source or tests, or tighten the requirement text, reviewing substantive changes with the user",
             "Don't re-run for a different result",
+            "record it in the audit log as the Rules say",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
             "record the old text, new text, reason, and the rationale that prompted the change in the project's audit log, such as `audits/requirement-rewordings/`",
         ],
     );
@@ -2026,14 +2029,15 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
     assert_phrases(
         "habeas-requirements",
         &[
-            "Every observable result and branch, including errors and input handling, must be specified by an agreed requirement",
-            "Check that the code fulfills each applicable requirement and adds no observable behavior beyond them",
+            "Every end-user-observable result, including errors and input handling, must follow from some agreed requirement",
+            "check that the code adds no observable behavior beyond the requirements",
         ],
     );
     assert_phrases(
         "habeas-bootstrap-requirements",
         &[
-            "Every observable result and branch, including errors and input handling, needs an agreed requirement",
+            "distinct observable branches",
+            "every observable branch has been reviewed",
         ],
     );
     // The requirement and example review criteria, including test adequacy and
@@ -2044,9 +2048,10 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
             "## What the review checks",
             "does not implement completely and exactly as stated",
             "code that implements part of the requirement without `{impl}`, including code that only cites it",
-            "observable behavior in `{impl}` code that no definition implemented there specifies",
-            "interesting cases, boundaries, and failures the tests miss, unless simplicity or impracticality justifies their absence",
-            "An example's review checks that tests' setup and assertions cover its scenario and expected outcomes",
+            "observable behavior in `{impl}` code that no requirement implemented there specifies",
+            "obligations, boundaries, and failure cases no test runs and asserts",
+            "A test may be omitted only for code with no logic of its own",
+            "An example's review checks that tests' setup and assertions cover its scenario and each expected outcome",
         ],
     );
     // The three outcomes and the documented-gap convention; habeas-evidence is
@@ -2055,14 +2060,16 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-requirements",
         &[
             "judges each requirement `true`, `false`, or FIXME",
-            "every remaining gap is explicitly acknowledged in a source comment or test, conventionally `FIXME(#125)`",
+            "To acknowledge a gap the user agrees to defer, use a `{fixme}` reference",
             "One acknowledged gap does not excuse others",
         ],
     );
     assert_phrases(
         "habeas-evidence",
         &[
-            "A FIXME judgment, such as `{\"FIXME\": [\"#125\"]}`, means source comments or tests explicitly acknowledge every remaining gap, conventionally with `FIXME(#125)` or `FIXME(rust-lang/rust#123)`",
+            "A FIXME judgment, such as `{\"FIXME\": [\"rust-lang/rust#123\"]}`, means `{fixme}` references to the definition acknowledge every remaining gap",
+            "// :github: rust-lang/rust#123",
+            "A plain `FIXME` or `TODO` comment does not count",
             "Validation accepts it like `true` when all other checks pass",
         ],
     );
@@ -2070,14 +2077,14 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
     assert_phrases(
         "habeas-requirements",
         &[
-            "designed to verify the definition, use `{test}`",
-            "if fulfilling the definition depends on the item, use `{impl}`",
-            "`{cite}` needs no coverage and does not count as implementing the definition",
+            "designed to verify the requirement or example, use `{test}`",
+            "if fulfilling it depends on the item, use `{impl}`",
+            "`{cite}` needs no coverage and does not count as implementing anything",
         ],
     );
     assert_phrases(
         "habeas-evidence",
-        &["Choose references by the procedure in the habeas-requirements skill"],
+        &["references by the procedure in the habeas-requirements skill"],
     );
     assert_phrases(
         "habeas-bootstrap-requirements",
@@ -2088,13 +2095,13 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-requirements",
         &[
             "If a behavior follows only from several requirements together, mark each with `{impl}` where it applies and add fenced commentary explaining how they combine",
-            "a reference alone does not explain why a behavior, such as accepting `^C` as a shortcut, is specified",
+            "a reference alone would not say why `^C` is accepted",
         ],
     );
     assert_phrases(
         "habeas-bootstrap-requirements",
         &[
-            "Where one behavior follows from several requirements, put each requirement's `{impl}` on the code that carries out its part",
+            "Where one behavior follows from several requirements, mark each with `{impl}` where it applies and explain how they combine",
         ],
     );
 }
@@ -2130,13 +2137,13 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
             "Follow behavior through the code",
             // Map every first-party test.
             "every first-party runnable test or test case",
-            "Record the requirement or example IDs each test checks",
-            "Tag each test with `{test}` for the definitions it is designed to verify",
+            "Record the behavior each test checks; fill in requirement names once they are installed",
+            "Every test must end up with a `{test}` reference to a requirement or example",
             // Map every end-user-visible source unit.
-            "every function, method (including trait methods and test helpers), struct, enum, and union",
+            "every item `cargo test --workspace` reports as unreferenced",
             "public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches",
             "One tagged entry point does not cover deeper code",
-            "Give every inventoried item its references",
+            "Give every inventoried test and item its references",
         ],
     );
     // Report gaps; no claim of completeness before an independent recount.
@@ -2144,9 +2151,9 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
         "habeas-bootstrap-requirements",
         &[
             "recount both inventories from the source and tests without your lists",
+            "- <item or behavior> (<file>:<line>): <reason>; <open question>",
             "Claim 100% only when both inventories have no unmapped items",
-            "List remaining gaps with file locations and reasons",
-            "don't silently exclude difficult cases",
+            "Don't silently exclude difficult cases",
         ],
     );
 }
@@ -2159,8 +2166,9 @@ fn bundled_skills_require_agreed_requirements_before_code() {
     assert_in_order(
         "habeas-requirements",
         &[
-            "the smallest set of new or changed observable obligations",
+            "the smallest set of new or changed obligations",
             "full names, and exact fenced text",
+            "Write the drafts into the chapter as uncommitted edits",
             "Review each new or changed requirement with the user in turn",
             "present its exact text",
             "point out ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements",
@@ -2169,7 +2177,6 @@ fn bundled_skills_require_agreed_requirements_before_code() {
             "no implementation or test code, and no commit of the drafts, until the user agrees",
             "a general request to build the feature does not",
             "Make sure the book contains exactly the approved text",
-            "drafts may already be uncommitted edits there",
             "Implement, add tests",
         ],
     );
@@ -2183,7 +2190,7 @@ fn bundled_skills_require_agreed_requirements_before_code() {
     assert_phrases(
         "habeas-evidence",
         &[
-            "Review a substantive change to an approved requirement's text with the user first, as the habeas-requirements skill describes",
+            "Review a change to an agreed requirement's text with the user first, as the habeas-requirements skill describes",
         ],
     );
     // Inferred requirements are reviewed with the user, area by area, before
@@ -2192,21 +2199,20 @@ fn bundled_skills_require_agreed_requirements_before_code() {
         "habeas-bootstrap-requirements",
         &[
             "every requirement starts as a proposal",
-            "Propose requirements one area at a time",
-            "exact text",
-            "point out ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts",
-            "accept, revise, or reject",
-            "apply the decisions before the next area",
-            "install a requirement only after the user agrees to it",
-            "Install the agreed requirements in the mdBook",
-            "Tag tests",
+            "Repeat steps 4 to 7 for each area",
+            "Propose requirements for the area",
+            "Review them with the user in turn as habeas-requirements step 3 describes",
+            "a general request to bootstrap is not agreement to specific text",
+            "don't commit a requirement or tag code against it until the user agrees to its text",
+            "Install the agreed requirements in the area's chapter",
+            "Tag the area's tests and items",
         ],
     );
     // Missing or false evidence is acceptable; no placeholder evidence.
     assert_phrases(
         "habeas-evidence",
         &[
-            "Missing evidence or a truthful false judgment is expected while implementation is pending",
+            "each missing evidence record or false judgment expected because implementation is pending",
             "Never write or edit evidence JSON, determinations, rationales, or inputs yourself",
         ],
     );

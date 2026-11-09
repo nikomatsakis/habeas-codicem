@@ -85,7 +85,6 @@ inventing a user-facing promise. Label each proposal and act on the label:
 - **Possible bug:** ask the user what behavior is intended and write the
   requirement for that. Don't change the code during bootstrap unless the user
   asks; the resulting false judgment stays on the gap list, or gets a
-  a
   `{fixme}` reference if the user defers it (see habeas-evidence).
 - **Incidental:** the user chooses between a requirement, often with MAY, and
   removing the behavior. For example, a command that also accepts an
@@ -104,7 +103,9 @@ habeas-requirements skill. Every test must end up with a `{test}` reference to a
 attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
 list, never `habeas:none`. For a parameterized test, put the reference on the
 case source or the generating declaration; one file-level tag must not stand in
-for unrelated tests. Many `habeas:none` citations on other items suggest
+for unrelated tests. Where one behavior follows from several requirements,
+mark each with `{impl}` where it applies and explain how they combine, as the
+habeas-requirements skill describes. Many `habeas:none` citations on other items suggest
 mis-tagging.
 
 ## Report
@@ -125,5 +126,7 @@ exclude difficult cases.
 
 - Never write evidence yourself or ask another agent to, even over a long
   session (habeas-evidence explains why).
+- When assessments of the same subject disagree, follow "Disagreeing
+  assessments" in the habeas-evidence skill.
 - `git add` new chapter and source files; references in untracked files don't
   count.
