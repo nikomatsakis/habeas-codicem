@@ -36,6 +36,8 @@ enum Behavior {
     WaitAfterFirst,
     /// The subject's first request is throttled with HTTP 429.
     ThrottledOnce { subject: &'static str },
+    /// A judgment is false when the prompt shows a closed issue.
+    ClosedIssueIsFalse,
 }
 
 // {test}`requirements.authoring.batch`
@@ -211,6 +213,9 @@ fn serve(
     let determination = match (behavior, subject.as_str()) {
         (Behavior::MixedJudgments, "requirement requirements.alpha") => json!(false),
         (Behavior::MixedJudgments, "requirement requirements.beta") => json!({"FIXME": ["#123"]}),
+        (Behavior::ClosedIssueIsFalse, _) if prompt.contains("\"state\": \"closed\"") => {
+            json!(false)
+        }
         _ => json!(true),
     };
     let rationale = if matches!(behavior, Behavior::MixedJudgments)
@@ -1554,4 +1559,163 @@ fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
         .count();
     assert_eq!(seconds * 2, subjects.len(), "{usage:?}");
     assert_eq!(usage.len(), subjects.len(), "{usage:?}");
+}
+
+/// A local stand-in for the GitHub API serving one issue,
+/// `example/queue#125`, whose state a test can change; other issues do not
+/// exist.
+// {test}`requirements.ci.fixme_closed_issue`
+// {test}`requirements.authoring.github_reads`
+struct FakeGithub {
+    endpoint: String,
+    state: Arc<Mutex<&'static str>>,
+    requests: Arc<Mutex<usize>>,
+}
+
+impl FakeGithub {
+    // {test}`requirements.ci.fixme_closed_issue`
+    // {test}`requirements.authoring.github_reads`
+    fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let state = Arc::new(Mutex::new("open"));
+        let requests = Arc::new(Mutex::new(0));
+        let (served_state, served) = (state.clone(), requests.clone());
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(&mut stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                *served.lock().unwrap() += 1;
+                let (status, body) = if request.starts_with("GET /repos/example/queue/issues/125 ")
+                {
+                    let state = *served_state.lock().unwrap();
+                    (
+                        "200 OK",
+                        json!({"state": state, "title": "Zero capacity", "body": ""}),
+                    )
+                } else {
+                    ("404 Not Found", json!({"message": "Not Found"}))
+                };
+                let body = body.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        Self {
+            endpoint,
+            state,
+            requests,
+        }
+    }
+
+    // {test}`requirements.ci.fixme_closed_issue`
+    fn requests(&self) -> usize {
+        *self.requests.lock().unwrap()
+    }
+}
+
+// {test}`requirements.ci.fixme_closed_issue`
+// {test}`requirements.cli.fixme_issues`
+// {test}`requirements.authoring.github_reads`
+// {test}`requirements.authoring.batch`
+#[test]
+fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
+    let server = Server::start_with(false, Behavior::ClosedIssueIsFalse);
+    let github = FakeGithub::start();
+    let fixture = Fixture::new(&server.endpoint, None);
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "pub fn beta()",
+            "// :::FIXME requirements.beta\n// :github: example/queue#125\n// Zero capacity is untested.\n// :::\npub fn beta()"
+                .replace("FIXME", "{fixme}")
+                .as_str(),
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let output = fixture
+            .command()
+            .env("HABEAS_GITHUB_API_URL", &github.endpoint)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    run(&["author", "--all"]);
+    assert_eq!(server.subjects().len(), 6);
+    // The issue was open, so record the acknowledged gap as current FIXME
+    // evidence.
+    let mut beta = fixture.evidence("requirements.beta");
+    beta["determination"] = json!({"FIXME": ["example/queue#125"]});
+    fs::write(
+        fixture.project.join("evidence/requirements.beta.json"),
+        serde_json::to_vec_pretty(&beta).unwrap(),
+    )
+    .unwrap();
+    let cache = fixture.state.join(if cfg!(windows) {
+        "habeas/state/github/example+queue+125.json"
+    } else {
+        "habeas/github/example+queue+125.json"
+    });
+    assert!(
+        cache.exists(),
+        "GitHub reads are cached under the state root"
+    );
+    let status = run(&["status"]);
+    assert!(!status.contains("stale"), "{status}");
+    let reads = github.requests();
+
+    *github.state.lock().unwrap() = "closed";
+    // The cached open state is reused for an hour.
+    assert!(!run(&["status"]).contains("stale"));
+    assert_eq!(github.requests(), reads);
+    fs::remove_file(&cache).unwrap();
+    let status = run(&["status"]);
+    assert_eq!(github.requests(), reads + 1);
+    let row = status
+        .lines()
+        .find(|line| line.starts_with("| `requirements.beta`"))
+        .unwrap_or_else(|| panic!("{status}"));
+    assert!(row.contains("Invalid"), "{status}");
+    for expected in [
+        "evidence/requirements.beta.json: stale: issue example/queue#125, named by the acknowledging {fixme} to requirements.beta at src/lib.rs:5, is closed",
+        "src/lib.rs:5: {fixme} names example/queue#125, which is closed",
+        "src/lib.rs:9: fn beta fails: its {fixme} at line 5 names example/queue#125, which is closed",
+    ] {
+        assert!(status.contains(expected), "{expected}\n{status}");
+    }
+    // Repository validation, which does not contact GitHub, still accepts it.
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(github.requests(), reads + 1);
+
+    run(&["author", "--all"]);
+    let subjects = server.subjects();
+    assert_eq!(subjects.len(), 7, "{subjects:?}");
+    assert_eq!(subjects[6], "requirement requirements.beta");
+    let beta = fixture.evidence("requirements.beta");
+    assert_eq!(beta["determination"], json!(false), "{beta}");
+    // Issue states are supplied with inputs but never recorded.
+    assert!(!beta.to_string().contains("github_issues"), "{beta}");
+    for run in fixture.usage() {
+        assert!(!run.to_string().contains("github_issues"), "{run}");
+    }
 }
