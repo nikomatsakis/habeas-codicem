@@ -1,7 +1,7 @@
 {
   "requirement": "Each assessment conversation MUST send its prompt as a system prompt followed by\none user message, the subject message, filled from the first and second text\nblocks of the prompt requirement for the assessment's kind. The kinds are\nrequirement, example, citation review, site review, and a verifier of each of\nthose. A system prompt MUST be the same for every assessment of its kind, so\nevery placeholder whose value depends on the subject MUST be in the subject\nmessage.",
   "determination": true,
-  "rationale": "I found no gaps. The requirement text is in `md/requirements/authoring.md` (`prompt_parts`). Its obligations and the code and tests for each are below.\n\n**Obligations**\n\n1. **Each conversation sends a system prompt followed by one user message (the subject message).**\n   - `Prompt::request` (`src/authoring/mod.rs`) builds `CompletionRequest::new(Message::user(self.subject)).preamble(self.system)`.\n   - `converse` takes a `Prompt` and calls `prompt.request()`. The initial assessment (`assess`) and the verifier (`verify`) both go through `converse`. I found no other request construction in `src`.\n   - Tests: `opening` in `tests/authoring_cli.rs` asserts a leading `system` message followed by a `user` message for Ollama, and the `system` block plus first message for Bedrock. `initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template` uses it. The Bedrock cache-checkpoint test also checks that `system[0]` begins \"# Task\".\n\n2. **The system prompt and subject message are filled from the first and second text blocks of the prompt requirement for the assessment's kind.**\n   - `Prompt::filled` fills `approved_text(name, 0)` as the system prompt and `approved_text(name, 1)` as the subject message.\n   - `initial_prompt` selects `initial_prompt` for requirements and examples, `citation_prompt` for citation reviews, and `site_prompt` for site reviews. `verification_prompt` uses `verifier_prompt`.\n   - Test: `initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template` asserts the system prompt equals block 1 with only the permitted substitutions, and that the subject message is block 2, for both requirement and example. The unit test `subjects_of_one_kind_share_a_byte_identical_system_prompt` checks that the subject message starts with \"# Subject\" for requirement, example, citation review and site review. It also checks that the verifier's subject message contains the rationale.\n\n3. **The kinds are requirement, example, citation review, site review, and a verifier of each.**\n   - These are the four `initial_prompt` branches plus `verification_prompt`. In `verification_prompt` the only per-kind differences are `subject_kind`, `site_step` and an empty `reference_roles` for a site review.\n   - Both of those placeholders sit in the system block. Their values depend only on the kind, so the system prompt still matches across subjects of one kind.\n\n4. **A system prompt is the same for every assessment of its kind.**\n   - The system templates contain only these placeholders, none of which depends on the subject:\n     - kind-only: `subject_kind`, `subject_task`, `site_step`;\n     - shared fixed blocks: `habeas_background`, `reference_roles`, `distributed_background`, `judgment_rules`.\n   - The subject-dependent values (`subject_name`, `item_file`, `item_selector`, `citations`, `site_file`, `site_selector`, `requirement_name`, `matches`, `mandatory_inputs`, `determination`, `rationale`, `review_instructions`, `distributed_task`) appear only in the second blocks. `fill` replaces placeholders in one pass, so substituted subject text cannot alter the system prompt.\n   - Test: `subjects_of_one_kind_share_a_byte_identical_system_prompt` takes two subjects of each kind and uses `assert_eq!` on `one.system` and `two.system`. The kinds are requirement, example, citation review, site review. It repeats the check for the verifier prompt of each pair. It also asserts the subject name and the rationale are absent from the system prompt, and that the subject messages differ.\n\n5. **Every subject-dependent placeholder is in the subject message.** This follows from the template layout in point 4. The same test asserts the subject name is not in the system prompt and the rationale is in the subject message.\n\n**Marking:** `Prompt`, `Prompt::filled`, `Prompt::request`, `initial_prompt`, `verification_prompt`, `distributed_task` and `converse` carry `{impl}` references. The test functions and helpers carry `{test}` references. I found no unmarked implementing code or unmarked verifying tests. I found no unspecified behavior in the prompt-parts code.\n\n**Minor observation, not a gap:** `assessment_kind` in `src/authoring/batch.rs` carries a `prompt_parts` `{impl}` mark. It only groups subjects by kind, but it uses the requirement's kind vocabulary, so I did not treat the mark as a gap.",
+  "rationale": "I found no gaps. The one test limit is that the verifier's role layout is checked only by the shared-path argument below.\n\n**Obligations**\n1. Each conversation sends a system prompt followed by one user message, the subject message.\n2. Both are filled from the first and second text blocks of the prompt requirement for the assessment's kind.\n3. The kinds are requirement, example, citation review, site review, and a verifier of each.\n4. A system prompt is the same for every assessment of its kind.\n5. Every subject-dependent placeholder is in the subject message.\n\n**Code**\n- **Structure (obligation 1):**\n  - `Prompt` (src/authoring/mod.rs:826) holds `system` and `subject`.\n  - `Prompt::request` (:849) builds `CompletionRequest::new(Message::user(subject)).preamble(system)`.\n  - `converse` (:1266) takes a `Prompt` and starts with `prompt.request()`.\n  - Both `assess` and `verify` reach `converse` only through a `Prompt` built by `initial_prompt` or `verification_prompt`. A grep of `CompletionRequest::new` in the authoring code turned up no other path that builds a conversation's opening request.\n- **Filling from the two blocks (obligation 2):**\n  - `Prompt::filled` (:836) fills `approved_text(name, 0)` as the system prompt and `approved_text(name, 1)` as the subject message.\n  - `initial_prompt` (:864) picks `initial_prompt` for requirements and examples, `citation_prompt` for citation reviews, and `site_prompt` for site reviews.\n  - `verification_prompt` (:949) uses `verifier_prompt`.\n  - `assessment_kind` in src/authoring/batch.rs:273 names the kinds.\n- **Subject-dependent values (obligation 5):**\n  - The system blocks I checked contain only these placeholders: `habeas_background`, `reference_roles`, `judgment_rules`, and the kind-level `subject_kind`, `subject_task`, `site_step`, `distributed_background`.\n  - `subject_kind` is `requirement` or `example`, `subject_task` follows from that, and `site_step` and the emptied `reference_roles` depend only on whether the review is a site review. All are fixed per kind.\n  - Per-subject values (`subject_name`, `distributed_task`, `item_file`, `item_selector`, `citations`, `requirement_name`, `site_file`, `site_selector`, `matches`, `determination`, `rationale`, `review_instructions`, `mandatory_inputs`) appear only in the second blocks.\n  - `distributed_task` (:809) puts the distributed-requirement task in the subject message, so a distributed and a non-distributed requirement share one system prompt.\n- **Same system prompt per kind (obligation 4):** The per-subject values and the `fill` call are all outside the system block. The unit test below confirms the result.\n\n**Tests**\n- **`subjects_of_one_kind_share_a_byte_identical_system_prompt`** (mod.rs:2840) covers a requirement pair, an example pair, a citation-review pair, and a site-review pair.\n  - For each pair it asserts that the two initial system prompts are byte-equal, the subject messages differ and start with `# Subject`, and the system prompt does not contain the subject name.\n  - It also asserts that each pair's verifier system prompts are equal and that the rationale appears only in the subject message.\n- **`initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template`** (tests/authoring_cli.rs:839) runs the real command. It asserts that the sent system prompt equals the first block with only kind-level substitutions, and that the sent subject message equals the second block with the subject and mandatory inputs filled in. It uses the `opening` helper, which asserts a leading `system` message followed by a `user` message (or Bedrock's `system` blocks and first message), for both a requirement and an example.\n- **`a_distributed_requirement_task_continues_with_the_filled_distributed_task`** (mod.rs:2794) checks that the distributed task is in the subject message and not in the system prompt, for both the initial and verifier prompts.\n- **`verifier_prompts_name_examples_and_citation_reviews`** (mod.rs:2544) checks that the rationale and subject name stay out of the verifier system prompt.\n- No end-to-end test checks the verifier's role layout. The verifier's request goes through the same `Prompt::request` and `converse` path as every other conversation, so the layout assertions above apply to it.\n\n**Marking:** The implementing items (`Prompt`, `filled`, `request`, `initial_prompt`, `verification_prompt`, `distributed_task`, `converse`, `assessment_kind`) carry `{impl}` references, and the tests carry `{test}` references. I found no unmarked code or tests, and no unspecified behavior.",
   "references": "e9a7bff41c026fce16878ab9562ef373048094b0dcd3cb215d0d3ed471e6ee27",
   "inputs": [
     {
@@ -89,12 +89,30 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]",
-      "hash": "2210bee3e19bfc552ad2b1a8a615e52a76514135511a752dd0280b9ac84f314d"
+      "hash": "fcc040320986b468979b19528211cffdd8c894ce64fe1d5fc122210a0400aa57"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[prompt_and_tools]",
       "hash": "184374359b89c3692fc625bd2cf28b181603fc10bc3d167447ce364c9f161480"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]",
+      "hash": "ed6d4a9fd83aa38c404dc6624de72ba067aec3b9b62c5739a56591a07f0d8fb6"
+    },
+    {
+      "definition": "requirements.references.definition_selection",
+      "text": [
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
+        "",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
+        ":::"
+      ]
     },
     {
       "file": "src/authoring/mod.rs",
@@ -143,39 +161,6 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[submission]",
-      "hash": "3f4acd1d1c636179b58366914e69d8b699355c761c96b5b2842314d8d7da1860"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[verifier_prompts_name_examples_and_citation_reviews]",
-      "hash": "9a62719c0a8d7b92593602b1ba02a3b5652ff559ec6a5b8763ed183d231b1763"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[verifications_accept_exactly_their_four_fields]",
-      "hash": "52814bc7f2fb8626a97eff95866521b4f0994a356c15b7c4bb280a72b908921a"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]",
-      "hash": "ed6d4a9fd83aa38c404dc6624de72ba067aec3b9b62c5739a56591a07f0d8fb6"
-    },
-    {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
       "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
     },
@@ -185,14 +170,39 @@
       "hash": "6a5a6ffe969e3b4d5c1d9bce32e4d92c0e3e386c3190e6419eb2bbd77dd16dd2"
     },
     {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[initial_prompt_carries_the_review_criteria]",
+      "hash": "5056a9cdc991e2db35d24da35f8f552983fcebbed81cbdb5b23b142eb5e2b653"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[initial_prompt_conveys_when_to_choose_each_outcome]",
+      "hash": "356ece7d39631efa26738b7cf270b1fd463ac5527206e84ad3fe70d5d8bcaa0a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[verifier_prompts_name_examples_and_citation_reviews]",
+      "hash": "9a62719c0a8d7b92593602b1ba02a3b5652ff559ec6a5b8763ed183d231b1763"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
+      "hash": "1573014ad3dd4a041f4da122f7453220ae2531a37842b7bbd07d6e6c9f4f84c2"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_distributed_requirement_task_continues_with_the_filled_distributed_task]",
+      "hash": "e41d4bad9d2fafef10d94ee00816f881f6edfd4964b3ddcbd20dd5a6bf1310c2"
+    },
+    {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[bedrock_native_option_types_are_checked_without_supplying_defaults]",
       "hash": "95dfba63238700fed1839482c85629b64e280a8002799ab8dbeae05ffa39b916"
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models_without_reasoning_turns]",
-      "hash": "95dea3819929f222b717bbc9a6c6fa1599cec7fd054df0b5b73bc527dbb27098"
+      "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
+      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
     }
   ]
 }
