@@ -206,7 +206,8 @@ The three reference roles:
   an output, or handles a case it specifies, or when it constrains a type's
   fields, variants, serialized form, or validation. Calling code that
   implements it, or producing a value a caller uses to meet it, does not by
-  itself count. A requirement stating a convention for every output of a kind,
+  itself count; returning the outcome of a check or decision the text specifies
+  does, even when a caller acts on it. A requirement stating a convention for every output of a kind,
   such as every validation error, is implemented by the code that carries out
   the convention as a whole, not by each item that produces one such output. A
   site of a distributed requirement needs no reference to it for being a site.
@@ -261,11 +262,13 @@ assessments judge by the same rules:
   gap with FIXME, conventionally FIXME(#125) or FIXME(owner/repo#123). A FIXME
   inside a string literal or test data is not an acknowledgment. Before deciding
   a gap is unacknowledged, search for FIXME in the files of the items it
-  concerns and, for a missing test, in the files of the subject's {test} items.
-  In a FIXME determination or an acknowledgments list, list each distinct
-  acknowledgment once: its issue
-  reference as written without FIXME( ), such as "#125" or "owner/repo#123", or
-  its comment text if it has none.
+  concerns: for missing code, the files of the subject's {impl} items and of the
+  code that should contain it; for a missing test, the files of the subject's
+  {test} items. In a FIXME determination or an acknowledgments list, give each
+  distinct issue reference once, as written without FIXME( ), such as "#125" or
+  "owner/repo#123"; for an acknowledgment with no issue reference, give the
+  source line containing FIXME, without comment markers or surrounding
+  whitespace.
 - Explain your judgment in a Markdown rationale with source locations,
   including any acknowledged gaps.
 ```
@@ -387,8 +390,9 @@ site's callers, or other sites.
 
 1. Decide applies, from the requirement's text describing its sites, not from
    which query matched; a violation match alone does not make the requirement
-   apply. Set applies to false only when the requirement does not govern this
-   site; then set determination to true and explain in your rationale why the
+   apply. Read the site's callers only when its own code does not settle
+   whether the text describes it. Set applies to false only when the
+   requirement does not govern this site; then set determination to true and explain in your rationale why the
    requirement does not apply.
 2. Otherwise set applies to true and judge the site: each obligation the
    requirement states for its sites that the site does not meet is a gap.
@@ -874,8 +878,11 @@ carrying an {impl} or {test} reference to it.
 Cited requirements and examples are context: when the subject requires behavior
 under or following a cited requirement, check that the subject's code applies
 that requirement in the subject's case, but do not reassess the cited
-requirement's own implementation or tests. For a requirement subject, that
-obligation still needs its own {impl} marking and test. When another requirement's text carries an {impl} reference
+requirement's own implementation or tests. For a requirement subject, the
+code that decides to apply the cited requirement in the subject's case
+implements that obligation of the subject, even when it only calls code
+implementing the cited requirement; it needs its own {impl} reference and a
+test. When another requirement's text carries an {impl} reference
 to the subject, assess only whether that text carries out the obligations it
 covers; do not reassess its implementation or tests, and those obligations need
 no test here.
@@ -930,7 +937,9 @@ Requirement task:
    network services, real elapsed time, or process-wide state such as
    environment variables or the current directory, and no test in the project
    sets that up; say which, and why. Files and directories a test can create do
-   not qualify.
+   not qualify. The exemption does not cover an obligation that itself states
+   that a value stays unchanged, distinct, or present; such an obligation needs
+   a test.
 ```
 
 Distributed task:

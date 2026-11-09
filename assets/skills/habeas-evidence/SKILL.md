@@ -30,7 +30,8 @@ Run commands from the project root, the directory with `book.toml` and
       skipped as current; `-v` prints each false judgment's rationale.
       `habeas author <full-name>` does one.
 - [ ] 5. `cargo test --workspace`. If findings remain that you can fix, return to
-      step 2. Stop and report to the user each finding that needs their
+      step 2. Also check `habeas status` for recorded disagreements (see
+      "Disagreeing assessments"). Stop and report to the user each finding that needs their
       decision, such as a new or changed requirement, a gap to defer, or a
       blocker, and each false judgment expected because implementation is
       pending; don't keep iterating on those.
@@ -40,8 +41,8 @@ Run commands from the project root, the directory with `book.toml` and
 - Never write or edit evidence JSON, determinations, rationales, or inputs
   yourself, and never hand that to another agent. Evidence means something only
   as an independent assessment that the harness records. If authoring cannot
-  run, because configuration or credentials are missing, a read is denied, or the
-  provider fails, stop and report the blocker.
+  run, follow the matching Gotcha below; when the fix needs the user, such as
+  missing credentials or configuration, stop and report the blocker.
 - Never re-run an assessment to get a different result, or change a judgment to
   make validation pass. Fix the source, tests, references, or requirement text.
   `--force` is for reassessing after a fix the hash does not see, never for
@@ -118,7 +119,9 @@ By default (`confirm` policy), `habeas author` checks each `true` or FIXME
 result with a second independent assessment and a verifier; the recorded
 rationale ends with a note on any disagreement, shown by `habeas info`. A
 determination that changes on reassessment, though the subject and sources have
-not changed in substance, is the same kind of finding.
+not changed in substance, is the same kind of finding. Validation accepts a recorded `true` or FIXME whose
+rationale notes a disagreement, so look for these in the "Disagreements"
+section of `habeas status` after each `habeas author` run.
 
 1. Read the rationale and its disagreement note, and decide whether one
    assessment found a real gap or the requirement text admits more than one

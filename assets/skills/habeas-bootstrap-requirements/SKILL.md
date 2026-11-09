@@ -18,12 +18,12 @@ to a subagent to keep it out of your context.
 
 - [ ] 1. Read the habeas-requirements skill; it defines the directive syntax,
       the reference procedure, and the review criteria. Aim for accurate
-      references, not a coverage number. If the project has no `habeas.toml`,
-      ask before running `habeas setup`. If a requirement already exists,
-      confirm authoring works with `habeas author --stdout <full-name>`, which
-      always assesses and writes no evidence; otherwise run
-      `habeas author <full-name>` after tagging the first area in step 6. If it fails, see the
-      habeas-evidence skill.
+      references, not a coverage number. If the project has no
+      `tests/habeas.rs` calling `habeas::validate()`, Habeas is not set up: ask
+      before running `habeas setup`. If a requirement already exists, confirm
+      authoring works with `habeas author --stdout <full-name>`, which always
+      assesses and writes no evidence. If it fails, see the habeas-evidence
+      skill.
 - [ ] 2. Read the existing requirements, documentation, public entry points,
       implementation, and tests. Follow behavior through the code rather than
       relying on test names or top-level dispatch.
@@ -37,12 +37,16 @@ to a subagent to keep it out of your context.
 - [ ] 5. Install the agreed requirements in the area's chapter, one file per
       area, such as `md/requirements/cli.md` for `requirements.cli.*`; add a
       new chapter to `SUMMARY.md` and `git add` it.
-- [ ] 6. Tag the area's tests and items (below).
-- [ ] 7. Run `cargo test --workspace`, which makes no model calls, and fix its
-      reference and coverage errors. Tell the user how many definitions
+- [ ] 6. Tag the area's tests and items (below). In the first area, if step 1
+      had no requirement to try, run `habeas author <full-name>` on one of the
+      area's requirements to confirm authoring works before going on.
+- [ ] 7. Run `cargo test --workspace`, which makes no model calls, and fix the
+      reference and coverage errors in this area's files. Unreferenced items in
+      areas not yet bootstrapped wait for their own pass; never give them
+      placeholder references. Tell the user how many definitions
       `habeas status` says need authoring, then follow the habeas-evidence
-      workflow until validation passes or every remaining finding is on the gap
-      list with a reason.
+      workflow for this area's definitions until each passes or is on the gap
+      list with a reason. Full validation can pass only after the last area.
 - [ ] 8. Have a fresh subagent recount both inventories from the source and tests
       without your lists, and reconcile any differences.
 - [ ] 9. Report (below).
