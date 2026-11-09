@@ -310,9 +310,10 @@ Given a requirement `foo.a.bar` and a named example `foo.a.b.bar`, `foo.*.bar` m
 ## Distributed requirements
 
 :::{req} distributed
-A requirement MAY be distributed: it states an obligation that each of many
-independent sites in the sources must uphold, such as a convention every
-validation function follows. A `{req}` body declares a distributed requirement
+A requirement MAY be distributed: it states obligations that each of many sites
+in the sources must uphold on its own, such as a convention every validation
+function follows, and MAY also state obligations that particular code carries
+out, which that code implements with `{impl}`. A `{req}` body declares a distributed requirement
 by containing one or more nested query directives: `:::{sites} <name>` for a
 site query, which finds the places the obligation applies, or
 `:::{violations} <name>` for a violation query, which finds constructs likely to
@@ -332,32 +333,28 @@ MUST be one fenced `yaml` code block containing a mapping with only these keys:
 - `rule`, required, with optional `utils` and `constraints`: an ast-grep rule
   core in the syntax of Habeas's pinned `ast-grep-config` version, matched
   against the language's pinned grammar.
-- `within`, optional and only for violation queries: the name of a site query
-  in the same requirement.
+- `within`, required for violation queries and not allowed for site queries:
+  the name of a site query in the same requirement.
 - `match` and `no_match`, required: nonempty lists of source snippets in the
   query's language. Each `match` snippet MUST contain at least one match of the
-  query, and each `no_match` snippet none, where a violation query with
-  `within` counts only matches inside a site of the named query in the same
-  snippet.
+  query, and each `no_match` snippet none, where a violation query counts only matches inside a site of its `within` query in the same snippet.
 
 Validation MUST report a query whose body is not such a mapping, whose rule does
-not compile, whose `within` names no site query of the requirement, or one of
-whose snippets fails to parse or has the wrong match result, and a site query
+not compile, whose `within` names no site query of the requirement, a violation query without `within`, or one of whose snippets fails to parse or has the wrong match result, and a site query
 that matches nothing in the project. Queries MUST search exactly the sources
 reference discovery considers under {cite}`requirements.references.targets`, in
 their original text.
 
 A match's site MUST be the innermost outline node, under
-{cite}`requirements.references.outlines`, whose range contains the match; for a
-violation query with `within`, it MUST instead be the innermost site of the
-named query that contains the match, and a match inside none of that query's
+{cite}`requirements.references.outlines`, whose range contains the match; for a violation query, it MUST instead be the innermost site of its `within` query that contains the match, and a match inside none of that query's
 sites MUST be discarded. A requirement's sites MUST be the distinct sites of all
 its queries' matches. Each site MUST have a site review under
 {cite}`requirements.references.site_review`, and needs no reference to the
 requirement; being a site MUST NOT count as a reference for
 {cite}`requirements.references.rust_item_coverage`, because a distributed
-requirement concerns a cross-cutting obligation, not why the item exists. Upgrading `ast-grep-config` MAY change matches and MUST be treated
-as a deliberate change. The book MUST render each query directive as a badge
+requirement concerns a cross-cutting obligation, not why the item exists.
+Upgrading `ast-grep-config` MAY change matches and MUST be treated as a
+deliberate change. The book MUST render each query directive as a badge
 naming its kind and name, followed by its code block.
 :::
 

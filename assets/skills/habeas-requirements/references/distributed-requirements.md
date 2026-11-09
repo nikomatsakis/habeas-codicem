@@ -14,8 +14,8 @@ fenced `yaml` block and a name unique within the requirement:
 - `:::{sites} <name>` selects the places the obligation applies.
 - `:::{violations} <name>` selects constructs likely to break it, such as `?`,
   `return`, `continue`, or `break` in a function that must keep going after a
-  failed check. With `within: <site query>`, naming a site query of the same
-  requirement, only matches inside that query's sites count. Violation queries
+  failed check. Each needs `within: <site query>`, naming a site query of the same
+  requirement; only matches inside that query's sites count. Violation queries
   point site reviews at likely problems; each site's review still judges the
   whole site, and a violation query that misses a construct does not by itself
   make the requirement false.
@@ -23,7 +23,7 @@ fenced `yaml` block and a name unique within the requirement:
 Each body has these keys: `language` (`rust`, `python`, `typescript`, `tsx`,
 `css`, `markdown`, `toml`, or `yaml`); optional `paths` and `exclude`, lists of
 project-relative files or directories; an ast-grep `rule`, with optional `utils`
-and `constraints`; `within`, for violation queries only; and `match` and
+and `constraints`; `within`, required for violation queries; and `match` and
 `no_match` snippet lists. Give the requirement a longer outer fence:
 
 ````text
