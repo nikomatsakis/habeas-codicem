@@ -42,14 +42,11 @@ determinations MUST remain validation errors under {cite}`requirements.ci.outcom
 :::
 
 :::{req} fixme_issues
-`habeas check-issues` MUST look up, through the GitHub API, every issue that a
-`:github:` option line of a `{fixme}` reference under
-{cite}`requirements.references.targets` names, and MUST report each that does not
-exist or is closed, with the file and line of each `{fixme}` naming it, exiting
-nonzero when it reports any. It MUST authenticate with the `GITHUB_TOKEN`
-environment variable when that is set. Repository validation MUST NOT contact
-GitHub, so this check runs only when the command is invoked, such as in a CI
-step.
+`habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,
+every issue that a `:github:` option line of a `{fixme}` reference under
+{cite}`requirements.references.targets` names, and MUST list each that is closed
+or does not exist, with the file and line of each `{fixme}` naming it. When GitHub cannot be reached, the issue MUST be assumed open.
+Repository validation MUST NOT contact GitHub.
 :::
 
 :::{req} status_table_alignment

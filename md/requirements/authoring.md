@@ -270,9 +270,7 @@ assessments judge by the same rules:
   does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the inputs or in a
   source you read, to the requirement or example your task judges against,
-  whose body describes that same gap, and whose named issues are open or of
-  unknown state; a {fixme} naming a closed issue no longer acknowledges its
-  gap. A plain FIXME or TODO comment is not an acknowledgment. In a FIXME determination or an acknowledgments list, give each
+  whose body describes that same gap, and whose named issues are open; a {fixme} naming a closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is not an acknowledgment. In a FIXME determination or an acknowledgments list, give each
   distinct issue its :github: option names once, such as
   "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
   joined by single spaces. A {fixme} describing a gap that no longer exists is
@@ -784,14 +782,16 @@ or pull request through the GitHub API, authenticating with the `GITHUB_TOKEN`
 environment variable when that is set, and MUST return its body redacted under
 {cite}`requirements.authoring.redaction`. GitHub reads cannot be reproduced
 later, so their results MUST NOT be recorded as evidence inputs and MUST NOT
-make evidence stale. A malformed reference, a missing issue, or a failed request
+make evidence stale. Every GitHub read by Habeas, including this tool's, the
+lookups below, and those of {cite}`requirements.cli.fixme_issues`, MUST go
+through one cache under the state root of
+{cite}`requirements.configuration.state_location`, keyed by issue, and MUST
+reuse a cached result less than one hour old instead of contacting GitHub. A malformed reference, a missing issue, or a failed request
 MUST return an explanatory tool error.
 
 When the mandatory inputs contain a `{fixme}` reference under
 {cite}`requirements.references.targets`, the harness MUST look up the state of
-each issue its `:github:` lines name, in the same way, and MUST supply each
-state with that input to the model as `open`, `closed`, or `unknown` when the
-lookup fails. These states MUST NOT be recorded either.
+each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either.
 :::
 
 ### Look up definitions and references: `references`
