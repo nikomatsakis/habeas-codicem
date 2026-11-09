@@ -121,9 +121,10 @@ A claimed gap is real when the sources show it and the reviewer's criteria or
 applied.
 
 1. Set real to true if at least one claimed gap is real.
-2. If any gap is real, set acknowledged to true if every real gap is
-   acknowledged, and list the acknowledgments in acknowledgments. Otherwise set
-   acknowledged to false and leave acknowledgments empty.
+2. Set acknowledged to true only if at least one claimed gap is real and every
+   real gap is acknowledged, and then list their acknowledgments in
+   acknowledgments; otherwise set acknowledged to false and leave
+   acknowledgments empty.
 3. For each claimed gap, state in your rationale whether it is real and whether
    it is acknowledged, with source locations.
 {{site_step}}
@@ -251,7 +252,8 @@ assessments judge by the same rules:
   gap with FIXME, conventionally FIXME(#125) or FIXME(owner/repo#123). A FIXME
   inside a string literal or test data is not an acknowledgment. Before deciding
   a gap is unacknowledged, search the files of the items it concerns for FIXME.
-  In a FIXME determination, list each distinct acknowledgment once: its issue
+  In a FIXME determination or an acknowledgments list, list each distinct
+  acknowledgment once: its issue
   reference as written without FIXME( ), such as "#125" or "owner/repo#123", or
   its comment text if it has none.
 - Explain your judgment in a Markdown rationale with source locations,
@@ -287,8 +289,7 @@ Judge against: the text of the requirements and examples it cites.
 # Your task
 
 The mandatory inputs at the end contain the item and the declarations of the
-requirements and examples it cites. To see why the item must track a cited
-requirement, look at the item's callers.
+requirements and examples it cites.
 
 Assess only each listed citation's role. Decide whether the item implements part
 of a cited requirement, not whether it does so correctly, and do not look for
@@ -297,8 +298,10 @@ requirements or examples the item does not cite, except as step 3 requires.
 1. Apply the reference procedure to each citation, in order: if the item is a
    test or test helper designed to verify the cited requirement or example, it
    calls for {test}; otherwise, if it implements part of it, it calls for
-   {impl}; otherwise the citation is right if the item should be re-checked or
-   kept in sync when it changes. A citation for which this calls for a
+   {impl}; otherwise the citation is right if a change to the cited text could
+   require changing the item, as when the item relies on behavior the text
+   specifies or must agree with a form or value it defines; read the item's
+   callers only when the item's own code does not settle this. A citation for which this calls for a
    different role, or for no reference at all, is a gap.
 2. A citation of a requirement or example the item also references with {impl}
    or {test} is redundant and is a gap.
@@ -860,8 +863,9 @@ carrying an {impl} or {test} reference to it.
 
 Cited requirements and examples are context: when the subject requires behavior
 under or following a cited requirement, check that the subject's code applies
-that requirement in the subject's case, but do not reassess its own
-implementation or tests. When another requirement's text carries an {impl} reference
+that requirement in the subject's case, but do not reassess the cited
+requirement's own implementation or tests. The subject's obligation still needs
+its own {impl} marking and test. When another requirement's text carries an {impl} reference
 to the subject, assess only whether that text carries out the obligations it
 covers; do not reassess its implementation or tests, and those obligations need
 no test here.
@@ -886,8 +890,10 @@ determination and rationale. That tool call is your final answer.
 Requirement task:
 
 ```text
-1. List each MUST, MUST NOT, and SHOULD clause as an obligation, with one
-   obligation for each separate condition, form, or property a clause requires.
+1. List each MUST, MUST NOT, and SHOULD clause as an obligation. Split a
+   clause into one obligation for each item it joins with "and", "or", or a
+   list, and for each separate condition or property it states; do not form
+   combinations of items.
 2. For each, find the code that carries it out, among the {impl} items and the
    code they call. In your rationale, map each obligation to its code and to
    the tests step 5 requires.
@@ -898,17 +904,20 @@ Requirement task:
    a targeted ripgrep for names, strings, or messages its obligations produce;
    do not survey unrelated code.
 4. Unspecified behavior: a distinct observable behavior in the {impl} code,
-   such as an extra output, error, exit status, option, or kind of input, that
-   neither the subject nor another requirement the same code marks with {impl}
-   specifies is a gap. Read those requirements before calling it one. Behavior
+   such as an extra output, error, exit status, or option, or acceptance of a
+   kind of input, that neither the subject nor another requirement the same code
+   marks with {impl} specifies is a gap. Silently skipping input the text does
+   not mention is robustness, not unspecified behavior. Read those requirements before calling it one. Behavior
    within what the text describes, even where its examples do not show it, is
    specified; so are the layout and wording of output the text requires.
 5. Testing: every obligation, and every boundary or failure case the text
    names, needs a test that runs the code carrying it out and asserts its
    outcome; calling that code directly counts. Branches for cases the text does
    not distinguish need no test of their own. An untested obligation is a gap
-   unless its code has no branch or computation that could get it wrong, or a
-   test is impractical to write; say which, and why.
+   unless the code carrying it out has no conditional and no transformation of
+   its own, such as passing a value through unchanged, or running it would need
+   external services, timing, or process state that no existing test sets up;
+   say which, and why.
 ```
 
 Distributed task:
