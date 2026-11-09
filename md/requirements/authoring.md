@@ -87,6 +87,7 @@ prompt. The harness MUST replace `{{subject_kind}}` with `requirement`,
 `example`, `citation review`, or `site review`; `{{subject_name}}` with the full
 name, `citations:<file>#<selector>`, or `sites:<full-name>/<file>#<selector>`;
 `{{determination}}` with that assessment's determination as JSON;
+`{{rationale}}` with that assessment's rationale;
 `{{review_instructions}}` with the lines of that assessment's filled "# Task"
 section after its first paragraph, which name the subject, its citations or
 matches, and what to judge against, followed by, for a site review, the filled
@@ -306,9 +307,12 @@ Judge against: the text of the requirements and examples it cites.
 The mandatory inputs at the end contain the item and the declarations of the
 requirements and examples it cites.
 
-Assess only each listed citation's role. Decide whether the item implements part
-of a cited requirement, not whether it does so correctly, and do not look for
-requirements or examples the item does not cite, except as step 3 requires.
+Assess only each listed citation's role. Decide whether the item implements part of a cited
+requirement, not whether it does so correctly: whether the item meets the cited
+text, including its SHOULDs, is never a gap here. If the text supports two
+readings equally and they call for different roles, that ambiguity is a gap;
+name the readings. Do not look for requirements or examples the item does not
+cite, except as step 3 requires.
 
 1. Apply the reference procedure to each citation, in order: if the item is a
    test or test helper designed to verify the cited requirement or example, it
@@ -393,9 +397,12 @@ site's callers, or other sites.
 1. Decide applies, from the requirement's text describing its sites, not from
    which query matched; a violation match alone does not make the requirement
    apply. Read the site's callers only when its own code does not settle
-   whether the text describes it. Set applies to false only when the
-   requirement does not govern this site; then set determination to true and explain in your rationale why the
-   requirement does not apply.
+   whether the text describes it. Set applies to false only when no reading the
+   requirement's wording supports governs this site; then set determination to
+   true and explain in your rationale why the requirement does not apply. If a
+   reading the wording supports as well as any other governs the site, set
+   applies to true; that ambiguity is then a gap only if the site fails an
+   obligation under that reading.
 2. Otherwise set applies to true and judge the site: each obligation the
    requirement states for its sites that the site does not meet is a gap.
    Violation matches are
