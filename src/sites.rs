@@ -841,6 +841,35 @@ no_match:
         (inspection.report.errors, inspection.sites)
     }
 
+    // {test}`requirements.authoring.redaction`
+    // {test}`requirements.authoring.site_prompt`
+    #[test]
+    fn violation_text_reaches_the_model_redacted() {
+        let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
+        let found = |kind, text: &str| SiteMatch {
+            kind,
+            query: "q".to_owned(),
+            line_start: 1,
+            line_end: 1,
+            text: text.to_owned(),
+        };
+        let site = SiteItem {
+            requirement: "requirements.rule".to_owned(),
+            file: "src/lib.rs".to_owned(),
+            item: "fn[check]".to_owned(),
+            line_start: 1,
+            line_end: 1,
+            matches: vec![
+                found(QueryKind::Sites, "fn check() {}"),
+                found(QueryKind::Violations, &format!("connect(\"{token}\")")),
+            ],
+        };
+        let value = site.matches_value();
+        assert!(value[0].get("text").is_none(), "{value}");
+        assert_eq!(value[1]["text"], "connect(\"[REDACTED:GitHub Token]\")");
+        assert!(!value.to_string().contains(&token), "{value}");
+    }
+
     // {test}`requirements.references.distributed`
     #[test]
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {

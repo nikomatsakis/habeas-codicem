@@ -468,7 +468,10 @@ fn editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered() {
     let errors = habeas::validate_repository(temp.path()).unwrap().errors;
     assert!(
         errors.iter().any(|error| error
-            == "evidence/requirements.timeout.json: no input covers {fixme}`requirements.timeout` at other.rs:1"),
+            == concat!(
+                "evidence/requirements.timeout.json: no input covers {",
+                "fixme}`requirements.timeout` at other.rs:1"
+            )),
         "{errors:?}"
     );
 }

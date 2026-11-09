@@ -250,6 +250,7 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.usage_requests`
 // {test}`requirements.authoring.mandatory_inputs`
 // {test}`requirements.authoring.github_reads`
+// {test}`requirements.authoring.invocation`
 #[test]
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
@@ -504,6 +505,24 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(MODEL) && stdout.contains("Evidence:") && stdout.contains("Usage:"));
+    // By default the report names the subject and backend and identifies the
+    // evidence file it wrote.
+    assert!(
+        stdout.starts_with(&format!("{SUBJECT}: ollama / {MODEL}")),
+        "{stdout}"
+    );
+    let evidence = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Evidence: "))
+        .unwrap();
+    assert!(
+        evidence.ends_with(&format!("evidence/{SUBJECT}.json")),
+        "{stdout}"
+    );
+    assert_eq!(
+        fs::canonicalize(evidence).unwrap(),
+        fs::canonicalize(fixture.project.join(format!("evidence/{SUBJECT}.json"))).unwrap()
+    );
 }
 
 // {test}`requirements.configuration.workspace_location`

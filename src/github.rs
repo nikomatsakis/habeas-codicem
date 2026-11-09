@@ -739,6 +739,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.github_reads`
+    // {test}`requirements.authoring.redaction`
     #[test]
     fn the_tool_reads_issues_with_the_token_and_redacts_bodies() {
         let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();

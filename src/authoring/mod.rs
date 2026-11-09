@@ -449,6 +449,7 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.configuration`
 async fn configured_assessment(
     root: &Path,
     subject: &str,
@@ -665,6 +666,7 @@ fn favorability(assessment: &(Judgment, Value)) -> (u8, bool) {
 /// Starts the usage record of a further conversation about a subject.
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.authoring.policy`
 fn followup_log(
     state: &Path,
     root: &Path,
@@ -1571,7 +1573,6 @@ mod tests {
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.examples.evidence`
-    // {test}`requirements.authoring.habeas_background`
     #[test]
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
@@ -2265,6 +2266,7 @@ mod tests {
     // {test}`requirements.authoring.confirmation`
     // {test}`requirements.authoring.verifier_prompt`
     // {test}`requirements.authoring.verifier_outcome`
+    // {test}`requirements.authoring.habeas_background`
     #[tokio::test]
     async fn disagreeing_assessments_verify_the_less_favorable_one() {
         for (turns, recorded, kept, conclusion) in [
@@ -2361,6 +2363,15 @@ mod tests {
             );
             assert!(text.contains("List each MUST, MUST NOT"), "{text}");
             assert!(text.contains("# Mandatory inputs"), "{text}");
+            // The verifier of a requirement carries both background texts.
+            let text = serde_json::from_str::<Value>(text).unwrap().to_string();
+            for background in [
+                approved_text("habeas_background", 0),
+                approved_text("habeas_background", 1),
+            ] {
+                let background = serde_json::to_string(background).unwrap();
+                assert!(text.contains(background.trim_matches('"')), "{text}");
+            }
             assert!(!text.contains("{{"), "{text}");
             assert!(tools.contains(&"submit_verification".to_owned()));
             assert!(tools.contains(&"habeas".to_owned()));
@@ -2439,6 +2450,7 @@ mod tests {
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.references.citation_review`
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.habeas_background`
     #[tokio::test]
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
@@ -2495,6 +2507,14 @@ mod tests {
         );
         assert!(prompt.contains("The project MUST be ready."), "{prompt}");
         assert!(prompt.contains("Cite this only when"), "{prompt}");
+        // Prompts are recorded as serialized requests.
+        for background in [
+            approved_text("habeas_background", 0),
+            approved_text("habeas_background", 1),
+        ] {
+            let background = serde_json::to_string(background).unwrap();
+            assert!(prompt.contains(background.trim_matches('"')), "{prompt}");
+        }
         assert!(!prompt.contains("{{"), "{prompt}");
 
         let citations = json!([
@@ -2851,6 +2871,10 @@ mod tests {
                 "{text}"
             );
             assert!(text.contains(&escaped(SITE_STEP)), "{text}");
+            assert!(
+                text.contains(&escaped(approved_text("habeas_background", 0))),
+                "{text}"
+            );
             assert!(
                 text.contains(&escaped(&format!(
                     "requirement states for each of its sites.\n\n{}\n\nThe mandatory inputs at the end contain the site",

@@ -481,6 +481,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
 // {test}`requirements.ci.determination`
 // {test}`requirements.authoring.progress`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.authoring.configuration`
 #[test]
 fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {
     let server = Server::start(true, None);

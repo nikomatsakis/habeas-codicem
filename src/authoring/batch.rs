@@ -133,6 +133,7 @@ async fn run_batch(
         policy: None,
     };
     // With nothing to assess, no configuration or credentials are resolved.
+    // {impl}`requirements.authoring.configuration`
     if subjects.is_empty() {
         return Ok(outcome);
     }
@@ -308,6 +309,7 @@ pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io:
         return Err(io::Error::other(inspection.discovery_errors.join("\n")));
     }
     // A FIXME record whose acknowledging issue closed is stale.
+    // {impl}`requirements.authoring.github_reads`
     crate::github::add_issue_findings(&mut inspection, &crate::github::GithubIssues::from_env());
     let path = match subject {
         AuthoringSubject::Definition(name) => {

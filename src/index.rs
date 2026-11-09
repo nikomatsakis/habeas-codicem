@@ -1324,6 +1324,45 @@ mod tests {
             );
             assert!(page.contains("api_key = '[REDACTED:api_key]'"), "{page}");
         }
+
+        // Validation findings, an unresolved input shown as raw JSON, and an
+        // unreadable record are redacted too.
+        let unresolved = json!({
+            "requirement": "Ready.",
+            "determination": true,
+            "rationale": "Checked.",
+            "inputs": [{"file": "src/gone.rs", "item": "fn[gone]", "hash": token}],
+        })
+        .to_string();
+        let unreadable = format!("{{broken {token}");
+        let errors = [format!("evidence/requirements.ready.json: saw {token}")];
+        for (record, shown) in [
+            (&unresolved, "\"hash\": \"[REDACTED:GitHub Token]\""),
+            (&unreadable, "{broken [REDACTED:GitHub Token]"),
+        ] {
+            let page = render_detail_page(
+                "requirements.ready",
+                Path::new("appendix/requirements-index/requirements.ready.md"),
+                None,
+                &definition,
+                DetailEvidence {
+                    state: EvidenceState::Invalid,
+                    record: Some(record),
+                    errors: &errors,
+                    fixme_entries: &[],
+                },
+                &RenderSources {
+                    root,
+                    definitions: &BTreeMap::new(),
+                    references: &[],
+                    source_links: None,
+                    outlines: &crate::inputs::OutlineCache::default(),
+                },
+            );
+            assert!(!page.contains(&token), "{page}");
+            assert!(page.contains("saw [REDACTED:GitHub Token]"), "{page}");
+            assert!(page.contains(shown), "{page}");
+        }
     }
 
     // {test}`requirements.index.detail_format`

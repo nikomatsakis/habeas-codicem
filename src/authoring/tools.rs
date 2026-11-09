@@ -305,11 +305,14 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         )));
     }
     found.retain(|reference| {
-        reference.kind != crate::ReferenceKind::Term
-            // A fence that never closes is a validation error, not a site,
-            // and so is a misplaced `{fixme}`.
+        // Only `{impl}`, `{cite}`, and `{test}` references are sites; a
+        // `{fixme}` acknowledges a gap rather than locating the definition.
+        matches!(
+            reference.kind,
+            crate::ReferenceKind::Impl | crate::ReferenceKind::Cite | crate::ReferenceKind::Test
+        )
+            // A fence that never closes is a validation error, not a site.
             && reference.closed
-            && reference.is_fixme_edge()
             && crate::definition_glob::matches(selection, &reference.name)
             && definitions
                 .get(&reference.name)
@@ -2088,12 +2091,13 @@ mod tests {
         assert!(flattened.inputs.is_empty());
 
         // A fenced reference in a comment run is a site of the node the run
-        // belongs to; a fence that never closes is invalid and not a site.
+        // belongs to; a `{fixme}` is not a site, nor is a fence that never
+        // closes.
         fs::write(
             root.path().join("src/fenced.rs"),
             format!(
-                "// :::{} requirements.other\n// Commentary.\n// :::\nfn fenced() {{}}\n\n// :::{} requirements.other\n// never closed\n\nfn open() {{}}\n",
-                "{impl}", "{cite}"
+                "// :::{} requirements.other\n// Commentary.\n// :::\nfn fenced() {{}}\n\n// :::{} requirements.other\n// Tracked by example/queue#1.\n// :::\nfn gap() {{}}\n\n// :::{} requirements.other\n// never closed\n\nfn open() {{}}\n",
+                "{impl}", "{fixme}", "{cite}"
             ),
         )
         .unwrap();
