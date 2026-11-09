@@ -434,6 +434,19 @@ book rendering remain deterministic and do not require model configuration or
 credentials. {cite}`requirements.authoring.usage_storage`
 {cite}`requirements.authoring.deterministic_validation`
 
+`habeas author` and `habeas status` read GitHub issues, authenticating with
+`GITHUB_TOKEN` when it is set, through a cache in the `github` directory of the
+same state root: `$XDG_STATE_HOME/habeas/github`, falling back to
+`$HOME/.local/state/habeas/github`, or `%LOCALAPPDATA%/habeas/state/github` on
+Windows. Each issue `<owner>/<repo>#<number>` is one JSON file,
+`<owner>+<repo>+<number>.json`, recording the `issue`, the GitHub `api` it was
+read from, the Unix time it was `fetched` in seconds, and its `state` (`open`,
+`closed`, or `missing`) and, for an issue that exists, its redacted `title` and
+`body`. An entry less than an hour old is reused; a failed read is not cached.
+Deleting the directory only forces fresh reads.
+{cite}`requirements.authoring.github_reads`
+{impl}`requirements.configuration.state_location`
+
 ### Assessment policy
 
 Every `habeas author` form assesses its subjects under an assessment policy,

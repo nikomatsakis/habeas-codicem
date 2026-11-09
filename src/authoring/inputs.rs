@@ -355,6 +355,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.site_prompt`
     // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.authoring.mandatory_inputs`
+    // {impl}`requirements.references.builtin_definitions`
     pub(crate) fn prepare_site(
         root: &Path,
         requirement: &str,
@@ -1259,6 +1260,53 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("private/skill.md"), "{error}");
+    }
+
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.references.builtin_definitions`
+    #[test]
+    fn cited_built_ins_contribute_their_text_and_fixmes_in_own_sites_do_not() {
+        let project = crate::authoring::tests::citing_site_project();
+        let root = project.path();
+        let fixme = |issue: &str| {
+            format!(
+                "    // :::{{fixme}} requirements.rule\n    // :github: o/r#{issue}\n    // Panics instead of reporting.\n    // :::\n"
+            )
+        };
+        let source = crate::sites::tests::SOURCE
+            .replace(
+                "fn check_two() {}",
+                &format!("fn check_two() {{\n{}}}", fixme("1")),
+            )
+            .replace(
+                "fn other() { panic!(\"y\"); }",
+                &format!("fn other() {{\n{}}}", fixme("2")),
+            );
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        let sources = AssessmentSources::prepare(root, "requirements.rule").unwrap();
+        let mandatory = sources.mandatory_inputs();
+        let items = mandatory
+            .iter()
+            .filter_map(|input| input["item"].as_str())
+            .collect::<Vec<_>>();
+        // The `{fixme}` outside every site contributes its node; the one
+        // inside the subject's own site belongs to that site's review.
+        assert_eq!(items, ["fn[other]"], "{mandatory:#?}");
+        // A cited built-in contributes its fixed text once, and a cited
+        // declaration its own declaration.
+        assert_eq!(
+            mandatory
+                .iter()
+                .filter(|input| input["builtin"] == "habeas:none")
+                .collect::<Vec<_>>(),
+            [&builtin_input("habeas:none")]
+        );
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["requirements"] == "requirements.other"),
+            "{mandatory:#?}"
+        );
     }
 
     // {test}`requirements.references.authoring_inputs`

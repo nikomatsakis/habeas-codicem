@@ -2691,6 +2691,156 @@ mod tests {
         (result, provider)
     }
 
+    /// A requirement whose only site query selects inner attributes, which
+    /// belong to their file's root node.
+    // {test}`requirements.references.site_review`
+    const ATTRIBUTES: &str = r##"::::{req} attributes
+Crate attributes MUST be justified.
+
+:::{sites} inner
+```yaml
+language: rust
+paths: [src]
+rule: { kind: inner_attribute_item }
+match:
+  - "#![allow(dead_code)]"
+no_match:
+  - "#[allow(dead_code)]\nfn a() {}"
+```
+:::
+::::
+"##;
+
+    /// A project whose `requirements.rule` cites `requirements.other` and
+    /// `habeas:none`, with a root-node site of `requirements.attributes`.
+    // {test}`requirements.references.site_review`
+    pub(crate) fn citing_site_project() -> tempfile::TempDir {
+        let cites = concat!("{", "cite}`requirements.other` and {", "cite}`habeas:none`");
+        let rule = crate::sites::tests::RULE.replace(
+            "instead of panicking.",
+            &format!("instead of panicking, as {cites} describe."),
+        );
+        crate::sites::tests::project(
+            &format!("{rule}\n:::{{req}} other\nOther MUST hold.\n:::\n\n{ATTRIBUTES}"),
+            &format!("#![allow(dead_code)]\n{}", crate::sites::tests::SOURCE),
+        )
+    }
+
+    // {test}`requirements.references.site_review`
+    // {test}`requirements.references.builtin_definitions`
+    #[test]
+    fn site_reviews_cite_declarations_go_stale_with_them_and_name_root_sites() {
+        let project = citing_site_project();
+        let root = project.path();
+        // Records a current review of a site with its mandatory inputs.
+        let write = |label: &str, queries: &[&str], drop: Option<&str>| {
+            let subject = AuthoringSubject::parse(label);
+            let AuthoringSubject::Site {
+                requirement,
+                file,
+                item,
+            } = &subject
+            else {
+                unreachable!()
+            };
+            let mut sources = subject.sources(root).unwrap();
+            let mandatory = sources.mandatory_inputs().to_vec();
+            sources.record_inputs(&mandatory);
+            let inputs = sources
+                .recorded_inputs()
+                .iter()
+                .filter(|input| drop.is_none_or(|name| input["requirements"] != name))
+                .cloned()
+                .collect::<Vec<_>>();
+            let path = subject.evidence_path(root);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                json!({"requirement": requirement, "file": file, "item": item,
+                    "queries": queries, "applies": true, "fixmes": [],
+                    "determination": true, "rationale": "Fine.", "inputs": inputs})
+                .to_string(),
+            )
+            .unwrap();
+            (sources, path)
+        };
+        let review_errors = |path: &Path| {
+            let prefix = format!("{}:", crate::evidence::display_path(root, path));
+            crate::sites::tests::inspect(root)
+                .0
+                .into_iter()
+                .filter(|error| error.starts_with(&prefix))
+                .collect::<Vec<_>>()
+        };
+
+        // A site review receives each declaration and built-in text its
+        // requirement cites.
+        let (sources, two) = write(
+            "sites:requirements.rule/src/lib.rs#fn[check_two]",
+            &["checkers"],
+            None,
+        );
+        let mandatory = sources.mandatory_inputs();
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["requirements"] == "requirements.other"
+                    && input["text"][1] == "Other MUST hold."),
+            "{mandatory:#?}"
+        );
+        assert_eq!(
+            mandatory
+                .iter()
+                .filter(|input| input["builtin"] == "habeas:none")
+                .count(),
+            1,
+            "{mandatory:#?}"
+        );
+        assert_eq!(review_errors(&two), Vec::<String>::new());
+
+        // A review without a cited declaration is incomplete.
+        let (_, one) = write(
+            "sites:requirements.rule/src/lib.rs#fn[check_one]",
+            &["checkers", "panics"],
+            Some("requirements.other"),
+        );
+        assert!(
+            review_errors(&one)
+                .iter()
+                .any(|error| error
+                    .contains("inputs must include the declaration of requirements.other")),
+            "{:#?}",
+            review_errors(&one)
+        );
+
+        // Omitting the selector names the file's root node.
+        let (_, attributes) = write("sites:requirements.attributes/src/lib.rs", &["inner"], None);
+        assert!(
+            attributes.ends_with("evidence/sites/requirements.attributes/src/lib.rs/_root.json"),
+            "{}",
+            attributes.display()
+        );
+        assert_eq!(review_errors(&attributes), Vec::<String>::new());
+
+        // Changing the requirement's or a cited declaration makes the review
+        // stale.
+        let chapter = root.join("md/requirements.md");
+        let original = fs::read_to_string(&chapter).unwrap();
+        for (old, new) in [
+            ("Other MUST hold.", "Other MUST still hold."),
+            ("Each checker MUST", "Every checker MUST"),
+        ] {
+            fs::write(&chapter, original.replace(old, new)).unwrap();
+            assert!(
+                review_errors(&two)
+                    .iter()
+                    .any(|error| error.contains("input text changed")),
+                "{new}: {:#?}",
+                review_errors(&two)
+            );
+        }
+    }
+
     // {test}`requirements.authoring.site_prompt`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.references.site_review`

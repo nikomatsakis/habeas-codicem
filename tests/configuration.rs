@@ -1196,6 +1196,44 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
 }
 
 // {test}`requirements.configuration.documentation`
+#[test]
+fn configuration_documentation_covers_locations_structure_editing_and_removal() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let reference = fs::read_to_string(root.join("md/reference.md")).unwrap();
+    // Collapse line breaks so phrases may wrap.
+    let reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        // Locations of the user and project files.
+        "Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or `$HOME/.config/habeas/config.toml`",
+        "On Windows, use `%APPDATA%/habeas/config.toml`",
+        "The nearest enclosing `habeas.toml` supplies workspace settings",
+        // Structure and schema version.
+        "Each must start with the schema version `version = 1`",
+        "the top level may contain only feature tables",
+        // Editing by hand, without a management command or generated state.
+        "you create and edit both by hand with a text editor; there is no configuration-management command",
+        "Habeas never creates, repairs, or rewrites them",
+        // Resolution rules and defaults.
+        "Selection order is `--config`, the user's per-project selection, workspace default, then user default",
+        "omitted settings use their documented defaults",
+        // Credential-source references.
+        "add `api_key_env = \"OLLAMA_API_KEY\"`",
+        "aws_profile = \"research\"",
+        // Changing and removing settings and selections.
+        "To remove an optional setting or selection, delete its key or table",
+        "Remove the project table or default field to remove a selection",
+        "Delete a configuration's table to remove it",
+        "delete `concurrency` to restore the default",
+        "Delete `endpoint` to return to the local default",
+    ] {
+        assert!(
+            reference.contains(phrase),
+            "md/reference.md lacks {phrase:?}"
+        );
+    }
+}
+
+// {test}`requirements.configuration.documentation`
 // {test}`requirements.authoring.configuration_documentation`
 #[test]
 fn documented_configuration_examples_are_complete_valid_files() {
