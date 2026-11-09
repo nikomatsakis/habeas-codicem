@@ -366,6 +366,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             "github",
             "habeas",
             "list_files",
+            "next_page",
             "outline",
             "references",
             "ripgrep",
@@ -1653,6 +1654,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
                 "github",
                 "habeas",
                 "list_files",
+                "next_page",
                 "outline",
                 "references",
                 "ripgrep",
@@ -2046,7 +2048,7 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
 
     // Both fixtures are identical projects, so the requests must match.
     assert_eq!(ollama, bedrock);
-    assert_eq!(ollama.1.len(), 8);
+    assert_eq!(ollama.1.len(), 9);
 }
 
 /// Asserts that authoring failed before or while recording usage history and

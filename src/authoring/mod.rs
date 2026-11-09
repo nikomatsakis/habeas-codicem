@@ -3,6 +3,7 @@
 pub(crate) mod access;
 mod batch;
 mod inputs;
+mod pages;
 mod progress;
 mod providers;
 mod tools;
@@ -1283,6 +1284,7 @@ async fn verify(
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.concurrency`
 // {impl}`requirements.authoring.prompt_parts`
+// {impl}`requirements.authoring.result_pages`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1295,6 +1297,8 @@ async fn converse<T>(
     request.tools = tool_definitions_with(submit, site)?;
     let mut pending = sources.mandatory_inputs().to_vec();
     let mut backoff = providers::ProviderBackoff::default();
+    // Pages are kept only until this assessment finishes.
+    let mut pages = pages::ResultPages::default();
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
@@ -1367,8 +1371,9 @@ async fn converse<T>(
         );
         let mut results = Vec::new();
         for call in calls {
-            match tools::dispatch(
+            match tools::dispatch_paged(
                 sources,
+                &mut pages,
                 call.function.name.as_str(),
                 &Value::Object(call.function.arguments.clone()),
             ) {
@@ -1539,6 +1544,91 @@ mod tests {
         let delivered = requests[1].to_string();
         assert!(delivered.contains("A unit of"), "{delivered}");
         assert!(!requests[0].to_string().contains("A unit of"));
+    }
+
+    /// Searches with a paged result, asks for its second page with the
+    /// token the first carried, and then submits.
+    // {test}`requirements.authoring.result_pages`
+    struct PagingProvider {
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl CompletionProvider for PagingProvider {
+        // {test}`requirements.authoring.result_pages`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let last = serde_json::to_string(request.chat_history.last().unwrap()).unwrap();
+            self.requests.borrow_mut().push(last.clone());
+            let turn = self.requests.borrow().len();
+            let (name, arguments) = match turn {
+                1 => (
+                    "ripgrep",
+                    json!({"pattern": "fn needle_", "path": "src", "context": 0}),
+                ),
+                2 => {
+                    // The tool result is JSON text inside the serialized message.
+                    let marker = r#"\"next\":\""#;
+                    let start = last.find(marker).expect("a paged result") + marker.len();
+                    ("next_page", json!({"token": &last[start..start + 16]}))
+                }
+                _ => return JudgmentProvider(json!(true)).complete(request).await,
+            };
+            Ok(CompletionResponse::new(
+                vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                    format!("call-{turn}"),
+                    ToolFunction::new(ToolName::new(name).unwrap(), arguments),
+                ))],
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.delivered_inputs`
+    #[tokio::test]
+    async fn only_inputs_on_delivered_pages_are_recorded() {
+        let project = inputs::tests::project();
+        let mut source = String::new();
+        for index in 0..600 {
+            source.push_str(&format!(
+                "fn needle_{index}() {{\n    let text = \"padding padding padding\";\n}}\n\n"
+            ));
+        }
+        fs::write(project.path().join("src/lib.rs"), source).unwrap();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = PagingProvider {
+            requests: RefCell::default(),
+        };
+        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let requests = provider.requests.borrow();
+        assert_eq!(requests.len(), 3);
+        let delivered = |request: &str| {
+            (0..600)
+                .filter(|index| request.contains(&format!("fn needle_{index}()")))
+                .collect::<Vec<_>>()
+        };
+        let (first, second) = (delivered(&requests[1]), delivered(&requests[2]));
+        assert!(!first.is_empty() && !second.is_empty());
+        // The pages are consecutive and leave entries undelivered.
+        assert_eq!(second[0], first.last().unwrap() + 1);
+        let last = *second.last().unwrap();
+        assert!(last < 599, "{last}");
+        let recorded = evidence["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|input| input["item"].as_str())
+            .filter_map(|item| item.strip_prefix("fn[needle_"))
+            .map(|item| item.trim_end_matches(']').parse::<usize>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(recorded, (0..=last).collect::<Vec<_>>());
+        let log: Value = serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["tool_calls"]["next_page"], 1);
     }
 
     // {test}`requirements.authoring.read_denial`

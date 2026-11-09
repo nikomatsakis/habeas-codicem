@@ -580,6 +580,30 @@ impl AssessmentSources {
             .collect()
     }
 
+    /// The additional definitions each input needs on its own, so a page of
+    /// inputs can carry the definitions that accompany them.
+    // {impl}`requirements.authoring.result_pages`
+    // {impl}`requirements.definitions.authoring_inputs`
+    pub(crate) fn definitions_each(&self, inputs: &[Value]) -> io::Result<Vec<Vec<Value>>> {
+        let definitions = load_definitions(&self.root)?;
+        inputs
+            .iter()
+            .map(|input| {
+                Ok(definition_inputs(
+                    &self.root,
+                    &self.access,
+                    &definitions,
+                    &self.outlines,
+                    std::slice::from_ref(input),
+                    None,
+                )?
+                .into_iter()
+                .filter(|definition| definition != input && !self.recorded.contains(definition))
+                .collect())
+            })
+            .collect()
+    }
+
     // {impl}`requirements.definitions.authoring_inputs`
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.text_search`

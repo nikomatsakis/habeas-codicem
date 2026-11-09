@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use serde_json::{Map, Value, json};
 
 use super::inputs::AssessmentSources;
+use super::pages::{Listing, ResultPages};
 use crate::inputs::InputSelector;
 use crate::structural::StructuralRule;
 
@@ -26,10 +27,11 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.result_pages`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
-    vec![
+    let mut definitions = vec![
         json!({
             "name": "habeas",
             "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line numbers unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error. Paths outside the project may be absolute when allowed.",
@@ -63,7 +65,35 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
         crate::github::tool_definition(),
-    ]
+        json!({
+            "name":"next_page", "description":"Return the following page of a paged result of habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references, in the same shape as its first page. token is the page's next value. Tokens are opaque and valid only in this assessment; an unknown token returns a tool error.",
+            "parameters":{"type":"object","properties":{"token":{"type":"string"}},"required":["token"],"additionalProperties":false}
+        }),
+    ];
+    for definition in &mut definitions {
+        let note = match definition["name"].as_str() {
+            Some("habeas") => Some(paged_note("A line-range result", "inputs")),
+            Some("list_files" | "outline") => Some(paged_note("A result", "entries")),
+            Some("ripgrep" | "ast_grep") => Some(paged_note("A result", "inputs")),
+            Some("references") => Some(paged_note("A result", "definitions and sites")),
+            _ => None,
+        };
+        if let Some(note) = note {
+            let description = definition["description"].as_str().unwrap_or_default();
+            definition["description"] = Value::String(format!("{description} {note}"));
+        }
+    }
+    definitions
+}
+
+/// How a tool's description explains paging: `subject` names the results
+/// that page, and `entries` what a page holds.
+// {impl}`requirements.authoring.result_pages`
+fn paged_note(subject: &str, entries: &str) -> String {
+    let limit = super::pages::PAGE_LIMIT / 1024;
+    format!(
+        "{subject} whose JSON exceeds {limit} KiB is returned in pages, each holding whole {entries} in order (with the definitions accompanying its inputs) and page: {{total_entries, returned_entries, next}}; next is a token for next_page while entries remain and null on the last page. A smaller result is returned whole, without page."
+    )
 }
 
 /// The parameter schema of a `referencing` argument.
@@ -85,21 +115,29 @@ fn reference_scope_schema() -> Value {
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.github_reads`
-pub(crate) fn dispatch(
+// {impl}`requirements.authoring.result_pages`
+pub(crate) fn dispatch_paged(
     sources: &AssessmentSources,
+    pages: &mut ResultPages,
     name: &str,
     arguments: &Value,
 ) -> io::Result<ToolDelivery> {
     let arguments = arguments
         .as_object()
         .ok_or_else(|| io::Error::other("tool arguments must be an object"))?;
+    let mut deliver = |listing: io::Result<Listing>| pages.deliver(sources, listing?);
     match name {
-        "habeas" => read(sources, arguments),
-        "list_files" => list_files(sources, arguments),
-        "outline" => outline(sources, arguments),
-        "ripgrep" => search(sources, arguments),
-        "ast_grep" => structural(sources, arguments),
-        "references" => references(sources, arguments),
+        "habeas" => read(sources, arguments).and_then(|read| match read {
+            Ok(delivery) => Ok(delivery),
+            Err(listing) => deliver(Ok(listing)),
+        }),
+        "list_files" => deliver(list_files(sources, arguments)),
+        "outline" => deliver(outline(sources, arguments)),
+        "ripgrep" => deliver(search(sources, arguments)),
+        "ast_grep" => deliver(structural(sources, arguments)),
+        "references" => deliver(references(sources, arguments)),
+        "next_page" => check_keys(arguments, &["token"])
+            .and_then(|()| pages.next_page(string(arguments, "token")?)),
         // GitHub reads are not evidence inputs.
         "github" => crate::github::tool(&sources.github, &Value::Object(arguments.clone()))
             .map(|result| ToolDelivery {
@@ -113,11 +151,28 @@ pub(crate) fn dispatch(
     .map_err(super::access::recoverable_outside_request)
 }
 
+/// Dispatches one tool call in an assessment of its own, whose pages are
+/// dropped once the call returns.
+// {test}`requirements.authoring.source_tools`
+#[cfg(test)]
+pub(crate) fn dispatch(
+    sources: &AssessmentSources,
+    name: &str,
+    arguments: &Value,
+) -> io::Result<ToolDelivery> {
+    dispatch_paged(sources, &mut ResultPages::default(), name, arguments)
+}
+
+/// A read's delivery, or, for the line-range form, its result to page.
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
 // {impl}`requirements.authoring.read_denial`
-fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn read(
+    sources: &AssessmentSources,
+    args: &Map<String, Value>,
+) -> io::Result<Result<ToolDelivery, Listing>> {
     let selector = if args.contains_key("item") {
         check_keys(args, &["file", "item"])?;
         InputSelector::Outline {
@@ -134,11 +189,7 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<To
             None
         };
         let inputs = sources.read_lines(file, line_start, line_end, false)?;
-        let definitions = sources.additional_definitions(&inputs)?;
-        let result = json!({ "inputs": inputs, "definitions": definitions });
-        let mut inputs = inputs;
-        inputs.extend(definitions);
-        return Ok(ToolDelivery { result, inputs });
+        return Ok(Err(Listing::inputs(inputs)));
     } else if args.contains_key("requirements") {
         check_keys(args, &["requirements"])?;
         InputSelector::Requirements {
@@ -155,13 +206,14 @@ fn read(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<To
     let result = json!({ "input": input, "definitions": definitions });
     let mut inputs = vec![input];
     inputs.extend(definitions);
-    Ok(ToolDelivery { result, inputs })
+    Ok(Ok(ToolDelivery { result, inputs }))
 }
 
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.references.outlines`
-fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["file"])?;
     let file = string(args, "file")?;
     let parsed = sources.parse_file(file)?;
@@ -169,10 +221,7 @@ fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result
         .as_ref()
         .as_ref()
         .map_err(|error| io::Error::other(error.clone()))?;
-    Ok(ToolDelivery {
-        result: Value::Array(outline_entries(&parsed.outline, 0)),
-        inputs: Vec::new(),
-    })
+    Ok(Listing::array(outline_entries(&parsed.outline, 0)))
 }
 
 /// The outline entries for a node's children, nested by ancestry.
@@ -200,7 +249,8 @@ fn outline_entries(outline: &crate::outline::Outline, parent: usize) -> Vec<Valu
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.authoring.read_denial`
-fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["path"])?;
     let path = optional_path(args)?;
     let directory = project_path(sources, path)?;
@@ -251,21 +301,24 @@ fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     }
     entries.sort();
     entries.dedup();
-    Ok(ToolDelivery {
-        result: Value::Array(
-            entries
-                .into_iter()
-                .map(|(path, kind)| json!({"path":path,"kind":kind}))
-                .collect(),
-        ),
-        inputs: Vec::new(),
-    })
+    Ok(Listing::array(
+        entries
+            .into_iter()
+            .map(|(path, kind)| json!({"path":path,"kind":kind}))
+            .collect(),
+    ))
 }
+
+/// The entry arrays of a `references` result, in order.
+// {impl}`requirements.authoring.reference_index`
+// {impl}`requirements.authoring.result_pages`
+const REFERENCE_ARRAYS: &[&str] = &["definitions", "sites"];
 
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
-fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["selection"])?;
     let selection = if args.contains_key("selection") {
         let selection = string(args, "selection")?;
@@ -285,10 +338,10 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         .map(|(name, definition)| json!({"name": name, "kind": definition.kind.noun()}))
         .collect();
     let Some(selection) = selection else {
-        return Ok(ToolDelivery {
-            result: json!({"definitions": selected, "sites": []}),
-            inputs: Vec::new(),
-        });
+        return Ok(Listing::object(
+            REFERENCE_ARRAYS,
+            vec![selected, Vec::new()],
+        ));
     };
     if selected.is_empty() {
         return Err(io::Error::other(format!(
@@ -370,13 +423,10 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         }
     }
     sites.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
-    Ok(ToolDelivery {
-        result: json!({
-            "definitions": selected,
-            "sites": sites.into_iter().map(|site| site.3).collect::<Vec<_>>(),
-        }),
-        inputs: Vec::new(),
-    })
+    Ok(Listing::object(
+        REFERENCE_ARRAYS,
+        vec![selected, sites.into_iter().map(|site| site.3).collect()],
+    ))
 }
 
 // {impl}`requirements.authoring.text_search`
@@ -386,7 +436,8 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
-fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["pattern", "path", "context", "referencing"])?;
     let pattern = string(args, "pattern")?;
     let path = optional_path(args)?;
@@ -472,10 +523,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
             }
         }
     }
-    let definitions = sources.additional_definitions(&inputs)?;
-    let result = json!({"inputs":inputs,"definitions":definitions});
-    inputs.extend(definitions);
-    Ok(ToolDelivery { result, inputs })
+    Ok(Listing::inputs(inputs))
 }
 
 /// Walks the permitted files under a requested path, and under the explicitly
@@ -770,7 +818,8 @@ fn referencing(
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
-fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     if args.contains_key("query") {
         check_keys(args, &["query"])?;
         return declared_query(sources, string(args, "query")?);
@@ -845,10 +894,7 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             }
         }
     }
-    let definitions = sources.additional_definitions(&inputs)?;
-    let result = json!({"inputs":inputs,"definitions":definitions});
-    inputs.extend(definitions);
-    Ok(ToolDelivery { result, inputs })
+    Ok(Listing::inputs(inputs))
 }
 
 /// Runs a query a distributed requirement declares, named
@@ -858,7 +904,8 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
 // {impl}`requirements.references.distributed`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
-fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<ToolDelivery> {
+// {impl}`requirements.authoring.result_pages`
+fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<Listing> {
     let (requirement, name) = query.rsplit_once('/').ok_or_else(|| {
         io::Error::other(format!(
             "query {query:?} must have the form <full-name>/<query-name>"
@@ -895,10 +942,7 @@ fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<ToolDe
             item: site.item,
         })?);
     }
-    let definitions = sources.additional_definitions(&inputs)?;
-    let result = json!({"inputs":inputs,"definitions":definitions});
-    inputs.extend(definitions);
-    Ok(ToolDelivery { result, inputs })
+    Ok(Listing::inputs(inputs))
 }
 
 // {impl}`requirements.authoring.source_tools`
@@ -2966,7 +3010,49 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.result_pages`
+    #[test]
+    fn next_page_is_advertised_and_paged_tools_explain_their_pages() {
+        let definitions = definitions();
+        let next = definitions
+            .iter()
+            .find(|definition| definition["name"] == "next_page")
+            .unwrap();
+        assert_eq!(
+            next["parameters"],
+            json!({"type":"object","properties":{"token":{"type":"string"}},"required":["token"],"additionalProperties":false})
+        );
+        for definition in &definitions {
+            let name = definition["name"].as_str().unwrap();
+            let description = definition["description"].as_str().unwrap();
+            let paged = matches!(
+                name,
+                "habeas" | "list_files" | "outline" | "ripgrep" | "ast_grep" | "references"
+            );
+            assert_eq!(
+                description.contains("exceeds 32 KiB is returned in pages"),
+                paged,
+                "{name}: {description}"
+            );
+            if paged {
+                for text in [
+                    "total_entries, returned_entries, next",
+                    "next_page",
+                    "without page",
+                ] {
+                    assert!(description.contains(text), "{name}: {description}");
+                }
+            }
+        }
+        let habeas = definitions[0]["description"].as_str().unwrap();
+        assert!(
+            habeas.contains("A line-range result whose JSON exceeds"),
+            "{habeas}"
+        );
+    }
+
     // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.authoring.result_pages`
     #[test]
     fn ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax() {
         let definitions = definitions();
@@ -2983,7 +3069,8 @@ mod tests {
                 "ripgrep",
                 "ast_grep",
                 "references",
-                "github"
+                "github",
+                "next_page"
             ]
         );
         let ast_grep = &definitions[4];

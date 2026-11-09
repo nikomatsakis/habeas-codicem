@@ -369,10 +369,11 @@ impl TokenCounts {
 // {impl}`requirements.authoring.usage_requests`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.usage_inputs`
+// {impl}`requirements.authoring.result_pages`
 fn tool_name(name: &str) -> &str {
     match name {
         "habeas" | "ripgrep" | "ast_grep" | "github" | "list_files" | "outline" | "references"
-        | "submit_judgment" => name,
+        | "next_page" | "submit_judgment" => name,
         _ => "unknown",
     }
 }
