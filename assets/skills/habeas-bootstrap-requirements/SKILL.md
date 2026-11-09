@@ -85,7 +85,8 @@ inventing a user-facing promise. Label each proposal and act on the label:
 - **Possible bug:** ask the user what behavior is intended and write the
   requirement for that. Don't change the code during bootstrap unless the user
   asks; the resulting false judgment stays on the gap list, or gets a
-  `FIXME(#N)` if the user defers it.
+  a
+  `{fixme}` reference if the user defers it (see habeas-evidence).
 - **Incidental:** the user chooses between a requirement, often with MAY, and
   removing the behavior. For example, a command that also accepts an
   undocumented alias.

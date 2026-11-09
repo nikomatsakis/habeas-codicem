@@ -93,31 +93,29 @@ A requirement or example judgment MUST use one of these outcomes, applying
 
 - `true`: the sources support the subject and its testing obligations.
 - `false`: the sources do not support the subject, or information is missing,
-  and the gaps are not all explicitly acknowledged in source comments or tests.
-- `FIXME`: some aspects remain unmet or untested, and source comments or tests
-  explicitly acknowledge those gaps. The reviewer MUST explain the gaps and
-  their source locations in the rationale and record their issue references or
-  other identifying content from the inputs.
+  and the gaps are not all acknowledged by `{fixme}` references to it.
+- `FIXME`: some aspects remain unmet or untested, and `{fixme}` references to
+  the subject acknowledge every one of those gaps. The reviewer MUST explain the
+  gaps and their source locations in the rationale and record their issue
+  references or other identifying content from the inputs.
 
 The JSON `determination` MUST be `true`, `false`, or an object containing exactly
 `"FIXME"` with a nonempty array of nonempty strings, such as
-`{"FIXME": ["#125", "rust-lang/rust#123"]}`. The expected source convention is
-`FIXME(issue-number)`, for example `FIXME(#125)` or
-`FIXME(rust-lang/rust#123)`. Only a source comment or test that marks the same
-gap with `FIXME` MUST count as acknowledging it; another marker, such as `TODO`,
-or prose without `FIXME` MUST NOT. The issue reference MAY appear elsewhere in
-the comment or test. When no issue reference is present, the strings MUST
-identify the documented gap using its source content. A FIXME judgment MUST be grounded in
-recorded evidence inputs; a bare issue reference without an acknowledged gap
-MUST NOT suffice.
+`{"FIXME": ["#125", "rust-lang/rust#123"]}`. A gap MUST count as acknowledged
+only by a `{fixme}` reference to the assessed definition under
+{cite}`requirements.references.targets` whose body describes that gap; a plain
+`FIXME` comment, another marker such as `TODO`, or prose MUST NOT. The strings
+MUST list each distinct issue reference the acknowledging `{fixme}` references
+name in their option lines, as written after `:github:`, and, for a `{fixme}`
+naming no issue, its body text. A FIXME judgment MUST be grounded in recorded
+evidence inputs.
 :::
 
 See [FIXME examples](#fixme-examples) for concrete review judgments and CI results.
 
 
 :::{req} reference_set
-A definition's reference set MUST consist of its current incoming `{impl}` and
-`{test}` edges under {cite}`requirements.references.targets` and
+A definition's reference set MUST consist of its current incoming `{impl}`, `{test}`, and `{fixme}` edges under {cite}`requirements.references.targets` and
 {cite}`requirements.references.anchors`: for each edge, its role and the file and
 outline selector of the node the reference belongs to under
 {cite}`requirements.references.outline_comments`, or of the anchored file or
@@ -128,7 +126,7 @@ the SHA-256 digest of an unambiguous encoding of those entries in sorted order,
 so it does not depend on line numbers or on the order references are found.
 Authoring MUST record the digest of the reference set it supplied, and
 validation MUST recompute it and report a changed reference set as stale
-evidence. Adding or removing an `{impl}` or `{test}` reference or anchor,
+evidence. Adding or removing an `{impl}`, `{test}`, or `{fixme}` reference or anchor,
 changing its role, editing its commentary, or moving it to a different node
 MUST therefore make the evidence stale even when no recorded input changed; moving a reference within
 the node it belongs to MUST NOT.
@@ -322,35 +320,40 @@ exist or are no longer relevant cannot block or shape reassessment.
 :::{example} fixme_implementation_gap
 A queue requirement says insertion into a full queue returns `Full`, including
 when its capacity is zero. The implementation handles positive capacities but
-contains this comment:
+contains this reference:
 
 ```text
-// FIXME(#125): capacity-zero insertion does not return Full yet.
+// :::{fixme} requirements.queue.full
+// :github: example/queue#125
+// Capacity-zero insertion does not return Full yet.
+// :::
 ```
 
 The reviewer finds the remaining behavior implemented and adequately tested.
-The judgment is `{"FIXME": ["#125"]}`, with a rationale explaining the zero-capacity
+The judgment is `{"FIXME": ["example/queue#125"]}`, with a rationale explaining the zero-capacity
 gap and locating the comment. The recorded inputs include the comment and reviewed
 sources. CI accepts the evidence when all other checks pass.
 {cite}`requirements.ci.outcomes`
 {cite}`requirements.ci.determination`
 :::
 
-### Missing tests and references outside the marker
+### Missing tests tracked by two issues
 
 :::{example} fixme_example_test_gaps
 A named example describes recovery after a timeout and a partial write. Its test
-source explicitly records the two missing cases:
+source records the two missing cases:
 
 ```text
-// FIXME(#125): retry-after-timeout coverage is missing.
-// Partial-write recovery is also untested; tracked in rust-lang/rust#123.
+// :::{fixme} requirements.io.recovery_example
+// :github: example/io#125
+// :github: rust-lang/rust#123
+// Retry-after-timeout and partial-write recovery are untested.
+// :::
 ```
 
 The reviewer finds no other gaps and records
-`{"FIXME": ["#125", "rust-lang/rust#123"]}`. The rationale identifies both missing
-tests, and the inputs include these comments. The second reference is recognized
-even though it is outside `FIXME(...)`. CI accepts this documented incomplete
+`{"FIXME": ["example/io#125", "rust-lang/rust#123"]}`. The rationale identifies
+both missing tests, and the inputs include the reference. CI accepts this documented incomplete
 coverage; the example does not receive a `true` judgment.
 {cite}`requirements.ci.outcomes`
 {cite}`requirements.ci.determination`
@@ -364,12 +367,14 @@ The implementation and tests satisfy a requirement except for a platform-specifi
 test gap recorded in the test source:
 
 ```text
-// FIXME: cancellation races are not tested on Windows.
+// :::{fixme} requirements.tasks.cancel
+// Cancellation races are not tested on Windows.
+// :::
 ```
 
 The reviewer records
-`{"FIXME": ["cancellation races are not tested on Windows"]}`, using the comment's
-content without inventing an issue number. The rationale explains the gap and
+`{"FIXME": ["Cancellation races are not tested on Windows."]}`, using the
+reference's body without inventing an issue number. The rationale explains the gap and
 locates the comment in the recorded inputs. CI accepts the evidence when all
 other checks pass.
 {cite}`requirements.ci.outcomes`
@@ -379,10 +384,11 @@ other checks pass.
 ### An additional, unacknowledged gap
 
 :::{example} fixme_with_unacknowledged_gap
-The queue implementation acknowledges its zero-capacity bug with `FIXME(#125)`.
+The queue implementation acknowledges its zero-capacity bug with a `{fixme}`
+reference naming `example/queue#125`.
 The reviewer also finds that insertion overwrites an existing entry when a
-positive-capacity queue is full, contrary to the requirement. No source comment
-or test acknowledges that second gap. The judgment is `false`, with a rationale
+positive-capacity queue is full, contrary to the requirement. No `{fixme}`
+reference acknowledges that second gap. The judgment is `false`, with a rationale
 describing both gaps and their source locations. The existing FIXME does not
 account for the additional defect. CI rejects the false determination.
 {cite}`requirements.ci.outcomes`
@@ -392,7 +398,7 @@ account for the additional defect. CI rejects the false determination.
 ### Recorded FIXME evidence becomes stale
 
 :::{example} fixme_stale_input
-A current evidence record has `{"FIXME": ["#125"]}` and passes CI. The code in one
+A current evidence record has `{"FIXME": ["example/queue#125"]}` and passes CI. The code in one
 of its recorded outline inputs then changes. CI rejects the record because the
 input's hash no longer matches, even though its determination is still FIXME. Validation reports the changed input without running a model or
 reassessing the documented gap.

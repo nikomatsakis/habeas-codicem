@@ -83,18 +83,24 @@ implements, tests, or cites, so fix each failing definition on its own.
 
 ### FIXME
 
-A FIXME judgment, such as `{"FIXME": ["#125"]}`, means a `FIXME` comment or test
-acknowledges every remaining gap, conventionally `FIXME(#125)` or
-`FIXME(rust-lang/rust#123)`; a `TODO` does not count. Validation accepts it like
-`true` when all other checks pass. When a gap is real but the user agrees to defer it, add a `FIXME(#N)` comment
-citing a real issue where the reviewer looks: for missing or wrong behavior, in
-the `{impl}` code or the code that should contain it; for a missing test, in a
-file of the definition's `{test}` items. A `FIXME` in the book, a string
-literal, or test data does not count. A `FIXME` comment inside one of the
-evidence's input nodes makes the evidence stale, so the next
-`habeas author --all` reassesses it; elsewhere, run
-`habeas author --force <full-name>`. Never invent issue numbers, and never add a
-`FIXME` just to get past a false determination.
+A FIXME judgment, such as `{"FIXME": ["rust-lang/rust#123"]}`, means `{fixme}`
+references to the definition acknowledge every remaining gap. Validation
+accepts it like `true` when all other checks pass. When a gap is real but the
+user agrees to defer it, add a fenced `{fixme}` reference to the definition
+near the code or test it concerns, naming the issue that tracks it:
+
+```text
+// :::{fixme} requirements.cli.status
+// :github: rust-lang/rust#123
+// Selections with globs are not tested.
+// :::
+```
+
+The reference makes the definition's evidence stale, so the next
+`habeas author --all` reassesses it. A plain `FIXME` or `TODO` comment does not
+count. Never invent issue numbers, and never add a `{fixme}` just to get past a
+false determination. `habeas check-issues` reports `:github:` issues that are
+closed or missing.
 
 ### Citation reviews
 
@@ -150,11 +156,11 @@ section of `habeas status` after each `habeas author` run.
 
 - Evidence identifies each source by an outline node, such as `fn[run]` or
   `impl[Thing]/fn[run]`, and a structural hash of its code. Moving a node within its file without changing its selector, or editing
-  comments the language does not hash, such as Rust `//` comments without
-  `FIXME`, keeps evidence current; moving it to another file or renaming it
+  comments the language does not hash, such as Rust `//` comments, keeps
+  evidence current; moving it to another file or renaming it
   changes its selector and makes the evidence stale or invalid. Changing code, doc comments,
-  docstrings, or `FIXME` comments makes it stale, and so does adding, removing,
-  or changing the role of an `{impl}` or `{test}` reference, or editing its
+  or docstrings makes it stale, and so does adding, removing, or changing the
+  role of an `{impl}`, `{test}`, or `{fixme}` reference, or editing its
   fenced commentary.
 - If authoring fails on configuration, credentials, or throttling, read
   [references/configuration.md](references/configuration.md). If it reports a

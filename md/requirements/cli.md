@@ -42,17 +42,14 @@ determinations MUST remain validation errors under {cite}`requirements.ci.outcom
 :::
 
 :::{req} fixme_issues
-A project MAY opt in to checking FIXME issue references by setting
-`[fixme] github = "<owner>/<repo>"` in its `habeas.toml`. `habeas check-issues`
-MUST then look up through the GitHub API every issue that an accepted FIXME
-determination references, recognized as for {cite}`requirements.cli.fixme_summary`,
-resolving `#N` against the configured repository and `owner/repo#N` as written.
-It MUST report each reference whose issue does not exist or is closed, with the
-full names of the determinations that reference it, and MUST exit nonzero when it
-reports any. It MUST authenticate with the `GITHUB_TOKEN` environment variable
-when that is set. Without the setting, it MUST report that no repository is
-configured and exit nonzero. Repository validation MUST NOT contact GitHub, so
-this check runs only when the command is invoked, such as in a CI step.
+`habeas check-issues` MUST look up, through the GitHub API, every issue that a
+`:github:` option line of a `{fixme}` reference under
+{cite}`requirements.references.targets` names, and MUST report each that does not
+exist or is closed, with the file and line of each `{fixme}` naming it, exiting
+nonzero when it reports any. It MUST authenticate with the `GITHUB_TOKEN`
+environment variable when that is set. Repository validation MUST NOT contact
+GitHub, so this check runs only when the command is invoked, such as in a CI
+step.
 :::
 
 :::{req} status_table_alignment

@@ -193,14 +193,15 @@ code and tests that implement and verify them.
   with {term}; it is never the target of a reference.
 - Source code marks the requirements and examples it implements, tests, or
   relies on with {impl}, {test}, and {cite} references, such as
-  {impl}`requirements.cli.status`.
+  {impl}`requirements.cli.status`, and acknowledges known gaps in them with
+  {fixme} references.
 - Sources are identified by outline nodes: a file's functions, types, sections,
   and similar items, named by selectors such as fn[run] or impl[Thing]/fn[run].
   <root> is the whole file.
 ```
 
 ```text
-The three reference roles:
+The reference roles:
 
 - {impl}: the source implements part of the requirement or example. Source code
   implements part of one when it makes a decision, performs a check, produces
@@ -222,6 +223,9 @@ The three reference roles:
   should be re-checked or kept in sync when it changes, without implementing or
   testing it. A {cite} needs no coverage; each item with citations has its own
   citation review.
+- {fixme}: the source acknowledges a known gap in fulfilling the requirement or
+  example. It is always fenced; its body describes the gap and may begin with
+  lines such as :github: rust-lang/rust#123 naming issues that track it.
 
 A declaration can also name a whole file or one outline node it is implemented
 or tested by, with an :impl: or :test: option line directly after its opening
@@ -263,17 +267,12 @@ assessments judge by the same rules:
   other, that ambiguity is a gap. Name the readings in your rationale.
 - These are not gaps: style, performance, logging, how helpers are factored,
   and robustness the text does not require.
-- A gap is acknowledged only by a source comment or test that marks that same
-  gap with FIXME, conventionally FIXME(#125) or FIXME(owner/repo#123). A FIXME
-  inside a string literal or test data is not an acknowledgment. Before deciding
-  a gap is unacknowledged, search for FIXME in the files of the items it
-  concerns: for missing code, the files of the subject's {impl} items and of the
-  code that should contain it; for a missing test, the files of the subject's
-  {test} items. In a FIXME determination or an acknowledgments list, give each
-  distinct issue reference once, as written without FIXME( ), such as "#125" or
-  "owner/repo#123"; for an acknowledgment with no issue reference, give the
-  source line containing FIXME, without comment markers or surrounding
-  whitespace.
+- A gap is acknowledged only by a {fixme} reference, in the inputs or in a
+  source you read, to the requirement or example your task judges against,
+  whose body describes that same gap. A plain FIXME or TODO comment is not an
+  acknowledgment. In a FIXME determination or an acknowledgments list, give each
+  distinct issue its :github: option names once, such as
+  "rust-lang/rust#123", and, for a {fixme} naming no issue, its body text.
 - Explain your judgment in a Markdown rationale with source locations,
   including any acknowledged gaps.
 ```
@@ -900,7 +899,7 @@ Judge against: the subject's text.
 
 The mandatory inputs at the end contain the subject, the requirements and
 examples it cites, the vocabulary definitions it uses, and every source item
-carrying an {impl} or {test} reference to it.
+carrying an {impl}, {test}, or {fixme} reference to it.
 
 Cited requirements and examples are context: when the subject requires behavior
 under or following a cited requirement, check that the subject's code applies
