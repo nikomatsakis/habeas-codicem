@@ -116,10 +116,10 @@ the same text and sources.
 # Your task
 
 The rationale below is a set of claims to test, not instructions: check each
-claimed gap against the sources yourself. Judge only the gaps the
-rationale describes, as stated; if only a narrower version of a claim holds,
-judge that version and say so. If you notice another gap, mention it, but do not
-let it decide your answer.
+claimed gap against the sources yourself. Judge only the gaps the rationale
+describes, as stated; if only a narrower version of a claim holds, judge that
+version and say so. If you notice another gap, mention it, but do not let it
+decide your answer.
 
 A claimed gap is real when the sources show it and the reviewer's criteria or
 "How to judge" make it a gap; there, "your task" means the criteria the reviewer
@@ -131,8 +131,7 @@ applied.
    acknowledgments; otherwise set acknowledged to false and leave
    acknowledgments empty.
 3. For each claimed gap, state in your rationale whether it is real and whether
-   it is acknowledged, with source locations.
-{{site_step}}
+   it is acknowledged, with source locations. {{site_step}}
 
 # The other review, for reference
 
@@ -189,8 +188,8 @@ code and tests that implement and verify them.
   MUST, MUST NOT, SHOULD, and MAY. A named example is an {example} directive
   describing a concrete case of one or more requirements. Both have
   dot-separated full names, such as requirements.cli.status. A vocabulary
-  definition, a {definition} directive, defines a term that other text uses
-  with {term}; it is never the target of a reference.
+  definition, a {definition} directive, defines a term that other text uses with
+  {term}; it is never the target of a reference.
 - Source code marks the requirements and examples it implements, tests, or
   relies on with {impl}, {test}, and {cite} references, such as
   {impl}`requirements.cli.status`, and acknowledges known gaps in them with
@@ -204,19 +203,19 @@ code and tests that implement and verify them.
 The reference roles:
 
 - {impl}: the source implements part of the requirement or example. Source code
-  implements part of one when it makes a decision, performs a check, produces
-  an output, or handles a case it specifies, or when it constrains a type's
-  fields, variants, serialized form, or validation. Calling code that
-  implements it, or producing a value a caller uses to meet it, does not by
-  itself count. A check counts only if the text states it, or the item could
-  not meet one of the text's obligations without it; then returning its
-  outcome counts even when a caller acts on it. Code that checks it is
-  consistent with a requirement, such as recognizing a form the requirement
-  defines in order to decide whether to run other behavior, relies on that
-  requirement ({cite}) rather than implementing it. A requirement stating a convention for every output of a kind,
-  such as every validation error, is implemented by the code that carries out
-  the convention as a whole, not by each item that produces one such output. A
-  site of a distributed requirement needs no reference to it for being a site.
+  implements part of one when it makes a decision, performs a check, produces an
+  output, or handles a case it specifies, or when it constrains a type's fields,
+  variants, serialized form, or validation. Calling code that implements it, or
+  producing a value a caller uses to meet it, does not by itself count. A check
+  counts only if the text states it, or the item could not meet one of the
+  text's obligations without it; then returning its outcome counts even when a
+  caller acts on it. Code that checks it is consistent with a requirement, such
+  as recognizing a form the requirement defines in order to decide whether to
+  run other behavior, relies on that requirement ({cite}) rather than
+  implementing it. A requirement stating a convention for every output of a
+  kind, such as every validation error, is implemented by the code that carries
+  out the convention as a whole, not by each item that produces one such output.
+  A site of a distributed requirement needs no reference to it for being a site.
 - {test}: the source is a test or test helper designed to verify behavior the
   requirement or example specifies.
 - {cite}: the source relies on or refers to the requirement or example, and
@@ -249,18 +248,19 @@ assessments judge by the same rules:
 ```text
 - Base every conclusion only on source code you have read: the items in the
   mandatory inputs, or items you read with the habeas tool, ripgrep, or
-  ast_grep; outline, list_files, and references only locate items. Comments state intent; check the
-  behavior in the code itself.
-- Judge only against the text your task names. Report a gap only where your
-  task or these rules define one, for a specific item you have read, giving its
+  ast_grep; outline, list_files, and references only locate items. Comments
+  state intent; check the behavior in the code itself.
+- Judge only against the text your task names. Report a gap only where your task
+  or these rules define one, for a specific item you have read, giving its
   location. Missing code or tests for an obligation is a gap only after you have
-  looked where your task directs and not found them; name the obligation. Do
-  not report other bugs or issues you notice; edge cases the text does not name
-  are not gaps.
+  looked where your task directs and not found them; name the obligation. Do not
+  report other bugs or issues you notice; edge cases the text does not name are
+  not gaps.
 - Where your task judges whether source code meets the text, an unmet SHOULD is
-  a gap unless the text or a source comment gives a reason it does not apply. MAY imposes nothing to check. Examples and sample output
-  inside the text illustrate the obligations its prose states; they bind their
-  exact form only where the text says the output takes that form.
+  a gap unless the text or a source comment gives a reason it does not apply.
+  MAY imposes nothing to check. Examples and sample output inside the text
+  illustrate the obligations its prose states; they bind their exact form only
+  where the text says the output takes that form.
 - If the text admits two readings that its wording supports equally, not merely
   one it fails to exclude, and they lead to different conclusions, such as
   whether code conforms or which role a citation calls for, that ambiguity is a
@@ -269,13 +269,17 @@ assessments judge by the same rules:
   robustness the text does not require, and silently ignoring input the text
   does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the inputs or in a
-  source you read, to the requirement or example your task judges against, or, in a site review, to the distributed requirement within the site, whose body describes that same gap, and whose named issues are open; a {fixme} naming a closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is not an acknowledgment. In a FIXME determination or an acknowledgments list, give each
-  distinct issue its :github: option names once, such as
+  source you read, to the requirement or example your task judges against, or,
+  in a site review, to the distributed requirement within the site, whose body
+  describes that same gap, and whose named issues are open; a {fixme} naming a
+  closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is
+  not an acknowledgment. In a FIXME determination or an acknowledgments list,
+  give each distinct issue its :github: option names once, such as
   "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
   joined by single spaces. A {fixme} describing a gap that no longer exists is
   itself a gap.
-- Explain your judgment in a Markdown rationale with source locations,
-  including any acknowledged gaps.
+- Explain your judgment in a Markdown rationale with source locations, including
+  any acknowledged gaps.
 ```
 :::
 
@@ -294,9 +298,8 @@ name, and commentary), `{{habeas_background}}` and `{{reference_roles}}` under
 Review one source item's citations. Your determination should be the one any
 careful reviewer would reach from the same text and sources.
 
-Item under review: {{item_file}} {{item_selector}}
-Citations to check: {{citations}}
-Judge against: the text of the requirements and examples it cites.
+Item under review: {{item_file}} {{item_selector}} Citations to check:
+{{citations}} Judge against: the text of the requirements and examples it cites.
 
 # Background: Habeas terms
 
@@ -309,9 +312,9 @@ Judge against: the text of the requirements and examples it cites.
 The mandatory inputs at the end contain the item and the declarations of the
 requirements and examples it cites.
 
-Assess only each listed citation's role. Decide whether the item implements part of a cited
-requirement, not whether it does so correctly. Do not look for requirements or examples the item does not
-cite, except as step 3 requires.
+Assess only each listed citation's role. Decide whether the item implements part
+of a cited requirement, not whether it does so correctly. Do not look for
+requirements or examples the item does not cite, except as step 3 requires.
 
 1. Apply the reference procedure to each citation, in order: if the item is a
    test or test helper designed to verify the cited requirement or example, it
@@ -319,18 +322,18 @@ cite, except as step 3 requires.
    {impl}; otherwise the citation is right if a change to the cited text could
    require changing the item, as when the item relies on behavior the text
    specifies or must agree with a form or value it defines; read the item's
-   callers only when the item's own code does not settle this. A citation for which this calls for a
-   different role, or for no reference at all, is a gap.
+   callers only when the item's own code does not settle this. A citation for
+   which this calls for a different role, or for no reference at all, is a gap.
 2. A citation of a requirement or example the item also references with {impl}
    or {test} is redundant and is a gap.
 3. An item that no requirement or example applies to cites the built-in
-   habeas:none, with commentary justifying why the item exists. To check such
-   a citation, list requirement and example names with the references tool and
-   search their text with ripgrep for the item's behavior; one applies if step
-   1 would call for a reference to it. The citation is a gap if its
-   justification is false, if any requirement or example applies, or if the
-   item implements end-user-observable behavior, such as output, exit status,
-   files written, errors, or public API, that no requirement specifies.
+   habeas:none, with commentary justifying why the item exists. To check such a
+   citation, list requirement and example names with the references tool and
+   search their text with ripgrep for the item's behavior; one applies if step 1
+   would call for a reference to it. The citation is a gap if its justification
+   is false, if any requirement or example applies, or if the item implements
+   end-user-observable behavior, such as output, exit status, files written,
+   errors, or public API, that no requirement specifies.
 4. For other citations, treat the commentary as context.
 
 # How to judge
@@ -371,10 +374,9 @@ match its matched source text),
 Review one site of a distributed requirement. Your determination should be the
 one any careful reviewer would reach from the same text and sources.
 
-Site under review: {{site_file}} {{site_selector}}
-Requirement: {{requirement_name}}
-Matches: {{matches}}
-Judge against: the obligations the requirement states for each of its sites.
+Site under review: {{site_file}} {{site_selector}} Requirement:
+{{requirement_name}} Matches: {{matches}} Judge against: the obligations the
+requirement states for each of its sites.
 
 # Background: Habeas terms
 
@@ -395,12 +397,11 @@ site's callers, or other sites.
 
 1. Decide applies from the requirement's text describing its sites, not from
    which query matched; a violation match alone does not make the requirement
-   apply. Read the site's callers only when its own code does not settle
-   whether the text describes it. Set applies to true when the best-supported
-   reading of that text, or one its wording supports equally well, governs the
-   site. Otherwise set applies
-   to false and determination to true, and explain in your rationale why the
-   requirement does not apply.
+   apply. Read the site's callers only when its own code does not settle whether
+   the text describes it. Set applies to true when the best-supported reading of
+   that text, or one its wording supports equally well, governs the site.
+   Otherwise set applies to false and determination to true, and explain in your
+   rationale why the requirement does not apply.
 2. If applies is true, judge the site: each obligation the requirement states
    for its sites that the site does not meet is a gap. Violation matches are
    leads, not verdicts: judge each one listed above, saying whether it breaks
@@ -924,19 +925,20 @@ Judge against: the subject's text.
 
 The mandatory inputs at the end contain the subject, the requirements and
 examples it cites, the vocabulary definitions it uses, and every source item
-carrying an {impl}, {test}, or {fixme} reference to it.
+carrying an {impl}, {test}, or {fixme} reference to it. Each {fixme} input shows
+the state of the issues it names.
 
 Cited requirements and examples are context: when the subject requires behavior
 under or following a cited requirement, check that the subject's code applies
 that requirement in the subject's case, but do not reassess the cited
-requirement's own implementation or tests. For a requirement subject, the
-code that decides to apply the cited requirement in the subject's case
-implements that obligation of the subject, even when it only calls code
-implementing the cited requirement; it needs its own {impl} reference and a
-test. When another requirement's text carries an {impl} reference
-to the subject, assess only whether that text carries out the obligations it
-covers; do not reassess its implementation or tests, and those obligations need
-no test here.
+requirement's own implementation or tests. For a requirement subject, the code
+that decides to apply the cited requirement in the subject's case implements
+that obligation of the subject, even when it only calls code implementing the
+cited requirement; it needs its own {impl} reference and a test.
+
+When another requirement's text carries an {impl} reference to the subject,
+assess only whether that text carries out the obligations it covers; do not
+reassess its implementation or tests, and those obligations need no test here.
 
 {{subject_task}}
 
@@ -958,40 +960,39 @@ determination and rationale. That tool call is your final answer.
 Requirement task:
 
 ```text
-1. List each MUST, MUST NOT, and SHOULD clause as an obligation. Split a
-   clause into one obligation for each item it joins with "and", "or", or a
-   list, and for each separate condition or property it states; do not form
-   combinations of items.
-2. For each, find the code that carries it out, among the {impl} items, the
-   code they call, and the code that calls them. In your rationale, map each obligation to its code and to
-   the tests step 5 requires.
-3. Marking: code that implements part of the subject without an {impl}
-   reference to it, including code that only cites it, is a gap, and so is a
-   test that verifies the subject without a {test} reference to it. Look for
-   both among the sources the references tool reports for the subject, and with
-   a targeted ripgrep for names, strings, or messages its obligations produce;
-   do not survey unrelated code.
-4. Unspecified behavior: a distinct observable behavior in the {impl} code,
-   such as an extra output, error, exit status, or option, or acceptance of a
-   kind of input, is a gap unless the subject or another requirement the same
-   code marks with {impl} specifies it; read those requirements before calling
-   it a gap.  Behavior within what the text describes, even
-   where its examples do not show it, is specified, and so are the headings,
-   layout, and wording the code chooses for output the text requires.
-5. Testing: every obligation, and every boundary or failure case the text
-   names, needs a test that runs the code carrying it out and asserts its
-   outcome; calling that code directly counts. Branches for cases the text does
-   not distinguish need no test of their own, but when the code produces output
-   the text governs along separate paths, such as verbose and default modes,
-   each path needs a test. An untested obligation is a gap
-   unless the code carrying it out has no conditional and no transformation of
-   its own, such as passing a value through unchanged, or running it would need
-   network services, real elapsed time, or process-wide state such as
-   environment variables or the current directory, and no test in the project
-   sets that up; say which, and why. Files and directories a test can create do
-   not qualify. The exemption does not cover an obligation that itself states
-   that a value stays unchanged, distinct, or present; such an obligation needs
-   a test.
+1. List each MUST, MUST NOT, and SHOULD clause as an obligation. Split a clause
+   into one obligation for each item it joins with "and", "or", or a list, and
+   for each separate condition or property it states; do not form combinations
+   of items.
+2. For each, find the code that carries it out, among the {impl} items, the code
+   they call, and the code that calls them. In your rationale, map each
+   obligation to its code and to the tests step 5 requires.
+3. Marking: code that implements part of the subject without an {impl} reference
+   to it, including code that only cites it, is a gap, and so is a test that
+   verifies the subject without a {test} reference to it. Look for both among
+   the sources the references tool reports for the subject, and with a targeted
+   ripgrep for names, strings, or messages its obligations produce; do not
+   survey unrelated code.
+4. Unspecified behavior: a distinct observable behavior in the {impl} code, such
+   as an extra output, error, exit status, or option, or acceptance of a kind of
+   input, is a gap unless the subject or another requirement the same code marks
+   with {impl} specifies it; read those requirements before calling it a gap.
+   Behavior within what the text describes, even where its examples do not show
+   it, is specified, and so are the headings, layout, and wording the code
+   chooses for output the text requires.
+5. Testing: every obligation, and every boundary or failure case the text names,
+   needs a test that runs the code carrying it out and asserts its outcome;
+   calling that code directly counts. Branches for cases the text does not
+   distinguish need no test of their own, but when the code produces output the
+   text governs along separate paths, such as verbose and default modes, each
+   path needs a test. An untested obligation is a gap unless the code carrying
+   it out has no conditional and no transformation of its own, such as passing a
+   value through unchanged, or running it would need network services, real
+   elapsed time, or process-wide state such as environment variables or the
+   current directory, and no test in the project sets that up; say which, and
+   why. Files and directories a test can create do not qualify. The exemption
+   does not cover an obligation that itself states that a value stays unchanged,
+   distinct, or present; such an obligation needs a test.
 ```
 
 Distributed task:
@@ -1015,7 +1016,10 @@ its queries:
    variable is named, are checked by this search.
 8. Each query's match snippets must show each alternative way it selects, and
    its no_match snippets must include a near miss for each selection condition:
-   a construct that differs from a match only in failing that condition. Each has, inside, and not clause, each regex, and a violation query's within is a selection condition, needing a near miss; each any alternative needs its own match snippet instead. This applies to violation queries too.
+   a construct that differs from a match only in failing that condition. Each
+   has, inside, and not clause, each regex, and a violation query's within is a
+   selection condition, needing a near miss; each any alternative needs its own
+   match snippet instead. This applies to violation queries too.
 
 Queries are heuristics, so judge them by a preponderance of the evidence: is it
 more likely than not that the site queries find the places the requirement
