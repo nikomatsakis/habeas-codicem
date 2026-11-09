@@ -12,5 +12,7 @@ harness keeps evidence already written.
 
 Don't edit the user's configuration file or `habeas.toml` without asking. If
 credentials are missing or expired, ask the user to provide or refresh them. If
-configuration or provider access is missing, report the blocker. Never work
-around it by writing evidence yourself.
+configuration or provider access is missing, report the blocker.
+
+The `once` policy (`--policy once` or a configuration's `policy`) skips the
+second assessment to save time and tokens; use it only if the user asks.

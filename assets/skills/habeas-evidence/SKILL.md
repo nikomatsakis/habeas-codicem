@@ -28,8 +28,7 @@ Run commands from the project root, the directory with `book.toml` and
 - [ ] 4. `habeas author --all` assesses every definition whose evidence is
       missing, stale, or invalid, keeps current records, and reports how many it
       skipped as current; `-v` prints each false judgment's rationale.
-      `habeas author <full-name>` does one; add `--force` to reassess current
-      evidence, or `--stdout` to print the result without writing it.
+      `habeas author <full-name>` does one.
 - [ ] 5. `cargo test --workspace`. If findings remain that you can fix, return to
       step 2. Stop and report to the user each finding that needs their
       decision, such as a new or changed requirement, a gap to defer, or a
@@ -77,24 +76,22 @@ acknowledges every remaining gap, conventionally `FIXME(#125)` or
 `true` when all other checks pass. When a gap is real but the user agrees to
 defer it, add a `FIXME(#N)` comment or test citing a real issue; comments
 containing `FIXME` are hashed, so the evidence becomes stale and the next
-`habeas author --all` reassesses it. Never invent issue numbers.
+`habeas author --all` reassesses it. Never invent issue numbers, and never add a
+`FIXME` just to get past a false determination.
 
 ### Citation reviews
 
 Every source item outside the book with a `{cite}` gets a citation review. It
 checks that each citation is sensible and should not be `{impl}` or `{test}`, and
-that each `habeas:none` justification holds. Reassess one with
-`habeas author citations:<file>#<selector> --force`. Fix a false review by
+that each `habeas:none` justification holds. Fix a false review by
 changing the references or the item.
 
 ### Site reviews
 
-A distributed requirement, described in the habeas-requirements skill, declares
-queries that select its sites. Each site gets a site review, authored by
-`habeas author --all`, by `habeas author sites:<full-name>` for one requirement,
-or by `habeas author sites:<full-name>/<file>#<selector>` for one site. A site
-needs no reference to the distributed requirement, but still needs its own
-reference for Rust item coverage. A site the requirement does not apply to is
+A distributed requirement (habeas-requirements,
+references/distributed-requirements.md) gets a site review for each site,
+authored by `habeas author --all` or, for one requirement,
+`habeas author sites:<full-name>`. A site the requirement does not apply to is
 judged true, so a false review means the reviewer found the requirement applies
 and is broken:
 
@@ -104,8 +101,7 @@ and is broken:
    changes edit the requirement; review them with the user.
 
 If `habeas info <full-name>` reports many sites the requirement does not apply
-to, the site query selects too much. A failing `match` or `no_match` snippet, or
-a site query matching nothing, is a validation error in the query.
+to, the site query selects too much.
 
 ## Disagreeing assessments
 
@@ -114,14 +110,11 @@ determination, because the requirement, code, and tests leave no gap a careful
 reviewer could find and no reading a careful reviewer could take differently.
 Assessments that disagree are findings against that goal.
 
-By default, `habeas author` uses the `confirm` policy: it checks each `true` or
-FIXME result with a second independent assessment and, when the two disagree,
-has a verifier check the gaps the less favorable one claims. The recorded
-rationale ends with a note on the disagreement and what the verifier concluded;
-`habeas info` shows it. The `once` policy, set with `--policy once` or a
-configuration's `policy`, skips the second assessment to save time and tokens. A
-determination that changes when evidence is reassessed, though the subject and
-sources have not changed in substance, is the same kind of finding.
+By default (`confirm` policy), `habeas author` checks each `true` or FIXME
+result with a second independent assessment and a verifier; the recorded
+rationale ends with a note on any disagreement, shown by `habeas info`. A
+determination that changes on reassessment, though the subject and sources have
+not changed in substance, is the same kind of finding.
 
 1. Read the rationale and its disagreement note, and decide whether one
    assessment found a real gap or the requirement text admits more than one
@@ -143,11 +136,6 @@ sources have not changed in substance, is the same kind of finding.
   docstrings, or `FIXME` comments makes it stale, and so does adding, removing,
   or changing the role of an `{impl}` or `{test}` reference, or editing its
   fenced commentary.
-- Every first-party Rust function, method, struct, enum, and union needs its own
-  reference; a module or `impl` reference does not cover it, and there is no
-  waiver.
-- `{impl}` and `{test}` lines must be covered by the referenced definition's
-  evidence; `{cite}` lines need none.
 - If authoring fails on configuration, credentials, or throttling, read
   [references/configuration.md](references/configuration.md). If it reports a
   denied read, read [references/file-access.md](references/file-access.md).

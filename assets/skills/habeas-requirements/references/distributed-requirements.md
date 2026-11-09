@@ -6,13 +6,6 @@ requirement across the codebase and asks one review to judge them all. A
 distributed requirement instead declares queries that find its sites, and
 Habeas reviews each site separately.
 
-Make a requirement distributed only for obligations that apply separately at
-each site; when particular code carries out the requirement as a whole, use
-`{impl}` there instead. The exception: a distributed requirement may also state
-obligations particular code carries out, such as the step that sequences every
-check. Mark that code `{impl}` as usual, and say in the text which obligations
-each site upholds.
-
 ## Queries
 
 A requirement becomes distributed by containing query directives, each with one
@@ -22,8 +15,9 @@ fenced `yaml` block and a name unique within the requirement:
 - `:::{violations} <name>` selects constructs likely to break it, such as `?`,
   `return`, `continue`, or `break` in a function that must keep going after a
   failed check. With `within: <site query>`, naming a site query of the same
-  requirement, only matches inside that query's sites count. Violation queries are optional and only point site reviews at
-  likely problems; each site's review judges the whole site anyway.
+  requirement, only matches inside that query's sites count. Violation queries
+  are optional and only point site reviews at likely problems; each site's
+  review judges the whole site anyway.
 
 Each body has these keys: `language` (`rust`, `python`, `typescript`, `tsx`,
 `css`, `markdown`, `toml`, or `yaml`); optional `paths` and `exclude`, lists of
@@ -101,6 +95,9 @@ that contains it.
 
 ## Do
 
+- Make a requirement distributed only when its obligation applies on its own at
+  each site; when particular code carries out the requirement as a whole, use
+  `{impl}` there.
 - Describe sites exactly as the site queries select them. When a query relies on
   a convention, such as how a variable is named, state the convention as an
   obligation, so code that breaks it is a real gap you fix in the code.
@@ -122,8 +119,6 @@ that contains it.
 
 ## Don't
 
-- Don't make a requirement distributed to avoid marking code that carries it out
-  as a whole.
 - Don't describe sites more broadly than the queries select, as in "however it is
   named".
 - Don't state a per-site obligation that a reviewer can check only by reading
@@ -142,21 +137,13 @@ that contains it.
   not a bare expression.
 - `cargo test --workspace` runs every snippet and reports a wrong result, and a
   site query that matches nothing in the project.
-- A site needs no reference to the distributed requirement, and must not carry
-  `{impl}` of it. Being a site does not satisfy Rust item coverage, though: each
-  site still needs its own reference to what it implements, such as `{impl}` of
-  the specific requirement whose check it performs.
+- Being a site does not satisfy Rust item coverage: each site still needs its own
+  reference to what it implements, such as `{impl}` of the requirement whose
+  check it performs.
 
 ## Review
 
-`habeas author --all` authors a site review for each site, judging whether it
-upholds the per-site obligations and addressing each violation match in it.
-Before submitting the requirement, check what its own review will check:
-
-- every obligation is upheld at each site or carried out by `{impl}` code;
-- the site queries find the places the text describes, and no others, in the
-  actual sources;
-- every query has a `match` snippet for each alternative and a `no_match` near
-  miss for each condition.
-
-See the habeas-evidence skill for fixing a false site review.
+`habeas author --all` authors a site review for each site, judging the per-site
+obligations and each violation match in it. The requirement's own review checks
+the Do list above. To fix a false site review, see "Site reviews" in the
+habeas-evidence skill.

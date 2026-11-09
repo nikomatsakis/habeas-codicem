@@ -150,8 +150,8 @@ specifies.
 
 `{impl}` and `{test}` make the item an input to the assessment, and its evidence
 must cover them. `{cite}` needs no coverage and does not count as implementing
-anything; every `{cite}` gets a citation review checking it should not be
-`{impl}` or `{test}`.
+anything; citation reviews (habeas-evidence) check it should not be `{impl}` or
+`{test}`.
 
 Any reference may be fenced to attach commentary: `:::{impl} name`, the
 commentary, and a closing `:::`. In a source comment, keep both fences in one run
@@ -173,11 +173,9 @@ selector. Don't anchor a file whose items can carry a reference themselves.
 
 ## What the review checks
 
-The authoring harness judges each requirement `true`, `false`, or FIXME. FIXME
-means the only gaps are ones a `FIXME` comment or test acknowledges,
-conventionally `FIXME(#125)`; a `TODO` does not count. Add a `FIXME` only when
-the user agrees to defer that gap, citing a real issue, never to get past a
-false determination. A requirement's review treats these as gaps:
+The authoring harness judges each requirement `true`, `false`, or FIXME, an
+acknowledged, deferred gap (see "FIXME" in the habeas-evidence skill). A
+requirement's review treats these as gaps:
 
 - an obligation the code marked `{impl}` does not implement completely and
   exactly as stated;
@@ -201,7 +199,5 @@ the habeas-evidence skill.
   helpers, and every struct, enum, and union needs its own reference in an
   attached comment or its body. A reference on an enclosing module or `impl`
   does not cover it, and there is no waiver.
-- Editing the commentary of a fenced `{impl}` or `{test}` reference makes that
-  requirement's evidence stale.
 - Inside a `{req}` or `{example}`, a fenced reference's closing `:::` ends the
   directive unless the directive has a longer fence.
