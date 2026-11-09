@@ -205,9 +205,11 @@ The three reference roles:
   implements part of one when it makes a decision, performs a check, produces
   an output, or handles a case it specifies, or when it constrains a type's
   fields, variants, serialized form, or validation. Calling code that
-  implements it, or producing a value a caller uses to meet it, does not by
-  itself count; returning the outcome of a check or decision the text specifies
-  does, even when a caller acts on it. A requirement stating a convention for every output of a kind,
+  implements it, producing a value a caller uses to meet it, or checking for a
+  form or value it defines in order to carry out another requirement's
+  behavior, does not by itself count; returning the outcome of a check or
+  decision the text specifies for its own behavior does, even when a caller
+  acts on it. A requirement stating a convention for every output of a kind,
   such as every validation error, is implemented by the code that carries out
   the convention as a whole, not by each item that produces one such output. A
   site of a distributed requirement needs no reference to it for being a site.
@@ -926,8 +928,8 @@ Requirement task:
    code marks with {impl} specifies it; read those requirements before calling
    it a gap. Silently skipping input the text does not mention is robustness,
    not unspecified behavior. Behavior within what the text describes, even
-   where its examples do not show it, is specified; so are the layout and
-   wording of output the text requires.
+   where its examples do not show it, is specified, and so are the headings,
+   layout, and wording the code chooses for output the text requires.
 5. Testing: every obligation, and every boundary or failure case the text
    names, needs a test that runs the code carrying it out and asserts its
    outcome; calling that code directly counts. Branches for cases the text does
