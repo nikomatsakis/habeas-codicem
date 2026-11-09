@@ -108,7 +108,9 @@ MUST list each distinct issue reference the acknowledging `{fixme}` references
 name in their option lines, as written after `:github:`, and, for a `{fixme}`
 naming no issue, its body's words, without comment delimiters, joined by single
 spaces. A `{fixme}` reference describing a gap that no longer exists MUST itself
-be treated as a gap. A FIXME judgment MUST be grounded in recorded evidence
+be treated as a gap. A `{fixme}` naming a GitHub issue that
+{cite}`requirements.authoring.github_reads` reports closed MUST NOT count as
+acknowledging its gap. A FIXME judgment MUST be grounded in recorded evidence
 inputs.
 :::
 

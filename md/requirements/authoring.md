@@ -270,8 +270,9 @@ assessments judge by the same rules:
   does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the inputs or in a
   source you read, to the requirement or example your task judges against,
-  whose body describes that same gap. A plain FIXME or TODO comment is not an
-  acknowledgment. In a FIXME determination or an acknowledgments list, give each
+  whose body describes that same gap, and whose named issues are open or of
+  unknown state; a {fixme} naming a closed issue no longer acknowledges its
+  gap. A plain FIXME or TODO comment is not an acknowledgment. In a FIXME determination or an acknowledgments list, give each
   distinct issue its :github: option names once, such as
   "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
   joined by single spaces. A {fixme} describing a gap that no longer exists is
@@ -506,7 +507,7 @@ recorded as evidence only after the request succeeds.
 
 ## Model tools
 
-The model receives seven tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `references`, and `submit_judgment`.
+The model receives eight tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, and `submit_judgment`.
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
 
@@ -767,6 +768,32 @@ arrays; an invalid language or rule, or a failed search, MUST return an
 explanatory tool error.
 :::
 
+### Read GitHub issues: `github`
+
+:::{req} github_reads
+The harness MUST expose a `github` tool with this interface:
+
+```text
+github({ issue: String }) -> Issue
+
+Issue { reference: String, state: "open" | "closed", title: String, body: String }
+```
+
+`issue` MUST have the form `<owner>/<repo>#<number>`. The tool MUST read the issue
+or pull request through the GitHub API, authenticating with the `GITHUB_TOKEN`
+environment variable when that is set, and MUST return its body redacted under
+{cite}`requirements.authoring.redaction`. GitHub reads cannot be reproduced
+later, so their results MUST NOT be recorded as evidence inputs and MUST NOT
+make evidence stale. A malformed reference, a missing issue, or a failed request
+MUST return an explanatory tool error.
+
+When the mandatory inputs contain a `{fixme}` reference under
+{cite}`requirements.references.targets`, the harness MUST look up the state of
+each issue its `:github:` lines name, in the same way, and MUST supply each
+state with that input to the model as `open`, `closed`, or `unknown` when the
+lookup fails. These states MUST NOT be recorded either.
+:::
+
 ### Look up definitions and references: `references`
 
 :::{req} reference_index
@@ -864,7 +891,7 @@ evidence is [not carried forward](ci.md#existing-evidence-inputs-used-by-authori
 ### Prompt template
 
 :::{req} initial_prompt
-The initial request MUST provide the seven tool definitions above and the
+The initial request MUST provide the eight tool definitions above and the
 following prompt. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name,
 `{{habeas_background}}`, `{{reference_roles}}`, and `{{distributed_background}}`
