@@ -81,6 +81,9 @@ pub(super) struct UsageLog {
     started: Instant,
     seen: BTreeSet<String>,
     active_request: Option<(usize, Instant)>,
+    /// Called once, when the conversation's first provider request
+    /// finishes, whether or not it succeeded.
+    first_request_finished: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl UsageLog {
@@ -138,6 +141,7 @@ impl UsageLog {
             started: Instant::now(),
             seen: BTreeSet::new(),
             active_request: None,
+            first_request_finished: None,
         };
         log.save()?;
         Ok(log)
@@ -204,8 +208,16 @@ impl UsageLog {
         Ok(index)
     }
 
+    /// Calls `finished` once this conversation's first provider request
+    /// has finished, whether or not it succeeded.
+    // {impl}`requirements.authoring.cache_warmup`
+    pub(super) fn on_first_request(&mut self, finished: impl FnOnce() + Send + 'static) {
+        self.first_request_finished = Some(Box::new(finished));
+    }
+
     // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.authoring.usage_inputs`
+    // {impl}`requirements.authoring.cache_warmup`
     pub(super) fn end_request(
         &mut self,
         index: usize,
@@ -233,6 +245,9 @@ impl UsageLog {
         self.record.tokens = TokenCounts::sum(&self.record.requests);
         self.active_request = None;
         self.record.elapsed_ms = self.started.elapsed().as_millis();
+        if let Some(finished) = self.first_request_finished.take() {
+            finished();
+        }
         self.save()
     }
 
@@ -379,6 +394,26 @@ mod tests {
     // {test}`requirements.authoring.usage_storage`
     fn persisted(log: &UsageLog) -> Value {
         serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()
+    }
+
+    // {test}`requirements.authoring.cache_warmup`
+    #[test]
+    fn the_first_finished_request_is_reported_once_whatever_its_outcome() {
+        let state = tempfile::tempdir().unwrap();
+        let mut log =
+            UsageLog::start(state.path(), Path::new("/project"), "requirements.case").unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        log.on_first_request(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        });
+        let first = log.begin_request().unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        log.end_request(first, 1, None).unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let second = log.begin_request().unwrap();
+        log.end_request(second, 1, Some(&Usage::new())).unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     // {test}`requirements.authoring.usage_inputs`

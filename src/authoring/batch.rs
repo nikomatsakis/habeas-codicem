@@ -88,6 +88,7 @@ pub async fn author_sites_with_options(
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.refresh`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.cache_warmup`
 async fn run_batch(
     root: &Path,
     selection: Option<&str>,
@@ -146,7 +147,12 @@ async fn run_batch(
         subjects.len()
     ));
     progress.start(subjects.len());
-    let mut subjects = subjects.into_iter();
+    let mut subjects = subjects
+        .into_iter()
+        .map(|subject| (assessment_kind(&inspection, &subject), subject))
+        .collect::<Vec<_>>();
+    let mut warmup = CacheWarmup::default();
+    let (warmed, mut warmed_kinds) = tokio::sync::mpsc::unbounded_channel();
     let mut tasks = JoinSet::new();
     let (cancel, cancellation) = watch::channel(None::<&'static str>);
     // The batch listens for interruption itself, so a signal arriving while no
@@ -161,20 +167,33 @@ async fn run_batch(
         // A signal received while the batch was busy stops further launches.
         observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
         while cancellation.borrow().is_none() && tasks.len() < concurrency {
-            let Some(subject) = subjects.next() else {
+            let Some((kind, subject, warms)) = warmup.next(&mut subjects) else {
                 break;
             };
             let root = root.clone();
             let config = config.clone();
             let cancellation = cancellation.clone();
             let cancel = cancel.clone();
+            let first_request_finished = warms.then(|| {
+                let warmed = warmed.clone();
+                Box::new(move || {
+                    let _ = warmed.send(kind);
+                }) as Box<dyn FnOnce() + Send>
+            });
             tasks.spawn(async move {
-                let result =
-                    prepare_assessment(&root, &subject, &config, policy, cancellation).await;
+                let result = prepare_assessment(
+                    &root,
+                    &subject,
+                    &config,
+                    policy,
+                    cancellation,
+                    first_request_finished,
+                )
+                .await;
                 if let Err(error) = &result {
                     cancel_on_error(&cancel, error);
                 }
-                (subject.label(), result)
+                (kind, subject.label(), result)
             });
         }
         progress.refresh(tasks.len(), subjects.len());
@@ -187,13 +206,24 @@ async fn run_batch(
                 }
                 continue;
             }
+            Some(kind) = warmed_kinds.recv() => {
+                warmup.warmed(kind);
+                continue;
+            }
             joined = tasks.join_next() => joined,
         };
         let Some(result) = joined else {
             break;
         };
+        // A warming assessment signals before it finishes.
+        while let Ok(kind) = warmed_kinds.try_recv() {
+            warmup.warmed(kind);
+        }
         let (label, result) = match result {
-            Ok(result) => result,
+            Ok((kind, label, result)) => {
+                warmup.finished(kind);
+                (label, result)
+            }
             Err(error) => {
                 progress.failed("authoring task", &error);
                 outcome
@@ -238,6 +268,71 @@ async fn run_batch(
     }
     progress.finish(cancellation.borrow().is_some(), subjects.len());
     Ok(outcome)
+}
+
+/// The kind of a subject's assessment, whose system prompt every
+/// assessment of that kind shares: requirement, example, citation review, or
+/// site review.
+// {impl}`requirements.authoring.cache_warmup`
+// {impl}`requirements.authoring.prompt_parts`
+fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject) -> &'static str {
+    match subject {
+        AuthoringSubject::Definition(name) => inspection
+            .definitions
+            .get(name)
+            .map_or("requirement", |definition| definition.kind.noun()),
+        AuthoringSubject::Citation { .. } => "citation review",
+        AuthoringSubject::Site { .. } => "site review",
+    }
+}
+
+/// Which assessment kinds have warmed their prompt cache: a kind's first
+/// assessment starts alone, and the others of its kind wait until its first
+/// provider request has finished, while other kinds proceed.
+// {impl}`requirements.authoring.cache_warmup`
+#[derive(Default)]
+struct CacheWarmup {
+    /// Kinds whose first assessment is running but has not yet finished its
+    /// first provider request.
+    warming: std::collections::BTreeSet<&'static str>,
+    /// Kinds whose cache an earlier provider request has written.
+    warm: std::collections::BTreeSet<&'static str>,
+}
+
+impl CacheWarmup {
+    /// Takes the first queued subject that may start now, and whether it
+    /// warms its kind: a subject of a warm kind, or the first of a kind
+    /// with none warming.
+    // {impl}`requirements.authoring.cache_warmup`
+    fn next(
+        &mut self,
+        queue: &mut Vec<(&'static str, AuthoringSubject)>,
+    ) -> Option<(&'static str, AuthoringSubject, bool)> {
+        let index = queue
+            .iter()
+            .position(|(kind, _)| !self.warming.contains(kind))?;
+        let (kind, subject) = queue.remove(index);
+        let warms = !self.warm.contains(kind);
+        if warms {
+            self.warming.insert(kind);
+        }
+        Some((kind, subject, warms))
+    }
+
+    /// Records that a kind's first provider request has finished.
+    // {impl}`requirements.authoring.cache_warmup`
+    fn warmed(&mut self, kind: &'static str) {
+        self.warming.remove(kind);
+        self.warm.insert(kind);
+    }
+
+    /// Records that an assessment of a kind finished. One that finished
+    /// without a provider request warmed nothing, so another of its kind
+    /// takes its place.
+    // {impl}`requirements.authoring.cache_warmup`
+    fn finished(&mut self, kind: &'static str) {
+        self.warming.remove(kind);
+    }
 }
 
 /// Deletes each citation or site review whose item or site no longer exists,
@@ -525,6 +620,53 @@ fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.authoring.cache_warmup`
+    #[test]
+    fn each_kind_starts_one_assessment_until_its_first_request_finishes() {
+        let subject = |name: &str| AuthoringSubject::Definition(name.into());
+        let mut queue = vec![
+            ("requirement", subject("a")),
+            ("requirement", subject("b")),
+            ("example", subject("c")),
+            ("requirement", subject("d")),
+            ("example", subject("e")),
+        ];
+        let mut warmup = CacheWarmup::default();
+        let label = |next: Option<(&str, AuthoringSubject, bool)>| {
+            next.map(|(kind, subject, warms)| (kind.to_owned(), subject.label(), warms))
+        };
+        let started =
+            |kind: &str, name: &str, warms| Some((kind.to_owned(), name.to_owned(), warms));
+        // One of each kind starts; the rest wait for their kind.
+        assert_eq!(
+            label(warmup.next(&mut queue)),
+            started("requirement", "a", true)
+        );
+        assert_eq!(
+            label(warmup.next(&mut queue)),
+            started("example", "c", true)
+        );
+        assert_eq!(label(warmup.next(&mut queue)), None);
+        // An assessment that finished without a request warmed nothing, so
+        // the next of its kind warms it instead.
+        warmup.finished("example");
+        assert_eq!(
+            label(warmup.next(&mut queue)),
+            started("example", "e", true)
+        );
+        // Once a kind's first request finishes, the others of it start.
+        warmup.warmed("requirement");
+        assert_eq!(
+            label(warmup.next(&mut queue)),
+            started("requirement", "b", false)
+        );
+        assert_eq!(
+            label(warmup.next(&mut queue)),
+            started("requirement", "d", false)
+        );
+        assert!(queue.is_empty());
+    }
 
     // {test}`requirements.authoring.progress`
     // {test}`requirements.authoring.batch`

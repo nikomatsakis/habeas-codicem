@@ -12,12 +12,15 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 // {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.cache_warmup`
 #[derive(Default)]
 struct Requests {
     subjects: Vec<String>,
     active: usize,
     peak: usize,
     first_pair_overlapped: bool,
+    /// Each request's subject with when it arrived and when it was answered.
+    timeline: Vec<(String, Instant, Option<Instant>)>,
 }
 
 // {test}`requirements.authoring.batch`
@@ -100,6 +103,12 @@ impl Server {
     fn subjects(&self) -> Vec<String> {
         self.requests.0.lock().unwrap().subjects.clone()
     }
+
+    /// Each request's subject, arrival, and answer, in arrival order.
+    // {test}`requirements.authoring.cache_warmup`
+    fn timeline(&self) -> Vec<(String, Instant, Option<Instant>)> {
+        self.requests.0.lock().unwrap().timeline.clone()
+    }
 }
 
 impl Drop for Server {
@@ -176,6 +185,8 @@ fn serve(
     let mut state = lock.lock().unwrap();
     let first_for_subject = !state.subjects.contains(&subject);
     state.subjects.push(subject.clone());
+    let position = state.timeline.len();
+    state.timeline.push((subject.clone(), Instant::now(), None));
     let first_request = state.subjects.len() == 1;
     state.active += 1;
     state.peak = state.peak.max(state.active);
@@ -288,6 +299,7 @@ fn serve(
     if !held {
         sent.unwrap();
     }
+    state.timeline[position].2 = Some(Instant::now());
     state.active -= 1;
 }
 
@@ -2019,4 +2031,85 @@ fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
     for run in fixture.usage() {
         assert!(!run.to_string().contains("github_issues"), "{run}");
     }
+}
+
+/// Checks that the first assessment of each kind starts before any other of
+/// its kind, and that the others start only once its first request has been
+/// answered, returning the requests of each kind in arrival order.
+// {test}`requirements.authoring.cache_warmup`
+fn assert_warmed_first(server: &Server) -> Vec<Vec<(String, Instant, Option<Instant>)>> {
+    let timeline = server.timeline();
+    let mut kinds = Vec::new();
+    for kind in ["requirement ", "example "] {
+        let requests = timeline
+            .iter()
+            .filter(|(subject, ..)| subject.starts_with(kind))
+            .cloned()
+            .collect::<Vec<_>>();
+        let (first, arrived, answered) = &requests[0];
+        let answered = answered.expect("the warming request was answered");
+        for (subject, other_arrived, _) in &requests[1..] {
+            if subject != first {
+                assert!(
+                    *other_arrived >= answered,
+                    "{subject} started before {first}'s first request finished"
+                );
+            }
+            assert!(other_arrived >= arrived);
+        }
+        kinds.push(requests);
+    }
+    kinds
+}
+
+// {test}`requirements.authoring.cache_warmup`
+#[test]
+fn a_batch_warms_each_kind_with_one_assessment_before_starting_the_others() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, Some(8));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let kinds = assert_warmed_first(&server);
+    assert_eq!(kinds[0].len(), 4, "{:?}", kinds[0]);
+    assert_eq!(kinds[1].len(), 2, "{:?}", kinds[1]);
+    // The others of a kind then run together.
+    let state = server.requests.0.lock().unwrap();
+    assert!(state.peak >= 3, "peak {}", state.peak);
+}
+
+// {test}`requirements.authoring.cache_warmup`
+#[test]
+fn a_failed_first_request_still_releases_its_kind() {
+    let server = Server::start_with(
+        false,
+        Behavior::ThrottledOnce {
+            subject: "requirement requirements.alpha",
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint, Some(8));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let kinds = assert_warmed_first(&server);
+    let requirements = &kinds[0];
+    assert_eq!(requirements[0].0, "requirement requirements.alpha");
+    // The other requirements start after the throttled request, without
+    // waiting for the retry, which backs off for at least half a second.
+    let retry = requirements[1..]
+        .iter()
+        .find(|(subject, ..)| subject == "requirement requirements.alpha")
+        .expect("the throttled request is retried");
+    let others = requirements
+        .iter()
+        .filter(|(subject, ..)| subject != "requirement requirements.alpha")
+        .collect::<Vec<_>>();
+    assert_eq!(others.len(), 3);
+    assert!(others.iter().all(|(_, arrived, _)| *arrived < retry.1));
 }

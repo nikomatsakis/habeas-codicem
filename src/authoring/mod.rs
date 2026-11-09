@@ -370,16 +370,21 @@ fn resolved_location(path: &Path) -> io::Result<PathBuf> {
 // {impl}`requirements.authoring.concurrency`
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.cache_warmup`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
     policy: AssessmentPolicy,
     mut cancellation: watch::Receiver<Option<&'static str>>,
+    first_request_finished: Option<Box<dyn FnOnce() + Send>>,
 ) -> io::Result<PendingAssessment> {
     let root = fs::canonicalize(root)?;
     let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, &subject.label())?;
+    if let Some(finished) = first_request_finished {
+        usage.on_first_request(finished);
+    }
     let result = tokio::select! {
         biased;
         _ = cancellation.changed() => {
