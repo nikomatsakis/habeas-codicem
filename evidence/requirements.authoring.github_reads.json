@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST expose a `github` tool with this interface:\n\n```text\ngithub({ issue: String }) -> Issue\n\nIssue { reference: String, state: \"open\" | \"closed\", title: String, body: String }\n```\n\n`issue` MUST have the form `<owner>/<repo>#<number>`. The tool MUST read the issue\nor pull request through the GitHub API, authenticating with the `GITHUB_TOKEN`\nenvironment variable when that is set, and MUST return its body redacted under\n{cite}`requirements.authoring.redaction`. GitHub reads cannot be reproduced\nlater, so their results MUST NOT be recorded as evidence inputs and MUST NOT\nmake evidence stale. Every GitHub read by Habeas, including this tool's, the\nlookups below, and those of {cite}`requirements.cli.fixme_issues`, MUST go\nthrough one cache under the state root of\n{cite}`requirements.configuration.state_location`, keyed by issue, and MUST\nreuse a cached result less than one hour old instead of contacting GitHub. A malformed reference, a missing issue, or a failed request\nMUST return an explanatory tool error.\n\nWhen the mandatory inputs contain a `{fixme}` reference under\n{cite}`requirements.references.roles`, the harness MUST look up the state of\neach issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.",
-  "determination": false,
-  "rationale": "One marking gap. Everything else I checked is implemented and tested.\n\n**Obligations and their code**\n- **`github` tool interface.**\n  - `tool_definition` in src/github.rs declares it, and `definitions()` in src/authoring/tools.rs includes it.\n  - `tool` in src/github.rs returns `{reference, state, title, body}`.\n  - tests/authoring_cli.rs asserts that the tool list sent to the model contains `github`.\n- **`issue` form `<owner>/<repo>#<number>`.** `tool` and `split_issue` check it through `is_issue_reference`. src/github.rs tests cover malformed inputs and an extra field.\n- **GitHub API read with `GITHUB_TOKEN`.**\n  - `from_env` reads the token; `fetch` sends it as a bearer token.\n  - The `Bearer TEST_TOKEN` header is asserted in `the_tool_reads_issues_with_the_token_and_redacts_bodies`.\n  - `from_env` itself reads process environment variables, and no unit test sets them (it returns offline under `cfg!(test)`). The environment-variable exemption therefore covers it.\n- **Redacted body.** `fetch` calls `redact_text`. The test asserts that a leaked token is absent from both the result and the cache file.\n- **Not recorded as evidence and not staleness-causing.**\n  - `dispatch` returns an empty `inputs` list for `github`.\n  - tests/authoring_batch.rs asserts that `github_issues` appears in neither the evidence nor the usage records.\n- **One cache under the state root, keyed by issue, reused when under an hour old.**\n  - `cache_path`, `cached`, `store`, `read_all` and `from_env` (cache directory `state_root()/github`) implement this.\n  - `results_are_cached_by_issue_for_an_hour_and_failures_are_not` tests reuse, expiry and failures.\n  - The batch test asserts the cache file location under the state root and that no request is made while the entry is fresh.\n- **Explanatory tool errors for malformed, missing and failed reads.** `tool` returns an error for each. The tests cover a malformed reference, a 404, an HTTP 500 and an unreachable endpoint.\n- **Issue states supplied with `{fixme}` inputs.**\n  - `input_issue_states` and `model_mandatory_inputs` supply them, with unreachable issues treated as open (`IssueRead::state`).\n  - `initial_prompt` and `verification_prompt` use `model_mandatory_inputs`.\n  - `inputs_containing_fixmes_carry_their_issue_states` and the tests/authoring_cli.rs prompt assertion cover this.\n- **Stale FIXME records for `habeas status` and `habeas author`, but not repository validation.**\n  - `add_issue_findings` is called from `status_markdown_with_github` and `run_batch`, and the status wrapper without GitHub is offline.\n  - The tests in src/github.rs and `closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed` cover closed and missing issues, site reviews, and validation making no requests.\n\n**Gap: missing `{impl}` marking**\n- `subject_is_current` in src/authoring/batch.rs (the `--missing` check for a single named subject) applies `add_issue_findings` before it decides whether an existing record is current.\n- That is the point where `habeas author` treats a stale FIXME record as not current, so it carries out part of the staleness obligation.\n- It has only `{impl}` references to `refresh` and `invocation`, none to `requirements.authoring.github_reads`.\n- Its comment, \"A FIXME record whose acknowledging issue closed is stale.\", copies the one in `run_batch`, but unlike `run_batch` it has no `{impl}` line under it.\n- Code that decides to apply the staleness rule needs its own `{impl}` reference, so this is a marking gap.\n- No `{fixme}` acknowledges it.",
-  "references": "fec5864fe946331d9e3223ed5b47e2b66beff75a548faa92ad6097c0207de3be",
+  "determination": true,
+  "rationale": "I found no gaps. Each obligation has marked code and a test, or a stated exemption.\n\n**Tool interface**\n- `github({issue}) -> Issue` is defined by `github::tool_definition` (src/github.rs). It is exposed through `authoring::tools::definitions` and routed by `dispatch`.\n- `tool` returns `reference`, `state` (`open` or `closed`), `title` and `body`.\n- The tests are `the_tool_reads_issues_with_the_token_and_redacts_bodies` and the `ollama_cli…` test in tests/authoring_cli.rs. The CLI test asserts that `github` is among the tools offered.\n\n**Issue form and errors**\n- `tool` rejects references that are not `<owner>/<repo>#<number>` and rejects extra arguments. `split_issue` does the same for cache and URL construction.\n- A missing issue (404 or 410) and a failed request each return an explanatory tool error from `tool`/`fetch`.\n- The unit test covers malformed references, a 404, a 500 and an unreachable endpoint.\n- `additional_read_flow_…` in src/authoring/tools.rs also checks the error messages through `dispatch`.\n- `is_issue_reference` in src/fixme.rs holds the regex but is marked only for other requirements. `tool` is the code that decides to reject, and it is marked and tested, so I do not count this as a gap.\n\n**API read with `GITHUB_TOKEN`**\n- `GithubIssues::from_env` reads `GITHUB_TOKEN`, and `fetch` sends it as a bearer token.\n- The test asserts the `Bearer TEST_TOKEN` header through `with_api`.\n- `from_env` itself reads process environment variables that no test sets, so it is exempt. It is also a pass-through apart from filtering out an empty token.\n\n**Redacted body**\n- `fetch` applies `redact_text` to the title and body.\n- The test checks that a leaked token is replaced and that the cache file holds only redacted text.\n\n**Results not recorded as evidence and not making evidence stale**\n- `dispatch` returns `inputs: Vec::new()` for the `github` tool.\n- `model_mandatory_inputs` adds issue states only to the prompt.\n- The batch test asserts that `github_issues` never appears in evidence or usage records.\n- Stale handling is limited to the explicit `add_issue_findings` findings.\n- The same test shows that `validate_repository` accepts the record and makes no GitHub requests.\n\n**Single cache**\n- `read_all`, `cached`, `store` and `cache_path` implement one cache under the state root's `github` subdirectory. `from_env` uses `config::state_root()`. Entries are keyed by issue, and a result is reused only if it is less than `CACHE_LIFETIME` old.\n- `results_are_cached_by_issue_for_an_hour_and_failures_are_not` tests reuse, the one-hour expiry, and not caching failures.\n- The batch integration test checks the cache file location and the reuse of cached state across `status` runs.\n- Every Habeas GitHub read goes through `read_all`: the tool, `input_issue_states`, `add_issue_findings` and `status_markdown_with_github`.\n\n**`{fixme}` issue states for the model**\n- `input_issue_states` looks up each issue named by a `{fixme}` inside an input's range. `IssueRead::state` maps a missing issue to `closed` and an unreachable one to `open`.\n- `model_mandatory_inputs` attaches the states, and `initial_prompt` and `verification_prompt` use them. `prepare`, `prepare_citation` and `prepare_site` compute them.\n- `inputs_containing_fixmes_carry_their_issue_states` tests this, including the offline case. The CLI test checks the `github_issues` text in the prompt.\n\n**Staleness**\n- `add_issue_findings` marks FIXME records stale, including site reviews. It is called from `status_markdown_with_github` for `habeas status`, and from `run_batch` and `subject_is_current` for `habeas author`.\n- It is tested in the unit tests (`closed_and_missing_issues_…`, `a_closed_issue_of_a_fixme_inside_a_site_…`) and in `closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed`.\n- Repository validation does not call it, and the integration test asserts that validation makes no requests.",
+  "references": "259137880c15e4f70d523127281a373f2c3ec69dbceacea1ced356db2608cf9a",
   "inputs": [
     {
       "requirements": "requirements.authoring.github_reads",
@@ -173,6 +173,11 @@
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
       "hash": "c51082d5741a03e2bdab470c43b63fba478f3552db0c2f8e5a27cbf1e320328c"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[subject_is_current]",
+      "hash": "a0504ef8b1d647c70adf997d8f7321a02507de03f30308bfb2956ec830407a83"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -382,22 +387,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "491ebae2d638e413df08f3db53806c1f5ecf39a5bad13a1096c514222b67211d"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[subject_is_current]",
-      "hash": "a0504ef8b1d647c70adf997d8f7321a02507de03f30308bfb2956ec830407a83"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "struct[AssessmentSources]",
-      "hash": "08ef757107053577d88642477c010d378a5b4747915cd102bf6c359bd97c99a8"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]",
-      "hash": "4024dd527bd53e08132b72cdfc0ebfa1431bc9668e377ccc3b37dca641478e92"
+      "hash": "49118cab66660836298922a3ff111b3238423db854cdf08241ea77b5a68f1ae2"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -415,44 +405,9 @@
       "hash": "74d67085fae31591537c9ca08b5bb4b471f066c8fc7a36e2c04ecb81b574361d"
     },
     {
-      "file": "src/commands.rs",
-      "item": "fn[status_markdown_with_options]",
-      "hash": "7ec371530fbf6f9524d16ec653461ff6c84707de9e03cb335fea2ef746b07de8"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "fn[issue_references]",
-      "hash": "d40e0d631da5eca146da098d9b4f1ca97383509c1fb8bae72352404979a5f854"
-    },
-    {
       "file": "src/fixme.rs",
       "item": "fn[is_issue_reference]",
       "hash": "2ce4cc2ad7876ec0ab8a9fd7ec3b6a1205990747b91fec357692fde979ac1dae"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "struct[FixmeBody]",
-      "hash": "d1c4081a179b17818b15da30ebca8148268c42af633e84d804e05765d726839c"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[tests]",
-      "hash": "f667419533d37259a76960d9f703c24cd8768bfaea1699e54c838470c4161075"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[commands]",
-      "hash": "d26060f5b4cd2bc311adbe4ea0245d28bbc8d6b1fa958235941b0f7d276b2536"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "mod[markdown]",
-      "hash": "b8bf89e68007cdb80ec626bfb99bbc5cfa1b31932abcc88d9c5c4a8eb4ffa4a3"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "use@6abd9545d113",
-      "hash": "6abd9545d113de1c93c7fd050b675d4261234af0429f5e2b4afd0aead324b432"
     },
     {
       "file": "src/main.rs",
