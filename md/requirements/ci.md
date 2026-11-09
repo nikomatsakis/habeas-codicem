@@ -397,6 +397,22 @@ account for the additional defect. CI rejects the false determination.
 {cite}`requirements.ci.determination`
 :::
 
+### The tracking issue closes
+
+:::{example} fixme_closed_issue
+A current evidence record has `{"FIXME": ["example/queue#125"]}`, acknowledged by
+a `{fixme}` naming `example/queue#125`. The issue is then closed, though the
+zero-capacity gap remains. `habeas status` reports the record as stale and lists
+the closed issue, exactly as if an input had changed, and `habeas author --all`
+reassesses it. The reviewer sees the issue's state as closed, so the `{fixme}` no
+longer acknowledges the gap, and the judgment is `false`. Repository validation,
+which does not contact GitHub, still accepts the old record until it is
+reassessed.
+{cite}`requirements.ci.outcomes`
+{cite}`requirements.authoring.github_reads`
+{cite}`requirements.cli.fixme_issues`
+:::
+
 ### Recorded FIXME evidence becomes stale
 
 :::{example} fixme_stale_input

@@ -790,7 +790,7 @@ MUST return an explanatory tool error.
 
 When the mandatory inputs contain a `{fixme}` reference under
 {cite}`requirements.references.targets`, the harness MUST look up the state of
-each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either.
+each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.
 :::
 
 ### Look up definitions and references: `references`

@@ -97,7 +97,7 @@ near the code or test it concerns, naming the issue that tracks it:
 The reference makes the definition's evidence stale, so the next
 `habeas author --all` reassesses it. A plain `FIXME` or `TODO` comment does not
 count. Never invent issue numbers, and never add a `{fixme}` just to get past a
-false determination. `habeas status` lists `:github:` issues that are closed or missing; a `{fixme}` naming a closed issue no longer acknowledges its gap.
+false determination. A `{fixme}` counts only while each issue it names is open: when one closes, `habeas status` lists it and treats the record as stale, and `habeas author --all` reassesses it, so fix the gap or name an open issue.
 
 ### Citation reviews
 
