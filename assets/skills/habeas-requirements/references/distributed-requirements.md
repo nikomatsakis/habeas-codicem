@@ -143,9 +143,11 @@ that contains it.
   other sites, such as "not reported by another check"; narrow it to the site,
   such as "does not report one failure twice".
 - Don't reference the distributed requirement from a site just because it is a
-  site; sites need none. A site that also carries out one of the requirement's
-  other obligations, such as the function that reports the collected errors,
-  gets `{impl}` like any other implementing code.
+  site; sites need none. Being a site also does not satisfy Rust item coverage,
+  so each site still needs its own references for what it implements, and a
+  site that carries out one of the requirement's other obligations, such as the
+  function that reports the collected errors, gets `{impl}` of it like any
+  other implementing code.
 
 ## Gotchas
 
@@ -158,9 +160,6 @@ that contains it.
   not a bare expression.
 - `cargo test --workspace` runs every snippet and reports a wrong result, and a
   site query that matches nothing in the project.
-- Being a site does not satisfy Rust item coverage: each site still needs its own
-  reference to what it implements, such as `{impl}` of the requirement for the
-  check it performs, not of the distributed requirement.
 
 ## Review
 

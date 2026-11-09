@@ -55,6 +55,12 @@ Run commands from the project root, the directory with `book.toml` and
   and return short findings.
 - Review a change to an agreed requirement's text with the user first, as the
   habeas-requirements skill describes.
+- When you reword a requirement for precision, whether a false rationale, a
+  site review, or a disagreement prompted it, record the old text, new text,
+  reason, and the rationale that prompted the change in the project's audit
+  log, such as `audits/requirement-rewordings/`; if the project has none, ask
+  the user before creating one. Escape quoted roles there, as in `\{cite}`, so
+  the log adds no references.
 - Validation is deterministic. When it tells you to run `habeas author`, run it
   yourself; never add `habeas author` to CI.
 
@@ -138,11 +144,7 @@ section of `habeas status` after each `habeas author` run.
    found a real gap or the requirement text admits more than one reading.
 2. Fix the source or tests, or tighten the requirement text, reviewing
    substantive changes with the user. Don't re-run for a different result.
-3. When you reword a requirement for precision, record the old text, new text,
-   reason, and the rationale that prompted the change in the project's audit
-   log, such as `audits/requirement-rewordings/`; if the project has none, ask
-   the user before creating one. Escape quoted roles there, as in `\{cite}`, so
-   the log adds no references.
+3. If you reword the requirement, record it in the audit log as the Rules say.
 
 ## Gotchas
 
