@@ -206,11 +206,13 @@ The three reference roles:
   implements part of one when it makes a decision, performs a check, produces
   an output, or handles a case it specifies, or when it constrains a type's
   fields, variants, serialized form, or validation. Calling code that
-  implements it, producing a value a caller uses to meet it, or checking for a
-  form or value it defines in order to carry out another requirement's
-  behavior, does not by itself count; returning the outcome of a check or
-  decision the text specifies for its own behavior does, even when a caller
-  acts on it. A requirement stating a convention for every output of a kind,
+  implements it, or producing a value a caller uses to meet it, does not by
+  itself count. A check counts only if the text states it, or the item could
+  not meet one of the text's obligations without it; then returning its
+  outcome counts even when a caller acts on it. Code that checks it is
+  consistent with a requirement, such as recognizing a form the requirement
+  defines in order to decide whether to run other behavior, relies on that
+  requirement ({cite}) rather than implementing it. A requirement stating a convention for every output of a kind,
   such as every validation error, is implemented by the code that carries out
   the convention as a whole, not by each item that produces one such output. A
   site of a distributed requirement needs no reference to it for being a site.

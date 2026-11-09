@@ -133,7 +133,9 @@ example it could reference; an item may carry several:
 2. Otherwise, if fulfilling it depends on the item, use `{impl}`. Code qualifies
    when it makes a decision, performs a check, produces an output, or handles a
    case the requirement specifies; a type qualifies when the requirement
-   constrains its fields, variants, serialized form, or validation. Calling code
+   constrains its fields, variants, serialized form, or validation. Code that only checks it is consistent with
+   a requirement, such as recognizing a form the requirement defines to decide
+   whether to run other behavior, gets `{cite}`, not `{impl}`. Calling code
    that implements it does not count, so a dispatcher that only routes to the
    implementation gets `{cite}` of what it dispatches to, or `habeas:none`. A
    requirement that refines another's obligation can `{impl}` it. A site of a
