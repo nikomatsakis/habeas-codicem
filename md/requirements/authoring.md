@@ -25,7 +25,11 @@ the evidence of every current requirement and named example, together with the
 reviews {cite}`requirements.references.citation_review` and
 {cite}`requirements.references.site_review` include, under
 {cite}`requirements.authoring.refresh`.
-`--all` MUST be mutually exclusive with a subject name and `--stdout`.
+`--all` MUST be mutually exclusive with a subject name and `--stdout`. It MUST
+also delete each orphaned citation review under
+{cite}`requirements.references.citation_review` and each orphaned site review
+under {cite}`requirements.references.site_review`, and report each deletion; the
+deletion MUST NOT require model configuration or credentials.
 Failure to discover declarations or to read, scan, or parse project sources MUST report an error,
 not a successful empty batch.
 

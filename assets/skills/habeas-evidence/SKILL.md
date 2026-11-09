@@ -62,7 +62,8 @@ Run commands from the project root, the directory with `book.toml` and
 | false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all`; if the fix changed only comments that are not hashed (see Gotchas), the record stays current and is skipped, so run `habeas author --force <full-name>` |
 | uncovered `{impl}` or `{test}` line | check the reference names the right definition, then re-author that definition |
 | unreferenced Rust item | add references by the procedure in the habeas-requirements skill |
-| orphaned evidence file, citation review, or site review | its definition, item, or site no longer exists; `git rm` the file the finding names (removing an orphan is not editing evidence), then `habeas author --all` for any renamed definition or changed item |
+| orphaned citation or site review | `habeas author --all` deletes it |
+| orphaned requirement or example evidence | its definition was renamed or removed; `git rm` the file the finding names (removing an orphan is not editing evidence), then `habeas author --all` |
 | untracked file with references | `git add` it |
 
 A false rationale points to the gaps that skill's "What the review checks"
