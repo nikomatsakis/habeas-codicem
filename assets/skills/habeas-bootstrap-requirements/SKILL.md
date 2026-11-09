@@ -32,8 +32,10 @@ to a subagent to keep it out of your context.
       full name and proposing any changes to their text. Review them with the
       user in turn as habeas-requirements step 3 describes; a general request to
       bootstrap is not agreement to specific text.
-      **Gate:** install a requirement only after the user agrees to it.
-      Undecided items stay on the gap list.
+      **Gate:** drafts may be uncommitted edits to the chapter, as in
+      habeas-requirements step 2, but don't commit a requirement or tag code
+      against it until the user agrees to its text. Remove undecided drafts
+      from the chapter and keep them on the gap list.
 - [ ] 5. Install the agreed requirements in the area's chapter, one file per
       area, such as `md/requirements/cli.md` for `requirements.cli.*`; add a
       new chapter to `SUMMARY.md` and `git add` it.
@@ -97,8 +99,8 @@ habeas-requirements skill's
 ## Tagging
 
 Give every inventoried test and item its references by the procedure in the
-habeas-requirements skill. Every test must end with `{test}` of a requirement or
-example; a test whose behavior no agreed requirement states goes on the gap
+habeas-requirements skill. Every test must end up with a `{test}` reference to a requirement or example,
+attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
 list, never `habeas:none`. For a parameterized test, put the reference on the
 case source or the generating declaration; one file-level tag must not stand in
 for unrelated tests. Many `habeas:none` citations on other items suggest

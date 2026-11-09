@@ -34,7 +34,10 @@ Run commands from the project root, the directory with `book.toml` and
       "Disagreeing assessments"). Stop and report to the user each finding that needs their
       decision, such as a new or changed requirement, a gap to defer, or a
       blocker, and each false judgment expected because implementation is
-      pending; don't keep iterating on those.
+      pending; don't keep iterating on those. When you commit, include every change under
+      `evidence/` (new, updated, and deleted records) with the source and
+      requirement changes they assess; CI validates only the committed
+      evidence.
 
 ## Rules
 
