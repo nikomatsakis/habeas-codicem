@@ -97,35 +97,27 @@ fn render_judgments(output: &mut String, judgments: &[&FixmeJudgment]) {
     }
 }
 
+/// The issues a judgment's FIXME strings name: each string that is exactly
+/// an `owner/repo#N` issue reference. Any other string describes a gap
+/// without an issue.
 // {impl}`requirements.cli.fixme_summary`
 fn issue_references(entries: &[String]) -> BTreeSet<String> {
-    static ISSUES: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:https?://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/|(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#)(?P<number>[0-9]+)")
+    entries
+        .iter()
+        .filter(|entry| is_issue_reference(entry))
+        .cloned()
+        .collect()
+}
+
+/// Whether `value` is a GitHub issue reference `<owner>/<repo>#<number>`,
+/// with a positive number written without leading zeros.
+// {impl}`requirements.cli.fixme_summary`
+fn is_issue_reference(value: &str) -> bool {
+    static ISSUE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+#[1-9][0-9]*$")
             .expect("valid issue-reference pattern")
     });
-    let mut issues = BTreeSet::new();
-    for entry in entries {
-        for found in ISSUES.captures_iter(entry) {
-            let matched = found.get(0).expect("complete match");
-            let before = entry[..matched.start()].chars().next_back();
-            let after = entry[matched.end()..].chars().next();
-            if before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '#'))
-                || after.is_some_and(|c| c.is_alphanumeric() || c == '_')
-            {
-                continue;
-            }
-            let number = found["number"].trim_start_matches('0');
-            if number.is_empty() {
-                continue;
-            }
-            let repository = found.name("url_repo").or_else(|| found.name("repo"));
-            issues.insert(format!(
-                "{}#{number}",
-                repository.map_or("", |m| m.as_str())
-            ));
-        }
-    }
-    issues
+    ISSUE.is_match(value)
 }
 
 #[cfg(test)]
@@ -156,28 +148,43 @@ mod tests {
 
     // {test}`requirements.cli.fixme_summary`
     #[test]
-    fn a_github_issue_url_alone_identifies_the_qualified_issue() {
+    fn only_exact_issue_references_identify_issues() {
         assert_eq!(
             issue_references(&strings(&[
-                "See https://github.com/owner/repo/issues/0042 for details"
+                "owner/repo#7",
+                "https://github.com/owner/repo/issues/7",
+                "FIXME(owner/repo#8)",
+                "See owner/repo#9 for details",
+                "#7",
+                "owner/repo#007",
             ])),
-            BTreeSet::from(["owner/repo#42".to_owned()])
+            BTreeSet::from(["owner/repo#7".to_owned()])
         );
         let mut summary = FixmeSummary::default();
+        summary.add("rules.exact", "requirement", &strings(&["owner/repo#7"]));
         summary.add(
             "rules.url",
             "requirement",
             &strings(&["https://github.com/owner/repo/issues/7"]),
         );
-        summary.add("rules.short", "example", &strings(&["FIXME(owner/repo#7)"]));
-        summary.add("rules.unqualified", "requirement", &strings(&["#7"]));
-        let output = summary.render(false);
-        assert!(
-            output.contains("- `owner/repo#7` — affects 2 judgments\n"),
+        summary.add("rules.unqualified", "example", &strings(&["#7"]));
+        summary.add("rules.zero", "example", &strings(&["owner/repo#007"]));
+        let output = summary.render(true);
+        assert_eq!(
+            verbose_groups(&output),
+            [
+                ("`owner/repo#7`".to_owned(), strings(&["rules.exact"])),
+                (
+                    "FIXME without an issue".to_owned(),
+                    strings(&["rules.url", "rules.unqualified", "rules.zero"])
+                ),
+            ],
             "{output}"
         );
-        assert!(output.contains("- `#7` — affects 1 judgment\n"), "{output}");
-        assert!(!output.contains("without an issue"), "{output}");
+        assert!(
+            output.contains("- 3 judgments are marked FIXME without an issue\n"),
+            "{output}"
+        );
     }
 
     // {test}`requirements.cli.fixme_summary`
@@ -187,17 +194,21 @@ mod tests {
         summary.add(
             "rules.both",
             "requirement",
-            &strings(&["FIXME(#1) and FIXME(#2)", "#1 again"]),
+            &strings(&["o/r#1", "o/r#2", "o/r#1"]),
         );
-        summary.add("rules.one", "example", &strings(&["FIXME(#1)"]));
+        summary.add("rules.one", "example", &strings(&["o/r#1"]));
         summary.add("rules.none", "requirement", &strings(&["no issue yet"]));
-        summary.add("rules.also_none", "example", &strings(&["#0 is not one"]));
+        summary.add(
+            "rules.also_none",
+            "example",
+            &strings(&["o/r#0 is not one"]),
+        );
         let output = summary.render(true);
         assert_eq!(
             verbose_groups(&output),
             [
-                ("`#1`".to_owned(), strings(&["rules.both", "rules.one"])),
-                ("`#2`".to_owned(), strings(&["rules.both"])),
+                ("`o/r#1`".to_owned(), strings(&["rules.both", "rules.one"])),
+                ("`o/r#2`".to_owned(), strings(&["rules.both"])),
                 (
                     "FIXME without an issue".to_owned(),
                     strings(&["rules.none", "rules.also_none"])
@@ -209,10 +220,14 @@ mod tests {
             "- `rules.both` (requirement)",
             "- `rules.one` (example)",
             "- `rules.also_none` (example)",
-            "<pre><code>FIXME(#1) and FIXME(#2)\n#1 again</code></pre>",
+            "<pre><code>o/r#1\no/r#2\no/r#1</code></pre>",
         ] {
             assert!(output.contains(line), "{output}");
         }
+        assert!(
+            output.contains("- `o/r#1` — affects 2 judgments\n"),
+            "{output}"
+        );
         assert!(
             output.contains("- 2 judgments are marked FIXME without an issue\n"),
             "{output}"
@@ -224,24 +239,24 @@ mod tests {
     // {test}`requirements.cli.fixme_summary`
     #[test]
     fn groups_order_by_decreasing_count_before_reference() {
-        // `#9` sorts after `#1` as text but affects more judgments, so it
-        // comes first; `#1` and `#5` tie and fall back to reference order.
+        // `o/r#9` sorts after `o/r#1` as text but affects more judgments, so
+        // it comes first; `o/r#1` and `o/r#5` tie and fall back to reference
+        // order.
         let mut summary = FixmeSummary::default();
-        summary.add("rules.a", "requirement", &strings(&["FIXME(#9)"]));
-        summary.add("rules.b", "requirement", &strings(&["FIXME(#9)"]));
-        summary.add(
-            "rules.c",
-            "requirement",
-            &strings(&["FIXME(#9) and FIXME(#5)"]),
-        );
-        summary.add("rules.d", "example", &strings(&["FIXME(#1)"]));
+        summary.add("rules.a", "requirement", &strings(&["o/r#9"]));
+        summary.add("rules.b", "requirement", &strings(&["o/r#9"]));
+        summary.add("rules.c", "requirement", &strings(&["o/r#9", "o/r#5"]));
+        summary.add("rules.d", "example", &strings(&["o/r#1"]));
         let output = summary.render(false);
         let order: Vec<_> = output
             .lines()
-            .filter(|line| line.starts_with("- `#"))
+            .filter(|line| line.starts_with("- `o/r#"))
             .map(|line| line.split('`').nth(1).unwrap().to_owned())
             .collect();
-        assert_eq!(order, ["#9", "#1", "#5"], "{output}");
-        assert!(output.contains("- `#9` — affects 3 judgments"), "{output}");
+        assert_eq!(order, ["o/r#9", "o/r#1", "o/r#5"], "{output}");
+        assert!(
+            output.contains("- `o/r#9` — affects 3 judgments"),
+            "{output}"
+        );
     }
 }

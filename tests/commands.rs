@@ -138,9 +138,8 @@ fn fixme_fixture() -> TempDir {
             "alpha",
             "Alpha MUST work.",
             vec![
-                "FIXME(#00123)",
-                "Repeated #123 and rust-lang/rust#000456.",
-                "https://github.com/rust-lang/rust/issues/456",
+                "example/app#123",
+                "rust-lang/rust#456",
                 "Unlinked extra detail",
             ],
         ),
@@ -148,17 +147,22 @@ fn fixme_fixture() -> TempDir {
             "req",
             "beta",
             "Beta MUST work.",
-            vec!["#123", "#45", "Rust-Lang/rust#456", "An unrelated note"],
+            vec![
+                "example/app#123",
+                "example/app#45",
+                "Rust-Lang/rust#456",
+                "An unrelated note",
+            ],
         ),
-        ("example", "case", &example, vec!["FIXME(#45)"]),
+        ("example", "case", &example, vec!["example/app#45"]),
         (
             "req",
             "unlinked",
             "Unlinked MUST work.",
             vec![
                 "No ticket for <script>alert(1)</script>",
-                "#000 is not an issue",
-                "#12abc and ##123 are not complete issue references",
+                "#123 is not a qualified issue",
+                "https://github.com/rust-lang/rust/issues/456",
             ],
         ),
     ];
@@ -167,7 +171,27 @@ fn fixme_fixture() -> TempDir {
         .map(|(kind, name, text, _)| format!(":::{{{kind}}} {name}\n{text}\n:::\n\n"))
         .collect();
     fs::write(temp.path().join("md/rules.md"), &source).unwrap();
+    // Each judgment's strings come from the `{fixme}` references to it: one
+    // naming its issues, and one per gap without an issue.
+    let mut gaps = String::new();
+    for (_, name, _, entries) in &declarations {
+        let (issues, others): (Vec<&str>, Vec<&str>) = entries
+            .iter()
+            .partition(|entry| entry.contains('/') && !entry.contains(' ') && !entry.contains(':'));
+        if !issues.is_empty() {
+            gaps.push_str(&format!(":::{{fixme}} rules.{name}\n"));
+            for issue in issues {
+                gaps.push_str(&format!(":github: {issue}\n"));
+            }
+            gaps.push_str("Tracked gaps.\n:::\n\n");
+        }
+        for other in others {
+            gaps.push_str(&format!(":::{{fixme}} rules.{name}\n{other}\n:::\n\n"));
+        }
+    }
+    fs::write(temp.path().join("gaps.txt"), gaps).unwrap();
     let input = habeas::outline_input(temp.path(), "md/rules.md", "").unwrap();
+    let gaps_input = habeas::outline_input(temp.path(), "gaps.txt", "").unwrap();
     for (kind, name, text, references) in declarations {
         let subject_key = if kind == "example" {
             "example"
@@ -185,7 +209,7 @@ fn fixme_fixture() -> TempDir {
                     &format!("rules.{name}")
                 )
                 .unwrap(),
-                "inputs": [input]
+                "inputs": [input, gaps_input]
             })
             .to_string(),
         )
@@ -269,7 +293,7 @@ fn status_applies_workspace_disallow_to_existing_evidence() {
 // {test}`requirements.cli.status`
 // {test}`requirements.cli.fixme_summary`
 #[test]
-fn status_groups_fixme_judgments_by_distinct_normalized_issue() {
+fn status_groups_fixme_judgments_by_distinct_exact_issue() {
     let temp = fixme_fixture();
     let output = habeas(temp.path(), &["status"]);
     assert!(output.status.success(), "{output:?}");
@@ -280,8 +304,8 @@ fn status_groups_fixme_judgments_by_distinct_normalized_issue() {
         .collect();
     assert_eq!(summaries.len(), 4, "{text}");
     for (line, reference, count) in [
-        (summaries[0], "#123", "affects 2 judgments"),
-        (summaries[1], "#45", "affects 2 judgments"),
+        (summaries[0], "example/app#123", "affects 2 judgments"),
+        (summaries[1], "example/app#45", "affects 2 judgments"),
         (summaries[2], "Rust-Lang/rust#456", "affects 1 judgment"),
         (summaries[3], "rust-lang/rust#456", "affects 1 judgment"),
     ] {
@@ -292,8 +316,9 @@ fn status_groups_fixme_judgments_by_distinct_normalized_issue() {
             .any(|line| line.contains("1 judgment") && line.contains("without an issue")),
         "{text}"
     );
-    assert!(!text.contains("#00123"), "{text}");
-    assert!(!text.contains("#000456"), "{text}");
+    // Strings that are not exactly `owner/repo#N` name no issue.
+    assert!(!text.contains("`#123`"), "{text}");
+    assert!(!text.contains("github.com"), "{text}");
     assert!(
         text.find("without an issue").unwrap() > text.find(summaries[3]).unwrap(),
         "{text}"
@@ -333,8 +358,7 @@ fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {
     for detail in [
         "requirement",
         "example",
-        "FIXME(#00123)",
-        "Repeated #123 and rust-lang/rust#000456.",
+        "#123 is not a qualified issue",
         "https://github.com/rust-lang/rust/issues/456",
         "Unlinked extra detail",
         "An unrelated note",
@@ -348,7 +372,7 @@ fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {
     assert!(output.status.success(), "{output:?}");
     let filtered = String::from_utf8(output.stdout).unwrap();
     assert!(
-        filtered.contains("#45") && filtered.contains("affects 1 judgment"),
+        filtered.contains("example/app#45") && filtered.contains("affects 1 judgment"),
         "{filtered}"
     );
     assert!(filtered.contains("rules.case"), "{filtered}");
@@ -356,7 +380,7 @@ fn verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups() {
         "rules.alpha",
         "rules.beta",
         "rules.unlinked",
-        "#123",
+        "example/app#123",
         "rust-lang/rust",
     ] {
         assert!(!filtered.contains(excluded), "{filtered}");

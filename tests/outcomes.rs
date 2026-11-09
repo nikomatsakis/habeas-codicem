@@ -54,7 +54,7 @@ fn fixture() -> TempDir {
         "timeout",
         json!({
             "example": example,
-            "determination": { "FIXME": ["#125", "rust-lang/rust#123"] },
+            "determination": { "FIXME": ["example/io#125", "rust-lang/rust#123"] },
             "rationale": "The recorded comments acknowledge the missing timeout tests.",
             "inputs": [source_input]
         }),
@@ -225,7 +225,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
         .find(|line| line.starts_with("| `requirements.timeout`"))
         .unwrap();
     assert!(row.contains("Invalid"), "{row}");
-    assert!(status.contains("#125"), "{status}");
+    assert!(status.contains("example/io#125"), "{status}");
     assert!(status.contains("outline input changed"), "{status}");
     fs::write(
         temp.path().join("other.txt"),
@@ -254,7 +254,7 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
         let status = habeas::status_markdown(temp.path(), all).unwrap();
         assert_eq!(status.contains("requirements.timeout"), all, "{status}");
         assert!(status.contains("FIXME"));
-        assert!(status.contains("#125"));
+        assert!(status.contains("example/io#125"));
         assert!(status.contains("rust-lang/rust#123"));
         assert!(status.contains("affects 1 judgment"), "{status}");
         assert!(!status.contains("## Validation findings"));
