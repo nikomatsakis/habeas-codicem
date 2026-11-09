@@ -326,6 +326,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(
         tools,
         [
+            "ast_grep",
             "github",
             "habeas",
             "list_files",
@@ -570,6 +571,7 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
 // {test}`requirements.authoring.read_denial`
 // {test}`requirements.authoring.file_discovery`
 // {test}`requirements.authoring.text_search`
+// {test}`requirements.authoring.structural_search`
 // {test}`requirements.authoring.source_tools`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
@@ -581,6 +583,10 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
         (
             "ripgrep",
             json!({"path":"untracked.txt", "pattern":"hidden"}),
+        ),
+        (
+            "ast_grep",
+            json!({"path":"untracked.txt", "language":"rust", "rule":{"rule":{"pattern":"hidden"}}}),
         ),
         ("list_files", json!({"path":"untracked-directory"})),
     ] {
@@ -1562,6 +1568,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(
             tools,
             [
+                "ast_grep",
                 "github",
                 "habeas",
                 "list_files",
@@ -1839,7 +1846,7 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
 
     // Both fixtures are identical projects, so the requests must match.
     assert_eq!(ollama, bedrock);
-    assert_eq!(ollama.1.len(), 7);
+    assert_eq!(ollama.1.len(), 8);
 }
 
 /// Asserts that authoring failed before or while recording usage history and

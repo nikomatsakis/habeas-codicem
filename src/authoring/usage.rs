@@ -352,7 +352,8 @@ impl TokenCounts {
 // {impl}`requirements.authoring.usage_inputs`
 fn tool_name(name: &str) -> &str {
     match name {
-        "habeas" | "ripgrep" | "list_files" | "outline" | "references" | "submit_judgment" => name,
+        "habeas" | "ripgrep" | "ast_grep" | "github" | "list_files" | "outline" | "references"
+        | "submit_judgment" => name,
         _ => "unknown",
     }
 }
@@ -616,12 +617,16 @@ mod tests {
         log.tool("outline", false);
         log.tool("habeas", true);
         log.skipped_tool("ripgrep");
+        log.tool("ast_grep", false);
+        log.tool("github", false);
         log.tool("MODEL_TEXT_SHOULD_NOT_APPEAR", true);
         log.skipped_tool("OTHER_MODEL_TEXT");
         log.finish("completed").unwrap();
         let value = persisted(&log);
-        assert_eq!(value["tool_call_count"], 6);
+        assert_eq!(value["tool_call_count"], 8);
         assert_eq!(value["tool_calls"]["list_files"], 1);
+        assert_eq!(value["tool_calls"]["ast_grep"], 1);
+        assert_eq!(value["tool_calls"]["github"], 1);
         assert_eq!(value["tool_calls"]["outline"], 1);
         assert_eq!(value["tool_failures"]["habeas"], 1);
         assert_eq!(value["tool_skipped"]["ripgrep"], 1);

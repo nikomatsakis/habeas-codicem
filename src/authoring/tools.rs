@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::inputs::AssessmentSources;
 use crate::inputs::InputSelector;
+use crate::structural::StructuralRule;
 
 // {impl}`requirements.authoring.delivered_inputs`
 pub(crate) struct ToolDelivery {
@@ -18,6 +19,7 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.authoring.read_denial`
@@ -53,6 +55,10 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
+            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path, referencing, file walking, ignore rules, ordering by path and then line, and source-access policy are as for ripgrep: explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden, evidence/ and untracked files are excluded, workspace disallow rules win, denied explicit requests for project paths abort the assessment, and unpermitted paths outside the project return a tool error. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Each match is returned as the innermost outline node containing it (a match in a comment returns the node the comment belongs to), with its item selector, kind, current line range, and redacted source text; those nodes are recorded as evidence and accompanied by required terminology, as {inputs, definitions}. No matches returns empty arrays; an invalid language or rule, or a failed search, returns a tool error.",
+            "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
+        }),
+        json!({
             "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and item, the selector of the smallest enclosing outline node when the file has a language outline (null otherwise). An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with line null and item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
             "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
@@ -62,6 +68,7 @@ pub(crate) fn definitions() -> Vec<Value> {
 
 /// The parameter schema of a `referencing` argument.
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.structural_search`
 fn reference_scope_schema() -> Value {
     json!({"type":"object","properties":{
         "selection":{"type":"string"},
@@ -73,6 +80,7 @@ fn reference_scope_schema() -> Value {
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.read_denial`
@@ -90,6 +98,7 @@ pub(crate) fn dispatch(
         "list_files" => list_files(sources, arguments),
         "outline" => outline(sources, arguments),
         "ripgrep" => search(sources, arguments),
+        "ast_grep" => structural(sources, arguments),
         "references" => references(sources, arguments),
         // GitHub reads are not evidence inputs.
         "github" => crate::github::tool(&sources.github, &Value::Object(arguments.clone()))
@@ -472,6 +481,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
 /// project-relative path. Source-access policy is applied while walking, so
 /// denied files are never opened.
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
@@ -564,11 +574,13 @@ fn walk_sources<T: Send>(
 /// project-relative file: the inclusive line ranges of each referencing
 /// outline node, or `None` for the whole file.
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.structural_search`
 struct ReferenceRegions(BTreeMap<String, Option<Vec<(usize, usize)>>>);
 
 impl ReferenceRegions {
     /// Whether a file carries a selected reference.
     // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.authoring.structural_search`
     fn has(&self, file: &str) -> bool {
         self.0.contains_key(file)
     }
@@ -577,6 +589,7 @@ impl ReferenceRegions {
     /// none does, `Some(None)` for a whole file, and otherwise the smallest
     /// referencing node's lines.
     // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.authoring.structural_search`
     fn region(&self, file: &str, first: usize, last: usize) -> Option<Option<(usize, usize)>> {
         match self.0.get(file)? {
             None => Some(None),
@@ -590,6 +603,7 @@ impl ReferenceRegions {
 
     /// Adds a referencing node's lines, or a whole file.
     // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.authoring.structural_search`
     fn add(&mut self, file: String, lines: Option<(usize, usize)>) {
         let entry = self.0.entry(file).or_insert_with(|| Some(Vec::new()));
         match (entry, lines) {
@@ -605,6 +619,7 @@ impl ReferenceRegions {
 /// selection matches, including declaration anchors, as referencing nodes or
 /// whole files by its scope.
 // {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
 fn referencing(
@@ -743,6 +758,144 @@ fn referencing(
         }
     }
     Ok(Some(regions))
+}
+
+// {impl}`requirements.authoring.structural_search`
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.generated_inputs`
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.definitions.authoring_inputs`
+// {impl}`requirements.authoring.delivered_inputs`
+fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
+    if args.contains_key("query") {
+        check_keys(args, &["query"])?;
+        return declared_query(sources, string(args, "query")?);
+    }
+    check_keys(args, &["language", "rule", "path", "referencing"])?;
+    let language = string(args, "language")?;
+    let rule = args
+        .get("rule")
+        .and_then(Value::as_object)
+        .ok_or_else(|| io::Error::other("rule must be an object"))?;
+    let rule = StructuralRule::compile(language, rule).map_err(io::Error::other)?;
+    let path = optional_path(args)?;
+    let regions = referencing(sources, args)?;
+    let matches = walk_sources(
+        sources,
+        path,
+        &|file, path| {
+            rule.language().covers(path) && regions.as_ref().is_none_or(|regions| regions.has(file))
+        },
+        &|_, path| {
+            let text = fs::read_to_string(path).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("ast-grep failed to search {}: {error}", path.display()),
+                )
+            })?;
+            let ranges = rule.matches(&text);
+            Ok((!ranges.is_empty()).then_some((text, ranges)))
+        },
+    )?;
+    let mut inputs = Vec::new();
+    for (file, (text, ranges)) in matches {
+        let parsed = sources.parse_file(&file)?;
+        let parsed = parsed
+            .as_ref()
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        if parsed.source != text {
+            return Err(io::Error::other(format!(
+                "{file} changed during the search; retry it"
+            )));
+        }
+        let line_of = |byte: usize| text[..byte].matches('\n').count() + 1;
+        let mut nodes = Vec::new();
+        for range in ranges {
+            let (first, last) = (
+                line_of(range.start),
+                line_of(range.end.saturating_sub(1).max(range.start)),
+            );
+            if regions
+                .as_ref()
+                .is_some_and(|regions| regions.region(&file, first, last).is_none())
+            {
+                continue;
+            }
+            let index = crate::structural::innermost_node(&parsed.outline, &text, &range);
+            if !nodes.contains(&index) {
+                nodes.push(index);
+            }
+        }
+        nodes.sort_by_key(|index| {
+            let node = &parsed.outline.nodes[*index];
+            (node.line_start, node.byte_start, *index)
+        });
+        for index in nodes {
+            let input = sources.read_selector(&InputSelector::Outline {
+                file: file.clone(),
+                item: parsed.outline.nodes[index].selector.clone(),
+            })?;
+            if !inputs.contains(&input) {
+                inputs.push(input);
+            }
+        }
+    }
+    let definitions = sources.additional_definitions(&inputs)?;
+    let result = json!({"inputs":inputs,"definitions":definitions});
+    inputs.extend(definitions);
+    Ok(ToolDelivery { result, inputs })
+}
+
+/// Runs a query a distributed requirement declares, named
+/// `<full-name>/<query-name>`, as validation runs it, returning each match's
+/// site as an outline input.
+// {impl}`requirements.authoring.structural_search`
+// {impl}`requirements.references.distributed`
+// {impl}`requirements.definitions.authoring_inputs`
+// {impl}`requirements.authoring.delivered_inputs`
+fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<ToolDelivery> {
+    let (requirement, name) = query.rsplit_once('/').ok_or_else(|| {
+        io::Error::other(format!(
+            "query {query:?} must have the form <full-name>/<query-name>"
+        ))
+    })?;
+    let definitions = crate::evidence::load_definitions(&sources.root)?;
+    let declaration = definitions
+        .get(requirement)
+        .filter(|definition| definition.kind == crate::DefinitionKind::Requirement)
+        .ok_or_else(|| {
+            io::Error::other(format!("query {query:?} names no declared requirement"))
+        })?;
+    let queries = crate::structural::declared_queries(declaration).map_err(io::Error::other)?;
+    if !queries.iter().any(|declared| declared.name == name) {
+        return Err(io::Error::other(format!(
+            "requirement {requirement} declares no query named {name:?}"
+        )));
+    }
+    let mut errors = Vec::new();
+    let files = crate::evidence::discovered_files(&sources.root, &mut errors);
+    if !errors.is_empty() {
+        return Err(io::Error::other(format!(
+            "cannot run query {query} because reference discovery failed:\n{}",
+            errors.join("\n")
+        )));
+    }
+    let sites =
+        crate::structural::query_sites(&sources.root, &files, &sources.outlines, &queries, name)
+            .map_err(|error| io::Error::other(format!("query {query}: {error}")))?;
+    let mut inputs = Vec::new();
+    for site in sites {
+        inputs.push(sources.read_selector(&InputSelector::Outline {
+            file: site.file,
+            item: site.item,
+        })?);
+    }
+    let definitions = sources.additional_definitions(&inputs)?;
+    let result = json!({"inputs":inputs,"definitions":definitions});
+    inputs.extend(definitions);
+    Ok(ToolDelivery { result, inputs })
 }
 
 // {impl}`requirements.authoring.source_tools`
@@ -1209,6 +1362,7 @@ mod tests {
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
     // {test}`requirements.authoring.read_denial`
     #[test]
     fn generated_evidence_is_excluded_from_reads_search_and_discovery() {
@@ -1259,6 +1413,24 @@ mod tests {
             .map(|input| input["file"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(files, vec!["source.txt", "src/evidence/source.txt"]);
+        let structural = dispatch(
+            &sources,
+            "ast_grep",
+            &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+        )
+        .unwrap();
+        assert!(structural.inputs.is_empty(), "{:?}", structural.inputs);
+        assert!(
+            dispatch(
+                &sources,
+                "ast_grep",
+                &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}},"path":"evidence"}),
+            )
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("generated evidence")
+        );
         let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
         assert!(listing.result.as_array().unwrap().iter().all(|entry| {
             !["evidence", "old-output", "old.json"].contains(&entry["path"].as_str().unwrap())
@@ -2636,6 +2808,7 @@ mod tests {
 
     /// The items of a search result's source inputs, as `file#item`.
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
     fn found(delivery: &ToolDelivery) -> Vec<String> {
         delivery.result["inputs"]
             .as_array()
@@ -2654,6 +2827,7 @@ mod tests {
     /// A project whose sources reference `requirements.ready` and
     /// `requirements.other` in several roles, each source calling `needle()`.
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
     fn referencing_project() -> tempfile::TempDir {
         let root = project();
         fs::write(
@@ -2774,6 +2948,322 @@ mod tests {
                 error.to_string().contains(message),
                 "{referencing}: {error}"
             );
+        }
+    }
+
+    // {test}`requirements.authoring.structural_search`
+    #[test]
+    fn ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax() {
+        let definitions = definitions();
+        let names = definitions
+            .iter()
+            .map(|definition| definition["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "habeas",
+                "list_files",
+                "outline",
+                "ripgrep",
+                "ast_grep",
+                "references",
+                "github"
+            ]
+        );
+        let ast_grep = &definitions[4];
+        let ripgrep = &definitions[3];
+        assert_eq!(
+            ast_grep["parameters"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["rust", "python", "typescript", "tsx", "css", "markdown", "toml", "yaml"]
+                    },
+                    "rule": {"type": "object"},
+                    "path": {"type": "string", "default": "."},
+                    "referencing": ripgrep["parameters"]["properties"]["referencing"],
+                    "query": {"type": "string"}
+                },
+                "additionalProperties": false
+            })
+        );
+        let description = ast_grep["description"].as_str().unwrap();
+        for phrase in [
+            "{language, rule, path (default .), referencing (optional)} or {query}",
+            "matched with Habeas's pinned grammars",
+            "rule (required), and optional utils (named rules) and constraints",
+            "pattern (code with metavariables",
+            "kind (a grammar node kind",
+            "inside, has, precedes, and follows",
+            "all, any, not, and matches",
+            "the context and selector form",
+            "path, referencing, file walking, ignore rules, ordering by path and then line, and source-access policy are as for ripgrep",
+            "denied explicit requests for project paths abort the assessment",
+            "named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site",
+            "the innermost outline node containing it",
+            "a match in a comment returns the node the comment belongs to",
+            "recorded as evidence and accompanied by required terminology",
+            "No matches returns empty arrays; an invalid language or rule, or a failed search, returns a tool error",
+        ] {
+            assert!(description.contains(phrase), "{phrase:?} in {description}");
+        }
+    }
+
+    // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.authoring.redaction`
+    #[test]
+    fn ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures() {
+        let root = project();
+        fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} value\n:phrase: value\nA useful value.\n:::\n",
+        )
+        .unwrap();
+        let token = ["gh", "p_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn first() {{\n    let x = value.unwrap();\n}}\n\n/// Calls unwrap in docs.\nfn second() {{\n    other(\"{token}\").unwrap();\n}}\n\nmod inner {{\n    fn third() {{\n        a.unwrap();\n        b.unwrap();\n    }}\n}}\n",
+                role("term", "terms.value")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/a.rs"),
+            "fn a() {\n    z.unwrap();\n}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("src/tool.py"), "value.unwrap()\n").unwrap();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let rust = |rule: Value, path: &str| {
+            dispatch(
+                &sources,
+                "ast_grep",
+                &json!({"language":"rust","rule":rule,"path":path}),
+            )
+        };
+        let search = rust(json!({"rule":{"pattern":"$X.unwrap()"}}), ".").unwrap();
+        // Only Rust files are searched, ordered by path and then line, and
+        // each node once.
+        assert_eq!(
+            found(&search),
+            [
+                "src/a.rs#fn[a]",
+                "src/lib.rs#fn[first]",
+                "src/lib.rs#fn[second]",
+                "src/lib.rs#mod[inner]/fn[third]"
+            ]
+        );
+        // Source text is redacted, and terminology is supplied and recorded.
+        let second = &search.result["inputs"][2]["text"];
+        assert!(second.to_string().contains("[REDACTED:"), "{second}");
+        assert!(!second.to_string().contains(&token), "{second}");
+        assert_eq!(search.result["definitions"][0]["definition"], "terms.value");
+        // A match in a comment belongs to the comment's owner; utils and
+        // constraints are accepted.
+        let comment = rust(
+            json!({
+                "rule": {"matches": "doc"},
+                "utils": {"doc": {"kind": "line_comment", "regex": "unwrap"}}
+            }),
+            "src/lib.rs",
+        )
+        .unwrap();
+        assert_eq!(found(&comment), ["src/lib.rs#fn[second]"]);
+        let constrained = rust(
+            json!({
+                "rule": {"pattern": "$X.unwrap()"},
+                "constraints": {"X": {"regex": "^[ab]$"}}
+            }),
+            "src",
+        )
+        .unwrap();
+        assert_eq!(found(&constrained), ["src/lib.rs#mod[inner]/fn[third]"]);
+        let python = dispatch(
+            &sources,
+            "ast_grep",
+            &json!({"language":"python","rule":{"rule":{"pattern":"$X.unwrap()"}}}),
+        )
+        .unwrap();
+        assert_eq!(found(&python), ["src/tool.py#"]);
+        let none = rust(json!({"rule":{"pattern":"missing()"}}), ".").unwrap();
+        assert_eq!(none.result, json!({"inputs": [], "definitions": []}));
+        assert!(none.inputs.is_empty());
+        for (arguments, message) in [
+            (
+                json!({"language":"cobol","rule":{"rule":{"kind":"x"}}}),
+                "unknown structural search language",
+            ),
+            (
+                json!({"rule":{"rule":{"kind":"x"}}}),
+                "language must be a string",
+            ),
+            (
+                json!({"language":"rust","rule":"x"}),
+                "rule must be an object",
+            ),
+            (
+                json!({"language":"rust","rule":{"rule":{"kind":"no_such_kind"}}}),
+                "invalid ast-grep rule",
+            ),
+            (
+                json!({"language":"rust","rule":{"pattern":"x"}}),
+                "unexpected key \"pattern\"",
+            ),
+            (
+                json!({"language":"rust","rule":{"rule":{"kind":"x"}},"extra":1}),
+                "unexpected tool argument \"extra\"",
+            ),
+            (
+                json!({"query":"x","language":"rust"}),
+                "unexpected tool argument \"language\"",
+            ),
+            (
+                json!({"query":"x"}),
+                "must have the form <full-name>/<query-name>",
+            ),
+            (
+                json!({"query":"requirements.none/sites"}),
+                "names no declared requirement",
+            ),
+            (
+                json!({"query":"requirements.ready/sites"}),
+                "declares no query named \"sites\"",
+            ),
+        ] {
+            let error = dispatch(&sources, "ast_grep", &arguments).err().unwrap();
+            assert!(error.to_string().contains(message), "{arguments}: {error}");
+        }
+        // A matched file that cannot be parsed fails the search.
+        fs::write(
+            root.path().join("src/broken.rs"),
+            "fn broken() {\n    q.unwrap();\n}\n}\n",
+        )
+        .unwrap();
+        let error = rust(json!({"rule":{"pattern":"$X.unwrap()"}}), "src")
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("syntax error"), "{error}");
+        sources.record_inputs(&search.inputs);
+        let recorded = sources.recorded_inputs();
+        for expected in [
+            crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[first]").unwrap(),
+            json!({"definition": "terms.value"}),
+        ] {
+            assert!(
+                recorded.iter().any(|input| expected
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .all(|(key, value)| &input[key] == value)),
+                "{expected} in {recorded:?}"
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.references.definition_globs`
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn ast_grep_referencing_restricts_the_search_as_ripgrep_does() {
+        let root = referencing_project();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = |referencing: Value| {
+            dispatch(
+                &sources,
+                "ast_grep",
+                &json!({"language":"rust","rule":{"rule":{"pattern":"needle()"}},"referencing":referencing}),
+            )
+        };
+        assert_eq!(
+            found(&search(json!({"selection":"requirements.ready","roles":["cite"]})).unwrap()),
+            ["src/cite.rs#fn[before]", "src/cite.rs#fn[cited]"]
+        );
+        assert_eq!(
+            found(&search(json!({"selection":"requirements.*","scope":"node"})).unwrap()),
+            [
+                "src/cite.rs#fn[cited]",
+                "src/lib.rs#fn[ready]",
+                "src/other.rs#fn[elsewhere]"
+            ]
+        );
+        let error = search(json!({"selection":"requirements.ready","scope":"dir"}))
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("unknown referencing scope"),
+            "{error}"
+        );
+    }
+
+    // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn ast_grep_queries_run_declared_queries_and_return_their_sites() {
+        let root = project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            concat!(
+                ":::{req} ready\nThe project MUST be ready.\n:::\n\n",
+                "::::{req} errors\nAccumulating functions MUST keep going.\n\n",
+                ":::{sites} accumulators\n```yaml\nlanguage: rust\npaths: [src]\nexclude: [src/skip.rs]\n",
+                "rule:\n  kind: function_item\n  has:\n    stopBy: end\n    kind: identifier\n    regex: \"^errors$\"\n",
+                "match: [\"fn f(errors: u8) {}\"]\nno_match: [\"fn f() {}\"]\n```\n:::\n\n",
+                ":::{violations} exits\n```yaml\nlanguage: rust\nwithin: accumulators\n",
+                "rule:\n  kind: return_expression\n",
+                "match: [\"fn f(errors: u8) { return; }\"]\nno_match: [\"fn f() { return; }\"]\n```\n:::\n",
+                "::::\n\n",
+                "::::{req} broken\nBroken.\n\n:::{sites} bad\nNo code block.\n:::\n::::\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "fn check(errors: &mut Vec<String>) {\n    if errors.is_empty() {\n        return;\n    }\n}\n\nfn helper() {\n    return;\n}\n\nmod inner {\n    fn nested(errors: u8) {}\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/skip.rs"),
+            "fn skipped(errors: u8) {}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("tests")).unwrap();
+        fs::write(
+            root.path().join("tests/outside.rs"),
+            "fn outside(errors: u8) {}\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let query = |name: &str| dispatch(&sources, "ast_grep", &json!({"query": name}));
+        // Site queries honour paths and exclude.
+        let sites = query("requirements.errors/accumulators").unwrap();
+        assert_eq!(
+            found(&sites),
+            ["src/lib.rs#fn[check]", "src/lib.rs#mod[inner]/fn[nested]"]
+        );
+        assert_eq!(sites.inputs.len(), 2);
+        // Violation matches belong to the innermost containing site; matches
+        // inside no site are discarded.
+        let violations = query("requirements.errors/exits").unwrap();
+        assert_eq!(found(&violations), ["src/lib.rs#fn[check]"]);
+        for (name, message) in [
+            (
+                "requirements.errors/missing",
+                "declares no query named \"missing\"",
+            ),
+            (
+                "requirements.broken/bad",
+                "exactly one fenced yaml code block",
+            ),
+        ] {
+            let error = query(name).err().unwrap();
+            assert!(error.to_string().contains(message), "{name}: {error}");
         }
     }
 }

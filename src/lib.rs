@@ -21,6 +21,7 @@ pub mod judgment;
 mod outline;
 mod redaction;
 mod rust_coverage;
+mod structural;
 mod terms;
 
 pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
