@@ -1,7 +1,7 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use habeas::{InputMode, InputTarget, add_input, validate_repository};
+use habeas::{outline_input, outline_inputs_for_lines, validate_repository};
 use mdbook_preprocessor::book::{Book, Chapter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -29,17 +29,84 @@ fn fixture() -> TempDir {
     temp
 }
 
-// {test}`requirements.definitions.capture`
-fn capture(root: &Path) {
-    add_input(
-        root,
-        InputTarget::Requirement("rules.ready".into()),
-        InputMode::Requirements("rules.*".into()),
-    )
-    .unwrap();
+/// The raw fenced declaration of a fixture definition, as evidence records
+/// it: `rules.ready` is the `ready` block in `md/rules.md`.
+// {test}`requirements.definitions.inputs`
+// {test}`requirements.ci.requirements_inputs`
+fn declaration(root: &Path, name: &str) -> Vec<String> {
+    let (file, local) = name.split_once('.').unwrap();
+    let source = fs::read_to_string(root.join(format!("md/{file}.md"))).unwrap();
+    let lines = source.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with(":::{") && line.ends_with(&format!("}} {local}")))
+        .unwrap_or_else(|| panic!("no declaration of {name}"));
+    let end = start
+        + lines[start..]
+            .iter()
+            .position(|line| *line == ":::")
+            .unwrap();
+    lines[start..=end]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
 }
 
-// {test}`requirements.definitions.capture`
+// {test}`requirements.definitions.inputs`
+fn definition(root: &Path, name: &str) -> Value {
+    json!({ "definition": name, "text": declaration(root, name) })
+}
+
+/// A requirements input selecting `selection` and recording `matches`.
+// {test}`requirements.ci.requirements_inputs`
+fn requirements(root: &Path, selection: &str, matches: &[&str]) -> Value {
+    let text = matches
+        .iter()
+        .map(|name| declaration(root, name))
+        .collect::<Vec<_>>()
+        .join(&String::new());
+    json!({ "requirements": selection, "matches": matches, "text": text })
+}
+
+/// Writes a pending evidence record for the requirement or example `name`
+/// containing exactly `inputs`, and returns its path.
+// {test}`requirements.definitions.inputs`
+fn record(root: &Path, name: &str, inputs: Vec<Value>) -> PathBuf {
+    let lines = declaration(root, name);
+    let kind = if lines[0].starts_with(":::{example}") {
+        "example"
+    } else {
+        "requirement"
+    };
+    let body = lines[1..lines.len() - 1].join("\n");
+    let path = root.join(format!("evidence/{name}.json"));
+    let record = json!({
+        kind: body.trim(),
+        "determination": false,
+        "rationale": "Review pending.",
+        "references": habeas::reference_set_digest_for(root, name).unwrap(),
+        "inputs": inputs,
+    });
+    fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+    path
+}
+
+/// Records the fixture requirement with its selection and the complete
+/// definition cycle it depends on.
+// {test}`requirements.definitions.dependencies`
+fn capture(root: &Path) {
+    record(
+        root,
+        "rules.ready",
+        vec![
+            requirements(root, "rules.*", &["rules.ready"]),
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+        ],
+    );
+}
+
+// {test}`requirements.definitions.inputs`
 fn approve(path: &Path) {
     let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     record["determination"] = json!(true);
@@ -51,20 +118,16 @@ fn approve(path: &Path) {
 // {test}`requirements.definitions.reassessment`
 // {test}`requirements.definitions.dependencies`
 // {test}`requirements.definitions.inputs`
-// {test}`requirements.definitions.capture`
 #[test]
-fn cyclic_dependencies_are_captured_once_and_changes_require_review() {
+fn cyclic_dependencies_are_required_once_and_changes_require_review() {
     let temp = fixture();
     let root = temp.path();
     capture(root);
     let path = root.join("evidence/rules.ready.json");
     approve(&path);
-    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(record["inputs"].as_array().unwrap().len(), 3);
-    assert!(validate_repository(root).unwrap().errors.is_empty());
+    let report = validate_repository(root).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
     let before = fs::read(&path).unwrap();
-    capture(root);
-    assert_eq!(before, fs::read(&path).unwrap());
 
     let glossary = root.join("md/glossary.md");
     let original = fs::read_to_string(&glossary).unwrap();
@@ -88,10 +151,9 @@ fn cyclic_dependencies_are_captured_once_and_changes_require_review() {
         );
         assert_eq!(before, fs::read(&path).unwrap());
     }
+    // Reassessment records the current snapshots.
     capture(root);
     let refreshed: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(refreshed["determination"], false);
-    assert_eq!(refreshed["inputs"].as_array().unwrap().len(), 3);
     approve(&path);
     assert!(validate_repository(root).unwrap().errors.is_empty());
 
@@ -119,9 +181,6 @@ fn cyclic_dependencies_are_captured_once_and_changes_require_review() {
             .iter()
             .any(|e| e.contains("found 2"))
     );
-    capture(root);
-    let repaired: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(repaired["inputs"].as_array().unwrap().len(), 3);
 }
 
 // {test}`requirements.definitions.selection`
@@ -136,37 +195,69 @@ fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
         ":::{req} ready\nUse TERM`glossary.a` and TERM`rules.used`.\n:::\n\n:::{definition} used\n:phrase: used\n\nReferenced.\n:::\n\n:::{definition} unrelated\n:phrase: unrelated\n\nNot referenced.\n:::\n".replace("TERM", "{term}"),
     )
     .unwrap();
-    capture(temp.path());
-    let record: Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join("evidence/rules.ready.json")).unwrap(),
-    )
-    .unwrap();
-    let inputs = record["inputs"].as_array().unwrap();
-    assert_eq!(inputs[0]["requirements"], "rules.*");
-    assert_eq!(inputs[0]["matches"], json!(["rules.ready"]));
+    let root = temp.path();
+    let selection = requirements(root, "rules.*", &["rules.ready"]);
+    let path = record(
+        root,
+        "rules.ready",
+        vec![
+            selection.clone(),
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+            definition(root, "rules.used"),
+        ],
+    );
+    approve(&path);
+    // The glob selects only the requirement, and exactly the referenced
+    // definitions are required as separate inputs.
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(errors.is_empty(), "{errors:?}");
+
+    // The referenced definition is required although the glob does not
+    // select it; the unreferenced one is never required.
+    record(
+        root,
+        "rules.ready",
+        vec![
+            selection,
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+        ],
+    );
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
     assert!(
-        inputs[0]["text"]
-            .as_array()
-            .unwrap()
+        errors
             .iter()
-            .all(|line| !line.as_str().unwrap().contains("{definition}")),
-        "definitions are not part of the selected text: {inputs:?}"
-    );
-    let definitions = inputs[1..]
-        .iter()
-        .map(|input| input["definition"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        definitions,
-        ["glossary.a", "glossary.b", "rules.used"],
-        "exactly the referenced definitions, captured separately"
+            .any(|error| error.contains("rules.used, found 0")),
+        "{errors:?}"
     );
     assert!(
-        validate_repository(temp.path())
-            .unwrap()
-            .errors
+        errors
             .iter()
             .all(|error| !error.contains("rules.unrelated")),
+        "{errors:?}"
+    );
+
+    // A selection whose recorded matches include named definitions is stale.
+    let definitions = requirements(root, "rules.*", &["rules.ready", "rules.used"]);
+    record(
+        root,
+        "rules.ready",
+        vec![
+            definitions,
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+            definition(root, "rules.used"),
+        ],
+    );
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.starts_with("evidence/rules.ready.json")),
+        "{errors:?}"
     );
 }
 
@@ -184,33 +275,42 @@ fn selections_match_requirements_and_examples_but_never_named_definitions() {
             .replace("CITE", "{cite}"),
     )
     .unwrap();
-    capture(root);
-    let record: Value =
-        serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.ready.json")).unwrap())
-            .unwrap();
-    let inputs = record["inputs"].as_array().unwrap();
     // The glob selects the requirement and the example, not the definition
     // whose name it also matches, and that definition is not a dependency.
-    assert_eq!(inputs[0]["matches"], json!(["rules.case", "rules.ready"]));
+    let selected = vec![
+        requirements(root, "rules.*", &["rules.case", "rules.ready"]),
+        definition(root, "glossary.a"),
+        definition(root, "glossary.b"),
+    ];
+    let path = record(root, "rules.ready", selected.clone());
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
     assert!(
-        inputs
+        errors
             .iter()
-            .all(|input| input["definition"] != "rules.used"),
-        "{inputs:?}"
+            .all(|error| !error.starts_with("evidence/rules.ready.json")),
+        "{errors:?}"
     );
 
     // A named definition's exact name selects nothing.
-    let error = add_input(
+    let exact = requirements(root, "rules.used", &["rules.used"]);
+    record(
         root,
-        InputTarget::Requirement("rules.ready".into()),
-        InputMode::Requirements("rules.used".into()),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        error.contains("matches no requirement or example"),
-        "{error}"
+        "rules.ready",
+        vec![
+            exact,
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+        ],
     );
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("matches no requirement or example")),
+        "{errors:?}"
+    );
+    record(root, "rules.ready", selected);
 
     // The CLI selection paths apply the same rule.
     for args in [["status", "rules.*"], ["info", "rules.*"]] {
@@ -488,33 +588,41 @@ fn markdown_and_plain_text_inputs_contribute_their_term_references() {
     )
     .unwrap();
     // The heading's section covers both the paragraph and the code block.
-    for at in ["docs/notes.md:1", "notes.txt:1"] {
-        add_input(
-            root,
-            InputTarget::Requirement("rules.ready".into()),
-            InputMode::ItemsAtLine(at.into()),
-        )
-        .unwrap_or_else(|error| panic!("{at}: {error}"));
-    }
-    let record: Value =
-        serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.ready.json")).unwrap())
-            .unwrap();
-    let mut definitions: Vec<_> = record["inputs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|input| input["definition"].as_str())
-        .collect();
-    definitions.sort();
+    let section = outline_input(root, "docs/notes.md", "section[Notes]").unwrap();
+    let line = outline_inputs_for_lines(root, "notes.txt", 1, 1).unwrap();
+    assert_eq!(line.len(), 1, "{line:?}");
+    let sources = [section, line[0].clone()];
     // The fixture's requirement text needs the glossary cycle; the Markdown
     // paragraph and the text line add their terms, and the code block does not.
-    assert_eq!(
-        definitions,
-        ["glossary.a", "glossary.b", "more.line", "more.prose"],
-        "{record}"
+    let terms = |names: &[&str]| {
+        sources
+            .iter()
+            .cloned()
+            .chain(names.iter().map(|name| definition(root, name)))
+            .collect::<Vec<_>>()
+    };
+    let path = record(
+        root,
+        "rules.ready",
+        terms(&["glossary.a", "glossary.b", "more.line", "more.prose"]),
     );
-    approve(&root.join("evidence/rules.ready.json"));
-    assert!(validate_repository(root).unwrap().errors.is_empty());
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(errors.is_empty(), "{errors:?}");
+    for (names, missing) in [
+        (&["glossary.a", "glossary.b", "more.line"][..], "more.prose"),
+        (&["glossary.a", "glossary.b", "more.prose"][..], "more.line"),
+    ] {
+        record(root, "rules.ready", terms(names));
+        approve(&path);
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains(&format!("{missing}, found 0"))),
+            "{missing}: {errors:?}"
+        );
+    }
 }
 
 // {test}`requirements.definitions.transitive_cycle`
@@ -531,34 +639,21 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
             .replace("TERM", "{term}"),
     )
     .unwrap();
-    add_input(
+    // The function's term reference needs the same glossary cycle as the
+    // requirement text, captured once.
+    let path = record(
         root,
-        InputTarget::Requirement("rules.ready".into()),
-        InputMode::ItemsAtLine("src/lib.rs:3".into()),
-    )
-    .unwrap();
-    let path = root.join("evidence/rules.ready.json");
-    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    let inputs = record["inputs"].as_array().unwrap();
-    assert!(
-        inputs.iter().any(|input| input["item"] == "fn[run]"),
-        "{inputs:?}"
+        "rules.ready",
+        vec![
+            requirements(root, "rules.*", &["rules.ready"]),
+            outline_input(root, "src/lib.rs", "fn[run]").unwrap(),
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+        ],
     );
-    for term in ["glossary.a", "glossary.b"] {
-        assert!(
-            inputs.iter().any(|input| input["definition"] == term),
-            "{inputs:?}"
-        );
-    }
-    capture(root);
-    add_input(
-        root,
-        InputTarget::Requirement("rules.ready".into()),
-        InputMode::ItemsAtLine("src/lib.rs:3".into()),
-    )
-    .unwrap();
-    approve(&root.join("evidence/rules.ready.json"));
-    assert!(validate_repository(root).unwrap().errors.is_empty());
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(errors.is_empty(), "{errors:?}");
     let glossary = root.join("md/glossary.md");
     fs::write(
         &glossary,
@@ -631,18 +726,18 @@ fn definition_schema_deletion_and_literal_references_are_checked() {
         format!(":::{{req}} ready\n{body}\n:::\n"),
     )
     .unwrap();
-    capture(root);
-    approve(&root.join("evidence/rules.ready.json"));
+    // Literal and escaped references require no definition inputs.
+    let path = record(
+        root,
+        "rules.ready",
+        vec![requirements(root, "rules.*", &["rules.ready"])],
+    );
+    approve(&path);
     let report = validate_repository(root).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    let record: Value =
-        serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.ready.json")).unwrap())
-            .unwrap();
-    assert_eq!(record["inputs"].as_array().unwrap().len(), 1);
 }
 
 // {test}`requirements.definitions.dependencies`
-// {test}`requirements.definitions.capture`
 #[test]
 fn example_subject_and_definition_display_use_the_same_dependencies() {
     let temp = fixture();
@@ -653,16 +748,24 @@ fn example_subject_and_definition_display_use_the_same_dependencies() {
             .replace("CITE", "{cite}")
             .replace("TERM", "{term}");
     fs::write(path, text).unwrap();
-    add_input(
+    // The example's own term reference and its selected requirement need the
+    // same glossary cycle, recorded once.
+    record(
         root,
-        InputTarget::Example("rules.case".into()),
-        InputMode::Requirements("rules.ready".into()),
-    )
-    .unwrap();
-    let record: Value =
-        serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.case.json")).unwrap())
-            .unwrap();
-    assert_eq!(record["inputs"].as_array().unwrap().len(), 3);
+        "rules.case",
+        vec![
+            requirements(root, "rules.ready", &["rules.ready"]),
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+        ],
+    );
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .all(|error| !error.contains("definition input")),
+        "{errors:?}"
+    );
     let display = habeas::info_markdown(root, "rules.case").unwrap();
     assert!(display.contains("definition glossary.a"));
     assert!(display.contains("md/glossary.md"));

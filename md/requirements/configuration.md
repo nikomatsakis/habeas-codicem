@@ -135,8 +135,8 @@ Both the requested path and its resolved symlink target MUST be checked for
 disallow, so an allowed alias cannot expose a disallowed target.
 
 The same explicit disallow rules and external-path exceptions MUST apply when
-resolving recorded evidence inputs, including ordinary validation and
-`add-input`. Validation MUST remain independent of Git index membership: it
+resolving recorded evidence inputs, including ordinary validation. Validation MUST
+remain independent of Git index membership: it
 checks the recorded inputs' existence and contents. Loading path policy MUST NOT
 resolve credentials or validate unused authoring settings.
 :::

@@ -30,12 +30,6 @@ Validation MUST report missing required definition inputs and MUST NOT silently 
 A {term}`requirements.references.definition_selection` in a requirements input MUST continue to select requirements and named examples, excluding named definitions. Definitions referenced by selected texts MUST be captured as separate definition inputs, regardless of whether their names match the selection. Sharing a selection's matching name prefix alone MUST NOT make a definition a dependency.
 :::
 
-:::{req} capture
-When `habeas add-input` creates or refreshes evidence, it MUST also capture or refresh the definition inputs required by the resulting record, including dependencies of its subject text and all reviewed inputs.
-
-Repeated references MUST NOT create duplicate definition inputs. Any change to the record MUST leave its determination false pending reassessment. If no inputs or other record contents change, the record MUST remain unchanged.
-:::
-
 :::{example} phrase_rendering
 A definition named `glossary.first_parent_history` declares the phrase "first-parent history". A term reference to that name renders the phrase as an ordinary hyperlink to the declaration, without displaying the identifier or a badge. {cite}`requirements.definitions.references`
 :::
@@ -49,7 +43,7 @@ A requirements input selects `requirements.cli.*`. A selected requirement refere
 :::
 
 :::{example} reassessment
-An evidence record has determination true and a current definition input. After the definition changes, validation reports stale evidence without modifying the record. Running `habeas add-input` for that record refreshes its required definition input and leaves determination false pending review. {cite}`requirements.definitions.inputs` {cite}`requirements.definitions.capture`
+An evidence record has determination true and a current definition input. After the definition changes, validation reports stale evidence without modifying the record. {cite}`requirements.definitions.inputs`
 :::
 
 ## Terminology as authoring inputs

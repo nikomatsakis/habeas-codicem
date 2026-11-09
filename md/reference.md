@@ -84,18 +84,11 @@ show each node's kind, current line range, and current source text.
 
 `habeas author --all` captures source text and delegates judgments to the configured
 model. The supervising agent fixes reported gaps and reruns the command; it does
-not write evidence by hand. The lower-level `habeas add-input` command remains
-available for selecting an additional input. A changed input leaves its
-determination false until the authoring harness reassesses it.
-{cite}`requirements.authoring.batch` {cite}`requirements.cli.add_input` {cite}`requirements.ci.schema`
+not write evidence by hand. A changed input leaves its determination false until
+the authoring harness reassesses it.
+{cite}`requirements.authoring.batch` {cite}`requirements.ci.schema`
 
-```sh
-habeas add-input --for-requirement requirements.ci.outline_inputs --item src/evidence.rs:20
-habeas add-input --for-example reference.cli.unknown_command --item tests/cli.rs:26
-habeas add-input --for-requirement requirements.ci.outline_inputs --requirements 'requirements.ci.*'
-```
-
-The `--item <file>:<line>` mode works on any text file. It selects every outline node declared on that line: a named node, such as a Rust function, is declared on the line containing its name; an anonymous node, such as a `use` declaration or a line of a plain-text file, is declared where it starts. Each selected node is recorded with its selector and structural hash. A line on which no node is declared is rejected. A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.cli.add_input_item` {cite}`requirements.cli.add_input_requirements` {cite}`requirements.ci.outline_inputs` {cite}`requirements.ci.requirements_inputs`
+A requirements input takes a definition selection, either a full name or a glob where `*` matches any characters including dots. It includes requirements and named examples, records every matched name, and stores the full raw fenced declarations in sorted name order. Changes to a matched declaration or the match set invalidate the input. {cite}`requirements.ci.requirements_inputs`
 
 Habeas checks that every requirement and example has evidence, that every evidence file names a definition, that recorded requirement and definition text still matches, and that every outline input's hash still matches its node. An example with a true determination also needs a `{test}` reference. Each determination is checked on its own: a false judgment does not fail the definitions its subject implements, tests, or cites. {cite}`requirements.ci.determination`
 
@@ -743,13 +736,12 @@ Evidence includes each referenced definition as a separate input:
 {"definition":"glossary.first_parent_history","text":[":::{definition} first_parent_history",":phrase: first-parent history","","The sequence obtained by starting at a Git commit and repeatedly","following its first parent until reaching a root commit.",":::"]}
 ```
 
-`habeas add-input` automatically captures definitions referenced by the target's
-requirement or example text and its reviewed inputs. It follows references between
+The authoring harness automatically captures definitions referenced by the
+subject's requirement or example text and its reviewed inputs. It follows references between
 definitions until no new definitions are found; cycles are allowed, and each
 definition appears once. A requirements input's selection still selects only
 requirements and examples. Their referenced definitions are captured regardless of name.
 
-Changing a definition's phrase or body invalidates its snapshots. Refreshing inputs
-leaves the evidence pending reassessment. Validation reports missing or stale
+Changing a definition's phrase or body invalidates its snapshots. Validation reports missing or stale
 snapshots without modifying them. A term link does not replace a function's required
 requirement or example reference.

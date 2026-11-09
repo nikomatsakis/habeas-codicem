@@ -48,15 +48,7 @@ fn clap_defines_commands_options_and_usage_errors() {
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.starts_with("Usage: habeas <COMMAND>"), "{help}");
-    for command in [
-        "mdbook",
-        "setup",
-        "status",
-        "info",
-        "author",
-        "add-input",
-        "help",
-    ] {
+    for command in ["mdbook", "setup", "status", "info", "author", "help"] {
         assert!(
             help.contains(&format!("\n  {command} ")),
             "{command}: {help}"

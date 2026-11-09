@@ -7,7 +7,6 @@ use super::profile::{KindRule, NameRule, Profile, never, normalized, text};
 /// Names a section by its heading's normalised text; a section without a
 /// heading, before the first heading, is anonymous.
 // {impl}`requirements.references.outlines`
-// {impl}`requirements.cli.add_input_item`
 fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let heading = node

@@ -6,7 +6,6 @@ use std::path::{Component, Path, PathBuf};
 use mdbook_preprocessor::book::Book;
 use pulldown_cmark::{Event, Parser, Tag};
 
-mod add_input;
 pub mod authoring;
 mod builtins;
 mod citations;
@@ -23,7 +22,6 @@ mod redaction;
 mod rust_coverage;
 mod terms;
 
-pub use add_input::{InputMode, InputTarget, add_input};
 pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
 pub use inputs::{outline_input, outline_inputs_for_lines};
 

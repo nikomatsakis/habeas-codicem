@@ -199,11 +199,8 @@ impl InputSelector {
 
     /// The recorded evidence input: selectors and hashes, never outline
     /// source text or line numbers.
-    // {impl}`requirements.cli.add_input`
     // {impl}`requirements.definitions.inputs`
     // {impl}`requirements.ci.schema`
-    // {impl}`requirements.cli.add_input_requirements`
-    // {impl}`requirements.cli.add_input_item`
     // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {
         match self {
@@ -248,8 +245,6 @@ impl InputSelector {
     // {impl}`requirements.ci.requirements_inputs`
     // {impl}`requirements.definitions.inputs`
     // {impl}`requirements.definitions.selection`
-    // {impl}`requirements.cli.add_input_item`
-    // {impl}`requirements.cli.add_input_requirements`
     // {impl}`requirements.references.definition_globs`
     // {impl}`requirements.ci.input_containment`
     // {impl}`requirements.authoring.redaction`

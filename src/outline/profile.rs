@@ -5,7 +5,6 @@ use tree_sitter::{Language, Node};
 /// A profile-specific naming rule: the name's parts and the byte where the
 /// name begins.
 // {impl}`requirements.references.outlines`
-// {impl}`requirements.cli.add_input_item`
 pub(crate) type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>;
 
 /// How an outline node of a mapped kind is named.

@@ -6,7 +6,6 @@ use super::profile::{KindRule, NameRule, Profile, text};
 
 /// Names an impl by its syntactic self type and optional trait path.
 // {impl}`requirements.references.rust_item_selectors`
-// {impl}`requirements.cli.add_input_item`
 fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let self_type = node.child_by_field_name("type")?;
     let name = text(self_type, source).to_owned();
@@ -22,7 +21,6 @@ fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 
 /// Names an extern block by its ABI string, `Rust` when absent.
 // {impl}`requirements.references.rust_item_selectors`
-// {impl}`requirements.cli.add_input_item`
 fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let modifier = node

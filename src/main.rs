@@ -71,24 +71,6 @@ enum Command {
         #[command(subcommand)]
         command: HookCommand,
     },
-    // {impl}`requirements.cli.add_input`
-    // {impl}`requirements.cli.add_input_item`
-    // {impl}`requirements.cli.add_input_requirements`
-    #[command(
-        group(ArgGroup::new("target").required(true).multiple(false).args(["for_requirement", "for_example"])),
-        group(ArgGroup::new("mode").required(true).multiple(false).args(["item", "requirements"]))
-    )]
-    AddInput {
-        #[arg(long)]
-        for_requirement: Option<String>,
-        #[arg(long)]
-        for_example: Option<String>,
-        /// Add every outline node declared on a line, as `<file>:<line>`.
-        #[arg(long, value_name = "file:line")]
-        item: Option<String>,
-        #[arg(long, value_name = "selection")]
-        requirements: Option<String>,
-    },
 }
 
 // {impl}`requirements.cli.clap`
@@ -253,30 +235,5 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Hook {
             command: HookCommand::SessionStart,
         } => hook::session_start(),
-        // {impl}`requirements.cli.add_input`
-        // {impl}`requirements.cli.add_input_item`
-        // {impl}`requirements.cli.add_input_requirements`
-        Command::AddInput {
-            for_requirement,
-            for_example,
-            item,
-            requirements,
-        } => {
-            let root = setup::project_root()?;
-            let target = if let Some(name) = for_requirement {
-                habeas::InputTarget::Requirement(name)
-            } else {
-                habeas::InputTarget::Example(for_example.expect("clap requires a target"))
-            };
-            let mode = if let Some(specification) = item {
-                habeas::InputMode::ItemsAtLine(specification)
-            } else {
-                habeas::InputMode::Requirements(requirements.expect("clap requires an input mode"))
-            };
-            io::stdout()
-                .lock()
-                .write_all(habeas::add_input(&root, target, mode)?.as_bytes())?;
-            Ok(())
-        }
     }
 }

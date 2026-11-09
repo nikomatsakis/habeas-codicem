@@ -266,7 +266,6 @@ impl LineIndex {
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_selectors`
 // {impl}`requirements.references.structural_hash`
-// {impl}`requirements.cli.add_input_item`
 // {impl}`requirements.authoring.redaction`
 fn plain_text(
     profile: &'static Profile,
@@ -442,7 +441,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// Names a mapped node, returning its parts and the byte where the name
     /// is declared.
     // {impl}`requirements.references.outlines`
-    // {impl}`requirements.cli.add_input_item`
     fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
         let named = |child: Node<'_>| {
             (
@@ -494,7 +492,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 continue;
             }
             if let Some(rule) = self.profile.rule(child) {
-                // {impl}`requirements.cli.add_input_item`
                 let (name, declaration_byte) = match self.name(rule.name, child) {
                     Some((parts, byte)) => (Some(parts), byte),
                     None => (None, child.start_byte()),
@@ -613,7 +610,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     // {impl}`requirements.references.outline_selectors`
     // {impl}`requirements.references.outline_comments`
     // {impl}`requirements.references.structural_hash`
-    // {impl}`requirements.cli.add_input_item`
     fn finish(self, lines: &LineIndex) -> Outline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         nodes.push(root_node(
@@ -897,16 +893,6 @@ impl Outline {
             }
         }
         found
-    }
-
-    /// Non-root nodes declared on a line: named nodes on the line of their
-    /// name, anonymous nodes on the line where they start.
-    // {impl}`requirements.references.outlines`
-    // {impl}`requirements.cli.add_input_item`
-    pub(crate) fn declared_on_line(&self, line: usize) -> Vec<usize> {
-        (1..self.nodes.len())
-            .filter(|index| self.nodes[*index].declaration_line == line)
-            .collect()
     }
 
     /// The owners of comments touching a line.
