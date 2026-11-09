@@ -6,6 +6,7 @@ use crate::definition_glob;
 use crate::escape_html;
 use crate::evidence::inspect_repository;
 use crate::fixme::FixmeSummary;
+use crate::github::GithubIssues;
 use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};
 use crate::markdown::render_evidence_table;
 
@@ -34,7 +35,29 @@ pub fn status_markdown_with_options(
     glob: Option<&str>,
     verbose: bool,
 ) -> io::Result<String> {
-    let inspection = inspect_repository(root)?;
+    status_markdown_with_github(root, all, glob, verbose, &GithubIssues::offline())
+}
+
+/// Renders `habeas status`, reading the issues `{fixme}` references name
+/// through `github`. The other status functions read no issues, so every
+/// issue counts as open.
+// {impl}`requirements.cli.status`
+// {impl}`requirements.cli.fixme_summary`
+// {impl}`requirements.cli.fixme_issues`
+// {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.cli.shared_status_rendering`
+// {impl}`requirements.definitions.selection`
+// {impl}`requirements.references.definition_globs`
+// {impl}`requirements.references.no_requirement`
+pub fn status_markdown_with_github(
+    root: &Path,
+    all: bool,
+    glob: Option<&str>,
+    verbose: bool,
+    github: &GithubIssues,
+) -> io::Result<String> {
+    let mut inspection = inspect_repository(root)?;
+    crate::github::add_issue_findings(&mut inspection, github);
     if let Some(glob) = glob {
         definition_glob::validate(glob)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;

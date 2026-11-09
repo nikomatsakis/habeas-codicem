@@ -199,7 +199,10 @@ impl Fixture {
             .env("APPDATA", &self.config)
             .env("LOCALAPPDATA", &self.state)
             .env("HOME", self.temp.path())
-            .env("HABEAS_TEST_MODEL_KEY", AUTH);
+            .env("HABEAS_TEST_MODEL_KEY", AUTH)
+            // No test contacts GitHub: nothing listens on this port, so
+            // issues are unreachable and count as open.
+            .env("HABEAS_GITHUB_API_URL", "http://127.0.0.1:9");
         command
     }
 
@@ -246,6 +249,7 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.usage_inputs`
 // {test}`requirements.authoring.usage_requests`
 // {test}`requirements.authoring.mandatory_inputs`
+// {test}`requirements.authoring.github_reads`
 #[test]
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
@@ -322,6 +326,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(
         tools,
         [
+            "github",
             "habeas",
             "list_files",
             "outline",
@@ -364,6 +369,16 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     // for the function it belongs to.
     assert!(prompt.contains("// :github: example/app#125"));
     assert!(prompt.contains("// One acknowledged gap."));
+    // GitHub is unreachable, so the issue is supplied as open, but the state
+    // is not recorded.
+    assert!(
+        prompt.contains(
+            "\"github_issues\": [\n      {\n        \"issue\": \"example/app#125\",\n        \"state\": \"open\"\n      }\n    ]"
+        ),
+        "{prompt}"
+    );
+    assert!(!evidence.to_string().contains("github_issues"));
+    assert!(!fixture.usage().to_string().contains("github_issues"));
     assert!(
         inputs
             .iter()
@@ -1547,6 +1562,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(
             tools,
             [
+                "github",
                 "habeas",
                 "list_files",
                 "outline",
@@ -1823,7 +1839,7 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
 
     // Both fixtures are identical projects, so the requests must match.
     assert_eq!(ollama, bedrock);
-    assert_eq!(ollama.1.len(), 6);
+    assert_eq!(ollama.1.len(), 7);
 }
 
 /// Asserts that authoring failed before or while recording usage history and

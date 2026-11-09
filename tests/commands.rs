@@ -111,6 +111,9 @@ fn fixture() -> TempDir {
 fn habeas(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_habeas"))
         .current_dir(dir)
+        // No test contacts GitHub: nothing listens on this port, so issues
+        // are unreachable and count as open.
+        .env("HABEAS_GITHUB_API_URL", "http://127.0.0.1:9")
         .args(args)
         .output()
         .unwrap()

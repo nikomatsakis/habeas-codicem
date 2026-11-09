@@ -14,6 +14,7 @@ mod definition_glob;
 mod evidence;
 mod fenced;
 mod fixme;
+mod github;
 mod index;
 mod inputs;
 pub mod judgment;
@@ -23,6 +24,7 @@ mod rust_coverage;
 mod terms;
 
 pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
+pub use github::GithubIssues;
 pub use inputs::{outline_input, outline_inputs_for_lines};
 
 /// Validate the current Cargo and mdBook project for use in a Cargo test.
@@ -1620,5 +1622,6 @@ mod tests {
 mod commands;
 mod markdown;
 pub use commands::{
-    info_markdown, status_markdown, status_markdown_filtered, status_markdown_with_options,
+    info_markdown, status_markdown, status_markdown_filtered, status_markdown_with_github,
+    status_markdown_with_options,
 };

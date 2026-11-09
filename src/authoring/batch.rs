@@ -44,6 +44,7 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.authoring.github_reads`
 pub async fn author_all_with_options(
     root: &Path,
     selection: Option<&str>,
@@ -51,10 +52,14 @@ pub async fn author_all_with_options(
 ) -> io::Result<BatchOutcome> {
     let root = fs::canonicalize(root)?;
     let mut progress = BatchProgress::new(options.verbose);
-    let inspection = inspect_repository_with_progress(&root, |update| progress.inspect(update))?;
+    let mut inspection =
+        inspect_repository_with_progress(&root, |update| progress.inspect(update))?;
     if !inspection.discovery_errors.is_empty() {
         return Err(io::Error::other(inspection.discovery_errors.join("\n")));
     }
+    // A FIXME record whose acknowledging issue closed is stale.
+    // {impl}`requirements.authoring.github_reads`
+    crate::github::add_issue_findings(&mut inspection, &crate::github::GithubIssues::from_env());
     let (subjects, unchanged) =
         select_subjects(&root, &inspection, &mut |update| progress.inspect(update));
     let mut outcome = BatchOutcome {

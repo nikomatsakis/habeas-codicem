@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use super::access::SourceAccess;
 use crate::citations::CitationItem;
 use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
+use crate::github::GithubIssues;
 use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::{DefinitionKind, ReferenceKind};
 
@@ -42,6 +43,11 @@ pub(crate) struct AssessmentSources {
     /// Digest of the subject's reference set, recorded with the judgment.
     pub(crate) reference_set: String,
     mandatory: Vec<Value>,
+    /// The state of each issue a `{fixme}` in each mandatory input names,
+    /// supplied to the model with the input but never recorded.
+    issue_states: Vec<Vec<(String, &'static str)>>,
+    /// GitHub reads for the `github` tool and the states above.
+    pub(crate) github: GithubIssues,
     recorded: Vec<Value>,
 }
 
@@ -199,6 +205,14 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.into_iter().map(builtin_input));
+        let github = GithubIssues::from_env();
+        let issue_states = crate::github::input_issue_states(
+            &root,
+            &github,
+            &references,
+            &definitions,
+            &mandatory,
+        );
         Ok(Self {
             root,
             access,
@@ -208,6 +222,8 @@ impl AssessmentSources {
             outlines,
             reference_set,
             mandatory,
+            issue_states,
+            github,
             recorded: Vec::new(),
         })
     }
@@ -284,6 +300,14 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.iter().map(|name| builtin_input(name)));
+        let github = GithubIssues::from_env();
+        let issue_states = crate::github::input_issue_states(
+            &root,
+            &github,
+            &references,
+            &definitions,
+            &mandatory,
+        );
         Ok(Self {
             root,
             access,
@@ -293,6 +317,8 @@ impl AssessmentSources {
             outlines,
             reference_set: String::new(),
             mandatory,
+            issue_states,
+            github,
             recorded: Vec::new(),
         })
     }
@@ -300,6 +326,35 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn mandatory_inputs(&self) -> &[Value] {
         &self.mandatory
+    }
+
+    /// The mandatory inputs as supplied to the model: each input containing
+    /// a `{fixme}` that names issues also lists their states, `open` or
+    /// `closed`, under `github_issues`.
+    // {impl}`requirements.authoring.github_reads`
+    // {impl}`requirements.authoring.mandatory_inputs`
+    pub(crate) fn model_mandatory_inputs(&self) -> Vec<Value> {
+        self.mandatory
+            .iter()
+            .zip(
+                self.issue_states
+                    .iter()
+                    .chain(std::iter::repeat(&Vec::new())),
+            )
+            .map(|(input, states)| {
+                let mut input = input.clone();
+                if let (false, Some(object)) = (states.is_empty(), input.as_object_mut()) {
+                    object.insert(
+                        "github_issues".to_owned(),
+                        states
+                            .iter()
+                            .map(|(issue, state)| json!({"issue": issue, "state": state}))
+                            .collect(),
+                    );
+                }
+                input
+            })
+            .collect()
     }
 
     /// Inputs recorded as evidence: outline inputs keep only their file,

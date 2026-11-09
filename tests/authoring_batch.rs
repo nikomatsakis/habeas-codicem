@@ -344,7 +344,10 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("APPDATA", &self.config_root)
             .env("XDG_STATE_HOME", &self.state)
-            .env("LOCALAPPDATA", &self.state);
+            .env("LOCALAPPDATA", &self.state)
+            // No test contacts GitHub: nothing listens on this port, so
+            // issues are unreachable and count as open.
+            .env("HABEAS_GITHUB_API_URL", "http://127.0.0.1:9");
         command
     }
 
@@ -429,6 +432,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
             .env("APPDATA", &self.config_root)
             .env("XDG_STATE_HOME", &self.state)
             .env("LOCALAPPDATA", &self.state)
+            .env("HABEAS_GITHUB_API_URL", "http://127.0.0.1:9")
             .env("TERM", term)
             .env("NO_COLOR", "1")
             .env("CLICOLOR_FORCE", "1")

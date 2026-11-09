@@ -134,6 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Setup { path } => setup::run(path.as_deref()),
         // {impl}`requirements.cli.status`
         // {impl}`requirements.cli.fixme_summary`
+        // {impl}`requirements.cli.fixme_issues`
         Command::Status {
             all,
             selection,
@@ -141,8 +142,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let root = setup::project_root()?;
             io::stdout().lock().write_all(
-                habeas::status_markdown_with_options(&root, all, selection.as_deref(), verbose)?
-                    .as_bytes(),
+                habeas::status_markdown_with_github(
+                    &root,
+                    all,
+                    selection.as_deref(),
+                    verbose,
+                    &habeas::GithubIssues::from_env(),
+                )?
+                .as_bytes(),
             )?;
             Ok(())
         }

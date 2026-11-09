@@ -701,8 +701,9 @@ fn subject_task(kind: &DefinitionKind) -> String {
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.redaction`
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.authoring.github_reads`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
-    let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
+    let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
@@ -749,13 +750,14 @@ fn review_instructions(prompt: &str) -> String {
 
 /// The verifier's prompt for a determination and its rationale.
 // {impl}`requirements.authoring.verifier_prompt`
+// {impl}`requirements.authoring.github_reads`
 fn verification_prompt(
     sources: &AssessmentSources,
     determination: &Judgment,
     rationale: &str,
 ) -> io::Result<String> {
     let instructions = review_instructions(&initial_prompt(sources)?);
-    let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
+    let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let determination = determination.to_value().to_string();
     let mut values = shared_blocks().to_vec();
     values.extend([

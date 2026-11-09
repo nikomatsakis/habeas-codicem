@@ -23,6 +23,7 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
+// {impl}`requirements.authoring.github_reads`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
@@ -55,6 +56,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and item, the selector of the smallest enclosing outline node when the file has a language outline (null otherwise). An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with line null and item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
             "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
+        crate::github::tool_definition(),
     ]
 }
 
@@ -64,6 +66,7 @@ pub(crate) fn definitions() -> Vec<Value> {
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.github_reads`
 pub(crate) fn dispatch(
     sources: &AssessmentSources,
     name: &str,
@@ -78,6 +81,13 @@ pub(crate) fn dispatch(
         "outline" => outline(sources, arguments),
         "ripgrep" => search(sources, arguments),
         "references" => references(sources, arguments),
+        // GitHub reads are not evidence inputs.
+        "github" => crate::github::tool(&sources.github, &Value::Object(arguments.clone()))
+            .map(|result| ToolDelivery {
+                result,
+                inputs: Vec::new(),
+            })
+            .map_err(io::Error::other),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
     .map_err(super::access::recoverable_os_denial)
@@ -574,6 +584,7 @@ mod tests {
     use crate::authoring::inputs::tests::{project, role};
 
     // {test}`requirements.authoring.additional_read`
+    // {test}`requirements.authoring.github_reads`
     #[test]
     fn additional_read_flow_searches_outlines_and_reads_a_rust_file() {
         let root = project();
@@ -591,6 +602,17 @@ mod tests {
         )
         .unwrap();
         let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        // GitHub reads return tool errors here, since unit tests never contact
+        // GitHub, and are never evidence inputs.
+        for (issue, message) in [
+            ("example/app#1", "cannot read GitHub issue example/app#1"),
+            ("example/app", "is not an issue reference"),
+        ] {
+            let error = dispatch(&sources, "github", &json!({ "issue": issue }))
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains(message), "{error}");
+        }
         // The listing finds the directory's file and records nothing.
         let listing = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
         assert_eq!(listing.result, json!([{"path":"src/lib.rs","kind":"file"}]));
