@@ -1,7 +1,7 @@
 {
   "requirement": "For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.",
   "determination": false,
-  "rationale": "The code carries out every obligation, but the failure case \"`requirements` MUST be a definition selection\" is never tested through the requirements-input path.\n\n**Obligations and the code that carries them out**\n\n- **Selection validity.** `InputSelector::resolve` (`src/inputs.rs`, `Self::Requirements` arm) calls `definition_glob::validate(requirements)?` and rejects the input if that fails.\n- **Match against all requirements and named examples.** The same arm iterates all `definitions`, skips only `Term` declarations, and applies `definition_glob::matches`.\n- **Recompute, sort, compare `matches`.**\n  - `validate_input` (`src/evidence.rs`) routes requirements inputs to `validate_resolved_input`.\n  - `resolve` iterates a `BTreeMap`, so names come out sorted.\n  - `validate_resolved_input` compares the recorded `matches` with the recomputed ones and reports added and removed names.\n- **Raw fenced declarations, blank-line join, compare with `text`.**\n  - `resolve` builds the text from each declaration's `raw_lines` (redacted), with one empty line between declarations.\n  - `collect_definitions` builds `raw_lines` from the whole fenced block, with option lines removed.\n  - `validate_resolved_input` compares the built text with the recorded `text`.\n- **Retain file and inclusive line range.** `resolve` pushes a `SourceRange` per match from `definition.file`, `line_start` and `line_end`. `ResolvedInput.ranges` holds them. `index.rs` and `evidence_input_ranges` use them for display and coverage.\n- **Empty match set is invalid.** `resolve` returns the error \"requirements glob … matches no requirement or example\".\n- **Add, remove, rename or change invalidates; moving does not.** This follows from comparing by name and by raw text, not by position.\n- **Errors identify the selection and affected definitions.**\n  - The match-set error names the glob plus the added and removed names.\n  - The text error names the selector and the changed definitions.\n\n**Tests present**\n\n- `requirements_inputs_track_matched_declarations_in_full_name_order` covers these cases:\n  - `*` crossing dots and full-name ordering;\n  - the complete fenced text and the blank-line join;\n  - moving declarations (no error);\n  - changing, adding, removing and renaming a declaration;\n  - a selection matching nothing.\n- `requirements_inputs_omit_option_lines` covers raw lines, line ranges and option-line removal.\n- `cited_example_with_a_test_and_matching_evidence_validates` covers an added definition changing the match set.\n- The `tests/definitions.rs` helpers `declaration` and `requirements` support the integration tests.\n\n**Gap**\n\nThe obligation that `requirements` MUST be a definition selection has no test through the requirements-input path. The code is `definition_glob::validate(requirements)?` in `resolve`. I found no test that puts an invalid selection (an empty string, or a name with a disallowed character such as `[`) in an evidence `requirements` input and asserts the resulting error.\n\n- `tests/commands.rs` only exercises invalid globs through the `info` and `status` commands, not through this path.\n- `schema_rejects_each_malformed_field_and_input_form` only uses valid selections.\n- Running this needs no network, elapsed time or process-wide state, and the `?` propagation is a conditional rejection, so no test exemption applies.\n\nThe task treats the code that decides to apply the cited selection rule as implementing this obligation, and that code needs its own test. No `{fixme}` acknowledges the gap.",
+  "rationale": "Nearly every obligation is implemented and tested. One obligation is verified only by a test that carries no `{test}` reference to the subject, so I judge that a marking gap.\n\n**Obligations, code and tests**\n- **`requirements` MUST be a definition selection.**\n  - Code: `InputSelector::resolve`, `Requirements` arm (src/inputs.rs:244), calls `definition_glob::validate`.\n  - Test: `requirements_inputs_track_matched_declarations_in_full_name_order` (src/evidence.rs:2510) rejects `foo.[a].bar` and the empty selection.\n- **Match against all requirements and named examples.**\n  - Code: `resolve` skips `DefinitionKind::Term` and uses `definition_glob::matches`.\n  - Tests: the same test, plus tests/definitions.rs `selections_match_requirements_and_examples_but_never_named_definitions`.\n- **Recompute matches, sort by full name, compare with `matches`.**\n  - Code: `resolve` iterates the `BTreeMap`, which is sorted. `validate_resolved_input` (src/evidence.rs:947) compares and reports \"matches changed; added …, removed …\".\n  - Test: the full-name-order test, where `foo.a.b.bar` sorts before `foo.a.bar`.\n- **Take each complete raw fenced declaration, concatenate in full-name order with one blank line, compare with `text`.**\n  - Code: `collect_definitions` stores `raw_lines` (src/evidence.rs:413). `resolve` joins them with an empty line, and `validate_resolved_input` compares `text != resolved.text`.\n  - Tests: the full-name-order test, `cited_example_with_a_test_and_matching_evidence_validates`, and `requirements_inputs_omit_option_lines`.\n- **A selection matching nothing MUST be invalid.**\n  - Code: the `matches.is_empty()` error in `resolve`.\n  - Test: the `foo.*.none` case, and tests/definitions.rs for an exact name selecting a named definition.\n- **Adding, removing, renaming or changing a matched definition invalidates the input; moving an unchanged declaration does not.**\n  - Test: the full-name-order test covers all five cases. It adds `foo.z.bar`, removes the nested example, renames `a.bar` to `c.bar`, changes `Bar.` to `Changed.`, and reorders the declarations with prose between them. The cited-example test also covers adding.\n- **Errors MUST identify the selection and affected definitions.**\n  - Code: the messages name the glob, the added and removed names, and `changed definitions […]` plus a diff.\n  - Test: asserted in the full-name-order test.\n\n**Gap: retaining each match's source file and inclusive line range**\n- Code: `resolve` builds `ranges` as `SourceRange` values with file and line start/end. `render_input` displays them and `evidence_input_ranges` uses them for reference coverage.\n- No test marked `{test}``requirements.ci.requirements_inputs`` asserts the retained ranges.\n  - `requirements_inputs_omit_option_lines` asserts `Declaration` line numbers and the resolved text, not `resolved.ranges`.\n  - The full-name-order test and the cited-example test do not assert ranges either.\n- Two unmarked tests do verify this obligation:\n  - src/index.rs `detail_page_shows_recorded_text_locations_and_first_matching_group` asserts that a requirements input lists \"each match's name, file, and inclusive range\" (`md/rules.md:5–7`, `md/rules.md:1–3`). It is marked only `requirements.index.detail_format` and `requirements.definitions.inputs`.\n  - src/evidence.rs `cited_example_with_a_test_and_matching_evidence_validates` covers coverage only for an outline input on `src/main.rs`. No test shows a requirements input's range covering a reference in the book.\n- A test that verifies the subject without a `{test}` reference to it is a marking gap.\n- No `{fixme}` acknowledges this gap.",
   "references": "e36826c65524e8bed9847487c2e4439ebfb2400ca4e19fe2a2c974379843c895",
   "inputs": [
     {
@@ -18,7 +18,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+      "hash": "d74379ced653dde13c267f2f468733ca91147ed4cf67ebab9f62152ad7ab32e6"
     },
     {
       "file": "src/evidence.rs",
@@ -33,7 +33,7 @@
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
-      "hash": "bb22e27d8177579db4e9d6a47a91dd24f6177c907310f4e437ab751d3f1bfc85"
+      "hash": "5640b21be3bd5a71e05fbb1037e11a9740fbe593a9c9467dd7de1d8701ec5fc1"
     },
     {
       "file": "src/evidence.rs",
@@ -79,6 +79,46 @@
       ]
     },
     {
+      "file": "tests/definitions.rs",
+      "item": "fn[definition]",
+      "hash": "c80a0aca6d3342cd8b2cd20c2373571de9a8defc89542670e6f2d3c4c3e09123"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[capture]",
+      "hash": "6e8f58bda2cfc28e5f1d69b8493d03e1b52f247e17ba7cd22ff5b0ced462b2ac"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[approve]",
+      "hash": "a726a254700f485489b8d03c8a7108b9af8d498f0e29a996829d007638f8193c"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[globs_exclude_terms_but_capture_referenced_terms_outside_the_glob]",
+      "hash": "4ab720c7ddab9148353cc02eb2a3e2abcf93cb1a1cf9ea8c6ef5a739f1f74321"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[selections_match_requirements_and_examples_but_never_named_definitions]",
+      "hash": "1ba29ec3405ff85dbf2eb8212220236eddeba91bbf79148dd19d75f5892e7e81"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
+      "hash": "53dd18bacac5bf1addd83d1a4d08d822e7c650c1f380fbe172f093263510d32d"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[definition_schema_deletion_and_literal_references_are_checked]",
+      "hash": "c58e035b585fb51c4a5f294e9e35cdc275e828b91c0fceab914b0bfe6c892f87"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[example_subject_and_definition_display_use_the_same_dependencies]",
+      "hash": "2b918ac4ab16a82e0effa56f0d278c0c817b443d5556d0ef14f7d5c3885a967e"
+    },
+    {
       "file": "src/authoring/inputs.rs",
       "item": "fn[source_input]",
       "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
@@ -90,33 +130,13 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[file_references]",
-      "hash": "6bb24546f89cf1c05044f2ac3c1bb6c5ef7649119368d6bb876ab15831f76d1f"
-    },
-    {
-      "file": "src/evidence.rs",
       "item": "fn[evidence_input_ranges]",
       "hash": "3f52fbf697d40dfacd965db9a21a865bfdd39b2d2c3d8e120e576f113b56d6f2"
     },
     {
       "file": "src/index.rs",
-      "item": "impl[DefinitionEdges]/fn[group]",
-      "hash": "1d77dfe098b7e08d057b6bfaf801439f4ad4a7d24a9b713012848ec5ab88f0fb"
-    },
-    {
-      "file": "src/index.rs",
       "item": "fn[render_detail_sections]",
       "hash": "99f2d71104c1973f5af2103efe4e59858c87722227ff88f9d456c5fb9859168f"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[InputLocation]",
-      "hash": "99ea2be1f267223b80d87d341410380c2b14855b158cb3be7bedd36ee329724f"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[InputLocation]",
-      "hash": "dea18032fc35a91d2f7725791250ff4d1b26d1636aa106c78e5ee06bbbf3e604"
     },
     {
       "file": "src/index.rs",
@@ -134,34 +154,29 @@
       "hash": "587eca8437328c0afa6fedfc73fa2c6b8e16334b646ebe638cfc190f3a785f00"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[colon_fence]",
-      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[overlaps_protected]",
-      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[is_protected]",
-      "hash": "096aa5aeb26e538ce1a69dd6bf447d0b45071fd25e14885f63b4cf7865a98d87"
-    },
-    {
-      "file": "README.md",
-      "item": "section[Habeas%20Codicem]/section[Add%20Habeas%20to%20a%20project]",
-      "hash": "738a63c0d42b3e7adc8e900d7a9f131d725590af95876a4c5d636bbb49cbbec6"
+      "file": "audits/requirement-rewordings/ci-references-definitions.md",
+      "item": "section[Requirement%20rewordings:%20ci,%20references,%20definitions]/section[requirements.references.definition_glob_cases%20(example)]",
+      "hash": "3bad41309bacd1da2bf7a8ca596f39160ce43cb9a6b95a9574c2de4ecee0d7ed"
     },
     {
       "file": "md/reference.md",
       "item": "section[How%20it%20works]/section[Evidence]",
-      "hash": "8b4f3cd6888926d1291d36a8d60392d88db5a26997e32b1a31639d57a8f59c40"
+      "hash": "c0eecfe9d3c8d746c8e782f5121a0db83df6d0ec83922e42f9bb3d9106d84212"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "361779d667adae92c89da84f58a95340ddd7c61cad8b488ba700fc427a563f18"
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Look%20up%20definitions%20and%20references:%20`references`]",
+      "hash": "87148e1adb69ebeb91f3e6c1e675d56046e4165ec30950791f3cf6d7df0ee75b"
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "49e24ceb6633270547f2920b00be97d377caff564c3b34fef37085c9e6663877"
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "item": "section[Command-line%20interface]",
+      "hash": "141ff9adc3e9574b3e0001a9956c78adfb33f0b288fcffb4a5ad939cee6c54d9"
     },
     {
       "file": "md/requirements/references.md",
@@ -169,84 +184,39 @@
       "hash": "e80023b1464a00211f90408102e072f3128a6a48594014e0b201157a4f7beb92"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
+      "file": "md/requirements/references.md",
+      "item": "section[References%20and%20Rust%20items]/section[Distributed%20requirements]",
+      "hash": "e348f30b0c7daca599e3e9a99b650c55efe986f230ab8ea73568a24bc7bf8345"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
-      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]/fn[files]",
+      "hash": "36d05f255d7ded128763ebd771369fe797aa0ee7f81a106550b8f3ea5fe7406a"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[requirements_reads_select_requirements_and_examples_but_not_definitions]",
-      "hash": "c3f94d4d5c2450f48fc8d520e85b25688406bd6f765dc7cfc84bc29182931041"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[validate]",
-      "hash": "ab65a72f40933e45b7a6d3bbb3c455bcfafa6fe438b47e72c58305d0eb6fe211"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[validate]",
-      "hash": "9d47228e0c5a1d9a1681eb79f95a62e082f16ff1f218268f1d1c0e8f85b2c9e1"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[validate]",
-      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]/fn[validate]",
-      "hash": "a4c81ffd7d637673106ccb371ad8a87bae9341db666df8444fdd36e5d0952ecc"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]/fn[validate]",
-      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "85a75e4507fc47425ea5274b29629a298b9259bce2cfc6d7fa79904e645d111a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OptionValue]/fn[validate]",
-      "hash": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
+      "item": "mod[tests]/fn[parallel_search_orders_results_by_path_and_line]",
+      "hash": "7c4b2836cfc2b22f56e6d8a23e39c7c1e9588ae66d23b22716397464baa7077d"
     },
     {
       "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
+      "item": "fn[reference_set_digest]",
+      "hash": "bf4ecee44b22c35aa92df3535e6d5b981ee81740ffff2d7b236a1d36c4c70343"
     },
     {
       "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
-      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
+      "item": "fn[validate_references]",
+      "hash": "f4651e1065e668e3b6f660f1075c16f6aa94e1e71d8aa64d41ff0bf2da7d1b43"
     },
     {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_pages_and_info_display_redacted_source]",
-      "hash": "38e21b2ac47d69c2ee6c8bf8b24a47684ad609d06a0c90ea44f2d9c90cfa497c"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[reports_unknown_references_and_uncovered_lines]",
+      "hash": "c4e1f5dba212e5f06ecb7f71e610297c4dad32d07cc2b0931b0140a79a9b0c6c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are]",
+      "hash": "8438b66760683bc3ebb8338901de592dc71751d1e7c7de59fd6a0713b0a4f456"
     },
     {
       "file": "src/index.rs",
@@ -259,54 +229,503 @@
       "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[validate]",
-      "hash": "650422c1e693574d5cdc7e44922f551e17eb4279fa1ac35aab4f8ef59911d806"
+      "file": "src/redaction.rs",
+      "item": "struct[Redaction]",
+      "hash": "c1a4d250853491e434b4ec2da0e27a8d537ff859662f4e62cfbcffb1409f28fa"
+    },
+    {
+      "file": "src/redaction.rs",
+      "item": "fn[secret_regions]",
+      "hash": "32e323c906372e0de5c320ec6710cfbd513f191a8d383a7ae5b0fef6206c01ed"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "impl[SiteItem]/fn[queries]",
+      "hash": "07137fd8c94b2201eb7866af96c48295fea8c533470e3c877e08c2779d5a5964"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "mod[tests]/fn[a_fixme_inside_a_site_belongs_to_that_sites_review_only]",
+      "hash": "54c6f1c55c36607397ce8f52502bff180c9dd1b277d49f17f3acd8fd0c5aa29d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@22dc5b567241",
+      "hash": "22dc5b5672412229d9e225639a5181ebaa51be6b1d4b32640a218d3951e61aeb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@ff2c7253bc94",
+      "hash": "ff2c7253bc948b19f9298613abb27b745e89cc60f1d3624c4650fc0da5410856"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@bf22baf07a66",
+      "hash": "bf22baf07a66e8c67db5be037d0d16c148ce3574ceac9cba6d880ef0f26d9f21"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@1e7152c71f53",
+      "hash": "1e7152c71f5353b18d714f0c79004eb5e73218050fcd47f0d7995618036e0728"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@d343af29a946",
+      "hash": "d343af29a946f31ab2e325e00f5d116107a3741f909102cc2e026369847fd9e7"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@1cd4b78d09ac",
+      "hash": "1cd4b78d09acab83616bb2610c7fe0bb327e7a274a2a5e6889072853b6ff759e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@69cc623587e5",
+      "hash": "69cc623587e52da5ded73ef2d3ec8ffb03ec16fe813e8e66c3c406707c77d57e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@c4f7ae1160f6",
+      "hash": "c4f7ae1160f67a91b47ccd9c70114f844030c60d70439b0a048fc0d3c16c1603"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@8ccbb6434712",
+      "hash": "8ccbb643471238b7a26b79e4ff3d50e2d8d7c496f77dfa2764663b43213e80f6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@cb47c0b1f55b",
+      "hash": "cb47c0b1f55bfac6645f37b431b91c40f7515d6ef27a2f4de6f40876dc851bf8"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@592201def0d6",
+      "hash": "592201def0d606ee9b3566054a76991b4a090f78e224483a70db24490130d19a"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@5082948b8510",
+      "hash": "5082948b8510de27dfc90989962f6f25934d2a50e0d895853c7148b4cfbf9cfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@36239df1ef3c",
+      "hash": "36239df1ef3cfcfceba858162919a4ae9731de2e85b4da5b9147dea07884e51e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@b0bfb370af7d",
+      "hash": "b0bfb370af7dff56ce26b21f11676cd0b130792b6e5e470897d4a359f5670003"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@a04bd12beb7b",
+      "hash": "a04bd12beb7b93789584cb3c19e497097922243a3f3a13523a91e140a3bc7bea"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@8a35a59164ba",
+      "hash": "8a35a59164ba739a6e826aea641fca40fd3f05bcc7df5d61f92a09f8cc5f5bbb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@ed137ddf207a",
+      "hash": "ed137ddf207a6c9d411eb5ff89ac343451a22b724d19015c8a8edc5be215efd6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@a834736bf6de",
+      "hash": "a834736bf6de67432074521b55aae5847f6494f8cc390357a4c116ffd066a780"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@7b9ac35ff38c",
+      "hash": "7b9ac35ff38c411b299a208f79ff6a22fc81a590c850ebad4b5921ccf9040975"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/obj.h",
+      "item": "line@438107de94c5",
+      "hash": "438107de94c54f8afbc90a7ef0a8bdf6e5669ff52801ba785cafc4f309fe2a8e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/obj.h",
+      "item": "line@eab323834a1e",
+      "hash": "eab323834a1ea49fefa03419c91e48a6e1c1cbdda452f559c59534ef2f14dfea"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@59a677115ae9",
+      "hash": "59a677115ae9e4ac91d8e000ec3030e2eaa50b1acf4963feef957b20a5ba1ffe"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@dc62984b414a",
+      "hash": "dc62984b414aa8806ed681d315aa4144b3bf2a444653b72aee0744d67ffa915f"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@0eab7b022ba2",
+      "hash": "0eab7b022ba257d81e26074e7b1aedc282c54ac2ff1cfded81e3587a051fe30c"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@ede01b5b2c27",
+      "hash": "ede01b5b2c27aff2416fe3d6f7374a33d126da3697bce51b4b03230b15be88c6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@b4f2d8060a41",
+      "hash": "b4f2d8060a4185cda89048d55cbd24847accd03a48f4a513ac0c0e5965f0fa93"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@9f6bdabbe798",
+      "hash": "9f6bdabbe7981e797c41acd6df63736714013bd4b8932a7b7b662b3b9ff08150"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@5a746e1e0beb",
+      "hash": "5a746e1e0beb37973e67141b5c80fbd3792b68c6c6fc686c5f957687814472ff"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/stack.h",
+      "item": "line@ee42915e9ade",
+      "hash": "ee42915e9adec2d3049c82292978a93ea8f5f2291bdc8d719631cbcd0e4c638a"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@22dc5b567241",
+      "hash": "22dc5b5672412229d9e225639a5181ebaa51be6b1d4b32640a218d3951e61aeb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@ff2c7253bc94",
+      "hash": "ff2c7253bc948b19f9298613abb27b745e89cc60f1d3624c4650fc0da5410856"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@bf22baf07a66",
+      "hash": "bf22baf07a66e8c67db5be037d0d16c148ce3574ceac9cba6d880ef0f26d9f21"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@1e7152c71f53",
+      "hash": "1e7152c71f5353b18d714f0c79004eb5e73218050fcd47f0d7995618036e0728"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@d343af29a946",
+      "hash": "d343af29a946f31ab2e325e00f5d116107a3741f909102cc2e026369847fd9e7"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@1cd4b78d09ac",
+      "hash": "1cd4b78d09acab83616bb2610c7fe0bb327e7a274a2a5e6889072853b6ff759e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@69cc623587e5",
+      "hash": "69cc623587e52da5ded73ef2d3ec8ffb03ec16fe813e8e66c3c406707c77d57e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@c4f7ae1160f6",
+      "hash": "c4f7ae1160f67a91b47ccd9c70114f844030c60d70439b0a048fc0d3c16c1603"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@8ccbb6434712",
+      "hash": "8ccbb643471238b7a26b79e4ff3d50e2d8d7c496f77dfa2764663b43213e80f6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@cb47c0b1f55b",
+      "hash": "cb47c0b1f55bfac6645f37b431b91c40f7515d6ef27a2f4de6f40876dc851bf8"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@592201def0d6",
+      "hash": "592201def0d606ee9b3566054a76991b4a090f78e224483a70db24490130d19a"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@5082948b8510",
+      "hash": "5082948b8510de27dfc90989962f6f25934d2a50e0d895853c7148b4cfbf9cfb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@36239df1ef3c",
+      "hash": "36239df1ef3cfcfceba858162919a4ae9731de2e85b4da5b9147dea07884e51e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@b0bfb370af7d",
+      "hash": "b0bfb370af7dff56ce26b21f11676cd0b130792b6e5e470897d4a359f5670003"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@a04bd12beb7b",
+      "hash": "a04bd12beb7b93789584cb3c19e497097922243a3f3a13523a91e140a3bc7bea"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@8a35a59164ba",
+      "hash": "8a35a59164ba739a6e826aea641fca40fd3f05bcc7df5d61f92a09f8cc5f5bbb"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@ed137ddf207a",
+      "hash": "ed137ddf207a6c9d411eb5ff89ac343451a22b724d19015c8a8edc5be215efd6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@a834736bf6de",
+      "hash": "a834736bf6de67432074521b55aae5847f6494f8cc390357a4c116ffd066a780"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@7b9ac35ff38c",
+      "hash": "7b9ac35ff38c411b299a208f79ff6a22fc81a590c850ebad4b5921ccf9040975"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/obj.h",
+      "item": "line@438107de94c5",
+      "hash": "438107de94c54f8afbc90a7ef0a8bdf6e5669ff52801ba785cafc4f309fe2a8e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/obj.h",
+      "item": "line@eab323834a1e",
+      "hash": "eab323834a1ea49fefa03419c91e48a6e1c1cbdda452f559c59534ef2f14dfea"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@59a677115ae9",
+      "hash": "59a677115ae9e4ac91d8e000ec3030e2eaa50b1acf4963feef957b20a5ba1ffe"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@dc62984b414a",
+      "hash": "dc62984b414aa8806ed681d315aa4144b3bf2a444653b72aee0744d67ffa915f"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@0eab7b022ba2",
+      "hash": "0eab7b022ba257d81e26074e7b1aedc282c54ac2ff1cfded81e3587a051fe30c"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@ede01b5b2c27",
+      "hash": "ede01b5b2c27aff2416fe3d6f7374a33d126da3697bce51b4b03230b15be88c6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@b4f2d8060a41",
+      "hash": "b4f2d8060a4185cda89048d55cbd24847accd03a48f4a513ac0c0e5965f0fa93"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@9f6bdabbe798",
+      "hash": "9f6bdabbe7981e797c41acd6df63736714013bd4b8932a7b7b662b3b9ff08150"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@5a746e1e0beb",
+      "hash": "5a746e1e0beb37973e67141b5c80fbd3792b68c6c6fc686c5f957687814472ff"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/stack.h",
+      "item": "line@ee42915e9ade",
+      "hash": "ee42915e9adec2d3049c82292978a93ea8f5f2291bdc8d719631cbcd0e4c638a"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@22dc5b567241",
+      "hash": "22dc5b5672412229d9e225639a5181ebaa51be6b1d4b32640a218d3951e61aeb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@ff2c7253bc94",
+      "hash": "ff2c7253bc948b19f9298613abb27b745e89cc60f1d3624c4650fc0da5410856"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@bf22baf07a66",
+      "hash": "bf22baf07a66e8c67db5be037d0d16c148ce3574ceac9cba6d880ef0f26d9f21"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols.h",
+      "item": "line@1e7152c71f53",
+      "hash": "1e7152c71f5353b18d714f0c79004eb5e73218050fcd47f0d7995618036e0728"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@d343af29a946",
+      "hash": "d343af29a946f31ab2e325e00f5d116107a3741f909102cc2e026369847fd9e7"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@1cd4b78d09ac",
+      "hash": "1cd4b78d09acab83616bb2610c7fe0bb327e7a274a2a5e6889072853b6ff759e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@69cc623587e5",
+      "hash": "69cc623587e52da5ded73ef2d3ec8ffb03ec16fe813e8e66c3c406707c77d57e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_asm.h",
+      "item": "line@c4f7ae1160f6",
+      "hash": "c4f7ae1160f67a91b47ccd9c70114f844030c60d70439b0a048fc0d3c16c1603"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@8ccbb6434712",
+      "hash": "8ccbb643471238b7a26b79e4ff3d50e2d8d7c496f77dfa2764663b43213e80f6"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@cb47c0b1f55b",
+      "hash": "cb47c0b1f55bfac6645f37b431b91c40f7515d6ef27a2f4de6f40876dc851bf8"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@592201def0d6",
+      "hash": "592201def0d606ee9b3566054a76991b4a090f78e224483a70db24490130d19a"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@5082948b8510",
+      "hash": "5082948b8510de27dfc90989962f6f25934d2a50e0d895853c7148b4cfbf9cfb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@36239df1ef3c",
+      "hash": "36239df1ef3cfcfceba858162919a4ae9731de2e85b4da5b9147dea07884e51e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@b0bfb370af7d",
+      "hash": "b0bfb370af7dff56ce26b21f11676cd0b130792b6e5e470897d4a359f5670003"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@a04bd12beb7b",
+      "hash": "a04bd12beb7b93789584cb3c19e497097922243a3f3a13523a91e140a3bc7bea"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/boringssl_prefix_symbols_nasm.inc",
+      "item": "line@8a35a59164ba",
+      "hash": "8a35a59164ba739a6e826aea641fca40fd3f05bcc7df5d61f92a09f8cc5f5bbb"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@ed137ddf207a",
+      "hash": "ed137ddf207a6c9d411eb5ff89ac343451a22b724d19015c8a8edc5be215efd6"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@a834736bf6de",
+      "hash": "a834736bf6de67432074521b55aae5847f6494f8cc390357a4c116ffd066a780"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@7b9ac35ff38c",
+      "hash": "7b9ac35ff38c411b299a208f79ff6a22fc81a590c850ebad4b5921ccf9040975"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/obj.h",
+      "item": "line@438107de94c5",
+      "hash": "438107de94c54f8afbc90a7ef0a8bdf6e5669ff52801ba785cafc4f309fe2a8e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/obj.h",
+      "item": "line@eab323834a1e",
+      "hash": "eab323834a1ea49fefa03419c91e48a6e1c1cbdda452f559c59534ef2f14dfea"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@59a677115ae9",
+      "hash": "59a677115ae9e4ac91d8e000ec3030e2eaa50b1acf4963feef957b20a5ba1ffe"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@dc62984b414a",
+      "hash": "dc62984b414aa8806ed681d315aa4144b3bf2a444653b72aee0744d67ffa915f"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@0eab7b022ba2",
+      "hash": "0eab7b022ba257d81e26074e7b1aedc282c54ac2ff1cfded81e3587a051fe30c"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@ede01b5b2c27",
+      "hash": "ede01b5b2c27aff2416fe3d6f7374a33d126da3697bce51b4b03230b15be88c6"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@b4f2d8060a41",
+      "hash": "b4f2d8060a4185cda89048d55cbd24847accd03a48f4a513ac0c0e5965f0fa93"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@9f6bdabbe798",
+      "hash": "9f6bdabbe7981e797c41acd6df63736714013bd4b8932a7b7b662b3b9ff08150"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@5a746e1e0beb",
+      "hash": "5a746e1e0beb37973e67141b5c80fbd3792b68c6c6fc686c5f957687814472ff"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/stack.h",
+      "item": "line@ee42915e9ade",
+      "hash": "ee42915e9adec2d3049c82292978a93ea8f5f2291bdc8d719631cbcd0e4c638a"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[prompt_and_tools]",
+      "hash": "93151d450fb3da316c088f4846f86d5f437d4721dcfcf917f909677af9ab3b57"
     },
     {
       "file": "tests/commands.rs",
-      "item": "fn[commands_report_invalid_arguments_and_unmatched_selectors]",
-      "hash": "d3e5ef37c8bcb051fba22c0908323dcc2b280d531c816faf752615a2b1349afc"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[definition_and_requirements_inputs_obey_containment_for_declaring_files]",
-      "hash": "c40f0ea056a4480433c552d0e9acfafcfbee195deffe498d7bb2a9387744933e"
+      "item": "fn[status_lists_nonvalid_requirements_and_all_option_in_name_order]",
+      "hash": "007e5bc1743b81fe5c0f6cc7245991c263471e21dfbc885a4c02939f8773f4c8"
     },
     {
       "file": "tests/outcomes.rs",
-      "item": "fn[fixture]",
-      "hash": "9126c5ef449db339cb7032a660385f33f6f1ba29a49775015de69022683b8ec2"
+      "item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
+      "hash": "1573472c9b006092db4f055077c2b7e852439a8d3bf57523ed9d7e599f7eb9ce"
     },
     {
-      "file": "tests/references.rs",
-      "item": "fn[review]",
-      "hash": "d4310c6009f2e6f62e01ecc563bdfe0208302b2b15a0bee49df22a5821145aeb"
+      "file": "tests/outcomes.rs",
+      "item": "fn[editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered]",
+      "hash": "95c256a5a74610cd059a5cfc208a86afc02f04ab9c6e125333321281d8498e89"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+      "file": "tests/repository.rs",
+      "item": "fn[ci_tests_pull_requests_and_main_then_deploys_the_book_from_main]",
+      "hash": "2c30892ea0cb2a91b2dcbf7d00f3820db27b4e6f6bfcde3dd9fedbb7a71d6022"
     },
     {
-      "file": "src/citations.rs",
-      "item": "fn[validate_review]",
-      "hash": "2dba26551f3415997e69ef044dbd2edae28a7652632fb5010aed4c9ee2a8d6bf"
+      "file": "tests/symposium_hook_smoke.py",
+      "item": "def[main]",
+      "hash": "e225275a81a6d0a67573ef7addd83be5cc6b4615e29795ac5b0991d053484943"
     },
     {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "38d4022dff717f3d4a0b045e09870a330c39a8d9df26be52d6df9fdec6545920"
-    },
-    {
-      "file": "audits/initial-requirements-coverage.md",
-      "item": "section[Initial%20requirements%20coverage%20audit]/section[Findings]",
-      "hash": "9fa0bce3c6a504d888589a3ddcf93d3ae80815f78511935fd6a14a156836a3f3"
+      "definition": "requirements.ci.validation_error",
+      "text": [
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
+      ]
     }
   ]
 }
