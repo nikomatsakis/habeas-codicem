@@ -272,10 +272,11 @@ fn delete_orphaned_reviews(
         if !directory.is_dir() {
             continue;
         }
-        let mut errors = Vec::new();
-        let files = crate::evidence::files_with_extension(root, &directory, "json", &mut errors);
-        if !errors.is_empty() {
-            return Err(io::Error::other(errors.join("\n")));
+        // A listing failure aborts, so this is not a validation site.
+        let mut failures = Vec::new();
+        let files = crate::evidence::files_with_extension(root, &directory, "json", &mut failures);
+        if !failures.is_empty() {
+            return Err(io::Error::other(failures.join("\n")));
         }
         for file in files {
             let relative = crate::evidence::display_path(root, &file);

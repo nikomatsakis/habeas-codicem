@@ -482,6 +482,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
 // {test}`requirements.authoring.progress`
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.configuration`
+// {test}`requirements.authoring.refresh`
 #[test]
 fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {
     let server = Server::start(true, None);
@@ -1123,6 +1124,7 @@ fn denied_read_preserves_in_flight_assessments_and_their_evidence() {
 
 // {test}`requirements.authoring.batch`
 // {test}`requirements.ci.determination`
+// {test}`requirements.authoring.refresh`
 #[test]
 fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     let server = Server::start(false, None);
@@ -1200,6 +1202,7 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
 /// recorded hash, but changes the reference set, so the record is stale.
 // {test}`requirements.authoring.batch`
 // {test}`requirements.ci.reference_set`
+// {test}`requirements.authoring.refresh`
 #[test]
 fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     let server = Server::start(false, None);
@@ -1266,6 +1269,7 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
 
 // {test}`requirements.references.site_review`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.refresh`
 #[test]
 fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
     let server = Server::start(false, None);
@@ -1499,6 +1503,7 @@ fn empty_batches_and_early_errors_clear_the_terminal_display() {
 
 // {test}`requirements.references.citation_review`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.refresh`
 #[test]
 fn batch_authors_citation_reviews_and_preserves_current_ones() {
     let server = Server::start(false, None);

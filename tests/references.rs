@@ -301,6 +301,7 @@ fn fixme_references_are_fenced_described_and_named_only_outside_the_book() {
 
 // {test}`requirements.references.procedure`
 // {test}`requirements.references.rust_item_coverage`
+// {test}`requirements.references.roles`
 #[test]
 fn a_fixme_does_not_count_as_an_items_reference() {
     let temp = project();
@@ -406,6 +407,7 @@ fn review(root: &Path, citations: Value, determination: Value) -> Value {
 
 // {test}`requirements.references.citation_review`
 // {test}`requirements.ci.outcomes`
+// {test}`requirements.ci.orphans`
 #[test]
 fn citation_reviews_are_required_current_and_not_orphaned() {
     let temp = project();

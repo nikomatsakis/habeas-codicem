@@ -176,7 +176,11 @@ impl LoadedDetailEvidence {
             Ok(record) => Some(record),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => {
-                errors.push(format!("{prefix} cannot read evidence: {error}"));
+                // Validation usually reported the same failure already.
+                let failure = format!("{prefix} cannot read evidence:");
+                if !errors.iter().any(|reported| reported.starts_with(&failure)) {
+                    errors.push(format!("{failure} {error}"));
+                }
                 None
             }
         };
@@ -1243,6 +1247,39 @@ mod tests {
         );
     }
 
+    // {test}`requirements.ci.errors`
+    // {test}`requirements.index.invalid_detail`
+    #[test]
+    fn an_unreadable_record_is_reported_once() {
+        let temp = tempfile::tempdir().unwrap();
+        // A directory where the record belongs cannot be read as one.
+        fs::create_dir_all(temp.path().join("evidence/requirements.ready.json")).unwrap();
+        let reading = |reported: Vec<String>| {
+            let report = crate::EvidenceReport {
+                requirements: 1,
+                examples: 0,
+                evidence_files: 1,
+                errors: reported,
+            };
+            let loaded =
+                super::LoadedDetailEvidence::load(temp.path(), "requirements.ready", &report);
+            assert!(loaded.state == EvidenceState::Invalid);
+            loaded
+                .errors
+                .iter()
+                .filter(|error| error.contains("cannot read evidence"))
+                .count()
+        };
+        assert_eq!(reading(Vec::new()), 1);
+        // Validation already reported it.
+        assert_eq!(
+            reading(vec![
+                "evidence/requirements.ready.json: cannot read evidence: Is a directory".into()
+            ]),
+            1
+        );
+    }
+
     // {test}`requirements.authoring.redaction`
     // {test}`requirements.index.detail_format`
     // {test}`requirements.cli.info`
@@ -2048,6 +2085,7 @@ mod tests {
 
     // {test}`requirements.index.detail_format`
     // {test}`requirements.definitions.inputs`
+    // {test}`requirements.ci.requirements_inputs`
     #[test]
     fn detail_page_shows_recorded_text_locations_and_first_matching_group() {
         let temp = TempDir::new().unwrap();

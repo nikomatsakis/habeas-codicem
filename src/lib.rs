@@ -272,6 +272,7 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
 }
 
 // {impl}`requirements.ci.identifiers`
+// {impl}`requirements.ci.coverage`
 fn chapter_namespace(path: &Path) -> String {
     let path = path.with_extension("");
     let mut parts: Vec<_> = path
@@ -482,6 +483,7 @@ fn replace_references(
 // {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.safe_badges`
 // {impl}`requirements.index.navigation`
+// {impl}`requirements.examples.index`
 fn reference_badge(
     kind: ReferenceKind,
     name: &str,
@@ -1623,11 +1625,16 @@ mod tests {
             "a four-space-indented fence does not close"
         );
         assert!(definition_blocks(":::{req}ready\nBody.\n:::\n").is_empty());
+        // An opening fence needs at least three colons immediately followed
+        // by `{req}`.
+        assert!(definition_blocks("::{req} ready\nBody.\n::\n").is_empty());
+        assert!(definition_blocks("::: {req} ready\nBody.\n:::\n").is_empty());
     }
 
     // {test}`requirements.examples.definition`
     // {test}`requirements.references.book_badges`
     // {test}`requirements.ci.identifiers`
+    // {test}`requirements.examples.index`
     #[test]
     fn examples_are_distinct_definitions_and_tests_link_to_them() {
         let source = "::::{req} ready\nReady.\n\n:::{example} something.foo\nGiven ready, it succeeds. CITE`requirements.ready`\n:::\n::::\n\n:::{example} bad name\nInvalid.\n:::\n\n```text\n:::{example} hidden\nLiteral.\n:::\n```"

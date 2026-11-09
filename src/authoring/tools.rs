@@ -1128,6 +1128,17 @@ mod tests {
         assert_eq!(eof.result["inputs"].as_array().unwrap().len(), 1);
         assert_eq!(eof.result["inputs"][0]["item"], "fn[work]");
         assert_eq!(eof.result["inputs"][0]["line_end"], 2);
+        // A line-range read supplies the terminology of what it delivers.
+        let fresh = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let lines = dispatch(
+            &fresh,
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":1}),
+        )
+        .unwrap();
+        assert_eq!(lines.result["definitions"][0]["definition"], "terms.value");
+        assert_eq!(lines.result["definitions"][0]["text"][1], ":phrase: value");
+        assert_eq!(lines.inputs.len(), 2);
         assert!(
             dispatch(
                 &sources,
@@ -3208,6 +3219,7 @@ mod tests {
 
     // {test}`requirements.authoring.structural_search`
     // {test}`requirements.references.distributed`
+    // {test}`requirements.definitions.authoring_inputs`
     #[test]
     fn ast_grep_queries_run_declared_queries_and_return_their_sites() {
         let root = project();
@@ -3228,8 +3240,16 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} value\n:phrase: value\nA useful value.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
             root.path().join("src/lib.rs"),
-            "fn check(errors: &mut Vec<String>) {\n    if errors.is_empty() {\n        return;\n    }\n}\n\nfn helper() {\n    return;\n}\n\nmod inner {\n    fn nested(errors: u8) {}\n}\n",
+            format!(
+                "fn check(errors: &mut Vec<String>) {{\n    // {}\n    if errors.is_empty() {{\n        return;\n    }}\n}}\n\nfn helper() {{\n    return;\n}}\n\nmod inner {{\n    fn nested(errors: u8) {{}}\n}}\n",
+                role("term", "terms.value")
+            ),
         )
         .unwrap();
         fs::write(
@@ -3251,7 +3271,9 @@ mod tests {
             found(&sites),
             ["src/lib.rs#fn[check]", "src/lib.rs#mod[inner]/fn[nested]"]
         );
-        assert_eq!(sites.inputs.len(), 2);
+        // A declared query supplies the terminology of the sites it returns.
+        assert_eq!(sites.result["definitions"][0]["definition"], "terms.value");
+        assert_eq!(sites.inputs.len(), 3);
         // Violation matches belong to the innermost containing site; matches
         // inside no site are discarded.
         let violations = query("requirements.errors/exits").unwrap();

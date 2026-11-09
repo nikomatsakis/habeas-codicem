@@ -251,6 +251,7 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.mandatory_inputs`
 // {test}`requirements.authoring.github_reads`
 // {test}`requirements.authoring.invocation`
+// {test}`requirements.configuration.serialization`
 #[test]
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
@@ -285,12 +286,17 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
+    let user_config = fixture.config.join("habeas/config.toml");
+    let configured = fs::read(&user_config).unwrap();
     let output = fixture.run(&["author-evidence", SUBJECT]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // The user configuration, with its environment-resolved key, is not
+    // rewritten.
+    assert_eq!(fs::read(&user_config).unwrap(), configured);
     let requests = server.finish();
     assert_eq!(requests.len(), 2);
     for request in &requests {
@@ -534,6 +540,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.usage_storage`
+// {test}`requirements.configuration.serialization`
 #[test]
 fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
     let server = Server::start(vec![reply(vec![call(
@@ -559,6 +566,11 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
         ),
     )
     .unwrap();
+    let configurations = [fixture.project.join("habeas.toml"), workspace.clone()];
+    let before = configurations
+        .iter()
+        .map(|path| fs::read(path).unwrap())
+        .collect::<Vec<_>>();
     let output = fixture
         .command()
         .current_dir(&nested)
@@ -566,6 +578,12 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
+    // Running the configured feature rewrites neither configuration file,
+    // and creates no user configuration.
+    for (path, before) in configurations.iter().zip(&before) {
+        assert_eq!(&fs::read(path).unwrap(), before, "{}", path.display());
+    }
+    assert!(!fixture.config.join("habeas/config.toml").exists());
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].body["model"], "workspace-model");

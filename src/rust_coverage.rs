@@ -135,6 +135,8 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.procedure`
+// {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.roles`
 fn missing_function_references(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
@@ -382,6 +384,7 @@ mod tests {
     }
 
     // {test}`requirements.references.rust_item_coverage`
+    // {test}`requirements.references.outline_comments`
     #[test]
     fn finds_uncited_functions_without_using_enclosing_or_string_references() {
         let source = r##"

@@ -787,6 +787,7 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 // {impl}`requirements.authoring.example_task`
 // {impl}`requirements.authoring.distributed_task`
 // {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.ci.review_criteria`
 fn subject_task(kind: &DefinitionKind, distributed: bool) -> String {
     match kind {
         DefinitionKind::Requirement if distributed => format!(
@@ -2363,11 +2364,15 @@ mod tests {
             );
             assert!(text.contains("List each MUST, MUST NOT"), "{text}");
             assert!(text.contains("# Mandatory inputs"), "{text}");
-            // The verifier of a requirement carries both background texts.
+            // The verifier of a requirement carries both background texts,
+            // the judgment rules, and the subject's mandatory input.
             let text = serde_json::from_str::<Value>(text).unwrap().to_string();
             for background in [
                 approved_text("habeas_background", 0),
                 approved_text("habeas_background", 1),
+                approved_text("judgment_rules", 0),
+                "\"requirements\": \"requirements.ready\"",
+                "The project MUST be ready.",
             ] {
                 let background = serde_json::to_string(background).unwrap();
                 assert!(text.contains(background.trim_matches('"')), "{text}");
@@ -2376,6 +2381,15 @@ mod tests {
             assert!(tools.contains(&"submit_verification".to_owned()));
             assert!(tools.contains(&"habeas".to_owned()));
             assert!(!tools.contains(&"submit_judgment".to_owned()));
+            // The verifier has the assessments' source tools.
+            let source_tools = |tools: &[String]| {
+                tools
+                    .iter()
+                    .filter(|tool| !tool.starts_with("submit_"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(source_tools(tools), source_tools(&prompts[0].1));
 
             assert_eq!(logs.len(), 3);
             assert_eq!(logs[2]["subject"], "requirements.ready (verification)");
@@ -2384,6 +2398,69 @@ mod tests {
     }
 
     // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.habeas_background`
+    #[test]
+    fn verifier_prompts_name_examples_and_citation_reviews() {
+        let project = inputs::tests::project();
+        let cite = concat!("{", "cite}`requirements.ready`");
+        let requirements = project.path().join("md/requirements.md");
+        let mut book = fs::read_to_string(&requirements).unwrap();
+        book.push_str(&format!(
+            "\n:::{{example}} case\nA ready case. {cite}\n:::\n"
+        ));
+        fs::write(&requirements, book).unwrap();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            format!("// {cite}\n// :::{{cite}} habeas:none\n// Formats output.\n// :::\nfn helper() {{}}\n"),
+        )
+        .unwrap();
+        for (subject, header, named) in [
+            (
+                "requirements.case",
+                "Another reviewer judged example requirements.case as false.",
+                "Subject: example requirements.case",
+            ),
+            (
+                "citations:src/lib.rs#fn[helper]",
+                "Another reviewer judged citation review citations:src/lib.rs#fn[helper] as false.",
+                "Item under review: src/lib.rs fn[helper] Citations to check:",
+            ),
+        ] {
+            let sources = AuthoringSubject::parse(subject)
+                .sources(project.path())
+                .unwrap();
+            let prompt = verification_prompt(&sources, &Judgment::False, "A claimed gap.").unwrap();
+            let initial = initial_prompt(&sources).unwrap();
+            let task = prompt_section(&initial, "Task");
+            // The Task section's first paragraph is not repeated.
+            let (first, rest) = task.split_once("\n\n").unwrap();
+            for expected in [
+                header,
+                named,
+                rest,
+                prompt_section(&initial, "Your task"),
+                "A claimed gap.",
+                approved_text("habeas_background", 0),
+                approved_text("habeas_background", 1),
+                approved_text("judgment_rules", 0),
+            ] {
+                assert!(
+                    prompt.contains(expected),
+                    "missing {expected:?} in:\n{prompt}"
+                );
+            }
+            assert!(!prompt.contains(first), "{prompt}");
+            assert!(!prompt.contains(SITE_STEP), "{prompt}");
+            // Every mandatory input is delivered.
+            let mandatory =
+                serde_json::to_string_pretty(&sources.model_mandatory_inputs()).unwrap();
+            assert!(prompt.contains(&mandatory), "{prompt}");
+            assert!(!prompt.contains("{{"), "{prompt}");
+        }
+    }
+
+    // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.verifier_outcome`
     #[test]
     fn verifications_accept_exactly_their_four_fields() {
         assert_eq!(
@@ -2563,6 +2640,7 @@ mod tests {
     // {test}`requirements.authoring.distributed_task`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.authoring.initial_prompt`
+    // {test}`requirements.ci.review_criteria`
     #[test]
     fn a_distributed_requirement_task_continues_with_the_filled_distributed_task() {
         let project =

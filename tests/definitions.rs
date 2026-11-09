@@ -389,6 +389,48 @@ fn invalid_declarations_and_reference_targets_are_reported() {
     );
 }
 
+// {test}`requirements.definitions.declaration`
+#[test]
+fn definitions_share_name_and_fence_rules_and_need_no_evidence() {
+    let temp = fixture();
+    let root = temp.path();
+    // A longer opening fence holds a shorter colon line in its body.
+    fs::write(
+        root.join("md/long.md"),
+        "::::{definition} fenced\n:phrase: fenced\n\nBody with\n:::\na shorter colon line.\n::::\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("md/bad dir")).unwrap();
+    fs::write(
+        root.join("md/bad dir/terms.md"),
+        ":::{definition} a\n:phrase: a\n\nBody.\n:::\n",
+    )
+    .unwrap();
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("invalid definition name \"bad dir.terms.a\"")),
+        "{errors:#?}"
+    );
+    // The long fence closes only at four colons, and definitions need no
+    // evidence records, unlike the requirement.
+    assert!(
+        !errors.iter().any(|e| e.contains("long.fenced")),
+        "{errors:#?}"
+    );
+    assert!(
+        !errors.iter().any(|e| e.contains("glossary.")),
+        "{errors:#?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("evidence/rules.ready.json: missing")),
+        "{errors:#?}"
+    );
+}
+
 // {test}`requirements.ci.definition_errors`
 #[test]
 fn duplicates_involving_named_definitions_name_the_first_declaration() {

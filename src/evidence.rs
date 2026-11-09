@@ -151,15 +151,16 @@ pub(crate) struct InspectionProgress {
 // {impl}`requirements.ci.definition_errors`
 pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {
     let root = fs::canonicalize(root)?;
-    let mut errors = Vec::new();
-    let md_root = book_source_dir(&root, &mut errors);
-    let definitions = collect_definitions(&root, &md_root, &mut errors);
-    if errors.is_empty() {
+    // Any failure aborts, so this is not a validation site.
+    let mut failures = Vec::new();
+    let md_root = book_source_dir(&root, &mut failures);
+    let definitions = collect_definitions(&root, &md_root, &mut failures);
+    if failures.is_empty() {
         Ok(definitions)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            errors.join("\n"),
+            failures.join("\n"),
         ))
     }
 }
@@ -418,6 +419,7 @@ pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf 
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.ci.coverage`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -452,21 +454,24 @@ fn collect_definitions(
                 + 1;
             let source = format!("{label}:{line}");
             let name = full_requirement_name(&namespace, &block.name);
+            // An invalid name declares nothing, but the checks of the
+            // declaration's fence, options, and text still run.
             // {impl}`requirements.references.builtin_definitions`
-            if name.starts_with("habeas:") || block.name.starts_with("habeas:") {
+            let named = if name.starts_with("habeas:") || block.name.starts_with("habeas:") {
                 errors.push(format!(
                     "{source}: invalid {} name {name:?}: names beginning with habeas: are reserved for built-in definitions",
                     block.kind.noun()
                 ));
-                continue;
-            }
-            if !valid_name(&name) {
+                false
+            } else if !valid_name(&name) {
                 errors.push(format!(
                     "{source}: invalid {} name {name:?}",
                     block.kind.noun()
                 ));
-                continue;
-            }
+                false
+            } else {
+                true
+            };
 
             if !block.closed {
                 errors.push(format!(
@@ -518,6 +523,9 @@ fn collect_definitions(
                 && let Err(error) = crate::terms::declaration(&text)
             {
                 errors.push(format!("{source}: definition {name}: {error}"));
+            }
+            if !named {
+                continue;
             }
             match definitions.entry(name.clone()) {
                 Entry::Vacant(slot) => {
@@ -803,9 +811,8 @@ pub(crate) fn validate_input(
         check_keys(object, &["definition", "text"], label, errors);
         let definition = string_field(object, "definition", label, errors);
         let text = text_field(object, label, errors);
-        let (Some(definition), Some(text)) = (definition, text) else {
-            return None;
-        };
+        // Resolving the definition does not depend on a well-formed `text`.
+        let definition = definition?;
         return validate_resolved_input(
             root,
             definitions,
@@ -813,7 +820,7 @@ pub(crate) fn validate_input(
             &InputSelector::Definition {
                 definition: definition.to_owned(),
             },
-            &text,
+            text.as_deref(),
             None,
             label,
             errors,
@@ -830,20 +837,18 @@ pub(crate) fn validate_input(
                     None => errors.push(format!("{label}: matches[{index}] must be a string")),
                 }
             }
-            if names.len() != values.len() {
-                return None;
-            }
+            // Duplicates among the string entries are a separate failure.
             if names.iter().collect::<BTreeSet<_>>().len() != names.len() {
                 errors.push(format!(
                     "{label}: matches must have distinct definition names"
                 ));
             }
-            Some(names)
+            (names.len() == values.len()).then_some(names)
         });
         let text = text_field(object, label, errors);
-        let (Some(requirements), Some(matches), Some(text)) = (requirements, matches, text) else {
-            return None;
-        };
+        // Resolving the selection depends only on `requirements`; each
+        // comparison runs when its recorded field is well formed.
+        let requirements = requirements?;
         let selector = InputSelector::Requirements {
             requirements: requirements.to_owned(),
         };
@@ -852,8 +857,8 @@ pub(crate) fn validate_input(
             definitions,
             outlines,
             &selector,
-            &text,
-            Some(&matches),
+            text.as_deref(),
+            matches.as_deref(),
             label,
             errors,
         );
@@ -895,7 +900,8 @@ fn validate_outline_input(
             None
         }
     });
-    let (Some(file), Some(item), Some(hash)) = (file, item, hash) else {
+    // Resolution needs the file and item but not the hash.
+    let (Some(file), Some(item)) = (file, item) else {
         return None;
     };
     let selector = InputSelector::Outline {
@@ -909,7 +915,7 @@ fn validate_outline_input(
             return None;
         }
     };
-    if let (Some(node), Some(range)) = (&resolved.node, resolved.ranges.first())
+    if let (Some(node), Some(range), Some(hash)) = (&resolved.node, resolved.ranges.first(), hash)
         && node.hash != hash
     {
         errors.push(format!(
@@ -932,16 +938,15 @@ fn text_field(
     if values.is_empty() {
         errors.push(format!("{label}: text must be a nonempty array"));
     }
-    values
-        .iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value.as_str().map(str::to_owned).or_else(|| {
-                errors.push(format!("{label}: text[{index}] must be a string"));
-                None
-            })
-        })
-        .collect()
+    // Every element is checked, not only those before the first failure.
+    let mut text = Vec::new();
+    for (index, value) in values.iter().enumerate() {
+        match value.as_str() {
+            Some(line) => text.push(line.to_owned()),
+            None => errors.push(format!("{label}: text[{index}] must be a string")),
+        }
+    }
+    (text.len() == values.len()).then_some(text)
 }
 
 // {impl}`requirements.ci.requirements_inputs`
@@ -956,7 +961,7 @@ fn validate_resolved_input(
     definitions: &BTreeMap<String, Declaration>,
     outlines: &OutlineCache,
     selector: &InputSelector,
-    text: &[String],
+    text: Option<&[String]>,
     matches: Option<&[String]>,
     label: &str,
     errors: &mut Vec<String>,
@@ -990,7 +995,9 @@ fn validate_resolved_input(
             "{label}: requirements glob {glob:?} matches changed; added {missing:?}, removed {removed:?}"
         ));
     }
-    if text != resolved.text {
+    if let Some(text) = text
+        && text != resolved.text
+    {
         // For a requirements input, name the still-matched definitions whose
         // current declaration no longer appears in the recorded text.
         let changed = matches.map_or_else(Vec::new, |matches| {
@@ -1266,9 +1273,9 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     let root = fs::canonicalize(root)?;
     // Errors in other declarations are validation errors; they do not change
     // this definition's reference set.
-    let mut errors = Vec::new();
-    let md_root = book_source_dir(&root, &mut errors);
-    let definitions = collect_definitions(&root, &md_root, &mut errors);
+    let mut ignored = Vec::new();
+    let md_root = book_source_dir(&root, &mut ignored);
+    let definitions = collect_definitions(&root, &md_root, &mut ignored);
     let definition = definitions
         .get(name)
         .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -1278,11 +1285,12 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
                 format!("{name}: no matching requirement or named example"),
             )
         })?;
-    let mut errors = Vec::new();
-    let files = discovered_files(&root, &mut errors);
-    let references = collect_references_with_progress(&root, &files, &mut errors, &mut |_| {});
-    if !errors.is_empty() {
-        return Err(io::Error::other(errors.join("\n")));
+    // A discovery failure aborts, so this is not a validation site.
+    let mut failures = Vec::new();
+    let files = discovered_files(&root, &mut failures);
+    let references = collect_references_with_progress(&root, &files, &mut failures, &mut |_| {});
+    if !failures.is_empty() {
+        return Err(io::Error::other(failures.join("\n")));
     }
     let outlines = OutlineCache::default();
     let sites = definition_sites(&root, name, definition, &files, &outlines)?;
@@ -1369,16 +1377,19 @@ fn validate_references(
                 reference.name
             ));
         }
-        if reference.kind == ReferenceKind::Fixme
-            && !validate_fixme_form(reference, &location, unclosed, errors)
-        {
+        // A `{fixme}` whose form or placement failed is not an edge, but
+        // whether its name resolves is still checked.
+        let edge = reference.kind != ReferenceKind::Fixme
+            || validate_fixme_form(reference, &location, unclosed, errors);
+        if reference.name.is_empty() {
             continue;
         }
         // {impl}`requirements.references.builtin_definitions`
         // {impl}`requirements.references.no_requirement`
         if crate::builtins::is_builtin_name(&reference.name) {
             match crate::builtins::builtin(&reference.name) {
-                Some(_) if unclosed => {}
+                // Its form problems are already reported.
+                Some(_) if unclosed || !edge => {}
                 Some(builtin) => {
                     if let Err(problem) =
                         builtin.check(reference.kind, reference.commentary.as_deref())
@@ -1412,7 +1423,7 @@ fn validate_references(
             // coverage or reference set.
             // {impl}`requirements.references.site_review`
             // {impl}`requirements.references.evidence_coverage`
-            if !unclosed && !crate::sites::in_own_site(root, sites, reference) {
+            if edge && !unclosed && !crate::sites::in_own_site(root, sites, reference) {
                 by_definition
                     .entry(reference.name.clone())
                     .or_default()
@@ -1584,12 +1595,14 @@ fn validate_fixme_form(
     errors: &mut Vec<String>,
 ) -> bool {
     let name = &reference.name;
-    let Some(body) = reference.commentary.as_deref() else {
+    // The form and placement checks are independent: each is reported.
+    let mut edge = true;
+    if reference.commentary.is_none() {
         errors.push(format!(
             "{location}: inline {{fixme}} reference to {name} must use the fenced form, with a body describing the gap"
         ));
-        return false;
-    };
+        edge = false;
+    }
     if !name.is_empty() && reference.in_book {
         errors.push(if reference.in_declaration {
             format!(
@@ -1600,10 +1613,14 @@ fn validate_fixme_form(
                 "{location}: a named {{fixme}} to {name} must appear in a source outside the book"
             )
         });
-        return false;
+        edge = false;
     }
+    // The body checks need a complete body.
+    let Some(body) = reference.commentary.as_deref() else {
+        return false;
+    };
     if unclosed {
-        return !name.is_empty();
+        return edge && !name.is_empty();
     }
     let parsed = crate::fixme::FixmeBody::parse(body);
     for problem in &parsed.problems {
@@ -1622,7 +1639,7 @@ fn validate_fixme_form(
             "{location}: {{fixme}} to {name} has an empty body; describe the gap it acknowledges"
         ));
     }
-    true
+    edge
 }
 
 /// Reports FIXME strings that no current `{fixme}` to the definition could
@@ -2386,6 +2403,75 @@ pub(crate) mod tests {
         ] {
             assert!(errors.contains(detail), "missing {detail:?} in:\n{errors}");
         }
+    }
+
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn failed_checks_do_not_hide_later_independent_checks() {
+        let temp = fixture();
+        let root = temp.path();
+        let fixme = ["{", "fixme}`requirements.missing`"].concat();
+        fs::create_dir_all(root.join("md/bad dir")).unwrap();
+        // Invalid and reserved names still have their fence and text checked.
+        fs::write(root.join("md/bad dir/rules.md"), ":::{req} good\n:::\n").unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            format!(
+                ":::{{req}} habeas:none\n:::\n\n:::{{req}} one\nFirst.\n:::\n\nSee {fixme}.\n\n:::{{fixme}} requirements.one\n:::\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("evidence/requirements.one.json"),
+            json!({
+                "requirement": "First.",
+                "determination": true,
+                "rationale": "Checked.",
+                "inputs": [
+                    {"definition": "requirements.missing", "text": [1, 2]},
+                    {"requirements": "requirements.none", "matches": ["requirements.one", "requirements.one", 3], "text": ["x"]},
+                    {"file": "src/gone.rs", "item": "", "hash": "ABC"},
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        let all = errors.join("\n");
+        for detail in [
+            "md/bad dir/rules.md:1: invalid requirement name \"bad dir.rules.good\"",
+            "md/bad dir/rules.md:1: requirement bad dir.rules.good has no text",
+            "md/requirements.md:1: invalid requirement name \"requirements.habeas:none\": names beginning with habeas: are reserved",
+            "md/requirements.md:1: requirement requirements.habeas:none has no text",
+            // Every element of `text` is checked, and the definition is
+            // still resolved.
+            "inputs[0]: text[0] must be a string",
+            "inputs[0]: text[1] must be a string",
+            "inputs[0]: requirements.missing: no matching named definition",
+            // Duplicate matches are reported beside a non-string entry, and
+            // the selection is still resolved.
+            "inputs[1]: matches[2] must be a string",
+            "inputs[1]: matches must have distinct definition names",
+            "inputs[1]: requirements glob \"requirements.none\" matches no requirement",
+            // A malformed hash does not hide a missing file.
+            "inputs[2]: hash must be a lowercase hexadecimal SHA-256 digest",
+            "inputs[2]: cannot open src/gone.rs",
+            // An inline `{fixme}` in the book is reported for its form, its
+            // placement, and its unknown name.
+            "md/requirements.md:8: inline {fixme} reference to requirements.missing must use the fenced form",
+            "md/requirements.md:8: a named {fixme} to requirements.missing must appear in a source outside the book",
+            &format!("md/requirements.md:8: {fixme} has no matching requirement or example"),
+            // A misplaced named `{fixme}` still has its body checked.
+            "md/requirements.md:10: a named {fixme} to requirements.one must appear in a source outside the book",
+            "md/requirements.md:10: {fixme} to requirements.one has an empty body",
+        ] {
+            assert!(all.contains(detail), "missing {detail:?} in:\n{all}");
+        }
+        // No failure is reported twice.
+        let mut unique = errors.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), errors.len(), "{all}");
     }
 
     // {test}`requirements.references.evidence_coverage`

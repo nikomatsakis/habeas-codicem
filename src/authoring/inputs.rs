@@ -891,6 +891,7 @@ pub(super) mod tests {
 
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.ci.authoring_inputs`
+    // {test}`requirements.authoring_input`
     #[test]
     fn unresolvable_earlier_inputs_do_not_block_reassessment() {
         let root = project();
@@ -1183,6 +1184,7 @@ pub(super) mod tests {
     // {test}`requirements.references.anchors`
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring_input`
     #[test]
     fn anchored_files_contribute_root_node_inputs() {
         let root = project();
