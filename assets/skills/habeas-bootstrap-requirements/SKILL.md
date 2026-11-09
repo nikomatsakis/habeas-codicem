@@ -20,8 +20,9 @@ to a subagent to keep it out of your context.
       the reference procedure, and the review criteria. Aim for accurate
       references, not a coverage number. If the project has no `habeas.toml`,
       ask before running `habeas setup`. If a requirement already exists,
-      confirm authoring works with `habeas author <full-name>`; otherwise do so
-      after tagging the first area in step 6. If it fails, see the
+      confirm authoring works with `habeas author --stdout <full-name>`, which
+      always assesses and writes no evidence; otherwise run
+      `habeas author <full-name>` after tagging the first area in step 6. If it fails, see the
       habeas-evidence skill.
 - [ ] 2. Read the existing requirements, documentation, public entry points,
       implementation, and tests. Follow behavior through the code rather than

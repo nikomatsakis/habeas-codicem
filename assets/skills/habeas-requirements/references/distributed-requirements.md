@@ -125,10 +125,12 @@ that contains it.
 - Write a violation query, with `within` naming the site query, for every kind
   of construct that could break the obligation, such as each early exit in a
   function that must keep going.
-- Before review, think about the places the site queries could miss, such as a
-  list held in a local variable or under another name, and widen the query or
-  state the convention as an obligation, so a miss becomes a code gap. The
-  requirement's review searches for them.
+- Before review, check that the site queries select every place the obligation
+  applies and no others: think about places they could miss, such as a list
+  held in a local variable or under another name, and places they select that
+  the obligation does not cover. Widen or narrow the query, or state the
+  convention as an obligation so a miss becomes a code gap. The requirement's
+  review searches for both.
 - Present the queries and snippets with the requirement text when reviewing it
   with the user.
 - Check with `habeas info <full-name>` that the sites are the ones you expect.

@@ -62,6 +62,10 @@ must move with the code.
   another says pressing q stops managed forwards; a reference alone would not
   say why `^C` is accepted.
 - Keep full names stable once agreed: evidence, references, and links use them.
+  Moving a requirement to another chapter or renaming it changes its full name:
+  agree it with the user, update every reference, link, and anchor to it, and
+  handle its old evidence as the orphaned-evidence row in habeas-evidence's
+  "Fixing findings" says.
 
 ## Writing requirements
 
@@ -131,7 +135,10 @@ example it could reference; an item may carry several:
    constrains its fields, variants, serialized form, or validation. Calling code
    that implements it does not count, so a dispatcher that only routes to the
    implementation gets `{cite}` of what it dispatches to, or `habeas:none`. A
-   requirement that refines another's obligation can `{impl}` it.
+   requirement that refines another's obligation can `{impl}` it. A site of a
+   distributed requirement needs no reference to that requirement; its site
+   review covers it, but it still needs references for anything else it
+   implements.
 3. Otherwise, if the item should be re-checked or kept in sync when the
    requirement or example changes, use `{cite}`.
 4. If nothing gives the item a reference, cite the built-in `habeas:none` in
