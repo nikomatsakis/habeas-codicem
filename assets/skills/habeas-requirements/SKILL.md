@@ -90,6 +90,15 @@ State obligations with BCP 14 terms (MUST, SHOULD, MAY). Give the outer directiv
 its body contains a nested colon directive, including a fenced reference;
 otherwise the inner closing `:::` ends the directive.
 
+Keep each requirement as small as it can be while still standing on its own: one
+obligation, or a few that only make sense together, that a reviewer can judge
+from its text and the requirements it cites. Split a requirement whose parts
+could change, be implemented, or fail independently, and move shared detail,
+such as a template or a format, into its own requirement that the others cite.
+A small requirement costs less to assess, and editing it makes only its own
+evidence stale. Draft new requirements this way; when you change an existing
+requirement that is larger, propose splitting it as part of the change.
+
 Write a concrete case as an `{example}` directive, named and fenced the same
 way. Its body must reference at least one requirement it illustrates: `{test}`
 when the requirement's review should check the case, `{cite}` when the
