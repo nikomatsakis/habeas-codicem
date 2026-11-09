@@ -1,7 +1,7 @@
 use std::io;
 use std::time::{Duration, SystemTime};
 
-use rig_core::completion::{CompletionRequest, CompletionResponse};
+use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse, Message};
 use rig_core::error::ProviderError;
 use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};
 use rig_core::{DynModel, operation::Completion};
@@ -102,6 +102,8 @@ pub(super) struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,
     bedrock: bool,
+    /// Whether the model takes prompt-cache checkpoints.
+    caches: bool,
 }
 
 impl RigProvider {
@@ -110,6 +112,7 @@ impl RigProvider {
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.authoring.credentials`
+    // {impl}`requirements.authoring.cache_checkpoints`
     pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let model = match config {
             BackendConfig::Bedrock(config) => {
@@ -133,6 +136,11 @@ impl RigProvider {
             model,
             options: config.options_json()?,
             bedrock: matches!(config, BackendConfig::Bedrock(_)),
+            caches: match config {
+                BackendConfig::Bedrock(config) => bedrock_caches(&config.model),
+                // Ollama has no prompt-cache checkpoints.
+                BackendConfig::Ollama(_) => false,
+            },
         })
     }
 }
@@ -190,6 +198,7 @@ impl CompletionProvider for RigProvider {
     // {impl}`requirements.authoring.provider`
     // {impl}`requirements.authoring.configuration_storage`
     // {impl}`requirements.authoring.rig_configuration_mapping`
+    // {impl}`requirements.authoring.cache_checkpoints`
     async fn complete(&self, mut request: CompletionRequest) -> io::Result<CompletionResponse> {
         let mut options = self
             .options
@@ -198,6 +207,9 @@ impl CompletionProvider for RigProvider {
             .clone();
         if self.bedrock {
             apply_bedrock_options(&mut request, &mut options)?;
+        }
+        if self.caches {
+            place_cache_checkpoints(&mut request);
         }
         request.additional_params = (!options.is_empty()).then_some(Value::Object(options));
         let mut response = self.model.call(request).await.map_err(provider_failure)?;
@@ -288,6 +300,37 @@ fn apply_bedrock_options(
             .map_err(|_| option_type("stopSequences", "an array of strings"))?;
     }
     Ok(())
+}
+
+/// Whether a Bedrock model takes Converse cache checkpoints: Rig places
+/// them for the Claude and Nova families and refuses them for any other.
+// {impl}`requirements.authoring.cache_checkpoints`
+fn bedrock_caches(model: &str) -> bool {
+    matches!(
+        rig_bedrock::completion::Family::of(model),
+        rig_bedrock::completion::Family::Claude | rig_bedrock::completion::Family::Nova
+    )
+}
+
+/// Asks Rig for its cache checkpoints, which Bedrock places after the
+/// system prompt and at the end of the last message as separate
+/// `cachePoint` blocks, leaving the request's content unchanged. Bedrock
+/// rejects a message checkpoint after a reasoning turn, so a conversation
+/// holding one is sent without checkpoints rather than failing.
+// {impl}`requirements.authoring.cache_checkpoints`
+fn place_cache_checkpoints(request: &mut CompletionRequest) {
+    let reasoned = request.chat_history.iter().any(|message| match message {
+        Message::Assistant(turn) => turn.content.iter().any(|block| {
+            matches!(block, AssistantContent::Reasoning(_))
+                || block
+                    .native_item()
+                    .is_some_and(|item| item.get("reasoningContent").is_some())
+        }),
+        _ => false,
+    });
+    if !reasoned {
+        request.options.cache = Some(CacheRetention::Short);
+    }
 }
 
 // {impl}`requirements.authoring.configuration_storage`
@@ -555,6 +598,41 @@ mod tests {
                 apply_bedrock_options(&mut CompletionRequest::new("prompt"), &mut options).is_err()
             );
         }
+    }
+
+    // {test}`requirements.authoring.cache_checkpoints`
+    #[test]
+    fn cache_checkpoints_are_requested_for_caching_models_without_reasoning_turns() {
+        assert!(bedrock_caches(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        ));
+        assert!(bedrock_caches(
+            "arn:aws:bedrock:us-east-1:123:inference-profile/us.anthropic.claude-opus-4-1-20250805-v1:0"
+        ));
+        assert!(bedrock_caches("us.amazon.nova-pro-v1:0"));
+        assert!(!bedrock_caches("meta.llama3-70b-instruct-v1:0"));
+        assert!(!bedrock_caches("fixture-bedrock-model"));
+
+        let mut request = CompletionRequest::new("subject").preamble("system");
+        place_cache_checkpoints(&mut request);
+        assert_eq!(request.options.cache, Some(CacheRetention::Short));
+        // Only the cache option changes.
+        let mut expected = CompletionRequest::new("subject").preamble("system");
+        expected.options.cache = Some(CacheRetention::Short);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+
+        // Bedrock rejects a message checkpoint after a reasoning turn.
+        let mut request = CompletionRequest::new("subject").preamble("system");
+        request.chat_history.push(Message::Assistant(
+            rig_core::message::AssistantMessage::new(vec![AssistantContent::Reasoning(
+                Reasoning::new("Think."),
+            )]),
+        ));
+        place_cache_checkpoints(&mut request);
+        assert_eq!(request.options.cache, None);
     }
 
     // {test}`requirements.authoring.provider`

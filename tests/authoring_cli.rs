@@ -1686,6 +1686,128 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
     }
 }
 
+/// Runs one Bedrock assessment that reads a file and then submits, against
+/// model `model`, returning the two request bodies and the usage record.
+// {test}`requirements.authoring.cache_checkpoints`
+// {test}`requirements.authoring.usage_requests`
+fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
+    let server = Server::start(vec![
+        json!({
+            "output":{"message":{"role":"assistant","content":[{"toolUse":
+                {"toolUseId":"read","name":"habeas","input":{"file":"extra.txt","line_start":1}}}]}},
+            "stopReason":"tool_use",
+            "usage":{"inputTokens":7,"outputTokens":5,"totalTokens":1012,
+                "cacheReadInputTokens":0,"cacheWriteInputTokens":1000},
+            "metrics":{"latencyMs":1}
+        }),
+        json!({
+            "output":{"message":{"role":"assistant","content":[{"toolUse":
+                {"toolUseId":"submit","name":"submit_judgment","input":
+                    {"determination":true,"rationale":"The supplied sources support the subject."}}}]}},
+            "stopReason":"tool_use",
+            "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":1214,
+                "cacheReadInputTokens":1000,"cacheWriteInputTokens":200},
+            "metrics":{"latencyMs":1}
+        }),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.config.join("habeas/config.toml"),
+        format!("version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\npolicy = 'once'\nbackend = 'bedrock'\nmodel = '{model}'\nregion = 'us-west-2'\n"),
+    )
+    .unwrap();
+    let mut command = fixture.command();
+    for key in [
+        "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_ENDPOINT_URL",
+        "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS",
+        "AWS_BEARER_TOKEN_BEDROCK",
+    ] {
+        command.env_remove(key);
+    }
+    let output = command
+        .env("AWS_CONFIG_FILE", fixture.temp.path().join("no-aws-config"))
+        .env(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            fixture.temp.path().join("no-aws-credentials"),
+        )
+        .env("AWS_ACCESS_KEY_ID", "FAKE_ACCESS_KEY")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret")
+        .env("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", &server.endpoint)
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .args(["author", SUBJECT])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = server
+        .finish()
+        .into_iter()
+        .map(|request| request.body)
+        .collect();
+    (bodies, fixture.usage())
+}
+
+/// Removes every `cachePoint` block from a Converse request body.
+// {test}`requirements.authoring.cache_checkpoints`
+fn without_cache_points(body: &Value) -> Value {
+    let mut body = body.clone();
+    let strip = |blocks: &mut Value| {
+        if let Some(blocks) = blocks.as_array_mut() {
+            blocks.retain(|block| block.get("cachePoint").is_none());
+        }
+    };
+    strip(&mut body["system"]);
+    for message in body["messages"].as_array_mut().unwrap() {
+        strip(&mut message["content"]);
+    }
+    body
+}
+
+// {test}`requirements.authoring.cache_checkpoints`
+// {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.prompt_parts`
+#[test]
+fn claude_requests_carry_cache_checkpoints_and_record_cache_usage() {
+    let checkpoint = json!({"cachePoint":{"type":"default"}});
+    let (cached, usage) = bedrock_run("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    assert_eq!(cached.len(), 2);
+    for body in &cached {
+        // One checkpoint follows the system prompt...
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2, "{body}");
+        assert!(system[0]["text"].as_str().unwrap().starts_with("# Task"));
+        assert_eq!(system[1], checkpoint);
+        // ...and one ends the last message, and there are no others.
+        let messages = body["messages"].as_array().unwrap();
+        let last = messages.last().unwrap()["content"].as_array().unwrap();
+        assert_eq!(last.last().unwrap(), &checkpoint, "{body}");
+        assert_eq!(body.to_string().matches("cachePoint").count(), 2, "{body}");
+    }
+    assert_eq!(cached[1]["messages"].as_array().unwrap().len(), 3);
+    // The checkpoints change nothing else: a model without caching gets the
+    // same request without them.
+    let (plain, _) = bedrock_run("fixture-uncached-model");
+    assert!(!plain[0].to_string().contains("cachePoint"));
+    for (cached, plain) in cached.iter().zip(&plain) {
+        assert_eq!(&without_cache_points(cached), plain);
+    }
+    // Cache reads and writes are recorded per request and in total.
+    let requests = usage["requests"].as_array().unwrap();
+    assert_eq!(requests[0]["tokens"]["cached_input"], 0);
+    assert_eq!(requests[0]["tokens"]["cache_creation_input"], 1000);
+    assert_eq!(requests[1]["tokens"]["cached_input"], 1000);
+    assert_eq!(requests[1]["tokens"]["cache_creation_input"], 200);
+    assert_eq!(usage["tokens"]["cached_input"], 1000);
+    assert_eq!(usage["tokens"]["cache_creation_input"], 1200);
+}
+
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 #[test]
