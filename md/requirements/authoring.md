@@ -394,18 +394,17 @@ A site needs no {impl} or {test} reference and no tests of its own. Do not
 assess the site against other requirements, and do not assess the queries, the
 site's callers, or other sites.
 
-1. Decide applies, from the requirement's text describing its sites, not from
+1. Decide applies from the requirement's text describing its sites, not from
    which query matched; a violation match alone does not make the requirement
    apply. Read the site's callers only when its own code does not settle
-   whether the text describes it. Set applies to false only when no reading the
-   requirement's wording supports governs this site; then set determination to
-   true and explain in your rationale why the requirement does not apply. If a
-   reading the wording supports as well as any other governs the site, set
-   applies to true; that ambiguity is then a gap only if the site fails an
-   obligation under that reading.
-2. Otherwise set applies to true and judge the site: each obligation the
-   requirement states for its sites that the site does not meet is a gap.
-   Violation matches are
+   whether the text describes it. Set applies to true when the best-supported
+   reading of that text, or a reading its wording supports equally well,
+   governs the site; a site that fails an obligation under one such reading is
+   then judged by the ambiguity rule in "How to judge". Otherwise set applies
+   to false and determination to true, and explain in your rationale why the
+   requirement does not apply.
+2. If applies is true, judge the site: each obligation the requirement states
+   for its sites that the site does not meet is a gap. Violation matches are
    leads, not verdicts: judge each one listed above, saying whether it breaks
    the requirement here and why, but a match may be harmless and the site may
    break the requirement without one.
