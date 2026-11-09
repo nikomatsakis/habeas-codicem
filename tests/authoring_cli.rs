@@ -302,7 +302,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     }
     let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
     for text in [
-        "Bring your expert judgment",
+        "Assess whether a project's source code and tests satisfy one requirement.",
         REQUIREMENT,
         "SECRET_DEFINITION_TEXT",
         "fn ready()",
@@ -625,7 +625,7 @@ fn false_is_a_completed_assessment() {
     );
     let requests = server.finish();
     let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
-    assert!(prompt.contains("Choose false for other gaps or insufficient evidence"));
+    assert!(prompt.contains("and false otherwise."));
     assert!(prompt.contains("FIXME(#125): zero-capacity insertion panics"));
     assert!(prompt.contains("queue[0] = value"));
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
@@ -732,14 +732,22 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
     );
 }
 
+/// The `index`th text block of requirement `name` in the authoring chapter.
+// {test}`requirements.authoring.initial_prompt`
+fn approved_text(name: &str, index: usize) -> &'static str {
+    let chapter = include_str!("../md/requirements/authoring.md");
+    let opening = format!(":::{{req}} {name}\n");
+    let start = chapter.find(&opening).unwrap() + opening.len();
+    let body = &chapter[start..];
+    let body = &body[..body.find("\n:::\n").unwrap()];
+    let block = body.split("```text\n").nth(index + 1).unwrap();
+    block.split("\n```").next().unwrap()
+}
+
 // {test}`requirements.authoring.initial_prompt`
 #[test]
 fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
-    let chapter = include_str!("../md/requirements/authoring.md");
-    let start = chapter
-        .find("Bring your expert judgment to the task of assessing")
-        .unwrap();
-    let template = chapter[start..].split("\n```").next().unwrap();
+    let template = approved_text("initial_prompt", 0);
     for (subject, kind) in [
         (SUBJECT, "requirement"),
         ("requirements.ready_case", "example"),
@@ -763,9 +771,25 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
 
         let (before, after) = template.split_once("{{mandatory_inputs}}").unwrap();
+        let task = if kind == "requirement" {
+            format!(
+                "{}\n{}",
+                approved_text("requirement_task", 0),
+                approved_text("testing_bar", 0)
+            )
+        } else {
+            approved_text("example_task", 0).to_owned()
+        };
         let before = before
             .replace("{{subject_kind}}", kind)
-            .replace("{{subject_name}}", subject);
+            .replace("{{subject_name}}", subject)
+            .replace(
+                "{{habeas_background}}",
+                approved_text("habeas_background", 0),
+            )
+            .replace("{{reference_roles}}", approved_text("habeas_background", 1))
+            .replace("{{subject_task}}", &task)
+            .replace("{{judgment_rules}}", approved_text("judgment_rules", 0));
         assert!(
             before.contains(&format!("\nSubject: {kind} {subject}\n")),
             "{before}"
@@ -1443,7 +1467,10 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         );
         assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
         let prompt = body["messages"][0]["content"][0]["text"].as_str().unwrap();
-        assert!(prompt.contains("Bring your expert judgment") && prompt.contains(REQUIREMENT));
+        assert!(
+            prompt.contains("Assess whether a project's source code")
+                && prompt.contains(REQUIREMENT)
+        );
         let tool_specs = body["toolConfig"]["tools"].as_array().unwrap();
         for tool in tool_specs {
             let schema = &tool["toolSpec"]["inputSchema"]["json"];

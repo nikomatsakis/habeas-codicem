@@ -20,6 +20,7 @@ use rig_core::message::{Message, ToolResultContent, turn_failure};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
+use crate::DefinitionKind;
 use crate::config::{self, BackendKind, ResolvedAuthoringConfig};
 use crate::judgment::Judgment;
 use inputs::{AssessmentKind, AssessmentSources};
@@ -523,17 +524,26 @@ async fn assess_subject(
         }
         Err(error) => Err(error),
     };
-    let (confirmed, verification) = finish_followup(log, "verification", result)?;
-    let (mut chosen, outcome) = if confirmed {
-        (less, "confirmed")
+    let verification = finish_followup(log, "verification", result)?;
+    let (mut chosen, conclusion) = if !verification.real {
+        (more, "found none of its claimed gaps real")
     } else {
-        (more, "did not confirm")
+        let (judgment, conclusion) = if verification.acknowledged {
+            (
+                Judgment::Fixme(verification.acknowledgments.clone()),
+                "found its real gaps all acknowledged",
+            )
+        } else {
+            (Judgment::False, "found an unacknowledged real gap")
+        };
+        let mut record = less.1;
+        record["determination"] = judgment.to_value();
+        ((judgment, record), conclusion)
     };
     let note = format!(
-        "**Confirmation:** the assessments disagreed: the first determination was `{first_kind}` and an independent second assessment's was `{second_kind}`. A verifier checked the less favorable `{}` determination and {outcome} it, so the `{}` assessment is recorded.\n\nVerification:\n\n{}",
-        less_kind,
+        "**Confirmation:** the assessments disagreed: the first determination was `{first_kind}` and an independent second assessment's was `{second_kind}`. A verifier checked the less favorable `{less_kind}` determination and {conclusion}, so `{}` is recorded.\n\nVerification:\n\n{}",
         chosen.0.kind(),
-        verification.trim()
+        verification.rationale.trim()
     );
     let rationale = format!(
         "{}\n\n{note}",
@@ -606,27 +616,35 @@ fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>)
     })
 }
 
-/// The opening line of each approved prompt template in the authoring chapter.
-// {impl}`requirements.authoring.initial_prompt`
-const DEFINITION_PROMPT: &str = "Bring your expert judgment to the task of assessing whether a project's sources satisfy a requirement or example.";
-// {impl}`requirements.authoring.citation_prompt`
-const CITATION_PROMPT: &str =
-    "Bring your expert judgment to the task of reviewing a source item's citations.";
-// {impl}`requirements.authoring.verifier_prompt`
-const VERIFICATION_PROMPT: &str = "Another reviewer judged {{subject_kind}} {{subject_name}} as {{determination}} for these reasons:";
-
-/// An approved prompt template, from its opening line to its closing fence.
+/// The `index`th text block of approved requirement `name` in the authoring
+/// chapter, which is the sole source of these instructions.
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.verifier_prompt`
-fn prompt_template(opening: &str) -> &'static str {
-    // Keep the approved templates as the sole source of these instructions.
+// {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.authoring.judgment_rules`
+fn approved_text(name: &str, index: usize) -> &'static str {
     let chapter = include_str!("../../md/requirements/authoring.md");
-    let start = chapter.find(opening).expect("approved prompt template");
-    chapter[start..]
-        .split("\n```")
-        .next()
-        .expect("prompt closing fence")
+    let opening = format!(":::{{req}} {name}\n");
+    let start = chapter.find(&opening).expect("approved requirement") + opening.len();
+    let body = &chapter[start..];
+    let body = &body[..body.find("\n:::\n").expect("requirement closing fence")];
+    body.split("```text\n")
+        .nth(index + 1)
+        .and_then(|block| block.split("\n```").next())
+        .expect("approved text block")
+}
+
+/// The shared blocks every assessment prompt fills: Habeas's terms, the
+/// reference roles, and the judgment rules.
+// {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.authoring.judgment_rules`
+fn shared_blocks() -> [(&'static str, &'static str); 3] {
+    [
+        ("habeas_background", approved_text("habeas_background", 0)),
+        ("reference_roles", approved_text("habeas_background", 1)),
+        ("judgment_rules", approved_text("judgment_rules", 0)),
+    ]
 }
 
 /// Replaces `{{name}}` placeholders in one pass, so substituted text that
@@ -656,10 +674,26 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
     result
 }
 
+/// The task text of a requirement or example review.
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.authoring.requirement_task`
 // {impl}`requirements.authoring.testing_bar`
 // {impl}`requirements.authoring.example_task`
+fn subject_task(kind: &DefinitionKind) -> String {
+    match kind {
+        DefinitionKind::Requirement => format!(
+            "{}\n{}",
+            approved_text("requirement_task", 0),
+            approved_text("testing_bar", 0)
+        ),
+        // Terms are never assessment subjects.
+        DefinitionKind::Example | DefinitionKind::Term => {
+            approved_text("example_task", 0).to_owned()
+        }
+    }
+}
+
+// {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.ci.review_criteria`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.examples.evidence`
@@ -668,28 +702,48 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 // {impl}`requirements.authoring.redaction`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
     let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
+    let mut values = shared_blocks().to_vec();
+    values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
-        AssessmentKind::Definition(_) => fill(
-            prompt_template(DEFINITION_PROMPT),
-            &[
+        AssessmentKind::Definition(kind) => {
+            let task = subject_task(kind);
+            values.extend([
                 ("subject_kind", sources.subject_kind.noun()),
                 ("subject_name", &sources.subject_name),
-                ("mandatory_inputs", &mandatory),
-            ],
-        ),
-        AssessmentKind::Citation(item) => fill(
-            prompt_template(CITATION_PROMPT),
-            &[
-                ("item_file", &item.file),
+                ("subject_task", &task),
+            ]);
+            fill(approved_text("initial_prompt", 0), &values)
+        }
+        AssessmentKind::Citation(item) => {
+            let citations = serde_json::to_string(&item.model_citations_value())?;
+            values.extend([
+                ("item_file", item.file.as_str()),
                 ("item_selector", item.selector_label()),
-                (
-                    "citations",
-                    &serde_json::to_string(&item.model_citations_value())?,
-                ),
-                ("mandatory_inputs", &mandatory),
-            ],
-        ),
+                ("citations", &citations),
+            ]);
+            fill(approved_text("citation_prompt", 0), &values)
+        }
     })
+}
+
+/// The body of a filled prompt's `# heading` section, up to the next heading.
+// {impl}`requirements.authoring.verifier_prompt`
+fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
+    let opening = format!("# {heading}\n\n");
+    let Some(start) = prompt.find(&opening) else {
+        return "";
+    };
+    let body = &prompt[start + opening.len()..];
+    body.find("\n\n# ").map_or(body, |end| &body[..end])
+}
+
+/// The criteria an assessment applied, for its verifier: its task section
+/// after the first paragraph, then its "Your task" section.
+// {impl}`requirements.authoring.verifier_prompt`
+fn review_instructions(prompt: &str) -> String {
+    let task = prompt_section(prompt, "Task");
+    let named = task.split_once("\n\n").map_or("", |(_, rest)| rest);
+    format!("{named}\n\n{}", prompt_section(prompt, "Your task"))
 }
 
 /// The verifier's prompt for a determination and its rationale.
@@ -699,19 +753,20 @@ fn verification_prompt(
     determination: &Judgment,
     rationale: &str,
 ) -> io::Result<String> {
-    Ok(fill(
-        prompt_template(VERIFICATION_PROMPT),
-        &[
-            ("subject_kind", sources.subject_kind.noun()),
-            ("subject_name", &sources.subject_name),
-            ("determination", &determination.to_value().to_string()),
-            ("rationale", rationale.trim()),
-            (
-                "mandatory_inputs",
-                &serde_json::to_string_pretty(sources.mandatory_inputs())?,
-            ),
-        ],
-    ))
+    let instructions = review_instructions(&initial_prompt(sources)?);
+    let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
+    let determination = determination.to_value().to_string();
+    let mut values = shared_blocks().to_vec();
+    values.extend([
+        ("subject_kind", sources.subject_kind.noun()),
+        ("subject_name", sources.subject_name.as_str()),
+        ("determination", &determination),
+        ("rationale", rationale.trim()),
+        ("review_instructions", &instructions),
+        ("site_step", ""),
+        ("mandatory_inputs", &mandatory),
+    ]);
+    Ok(fill(approved_text("verifier_prompt", 0), &values))
 }
 
 // {impl}`requirements.authoring.submission`
@@ -735,28 +790,66 @@ fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     Ok((judgment, rationale.to_owned()))
 }
 
-/// Parses a `submit_verification` call: exactly a boolean `confirmed` and a
-/// nonempty `rationale`.
+/// A verifier's findings about the claimed gaps of an assessment.
 // {impl}`requirements.authoring.verifier_prompt`
-fn verification(arguments: &Value) -> io::Result<(bool, String)> {
+#[derive(Debug, PartialEq)]
+struct Verification {
+    real: bool,
+    acknowledged: bool,
+    acknowledgments: Vec<String>,
+    rationale: String,
+}
+
+/// Parses a `submit_verification` call: exactly booleans `real` and
+/// `acknowledged`, an array of nonempty `acknowledgments`, which must be
+/// nonempty when both are true, and a nonempty `rationale`.
+// {impl}`requirements.authoring.verifier_prompt`
+// {impl}`requirements.authoring.verifier_outcome`
+fn verification(arguments: &Value) -> io::Result<Verification> {
+    const FIELDS: [&str; 4] = ["real", "acknowledged", "acknowledgments", "rationale"];
+    let invalid = |message: &str| io::Error::other(format!("submit_verification {message}"));
     let object = arguments
         .as_object()
-        .ok_or_else(|| io::Error::other("submit_verification expects an object"))?;
-    if object.len() != 2 || !object.contains_key("confirmed") || !object.contains_key("rationale") {
-        return Err(io::Error::other(
-            "submit_verification requires exactly confirmed and rationale",
+        .ok_or_else(|| invalid("expects an object"))?;
+    if object.len() != FIELDS.len() || !FIELDS.iter().all(|field| object.contains_key(*field)) {
+        return Err(invalid(
+            "requires exactly real, acknowledged, acknowledgments, and rationale",
         ));
     }
-    let confirmed = object["confirmed"]
-        .as_bool()
-        .ok_or_else(|| io::Error::other("submit_verification confirmed must be a boolean"))?;
+    let flag = |field: &str| {
+        object[field]
+            .as_bool()
+            .ok_or_else(|| invalid(&format!("{field} must be a boolean")))
+    };
+    let (real, acknowledged) = (flag("real")?, flag("acknowledged")?);
+    let acknowledgments = object["acknowledgments"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_owned)
+                })
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| invalid("acknowledgments must be an array of nonempty strings"))?;
+    if real && acknowledged && acknowledgments.is_empty() {
+        return Err(invalid(
+            "acknowledgments must be nonempty when real and acknowledged are true",
+        ));
+    }
     let rationale = object["rationale"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            io::Error::other("submit_verification rationale must be nonempty Markdown")
-        })?;
-    Ok((confirmed, rationale.to_owned()))
+        .ok_or_else(|| invalid("rationale must be nonempty Markdown"))?;
+    Ok(Verification {
+        real,
+        acknowledged,
+        acknowledgments,
+        rationale: rationale.to_owned(),
+    })
 }
 
 /// The source tools and one submission tool.
@@ -768,8 +861,10 @@ fn tool_definitions_with(submit: &str) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
     if submit == "submit_verification" {
         definitions.push(json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
-            "parameters": {"type":"object", "additionalProperties": false, "required":["confirmed","rationale"], "properties": {
-                "confirmed":{"type":"boolean"},
+            "parameters": {"type":"object", "additionalProperties": false, "required":["real","acknowledged","acknowledgments","rationale"], "properties": {
+                "real":{"type":"boolean"},
+                "acknowledged":{"type":"boolean"},
+                "acknowledgments":{"type":"array","items":{"type":"string","minLength":1}},
                 "rationale":{"type":"string","minLength":1}}}}));
     } else {
         let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
@@ -839,7 +934,7 @@ async fn assess(
 }
 
 /// Verifies a determination and its rationale in its own conversation,
-/// returning whether the verifier confirmed it and the verifier's rationale.
+/// returning the verifier's findings.
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.verifier_prompt`
 async fn verify(
@@ -848,7 +943,7 @@ async fn verify(
     usage: &mut UsageLog,
     determination: &Judgment,
     rationale: &str,
-) -> io::Result<(bool, String)> {
+) -> io::Result<Verification> {
     let prompt = verification_prompt(sources, determination, rationale)?;
     converse(
         provider,
@@ -1228,24 +1323,50 @@ mod tests {
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let prompt = initial_prompt(&sources).unwrap();
         for criterion in [
-            "Subject: requirement requirements.ready",
-            "Assess only the named subject, using cited requirements and definitions as context.",
-            "implements every obligation\ncompletely and exactly as stated",
-            "tests cover the interesting points in\nthe design space, including relevant boundaries and failure cases",
-            "When another requirement implements part of the subject, assess\nwhether its text carries out that part; do not reassess its implementation,\ntests, or evidence.",
-            "without an {impl} reference to it, including code that refers to it\nonly with {cite}, is a gap",
-            "behavior in the {impl} code that this\nrequirement does not specify, unless another definition that code implements\nspecifies it",
-            "If there are no tests,\nassess whether simplicity or impracticality justifies their absence, and explain.",
-            "For an example, assess whether test setup and assertions cover its scenario and\nexpected outcomes.",
-            "with source locations",
-            "for\na requirement, explain the implementation and testing judgments.",
-            "Explain the coverage.",
+            "Subject: requirement requirements.ready\nJudge against: the subject's text.",
+            approved_text("habeas_background", 0),
+            approved_text("habeas_background", 1),
+            approved_text("judgment_rules", 0),
+            approved_text("requirement_task", 0),
+            approved_text("testing_bar", 0),
+            "List each MUST, MUST NOT, and SHOULD clause as an obligation.",
+            "5. Testing:",
+            "The project MUST be ready.",
         ] {
             assert!(
                 prompt.contains(criterion),
                 "missing {criterion:?} in:\n{prompt}"
             );
         }
+        // Step 5 continues the requirement task's numbered steps.
+        assert!(prompt.contains(&format!(
+            "{}\n{}",
+            approved_text("requirement_task", 0),
+            approved_text("testing_bar", 0)
+        )));
+        assert!(!prompt.contains(approved_text("example_task", 0)));
+        assert!(!prompt.contains("{{"), "{prompt}");
+
+        // An example's task replaces the requirement task.
+        let requirements = project.path().join("md/requirements.md");
+        let mut book = fs::read_to_string(&requirements).unwrap();
+        let cite = concat!("{", "cite}`requirements.ready`");
+        book.push_str(&format!(
+            "\n:::{{example}} case\nA ready case. {cite}\n:::\n"
+        ));
+        fs::write(&requirements, book).unwrap();
+        let sources = AssessmentSources::prepare(project.path(), "requirements.case").unwrap();
+        let prompt = initial_prompt(&sources).unwrap();
+        assert!(
+            prompt.contains("Subject: example requirements.case"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains(approved_text("example_task", 0)),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("5. Testing:"), "{prompt}");
+        assert!(!prompt.contains("{{"), "{prompt}");
     }
 
     // {test}`requirements.authoring.provider_backoff`
@@ -1538,11 +1659,11 @@ mod tests {
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let prompt = initial_prompt(&sources).unwrap();
         for guidance in [
-            "Choose true when the subject meets these criteria.",
-            "Choose {\"FIXME\": [\"...\"]} when\nthe remaining gaps are explicitly acknowledged in source comments or tests;\nlist their issue references or other identifying content.",
-            "The usual convention\nis FIXME(#125) or FIXME(rust-lang/rust#123), but references may occur elsewhere.",
-            "Choose false for other gaps or insufficient evidence.",
-            "including any acknowledged gaps",
+            "Choose true when your task finds no gap, {\"FIXME\": [\"...\"]} when every gap is\nacknowledged, and false otherwise.",
+            "Call submit_judgment exactly once with\ndetermination and rationale.",
+            "A gap is acknowledged only by a {fixme} reference",
+            "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
+            "including\n  any acknowledged gaps",
         ] {
             assert!(
                 prompt.contains(guidance),
@@ -1794,10 +1915,11 @@ mod tests {
 
     // {test}`requirements.authoring.confirmation`
     // {test}`requirements.authoring.verifier_outcome`
-    fn verdict(confirmed: bool, rationale: &str) -> (&'static str, Value) {
+    fn verdict(real: bool, acknowledgments: &[&str], rationale: &str) -> (&'static str, Value) {
         (
             "submit_verification",
-            json!({"confirmed": confirmed, "rationale": rationale}),
+            json!({"real": real, "acknowledged": !acknowledgments.is_empty(),
+                "acknowledgments": acknowledgments, "rationale": rationale}),
         )
     }
 
@@ -1868,12 +1990,10 @@ mod tests {
         // own usage record.
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 2);
-        assert!(
-            prompts
-                .iter()
-                .all(|(text, tools)| text.contains("Bring your expert judgment")
-                    && tools.contains(&"submit_judgment".to_owned()))
-        );
+        assert!(prompts.iter().all(|(text, tools)| {
+            text.contains("Assess whether a project's source code")
+                && tools.contains(&"submit_judgment".to_owned())
+        }));
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0]["subject"], "requirements.ready");
         assert_eq!(logs[1]["subject"], "requirements.ready (second assessment)");
@@ -1886,26 +2006,52 @@ mod tests {
     // {test}`requirements.authoring.verifier_outcome`
     #[tokio::test]
     async fn disagreeing_assessments_verify_the_less_favorable_one() {
-        for (turns, recorded, outcome) in [
-            // The second assessment is less favorable and is confirmed.
+        for (turns, recorded, kept, conclusion) in [
+            // A real, unacknowledged gap records false with the less favorable
+            // (second) assessment's rationale.
             (
                 vec![
                     judgment(json!(true), "Looks complete."),
                     judgment(json!(false), "The empty case is unhandled."),
-                    verdict(true, "The empty case panics."),
+                    verdict(true, &[], "The empty case panics."),
                 ],
                 Judgment::False,
-                "confirmed",
+                1,
+                "found an unacknowledged real gap",
             ),
-            // The first is less favorable and is not confirmed.
+            // A FIXME whose gap is real but unacknowledged also becomes false.
             (
                 vec![
                     judgment(json!({"FIXME": ["#7"]}), "Issue 7 is open."),
                     judgment(json!(true), "Complete."),
-                    verdict(false, "Issue 7 does not affect this."),
+                    verdict(true, &[], "Issue 7 is closed."),
+                ],
+                Judgment::False,
+                0,
+                "found an unacknowledged real gap",
+            ),
+            // Real and acknowledged gaps record FIXME with the verifier's
+            // acknowledgments.
+            (
+                vec![
+                    judgment(json!(true), "Looks complete."),
+                    judgment(json!(false), "The empty case is unhandled."),
+                    verdict(true, &["example/queue#9"], "A fixme tracks it."),
+                ],
+                Judgment::Fixme(vec!["example/queue#9".into()]),
+                1,
+                "found its real gaps all acknowledged",
+            ),
+            // No real gap records the more favorable (second) assessment.
+            (
+                vec![
+                    judgment(json!({"FIXME": ["#7"]}), "Issue 7 is open."),
+                    judgment(json!(true), "Complete."),
+                    verdict(false, &[], "Issue 7 does not affect this."),
                 ],
                 Judgment::True,
-                "did not confirm",
+                1,
+                "found none of its claimed gaps real",
             ),
         ] {
             let (result, provider, logs) = confirmed(turns.clone(), true).await;
@@ -1914,39 +2060,47 @@ mod tests {
             assert_eq!(record["determination"], judgment.to_value());
             let rationale = record["rationale"].as_str().unwrap();
             assert!(
-                rationale.contains("the assessments disagreed"),
+                rationale.starts_with(turns[kept].1["rationale"].as_str().unwrap()),
                 "{rationale}"
             );
             assert!(
-                rationale.contains(&format!("and {outcome} it")),
+                rationale.contains("the assessments disagreed"),
                 "{rationale}"
             );
+            assert!(rationale.contains(conclusion), "{rationale}");
             assert!(
                 rationale.contains(turns[2].1["rationale"].as_str().unwrap()),
                 "{rationale}"
             );
 
-            // The verifier receives the less favorable determination and its
-            // rationale, with the source tools and submit_verification only.
+            // Prompts are recorded as serialized requests, so expected text is
+            // compared in its JSON-escaped form.
+            // The verifier receives the less favorable determination, its
+            // rationale, and the criteria it applied, with the source tools
+            // and submit_verification only.
+            let less = if turns[1].1["determination"] == json!(false) {
+                1
+            } else {
+                0
+            };
             let prompts = provider.prompts();
             assert_eq!(prompts.len(), 3);
-            let (less, less_rationale) = if turns[1].1["determination"] == json!(false) {
-                ("false", turns[1].1["rationale"].as_str().unwrap())
-            } else {
-                (
-                    "{\\\"FIXME\\\":[\\\"#7\\\"]}",
-                    turns[0].1["rationale"].as_str().unwrap(),
-                )
-            };
-            let (verifier, tools) = &prompts[2];
+            let determination = turns[less].1["determination"].to_string();
+            let less_rationale = turns[less].1["rationale"].as_str().unwrap();
+            let escaped = serde_json::to_string(&format!(
+                "Another reviewer judged requirement requirements.ready as {determination}."
+            ))
+            .unwrap();
+            let (text, tools) = &prompts[2];
+            assert!(text.contains(escaped.trim_matches('"')), "{text}");
+            assert!(text.contains(less_rationale), "{text}");
             assert!(
-                verifier.contains(&format!(
-                    "Another reviewer judged requirement requirements.ready as {less} for these reasons"
-                )),
-                "{verifier}"
+                text.contains("Judge against: the subject's text."),
+                "{text}"
             );
-            assert!(verifier.contains(less_rationale), "{verifier}");
-            assert!(verifier.contains("Mandatory inputs:"), "{verifier}");
+            assert!(text.contains("List each MUST, MUST NOT"), "{text}");
+            assert!(text.contains("# Mandatory inputs"), "{text}");
+            assert!(!text.contains("{{"), "{text}");
             assert!(tools.contains(&"submit_verification".to_owned()));
             assert!(tools.contains(&"habeas".to_owned()));
             assert!(!tools.contains(&"submit_judgment".to_owned()));
@@ -1959,16 +2113,33 @@ mod tests {
 
     // {test}`requirements.authoring.verifier_prompt`
     #[test]
-    fn verifications_accept_exactly_a_boolean_and_a_nonempty_rationale() {
+    fn verifications_accept_exactly_their_four_fields() {
         assert_eq!(
-            verification(&json!({"confirmed": true, "rationale": "Checked."})).unwrap(),
-            (true, "Checked.".to_owned())
+            verification(&json!({"real": true, "acknowledged": true,
+                "acknowledgments": ["example/queue#1"], "rationale": "Checked."}))
+            .unwrap(),
+            Verification {
+                real: true,
+                acknowledged: true,
+                acknowledgments: vec!["example/queue#1".into()],
+                rationale: "Checked.".into(),
+            }
+        );
+        assert!(
+            verification(&json!({"real": false, "acknowledged": false,
+                "acknowledgments": [], "rationale": "None hold."}))
+            .is_ok()
         );
         for arguments in [
-            json!({"confirmed": "true", "rationale": "x"}),
-            json!({"confirmed": true}),
-            json!({"confirmed": true, "rationale": " "}),
-            json!({"confirmed": true, "rationale": "x", "extra": 1}),
+            json!({"real": "true", "acknowledged": false, "acknowledgments": [], "rationale": "x"}),
+            json!({"real": true, "acknowledged": 1, "acknowledgments": [], "rationale": "x"}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": "", "rationale": "x"}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": [" "], "rationale": "x"}),
+            json!({"real": true, "acknowledged": true, "acknowledgments": [], "rationale": "x"}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": []}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": [], "rationale": " "}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": [], "rationale": "x", "extra": 1}),
+            json!({"confirmed": true, "rationale": "x"}),
         ] {
             assert!(verification(&arguments).is_err(), "accepted {arguments}");
         }
@@ -1981,8 +2152,14 @@ mod tests {
             .find(|definition| definition["name"] == "submit_verification")
             .unwrap();
         assert_eq!(
+            submit["parameters"]["required"],
+            json!(["real", "acknowledged", "acknowledgments", "rationale"])
+        );
+        assert_eq!(
             submit["parameters"]["properties"],
-            json!({"confirmed": {"type": "boolean"}, "rationale": {"type": "string", "minLength": 1}})
+            json!({"real": {"type": "boolean"}, "acknowledged": {"type": "boolean"},
+                "acknowledgments": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "rationale": {"type": "string", "minLength": 1}})
         );
     }
 
@@ -2037,11 +2214,11 @@ mod tests {
         let prompts = provider.prompts();
         let prompt = &prompts[0].0;
         assert!(
-            prompt.contains("reviewing a source item's citations"),
+            prompt.contains("Review one source item's citations."),
             "{prompt}"
         );
         assert!(
-            prompt.contains("Subject: src/lib.rs fn[helper]"),
+            prompt.contains("Item under review: src/lib.rs fn[helper]"),
             "{prompt}"
         );
         assert!(

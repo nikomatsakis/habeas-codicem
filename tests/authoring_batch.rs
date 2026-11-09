@@ -145,7 +145,13 @@ fn serve(
     let prompt = request["messages"][0]["content"].as_str().unwrap();
     let subject = prompt
         .lines()
-        .find_map(|line| line.strip_prefix("Subject: "))
+        .find_map(|line| {
+            line.strip_prefix("Subject: ").or_else(|| {
+                // A citation review names its item before its citations.
+                line.strip_prefix("Item under review: ")
+                    .map(|rest| rest.split(" Citations to check:").next().unwrap())
+            })
+        })
         .expect("assessment subject")
         .to_owned();
 
