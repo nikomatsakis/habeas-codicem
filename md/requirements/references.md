@@ -363,29 +363,36 @@ Every site of a distributed requirement under
 {cite}`requirements.references.distributed` MUST have a site review: an
 assessment of whether that site upholds the requirement, recorded at
 `evidence/sites/<full-name>/<file>/<selector>.json`, where `<file>` and
-`<selector>` are encoded as under {cite}`requirements.references.citation_review`.
-The review MUST use the prompt defined by {cite}`requirements.authoring.site_prompt`.
-Mandatory inputs, under {cite}`requirements.authoring.mandatory_inputs`, MUST be
-the site's outline node, the requirement's complete declaration, and each
-declaration the requirement cites. The record MUST contain the requirement's
-full name, the site's file and selector, `queries`, the sorted names of the
-queries with a match at the site, `applies`, `determination`, `rationale`, and
-`inputs`, with determinations under {cite}`requirements.ci.outcomes`. `applies`
-MUST be a Boolean recording whether the requirement applies to the site. A site
-to which the requirement does not apply MUST be judged `true`, and the rationale
-MUST explain why it does not apply. `habeas info` MUST report, for each selected
+`<selector>` are encoded as under
+{cite}`requirements.references.citation_review`. The review MUST use the prompt
+defined by {cite}`requirements.authoring.site_prompt`. Mandatory inputs, under
+{cite}`requirements.authoring.mandatory_inputs`, MUST be the site's outline
+node, the requirement's complete declaration, and each declaration the
+requirement cites. The record MUST contain the requirement's full name, the
+site's file and selector, `queries`, the sorted names of the queries with a
+match at the site, `applies`, `determination`, `rationale`, and `inputs`, with
+determinations under {cite}`requirements.ci.outcomes`. `applies` MUST be a
+Boolean recording whether the requirement applies to the site. A site to which
+the requirement does not apply MUST be judged `true`, and the rationale MUST
+explain why it does not apply. `habeas info` MUST report, for each selected
 distributed requirement, how many of its sites the requirement does not apply
 to.
 
-Validation MUST require a current, accepted review for every site, MUST report
-a false review with its rationale, and MUST report stale, missing, or orphaned
-reviews; a review is orphaned when its file and selector no longer name a site of
-the requirement. A `{fixme}` naming the requirement inside a site acknowledges a gap at that site only: it MUST be an input to that site's review and MUST NOT contribute to the requirement's own review, coverage, or reference set. A review MUST become stale when the site's hash, the requirement's declaration, a cited declaration, its `queries`, or the `{fixme}` references naming the requirement inside the site, with the words of their bodies, change. Each
-site review's determination MUST be checked on its own, independently of the
-requirement's evidence. Authoring with `--all` MUST include site reviews,
+Validation MUST require a current, accepted review for every site, MUST report a
+false review with its rationale, and MUST report stale, missing, or orphaned
+reviews; a review is orphaned when its file and selector no longer name a site
+of the requirement. A `{fixme}` naming the requirement inside a site
+acknowledges a gap at that site only: it MUST be an input to that site's review
+and MUST NOT contribute to the requirement's own review, coverage, or reference
+set. A review MUST become stale when the site's hash, the requirement's
+declaration, a cited declaration, its `queries`, or the `{fixme}` references
+naming the requirement inside the site, with the words of their bodies, change.
+Each site review's determination MUST be checked on its own, independently of
+the requirement's evidence. Authoring with `--all` MUST include site reviews,
 `habeas author sites:<full-name>` MUST author the site reviews of the named
 requirement, and `habeas author sites:<full-name>/<file>#<selector>` MUST author
-the review of the one site it names, under {cite}`requirements.authoring.refresh`, where omitting `#<selector>` names the
+the review of the one site it names, under
+{cite}`requirements.authoring.refresh`, where omitting `#<selector>` names the
 file's root node. `habeas status` MUST report missing, stale, invalid, and false
 site reviews with their requirement, file, and selector, and `habeas info` MUST
 list each selected requirement's sites with their determinations.
