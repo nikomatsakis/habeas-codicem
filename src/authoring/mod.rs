@@ -700,6 +700,7 @@ fn subject_task(kind: &DefinitionKind) -> String {
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.redaction`
+// {impl}`requirements.references.citation_review`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
     let mandatory = serde_json::to_string_pretty(sources.mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
@@ -975,6 +976,7 @@ async fn verify(
 // {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.concurrency`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1317,6 +1319,9 @@ mod tests {
     // {test}`requirements.authoring.requirement_task`
     // {test}`requirements.authoring.testing_bar`
     // {test}`requirements.authoring.example_task`
+    // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.examples.evidence`
     #[test]
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
@@ -2263,5 +2268,17 @@ mod tests {
             AuthoringSubject::parse("citations:notes.txt"),
             AuthoringSubject::Citation { file, item } if file == "notes.txt" && item.is_empty()
         ));
+
+        // The root node's selector is shown as `<root>` in the prompt.
+        fs::write(project.path().join("notes.txt"), format!("Notes. {cite}\n")).unwrap();
+        let sources = AuthoringSubject::parse("citations:notes.txt")
+            .sources(project.path())
+            .unwrap();
+        let prompt = initial_prompt(&sources).unwrap();
+        assert!(
+            prompt.contains("Item under review: notes.txt <root>"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("{{"), "{prompt}");
     }
 }

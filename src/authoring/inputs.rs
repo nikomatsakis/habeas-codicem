@@ -11,7 +11,6 @@ use crate::evidence::{Declaration, SourceReference, collect_references, load_def
 use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::{DefinitionKind, ReferenceKind};
 
-// {cite}`requirements.authoring.invocation`
 // {impl}`requirements.references.citation_review`
 pub(crate) enum AssessmentKind {
     Definition(DefinitionKind),

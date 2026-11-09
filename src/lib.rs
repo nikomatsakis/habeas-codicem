@@ -436,6 +436,7 @@ fn replace_references(
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.safe_badges`
+// {impl}`requirements.index.navigation`
 fn reference_badge(
     kind: ReferenceKind,
     name: &str,
@@ -765,6 +766,7 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.references.discovery`
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
     let protected = if markdown {
         let mut ranges = protected_ranges(content);
@@ -1381,6 +1383,7 @@ mod tests {
     }
 
     // {test}`requirements.references.book_badges`
+    // {test}`requirements.index.navigation`
     #[test]
     fn references_in_nested_chapters_link_to_the_requirement_definition() {
         let mut book = Book::new();

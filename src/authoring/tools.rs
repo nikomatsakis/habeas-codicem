@@ -770,6 +770,7 @@ mod tests {
     }
 
     // {test}`requirements.definitions.selection`
+    // {test}`requirements.references.definition_globs`
     #[test]
     fn requirements_reads_select_requirements_and_examples_but_not_definitions() {
         let root = project();
@@ -1576,6 +1577,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.reference_index`
+    // {test}`requirements.references.definition_globs`
     #[test]
     fn references_list_names_and_flattened_sites_without_recording_inputs() {
         let root = project();

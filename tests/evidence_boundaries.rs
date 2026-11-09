@@ -290,6 +290,30 @@ fn unreadable_and_missing_inputs_are_reported() {
     }
 }
 
+// {test}`requirements.ci.errors`
+#[cfg(unix)]
+#[test]
+fn an_unlistable_review_directory_is_reported_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = fixture();
+    let root = temp.path().join("project");
+    let locked = root.join("evidence/citations/src");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let errors = validate_repository(&root).unwrap().errors;
+    // A privileged user can list the directory regardless of its mode.
+    let unlistable = fs::read_dir(&locked).is_err();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if unlistable {
+        let listing = errors
+            .iter()
+            .filter(|error| error.starts_with("evidence/citations/src: cannot list directory"))
+            .count();
+        assert_eq!(listing, 1, "{errors:#?}");
+    }
+}
+
 // {test}`requirements.ci.orphans`
 #[test]
 fn nested_evidence_files_are_reported() {

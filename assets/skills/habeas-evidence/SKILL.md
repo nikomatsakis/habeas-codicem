@@ -121,6 +121,8 @@ and is broken:
    site fails, tighten that text. Query and text changes edit the requirement;
    review them with the user.
 
+Don't re-run a false site review for a different result.
+
 If `habeas info <full-name>` reports many sites the requirement does not apply
 to, the site query selects too much.
 

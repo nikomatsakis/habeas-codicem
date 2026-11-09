@@ -262,6 +262,7 @@ fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
 }
 
 // {test}`requirements.definitions.selection`
+// {test}`requirements.references.definition_globs`
 #[test]
 fn selections_match_requirements_and_examples_but_never_named_definitions() {
     let temp = fixture();
@@ -386,6 +387,34 @@ fn invalid_declarations_and_reference_targets_are_reported() {
             .iter()
             .any(|e| e.contains("term missing.name has no matching named definition"))
     );
+}
+
+// {test}`requirements.ci.definition_errors`
+#[test]
+fn duplicates_involving_named_definitions_name_the_first_declaration() {
+    for (first, second, kind) in [
+        (
+            ":::{req} x\nRequirement.\n:::\n",
+            ":::{definition} x\n:phrase: x\n\nDefinition.\n:::\n",
+            "definition",
+        ),
+        (
+            ":::{definition} x\n:phrase: x\n\nDefinition.\n:::\n",
+            ":::{example} x\nExample.\n:::\n",
+            "example",
+        ),
+    ] {
+        let temp = fixture();
+        fs::write(temp.path().join("md/bad.md"), format!("{first}\n{second}")).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors;
+        let line = first.lines().count() + 2;
+        let expected =
+            format!("md/bad.md:{line}: duplicate {kind} bad.x; first declared at md/bad.md:1");
+        assert!(
+            errors.iter().any(|error| error.contains(&expected)),
+            "{expected}\n{errors:#?}"
+        );
+    }
 }
 
 // {test}`requirements.definitions.references`

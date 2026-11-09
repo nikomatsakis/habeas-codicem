@@ -34,6 +34,8 @@ enum Behavior {
     MixedJudgments,
     #[cfg_attr(not(unix), allow(dead_code))]
     WaitAfterFirst,
+    /// The subject's first request is throttled with HTTP 429.
+    ThrottledOnce { subject: &'static str },
 }
 
 // {test}`requirements.authoring.batch`
@@ -157,6 +159,7 @@ fn serve(
 
     let (lock, arrived) = &*requests;
     let mut state = lock.lock().unwrap();
+    let first_for_subject = !state.subjects.contains(&subject);
     state.subjects.push(subject.clone());
     let first_request = state.subjects.len() == 1;
     state.active += 1;
@@ -219,7 +222,11 @@ fn serve(
             "Fixture judgment for {subject}; src/lib.rs supplies the implementation and test inputs."
         )
     };
-    let response = if failed {
+    let throttled = first_for_subject
+        && matches!(behavior, Behavior::ThrottledOnce { subject: name } if subject == name);
+    let response = if throttled {
+        json!({"error": "fixture provider is throttling"})
+    } else if failed {
         json!({"error": "fixture model rejected this subject"})
     } else if denied {
         json!({
@@ -246,11 +253,17 @@ fn serve(
         })
     };
     let body = response.to_string();
-    let status = if failed { "400 Bad Request" } else { "200 OK" };
+    let (status, retry_after) = if throttled {
+        ("429 Too Many Requests", "Retry-After: 0\r\n")
+    } else if failed {
+        ("400 Bad Request", "")
+    } else {
+        ("200 OK", "")
+    };
     let mut state = lock.lock().unwrap();
     let sent = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\n{retry_after}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     if !held {
@@ -579,6 +592,58 @@ fn ollama_batches_are_serial_by_default() {
     );
     assert_eq!(server.subjects().len(), 6);
     assert_eq!(server.requests.0.lock().unwrap().peak, 1);
+}
+
+// {test}`requirements.authoring.concurrency`
+#[test]
+fn throttled_assessment_retries_within_itself_while_others_proceed() {
+    let server = Server::start_with(
+        false,
+        Behavior::ThrottledOnce {
+            subject: "requirement requirements.alpha",
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Six assessments plus one retried request, never more than two at once.
+    let subjects = server.subjects();
+    assert_eq!(subjects.len(), 7, "{subjects:?}");
+    assert_eq!(
+        subjects
+            .iter()
+            .filter(|subject| *subject == "requirement requirements.alpha")
+            .count(),
+        2
+    );
+    assert!(server.requests.0.lock().unwrap().peak <= 2);
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
+
+    // The retry stays inside the throttled assessment's own conversation and
+    // usage record; no other assessment is restarted or failed.
+    let usage = fixture.usage();
+    assert_eq!(usage.len(), 6);
+    assert!(usage.iter().all(|run| run["outcome"] == "completed"));
+    let alpha = usage
+        .iter()
+        .find(|run| run["subject"] == "requirements.alpha")
+        .unwrap();
+    assert_eq!(alpha["request_count"], 2);
+    assert_eq!(alpha["requests"][0]["outcome"], "failed");
+    assert_eq!(alpha["requests"][1]["outcome"], "completed");
+    assert!(
+        usage
+            .iter()
+            .filter(|run| run["subject"] != "requirements.alpha")
+            .all(|run| run["request_count"] == 1)
+    );
 }
 
 // {test}`requirements.authoring.concurrency`

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -63,6 +63,7 @@ impl CitationItem {
 
     /// The selector as displayed, `<root>` for the root node.
     // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.authoring.citation_prompt`
     pub(crate) fn selector_label(&self) -> &str {
         if self.item.is_empty() {
             "<root>"
@@ -195,7 +196,9 @@ fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
 }
 
 /// Validates citation reviews: each current item needs a current, accepted
-/// review, and every review file must belong to a current item.
+/// review, and every review file must belong to a current item. `files` are
+/// the review files already listed with the rest of `evidence/`, so a listing
+/// failure there is reported once.
 /// Reports progress as the "citation reviews" phase: an activity display
 /// while items are discovered, then one check per item and review file.
 // {impl}`requirements.references.citation_review`
@@ -208,6 +211,7 @@ pub(crate) fn validate(
     definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
     outlines: &OutlineCache,
+    files: &[PathBuf],
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) {
@@ -217,12 +221,6 @@ pub(crate) fn validate(
         total: None,
     });
     let items = citation_items(root, definitions, references, outlines);
-    let directory = root.join("evidence").join(CITATIONS_DIR);
-    let files = if directory.is_dir() {
-        crate::evidence::files_with_extension(root, &directory, "json", errors)
-    } else {
-        Vec::new()
-    };
     let total = items.len() + files.len();
     let mut completed = 0;
     let mut advance = |progress: &mut dyn FnMut(InspectionProgress)| {
@@ -252,10 +250,10 @@ pub(crate) fn validate(
         advance(progress);
     }
     for file in files {
-        if !expected.contains(&file) {
+        if !expected.contains(file) {
             errors.push(format!(
                 "{}: orphaned citation review: no source item outside the book with {{cite}} references matches it",
-                display_path(root, &file)
+                display_path(root, file)
             ));
         }
         advance(progress);

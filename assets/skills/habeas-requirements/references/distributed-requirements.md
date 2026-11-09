@@ -131,20 +131,25 @@ that contains it.
 - Present the queries and snippets with the requirement text when reviewing it
   with the user.
 - Check with `habeas info <full-name>` that the sites are the ones you expect.
+- Run `habeas author --all` to author the site reviews.
 
 ## Don't
 
 - Don't describe sites more broadly than the queries select, as in "however it is
   named".
-- Don't state a per-site obligation that a reviewer can check only by reading
-  other sites, such as "not reported by another check"; narrow it to the site,
-  such as "does not report one failure twice".
+- Don't state a per-site obligation that a reviewer cannot check from the site
+  and the helpers it calls, such as "not reported by another check", which needs
+  reading other sites; narrow it to the site, such as "does not report one
+  failure twice".
 - Don't reference the distributed requirement from a site just because it is a
   site; sites need none. Being a site also does not satisfy Rust item coverage,
   so each site still needs its own references for what it implements, and a
   site that carries out one of the requirement's other obligations, such as the
   function that reports the collected errors, gets `{impl}` of it like any
   other implementing code.
+- Don't re-run a false site review for a different result; fix the site, or
+  tighten the queries or the text, as "Site reviews" in the habeas-evidence
+  skill describes.
 
 ## Gotchas
 

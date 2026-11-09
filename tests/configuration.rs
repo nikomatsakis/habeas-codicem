@@ -68,6 +68,7 @@ fn locations_use_absolute_xdg_values_and_platform_fallbacks() {
 // {test}`requirements.configuration.structure`
 // {test}`requirements.configuration.loading`
 // {test}`requirements.configuration.serialization`
+// {test}`requirements.configuration.workspace_structure`
 #[test]
 fn absent_and_minimal_configuration_are_distinct_and_read_only() {
     let dir = tempfile::tempdir().unwrap();
@@ -256,15 +257,20 @@ model = "explicit:tag"
     assert!(error.contains("DEFAULT"));
     assert!(error.contains("config.toml"));
     assert!(error.contains("editing-the-file"));
+    // Missing configuration names the file and points to documented examples.
+    let missing = resolve_authoring_from(&config_path, None, &root, None)
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("no authoring configuration"), "{missing}");
     assert!(
-        resolve_authoring_from(&config_path, None, &root, None)
-            .unwrap_err()
-            .to_string()
-            .contains("no authoring configuration")
+        missing.contains(&config_path.display().to_string()),
+        "{missing}"
     );
+    assert!(missing.contains("editing-the-file"), "{missing}");
 }
 
 // {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.configuration.loading`
 #[test]
 fn configurations_without_any_selection_report_how_to_choose_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -1091,6 +1097,7 @@ fn unreadable_configuration_files_are_reported_instead_of_skipped() {
 // {test}`requirements.configuration.feature_sections`
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.configuration.structure`
+// {test}`requirements.configuration.workspace_structure`
 #[test]
 fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
     let temp = tempfile::tempdir().unwrap();
@@ -1136,6 +1143,7 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
 }
 
 // {test}`requirements.configuration.documentation`
+// {test}`requirements.authoring.configuration_documentation`
 #[test]
 fn documented_configuration_examples_are_complete_valid_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1195,6 +1203,97 @@ fn documented_configuration_examples_are_complete_valid_files() {
     }
     assert_eq!(literal_credential_examples, 1);
     assert!(checked >= 14, "{checked}");
+}
+
+// {test}`requirements.authoring.configuration_documentation`
+#[test]
+fn authoring_documentation_shows_each_configuration_task() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let section = |document: &str, start: &str, end: &str| {
+        let text = fs::read_to_string(root.join(document)).unwrap();
+        let (_, rest) = text.split_once(start).unwrap();
+        rest.split_once(end).unwrap().0.to_owned()
+    };
+    let chapter = section(
+        "md/requirements/authoring.md",
+        ":::{req} configuration_documentation",
+        "## Recording results",
+    );
+    let reference = section(
+        "md/reference.md",
+        "## Authoring evidence with a model",
+        "### Confirming assessments",
+    );
+
+    // Each example is a complete user or workspace file, and every placeholder
+    // it uses is identified in the prose that introduces it.
+    let mut pieces = chapter.split("```toml\n");
+    let mut before = pieces.next().unwrap().to_owned();
+    let mut blocks = Vec::new();
+    for block in pieces {
+        let (source, after) = block.split_once("\n```").unwrap();
+        let path = Path::new("md/requirements/authoring.md");
+        if source.contains("[evidence]") {
+            WorkspaceConfig::parse(source, path).unwrap();
+        } else {
+            UserConfig::parse(source, path).unwrap();
+        }
+        // The prose before the example, or the paragraph right after it.
+        let intro = format!(
+            "{}{}",
+            before.rsplit("```").next().unwrap(),
+            after.trim_start().split("\n\n").next().unwrap()
+        );
+        let every_uppercase = intro.contains("replace every uppercase placeholder");
+        for placeholder in ["MODEL_ID", "MODEL_TAG"] {
+            if source.contains(placeholder) {
+                assert!(
+                    every_uppercase || intro.contains(&format!("`{placeholder}`")),
+                    "{placeholder} is not identified:\n{intro}\n{source}"
+                );
+            }
+        }
+        if source.contains(".credentials]") {
+            assert!(every_uppercase, "{intro}");
+        }
+        blocks.push(source.to_owned());
+        before = after.to_owned();
+    }
+    let any_block = |needle: &str| blocks.iter().any(|block| block.contains(needle));
+    // Bedrock and Ollama examples, a default, a remote Ollama server, and a
+    // project selection.
+    assert!(any_block("backend = \"bedrock\""));
+    assert!(any_block("backend = \"ollama\""));
+    assert!(any_block("[authoring]\ndefault = "));
+    assert!(any_block("endpoint = \"http://workstation:11434\""));
+    assert!(any_block("[authoring.projects."));
+    for placeholder in [
+        "`research`",
+        "`us-east-1`",
+        "`workstation`",
+        "`/absolute/path/to/project`",
+    ] {
+        assert!(chapter.contains(placeholder), "{placeholder}");
+    }
+    // Invocation selection and editing or removing selections by hand.
+    for phrase in [
+        "Add `--config local`",
+        "Edit `authoring.default` to change the user default",
+        "Delete the corresponding field or\nproject table to remove a selection",
+        "To remove a named configuration, delete its\ntable and update any selections naming it",
+    ] {
+        assert!(chapter.contains(phrase), "{phrase}");
+    }
+    // Backend-specific options and credential-source references.
+    for phrase in [
+        "`[authoring.configs.<name>.options]`",
+        "`api_key_env = \"OLLAMA_API_KEY\"`",
+        "Omit `aws_profile` or `region` to use AWS SDK defaults",
+    ] {
+        assert!(chapter.contains(phrase), "{phrase}");
+    }
+    assert!(reference.contains("[authoring.configs.cloud.options]"));
+    assert!(reference.contains("`num_ctx`"));
 }
 
 // {test}`requirements.configuration.loading`

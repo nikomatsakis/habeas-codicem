@@ -889,6 +889,7 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
 }
 
 // {test}`requirements.cli.internal_detail_guidance`
+// {test}`requirements.cli.skill_structure`
 #[test]
 fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waivers() {
     // habeas-requirements is the home of the reference procedure; its steps
@@ -953,6 +954,7 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
 }
 
 // {test}`requirements.cli.flip_guidance`
+// {test}`requirements.cli.skill_structure`
 #[test]
 fn bundled_skills_treat_disagreeing_assessments_as_findings() {
     const GOAL: &str = "The goal is that independent assessments of the same subject reach the same determination, because the requirement, code, and tests leave no gap a careful reviewer could find and no reading a careful reviewer could take differently";
@@ -1124,6 +1126,7 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
 // {test}`requirements.authoring.delivered_inputs`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.reporting`
+// {test}`requirements.ci.schema`
 #[test]
 fn stdout_emits_only_evidence_json_without_changing_project_files() {
     for (determination, kind, existing_evidence, verbose) in [
@@ -1172,6 +1175,26 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
                 .iter()
                 .any(|input| input["file"] == "src/lib.rs" && input["item"].is_string())
         );
+        // The record has exactly the schema's fields, and outline inputs carry
+        // only their file, selector, and hash, never source text.
+        let keys = |value: &Value| {
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(
+            keys(&evidence),
+            [
+                "determination",
+                "inputs",
+                "rationale",
+                "references",
+                "requirement"
+            ]
+        );
+        for input in inputs.iter().filter(|input| input.get("item").is_some()) {
+            assert_eq!(keys(input), ["file", "hash", "item"], "{input}");
+        }
         if existing_evidence {
             assert_eq!(
                 fs::read_to_string(&fixture.evidence).unwrap(),
@@ -1951,6 +1974,163 @@ fn missing_or_empty_api_key_env_fails_before_any_model_request() {
     }
 }
 
+// {test}`requirements.authoring.mandatory_inputs`
+#[test]
+fn unresolvable_mandatory_inputs_fail_before_any_model_request() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
+    // The subject's own declaration is a mandatory input that cannot be read.
+    fs::write(
+        fixture.project.join("habeas.toml"),
+        "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
+    )
+    .unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("md/requirements.md"), "{stderr}");
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "the model endpoint was contacted"
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance`
+#[test]
+fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
+    let reference =
+        include_str!("../assets/skills/habeas-requirements/references/distributed-requirements.md");
+    let list = |heading: &str| {
+        let (_, rest) = reference.split_once(heading).unwrap();
+        let list = rest.split("\n## ").next().unwrap();
+        list.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let (dos, donts) = (list("\n## Do\n"), list("\n## Don't\n"));
+    for phrase in [
+        "Make a requirement distributed only when its obligation applies on its own at each site; when particular code carries out the requirement as a whole, use `{impl}` there.",
+        "Separate obligations each site upholds from obligations particular code carries out, and mark that code `{impl}`.",
+        "check that the site queries select every place the obligation applies and no others",
+        "Write a violation query, with `within` naming the site query, for every kind of construct that could break the obligation",
+        "Give every query a `match` snippet for each alternative way it selects, and a `no_match` near miss for each selection condition",
+        "Describe sites exactly as the site queries select them. When a query relies on a convention, such as how a variable is named, state the convention as an obligation",
+        "Present the queries and snippets with the requirement text when reviewing it with the user.",
+        "Run `habeas author --all` to author the site reviews.",
+    ] {
+        assert!(dos.contains(phrase), "Do list lacks {phrase:?}");
+    }
+    for phrase in [
+        "Don't describe sites more broadly than the queries select",
+        "Don't state a per-site obligation that a reviewer cannot check from the site and the helpers it calls",
+        "Don't reference the distributed requirement from a site just because it is a site; sites need none.",
+        "Don't re-run a false site review for a different result; fix the site, or tighten the queries or the text",
+    ] {
+        assert!(donts.contains(phrase), "Don't list lacks {phrase:?}");
+    }
+    assert_phrases(
+        "habeas-requirements",
+        &["`habeas author --all` authors a site review for each site"],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "1. If it does apply, fix the code at the site.",
+            "2. If the site should not be covered, narrow the site query or tighten the text describing sites",
+            "Don't re-run a false site review for a different result.",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &["propose a distributed requirement instead of marking each site `{impl}`"],
+    );
+}
+
+// {test}`requirements.cli.skill_structure`
+#[test]
+fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
+    let skills = [
+        (
+            "habeas-requirements",
+            include_str!("../assets/skills/habeas-requirements/SKILL.md"),
+        ),
+        (
+            "habeas-evidence",
+            include_str!("../assets/skills/habeas-evidence/SKILL.md"),
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
+        ),
+    ];
+    for (name, text) in skills {
+        let description = text
+            .lines()
+            .find_map(|line| line.strip_prefix("description: "))
+            .unwrap_or_else(|| panic!("{name} has no description"));
+        assert!(
+            description.starts_with("Use when") || description.starts_with("Use before"),
+            "{name}: {description}"
+        );
+        for (other, _) in skills.iter().filter(|(other, _)| *other != name) {
+            assert!(description.contains(other), "{name} does not name {other}");
+        }
+        // The first section after the title is the workflow, as ordered steps.
+        let first = text.lines().find(|line| line.starts_with("## ")).unwrap();
+        assert_eq!(first, "## Workflow", "{name}");
+        let workflow = text.split("## Workflow\n").nth(1).unwrap();
+        let workflow = workflow.split("\n## ").next().unwrap();
+        let first_step = workflow
+            .find("- [ ] 1. ")
+            .unwrap_or_else(|| panic!("{name}"));
+        let second_step = workflow
+            .find("- [ ] 2. ")
+            .unwrap_or_else(|| panic!("{name}"));
+        assert!(first_step < second_step, "{name}");
+    }
+
+    // Each topic's home holds its section.
+    let [(_, requirements), (_, evidence), (_, bootstrap)] = skills;
+    for heading in [
+        "## Writing requirements",
+        "## Choosing references",
+        "## What the review checks",
+    ] {
+        assert!(requirements.contains(heading), "{heading}");
+    }
+    for heading in [
+        "### FIXME",
+        "### Citation reviews",
+        "### Site reviews",
+        "## Disagreeing assessments",
+    ] {
+        assert!(evidence.contains(heading), "{heading}");
+    }
+    assert!(bootstrap.contains("## Proposing requirements"));
+
+    // Each reference file is linked with a statement of when to read it.
+    let collapsed = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (skill, link) in [
+        (
+            requirements,
+            "read [references/distributed-requirements.md](references/distributed-requirements.md) before drafting",
+        ),
+        (
+            requirements,
+            "read [references/syntax-details.md](references/syntax-details.md)",
+        ),
+        (
+            evidence,
+            "If authoring fails on configuration, credentials, throttling, or a denied read, read [references/authoring-failures.md](references/authoring-failures.md)",
+        ),
+    ] {
+        assert!(collapsed(skill).contains(link), "{link}");
+    }
+}
+
 /// The bundled skills, by name.
 // {test}`requirements.cli.behavior_review_guidance`
 // {test}`requirements.cli.internal_detail_guidance`
@@ -1968,6 +2148,7 @@ const SKILLS: [&str; 3] = [
 // {test}`requirements.cli.flip_guidance`
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.requirements_review_skill`
+// {test}`requirements.cli.distributed_guidance`
 fn bundled_skill(name: &str) -> String {
     let files: &[&str] = match name {
         "habeas-requirements" => &[
@@ -1998,6 +2179,8 @@ fn bundled_skill(name: &str) -> String {
 // {test}`requirements.cli.bootstrap_skill`
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.requirements_review_skill`
+// {test}`requirements.cli.flip_guidance`
+// {test}`requirements.cli.distributed_guidance`
 fn assert_phrases(name: &str, phrases: &[&str]) {
     let text = bundled_skill(name);
     for phrase in phrases {

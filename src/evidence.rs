@@ -212,10 +212,10 @@ pub(crate) fn inspect_repository_with_progress(
     let outlines = OutlineCache::default();
     // Citation reviews are validated against their source items below.
     // {impl}`requirements.references.citation_review`
-    let ordinary_files: Vec<_> = evidence_files
+    let (review_files, ordinary_files): (Vec<_>, Vec<_>) = evidence_files
         .iter()
-        .filter(|file| !crate::citations::is_review_path(&evidence_root, file))
-        .collect();
+        .partition(|file| crate::citations::is_review_path(&evidence_root, file));
+    let review_files: Vec<PathBuf> = review_files.into_iter().cloned().collect();
 
     // {impl}`requirements.ci.orphans`
     for (completed, file) in ordinary_files.iter().enumerate() {
@@ -294,6 +294,7 @@ pub(crate) fn inspect_repository_with_progress(
         &definitions,
         &references,
         &outlines,
+        &review_files,
         &mut errors,
         &mut progress,
     );
@@ -1281,19 +1282,22 @@ fn validate_references(
     let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();
     for reference in references {
         let location = format!("{}:{}", display_path(root, &reference.file), reference.line);
+        // An unclosed fence has no complete body, so only the checks of its
+        // name, which comes from the opening line, still run.
         // {impl}`requirements.references.roles`
-        if reference.commentary.is_some() && !reference.closed {
+        let unclosed = reference.commentary.is_some() && !reference.closed;
+        if unclosed {
             errors.push(format!(
                 "{location}: fenced {{{}}} reference to {} has no closing fence with at least as many colons within its comment run or file",
                 reference.kind.label(),
                 reference.name
             ));
-            continue;
         }
         // {impl}`requirements.references.builtin_definitions`
         // {impl}`requirements.references.no_requirement`
         if crate::builtins::is_builtin_name(&reference.name) {
             match crate::builtins::builtin(&reference.name) {
+                Some(_) if unclosed => {}
                 Some(builtin) => {
                     if let Err(problem) =
                         builtin.check(reference.kind, reference.commentary.as_deref())
@@ -1322,10 +1326,12 @@ fn validate_references(
             continue;
         }
         if target.is_some_and(|d| d.kind != DefinitionKind::Term) {
-            by_definition
-                .entry(reference.name.clone())
-                .or_default()
-                .push(reference);
+            if !unclosed {
+                by_definition
+                    .entry(reference.name.clone())
+                    .or_default()
+                    .push(reference);
+            }
         } else {
             errors.push(format!(
                 "{}:{}: {{{}}}`{}` has no matching requirement or example",
@@ -1929,6 +1935,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.book_source`
+    // {test}`requirements.configuration.loading`
     #[test]
     fn book_source_defaults_only_when_absent_and_reports_invalid_configuration() {
         let temp = TempDir::new().unwrap();
@@ -2238,6 +2245,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.requirements_inputs`
     // {test}`requirements.references.definition_glob_cases`
+    // {test}`requirements.references.definition_globs`
     #[test]
     fn requirements_inputs_track_matched_declarations_in_full_name_order() {
         let temp = fixture();
@@ -2338,6 +2346,19 @@ pub(crate) mod tests {
                 "evidence/foo.other.json: inputs[0]: requirements glob \"foo.*.none\" matches no requirement or example"
             ]
         );
+
+        // A selection that is not a valid definition glob is rejected.
+        for (glob, problem) in [
+            ("foo.[a].bar", "unsupported character '['"),
+            ("", "definition glob must not be empty"),
+        ] {
+            fs::write(temp.path().join("evidence/foo.other.json"), record(glob)).unwrap();
+            let found = errors();
+            assert!(
+                found.len() == 1 && found[0].contains("inputs[0]") && found[0].contains(problem),
+                "{glob:?}: {found:?}"
+            );
+        }
     }
 
     // {test}`requirements.ci.errors`

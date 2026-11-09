@@ -15,6 +15,7 @@ const CONFIG_EXAMPLES: &str = "see md/requirements/authoring.md#editing-the-file
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.configuration.structure`
 // {impl}`requirements.configuration.feature_sections`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
@@ -31,6 +32,7 @@ pub struct ProjectConfig {}
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.configuration.workspace_structure`
 // {impl}`requirements.configuration.feature_sections`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
@@ -44,6 +46,7 @@ pub struct WorkspaceConfig {
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.configuration.feature_sections`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceAuthoringConfig {
@@ -85,6 +88,7 @@ pub struct WorkspaceEvidenceConfig {
 /// A user-supplied credential value. Serialization preserves it; diagnostics do not.
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretString(String);
@@ -106,6 +110,7 @@ impl fmt::Debug for SecretString {
 
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BedrockCredentials {
@@ -118,6 +123,7 @@ pub struct BedrockCredentials {
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.configuration.feature_sections`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserAuthoringConfig {
@@ -139,6 +145,7 @@ pub struct ProjectSelection {
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuthoringConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +166,7 @@ pub enum BackendConfig {
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.authoring.rig_configuration_mapping`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BedrockConfig {
@@ -176,6 +184,7 @@ pub struct BedrockConfig {
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 // {impl}`requirements.authoring.rig_configuration_mapping`
+// {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OllamaConfig {
@@ -219,6 +228,7 @@ pub struct ModelRef {
 }
 
 // {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.configuration.serialization`
 /// The selected saved values together with their source, without resolved secrets.
 #[derive(Clone, Debug)]
 pub struct ResolvedAuthoringConfig {
@@ -558,6 +568,7 @@ impl OptionValue {
 impl OllamaConfig {
     // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.authoring.rig_configuration_mapping`
+    // {impl}`requirements.configuration.serialization`
     pub fn endpoint(&self) -> &str {
         self.endpoint.as_deref().unwrap_or("http://localhost:11434")
     }

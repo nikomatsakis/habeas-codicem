@@ -170,6 +170,7 @@ fn split_lines(content: &str) -> Vec<(usize, usize, &str)> {
 // {impl}`requirements.references.roles`
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.references.book_badges`
+// {impl}`requirements.references.discovery`
 pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFence> {
     let protected = if markdown {
         protected_ranges(content)

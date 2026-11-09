@@ -406,6 +406,44 @@ fn session_start_advises_only_when_setup_is_incomplete() {
         "setup keeps an existing fold setting, so any value is complete"
     );
 
+    // Each required file and the stylesheet entry is checked on its own.
+    fs::write(project.join("book.toml"), &book).unwrap();
+    let mut without_css: toml_edit::DocumentMut = book.parse().unwrap();
+    without_css["output"]["html"]["additional-css"] = toml_edit::value(toml_edit::Array::new());
+    fs::write(project.join("book.toml"), without_css.to_string()).unwrap();
+    assert!(
+        session_start(project, &nested)["SessionStart"]["additionalContext"].is_string(),
+        "a book without the stylesheet entry is not fully configured"
+    );
+    fs::write(project.join("book.toml"), &book).unwrap();
+    let test = project.join("tests/habeas.rs");
+    let test_source = fs::read_to_string(&test).unwrap();
+    for (path, original) in [
+        (&css, include_str!("../md/habeas.css").to_owned()),
+        (&test, test_source),
+    ] {
+        fs::write(path, "user content\n").unwrap();
+        assert!(
+            session_start(project, &nested)["SessionStart"]["additionalContext"].is_string(),
+            "{} with different content is not compatible",
+            path.display()
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "user content\n");
+        fs::remove_file(path).unwrap();
+        assert!(
+            session_start(project, &nested)["SessionStart"]["additionalContext"].is_string(),
+            "a missing {} is not fully configured",
+            path.display()
+        );
+        assert!(
+            !path.exists(),
+            "the hook must not recreate {}",
+            path.display()
+        );
+        fs::write(path, original).unwrap();
+        assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+    }
+
     fs::remove_file(project.join("book.toml")).unwrap();
     assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
 }

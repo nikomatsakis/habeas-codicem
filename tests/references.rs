@@ -42,10 +42,35 @@ fn has(errors: &[String], needle: &str) -> bool {
     errors.iter().any(|error| error.contains(needle))
 }
 
+// {test}`requirements.ci.errors`
+#[test]
+fn unclosed_fences_still_report_unknown_names() {
+    let temp = project();
+    let root = temp.path();
+    let cr = role("cite");
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "// :::{cr} rules.missing\n// never closed\n\n// :::{cr} habeas:other\n// never closed\n"
+        ),
+    )
+    .unwrap();
+    let errors = errors(root);
+    for expected in [
+        "src/lib.rs:1: fenced {cite} reference to rules.missing has no closing fence".to_owned(),
+        format!("src/lib.rs:1: {cr}`rules.missing` has no matching requirement or example"),
+        "src/lib.rs:4: fenced {cite} reference to habeas:other has no closing fence".to_owned(),
+        format!("src/lib.rs:4: {cr}`habeas:other` has no matching built-in definition"),
+    ] {
+        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+    }
+}
+
 // {test}`requirements.references.roles`
 // {test}`requirements.references.builtin_definitions`
 // {test}`requirements.references.no_requirement`
 // {test}`requirements.references.rust_item_coverage`
+// {test}`requirements.references.procedure`
 #[test]
 fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     let temp = project();
