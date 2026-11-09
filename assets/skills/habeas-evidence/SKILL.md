@@ -44,6 +44,8 @@ Run commands from the project root, the directory with `book.toml` and
   provider fails, stop and report the blocker.
 - Never re-run an assessment to get a different result, or change a judgment to
   make validation pass. Fix the source, tests, references, or requirement text.
+  `--force` is for reassessing after a fix the hash does not see, never for
+  retrying unchanged sources.
 - Don't read evidence files into your context. Use `habeas status` and
   `habeas info`; to survey many rationales at once, ask a subagent to read them
   and return short findings.
@@ -57,7 +59,7 @@ Run commands from the project root, the directory with `book.toml` and
 | Finding | Action |
 | --- | --- |
 | missing or stale evidence | `habeas author --all` |
-| false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
+| false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all`; if the fix changed only comments that are not hashed (see Gotchas), the record stays current and is skipped, so run `habeas author --force <full-name>` |
 | uncovered `{impl}` or `{test}` line | check the reference names the right definition, then re-author that definition |
 | unreferenced Rust item | add references by the procedure in the habeas-requirements skill |
 | orphaned citation or site review | the item or query changed; `habeas author --all` |

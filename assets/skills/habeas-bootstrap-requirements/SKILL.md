@@ -18,13 +18,11 @@ to a subagent to keep it out of your context.
 
 - [ ] 1. Read the habeas-requirements skill; it defines the directive syntax,
       the reference procedure, and the review criteria. Aim for accurate
-      references, not a coverage number. Then check the setup. If the project has no `habeas.toml`, ask before
-      running `habeas setup`. If a requirement already exists,
-      confirm authoring works by running `habeas author <full-name>` on it;
-      otherwise do this after installing the first agreed requirement in step
-      5. If it fails, see the habeas-evidence skill. Use one chapter file per area, such as
-      `md/requirements/cli.md` for `requirements.cli.*`; add each to
-      `SUMMARY.md` and `git add` it.
+      references, not a coverage number. If the project has no `habeas.toml`,
+      ask before running `habeas setup`. If a requirement already exists,
+      confirm authoring works with `habeas author <full-name>`; otherwise do so
+      after tagging the first area in step 6. If it fails, see the
+      habeas-evidence skill.
 - [ ] 2. Read the existing requirements, documentation, public entry points,
       implementation, and tests. Follow behavior through the code rather than
       relying on test names or top-level dispatch.
@@ -35,7 +33,9 @@ to a subagent to keep it out of your context.
       bootstrap is not agreement to specific text.
       **Gate:** install a requirement only after the user agrees to it.
       Undecided items stay on the gap list.
-- [ ] 5. Install the agreed requirements in the area's chapter.
+- [ ] 5. Install the agreed requirements in the area's chapter, one file per
+      area, such as `md/requirements/cli.md` for `requirements.cli.*`; add a
+      new chapter to `SUMMARY.md` and `git add` it.
 - [ ] 6. Tag the area's tests and items (below).
 - [ ] 7. Run `cargo test --workspace`, which makes no model calls, and fix its
       reference and coverage errors. Tell the user how many definitions
@@ -90,9 +90,11 @@ habeas-requirements skill's
 ## Tagging
 
 Give every inventoried test and item its references by the procedure in the
-habeas-requirements skill. For a parameterized test, put the reference on the
+habeas-requirements skill. Every test must end with `{test}` of a requirement or
+example; a test whose behavior no agreed requirement states goes on the gap
+list, never `habeas:none`. For a parameterized test, put the reference on the
 case source or the generating declaration; one file-level tag must not stand in
-for unrelated tests. Many `habeas:none` citations in a bootstrap suggest
+for unrelated tests. Many `habeas:none` citations on other items suggest
 mis-tagging.
 
 ## Report
