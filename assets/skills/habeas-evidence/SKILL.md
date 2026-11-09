@@ -1,146 +1,153 @@
 ---
 name: habeas-evidence
-description: Use the Habeas authoring harness to create or refresh requirement and example evidence, and address Cargo validation failures.
+description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, unreferenced Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to derive an initial requirement set when most of a codebase is unreferenced, use habeas-bootstrap-requirements.
 ---
 
 # Habeas evidence
 
-Run the authoring harness from the Cargo and mdBook project:
+Habeas records, for each requirement and example in a project's mdBook, a
+model's judgment of whether the code and tests satisfy it. `habeas author`
+produces these records; `cargo test --workspace` validates them without calling
+a model.
 
-```sh
-habeas author --all
-```
+## Workflow
 
-It fills in missing, stale, or invalid evidence for requirements and named
-examples. Current records are preserved, including FIXME judgments and false
-judgments whose subject and inputs are unchanged; rerun one explicitly with
-`habeas author <full-name>`. Each assessment runs in its own model conversation.
-The harness records delivered source inputs and writes the model's judgment and
-rationale. The supervising agent must not compose or refresh evidence JSON,
-determinations, rationales, or source inputs itself, or delegate that work to
-an ad hoc evidence-writing agent.
+Run commands from the project root, the directory with `book.toml` and
+`Cargo.toml`.
 
-The model reads sources with the `habeas` tool, lists a file's selectable nodes
-with the `outline` tool, and searches with `ripgrep`. Evidence identifies each
-source by an outline node of its file, such as `fn[run]` or `impl[Thing]/fn[run]`,
-and that node's structural hash; it stores no source text or line numbers. Moving
-code or editing comments that the language profile does not hash, such as
-ordinary Rust `//` comments, keeps the evidence current; changing the node's code
-or doc comments makes it stale and calls for reassessment. `habeas add-input
---item <file>:<line>` adds every node declared on a line to a record pending
-review, but authoring remains the way to produce judgments.
+- [ ] 1. `git add` the new source files you created. Untracked files are
+      invisible to authoring and reference discovery, and `habeas status` lists
+      untracked files that contain references; unstaged edits to tracked files
+      are read.
+- [ ] 2. `habeas status [<selection>]` lists definitions needing attention;
+      `--all` includes accepted ones, and `--verbose` lists the judgments in each
+      FIXME issue group. `habeas info <selection>` shows one definition's text,
+      judgment, rationale, inputs, and validation findings. A selection is a full
+      name or a glob in which `*` matches any characters, including dots.
+- [ ] 3. Fix what the findings name (see "Fixing findings").
+- [ ] 4. `habeas author --all` assesses every definition whose evidence is
+      missing, stale, or invalid, keeps current records, and reports how many it
+      skipped as current; `-v` prints each false judgment's rationale.
+      `habeas author <full-name>` does one; add `--force` to reassess current
+      evidence, or `--stdout` to print the result without writing it.
+- [ ] 5. `cargo test --workspace`. If findings remain that you can fix, return to
+      step 2. Stop and report to the user each finding that needs their
+      decision, such as a new or changed requirement, a gap to defer, or a
+      blocker, and each false judgment expected because implementation is
+      pending; don't keep iterating on those.
 
-Monitor summaries, outcomes, and validation diagnostics without loading generated
-evidence bodies into the supervising agent's context. If a rationale needs
-investigation, delegate that reading and request a concise implementation finding
-rather than the evidence text.
+## Rules
 
-In a Git worktree, stage new source files with `git add` before authoring.
-Unstaged edits to tracked files are readable. The default exclusions are
-untracked files, generated `evidence/` content, and paths outside the project;
-existing Cargo build-script output directories are allowed when discoverable.
-The nearest enclosing `habeas.toml` can set `[evidence]` `allow` and `disallow`
-paths (literal files or directory subtrees relative to that file). Allow overrides
-the defaults and disallow wins. A denied explicit read aborts that assessment;
-other batch assessments continue, and the command ultimately reports failure.
-The driving human or agent must decide whether to stage the file or change policy.
-Do not bypass the error by writing evidence yourself.
+- Never write or edit evidence JSON, determinations, rationales, or inputs
+  yourself, and never hand that to another agent. Evidence means something only
+  as an independent assessment that the harness records. If authoring cannot
+  run, because configuration or credentials are missing, a read is denied, or the
+  provider fails, stop and report the blocker.
+- Never re-run an assessment to get a different result, or change a judgment to
+  make validation pass. Fix the source, tests, references, or requirement text.
+- Don't read evidence files into your context. Use `habeas status` and
+  `habeas info`; to survey many rationales at once, ask a subagent to read them
+  and return short findings.
+- Review a change to an agreed requirement's text with the user first, as the
+  habeas-requirements skill describes.
+- Validation is deterministic. When it tells you to run `habeas author`, run it
+  yourself; never add `habeas author` to CI.
 
-Use `--config <name>` to select a saved authoring configuration. Configuration and
-credentials can come from the user file or nearest `habeas.toml`; prefer profiles
-and environment references over literal credentials in workspace files.
-Bedrock defaults to concurrent assessments;
-Ollama defaults to one at a time. Each named configuration's positive `concurrency`
-setting overrides its default. If the provider reports throttling, lower that
-setting and rerun the command. Do not substitute manual evidence creation when
-configuration or provider access is missing; report the blocker.
+## Fixing findings
 
-Use `habeas status [<selection>]` to find requirements and examples needing attention,
-or `--all` to include accepted records. Status groups FIXME judgments by issue;
-use `--verbose` to list the judgments and original FIXME entries in each group.
-Use `habeas info <selection>` to inspect their
-judgments, inputs, and validation findings. A selection is a full name, which
-selects exactly, or a glob matching whole names, where `*` matches any number of
-characters, including dots. For a focused reassessment, run
-`habeas author <full-name>`; add `--stdout` to inspect its JSON without changing
-the evidence file.
+| Finding | Action |
+| --- | --- |
+| missing or stale evidence | `habeas author --all` |
+| false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
+| uncovered `{impl}` or `{test}` line | check the reference names the right definition, then re-author that definition |
+| unreferenced Rust item | add references by the procedure in the habeas-requirements skill |
+| orphaned citation or site review | the item or query changed; `habeas author --all` |
+| untracked file with references | `git add` it |
 
-Address findings by fixing implementation, tests, or source references. Review a
-substantive change to an approved requirement with the user before changing its
-text. Every first-party Rust function or method needs its own requirement or
-example reference, including trait methods and test helpers; an enclosing module
-reference does not cover its functions. Mark code `{impl}` where it implements
-part of a definition and tests `{test}` where they are designed to verify it; use
-`{cite}` only for related code that does neither. A requirement can `{impl}`
-another requirement it refines, and an example can `{test}` or `{cite}` a
-requirement. There is no waiver for an uncited function. Choose references by
-Habeas's reference procedure, applied to each definition an item could
-reference: `{test}` for a test or test helper designed to verify it; otherwise
-`{impl}` when fulfilling it depends on the item, including a type whose fields,
-variants, serialized form, or validation it constrains; otherwise `{cite}` when
-the item should be re-checked or kept in sync when it changes. When no
-existing requirement explains behavior, propose an appropriate requirement
-rather than inventing evidence. For internal code, state any invariant worth
-checking as an ordinary requirement and implement it; otherwise cite the
-built-in `habeas:none` in fenced form, with a body justifying why the item
-exists. Do not propose grouping requirements that state no checkable
-obligation. An item citing `habeas:none` must not implement
-end-user-observable behavior that no requirement specifies.
+A false rationale points to the gaps that skill's "What the review checks"
+lists. Behavior with no requirement needs one agreed with the user. Each
+determination stands alone: a false requirement does not fail the definitions it
+implements, tests, or cites, so fix each failing definition on its own.
 
-Every source item outside the book with a `{cite}` reference needs a citation
-review at `evidence/citations/<file>/<selector>.json`, which `habeas author --all`
-authors. It assesses whether each citation is sensible or should be `{impl}` or
-`{test}`, and whether each `habeas:none` justification holds. Reassess one with
-`habeas author citations:<file>#<selector>`. A false citation review is fixed by
-changing the references or the item, not by rewriting the review.
-Missing evidence or a truthful false judgment is expected while implementation
-is pending; do not write placeholder evidence yourself.
+### FIXME
 
-The harness assesses each requirement against the code marked `{impl}` for it
-and checks that its `{test}` sources cover interesting design cases. It may
-justify absent tests for simple logic or where testing is impractical. The same
-review checks that the implementation is marked completely: code that implements
-part of the requirement without `{impl}`, including code that only cites it, is a
-gap, and so is behavior in `{impl}` code that no definition implemented there
-specifies. Examples require tests covering the scenario and expected outcomes; an
-accepted true judgment needs a covered `{test}` reference. `{impl}` and `{test}`
-lines must be covered by the referenced definition's evidence; `{cite}` lines
-need no coverage.
+A FIXME judgment, such as `{"FIXME": ["#125"]}`, means a `FIXME` comment or test
+acknowledges every remaining gap, conventionally `FIXME(#125)` or
+`FIXME(rust-lang/rust#123)`; a `TODO` does not count. Validation accepts it like
+`true` when all other checks pass. When a gap is real but the user agrees to
+defer it, add a `FIXME(#N)` comment or test citing a real issue; comments
+containing `FIXME` are hashed, so the evidence becomes stale and the next
+`habeas author --all` reassesses it. Never invent issue numbers.
 
-Requirement and example judgments are `true`, `false`, or `{"FIXME": ["#125"]}`.
-FIXME means source comments or tests explicitly acknowledge every remaining gap;
-the entries identify issues or other source content. The convention is
-`FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but other source locations are allowed.
-The harness records these references; do not invent issue numbers or change a
-judgment to make validation pass. CI accepts true and FIXME only when all schema,
-freshness, and coverage checks also pass. Each determination stands alone: a
-false judgment does not fail the definitions its subject implements, tests, or
-cites.
+### Citation reviews
+
+Every source item outside the book with a `{cite}` gets a citation review. It
+checks that each citation is sensible and should not be `{impl}` or `{test}`, and
+that each `habeas:none` justification holds. Reassess one with
+`habeas author citations:<file>#<selector> --force`. Fix a false review by
+changing the references or the item.
+
+### Site reviews
+
+A distributed requirement, described in the habeas-requirements skill, declares
+queries that select its sites. Each site gets a site review, authored by
+`habeas author --all`, by `habeas author sites:<full-name>` for one requirement,
+or by `habeas author sites:<full-name>/<file>#<selector>` for one site. A site
+needs no reference to the distributed requirement, but still needs its own
+reference for Rust item coverage. A site the requirement does not apply to is
+judged true, so a false review means the reviewer found the requirement applies
+and is broken:
+
+1. If it does apply, fix the code at the site.
+2. If the reviewer misread whether it applies, tighten the requirement text or
+   narrow the site query so the site's status is unambiguous. Query and text
+   changes edit the requirement; review them with the user.
+
+If `habeas info <full-name>` reports many sites the requirement does not apply
+to, the site query selects too much. A failing `match` or `no_match` snippet, or
+a site query matching nothing, is a validation error in the query.
 
 ## Disagreeing assessments
 
 The goal is that independent assessments of the same subject reach the same
 determination, because the requirement, code, and tests leave no gap a careful
 reviewer could find and no reading a careful reviewer could take differently.
-Assessments of the same subject that disagree are findings against that goal:
-for example, when `habeas author --confirm` reports that its assessments
-disagreed, or a determination flips between runs. Read both rationales and
-decide whether one assessment found a real gap or the requirement text admits
-more than one reading. Then fix the source or tests, or tighten the requirement
-text, rather than re-running an assessment to obtain a different determination.
-Review substantive requirement changes with the user before changing the text.
-When you reword a requirement for precision, record the old text, new text,
-reason, and the rationale that prompted the change in the project's audit log,
-such as `audits/requirement-rewordings/`; escape quoted roles there, as in
-`\{cite}`, so the log does not add references.
+Assessments that disagree are findings against that goal.
 
-`habeas author --confirm`, with a full name or `--all`, checks each `true` or
-FIXME result with an independent second assessment and verifies the less
-favorable result when they disagree.
+By default, `habeas author` uses the `confirm` policy: it checks each `true` or
+FIXME result with a second independent assessment and, when the two disagree,
+has a verifier check the gaps the less favorable one claims. The recorded
+rationale ends with a note on the disagreement and what the verifier concluded;
+`habeas info` shows it. The `once` policy, set with `--policy once` or a
+configuration's `policy`, skips the second assessment to save time and tokens. A
+determination that changes when evidence is reassessed, though the subject and
+sources have not changed in substance, is the same kind of finding.
 
-After source or requirement fixes, rerun `habeas author --all`, then
-`cargo test --workspace`. Authoring preserves completed writes when another
-assessment fails, so rerunning can continue the work. A completed false judgment
-still fails validation and needs its reported gaps addressed. Ordinary validation
-checks stored evidence without inference; its instruction to run authoring is
-for the agent, not permission for CI to call a model automatically.
+1. Read the rationale and its disagreement note, and decide whether one
+   assessment found a real gap or the requirement text admits more than one
+   reading.
+2. Fix the source or tests, or tighten the requirement text, reviewing
+   substantive changes with the user. Don't re-run for a different result.
+3. When you reword a requirement for precision, record the old text, new text,
+   reason, and the rationale that prompted the change in the project's audit
+   log, such as `audits/requirement-rewordings/`; if the project has none, ask
+   the user before creating one. Escape quoted roles there, as in `\{cite}`, so
+   the log adds no references.
+
+## Gotchas
+
+- Evidence identifies each source by an outline node, such as `fn[run]` or
+  `impl[Thing]/fn[run]`, and a structural hash of its code. Moving a node, or
+  editing comments the language does not hash, such as Rust `//` comments
+  without `FIXME`, keeps evidence current. Changing code, doc comments,
+  docstrings, or `FIXME` comments makes it stale, and so does adding, removing,
+  or changing the role of an `{impl}` or `{test}` reference, or editing its
+  fenced commentary.
+- Every first-party Rust function, method, struct, enum, and union needs its own
+  reference; a module or `impl` reference does not cover it, and there is no
+  waiver.
+- `{impl}` and `{test}` lines must be covered by the referenced definition's
+  evidence; `{cite}` lines need none.
+- If authoring fails on configuration, credentials, or throttling, read
+  [references/configuration.md](references/configuration.md). If it reports a
+  denied read, read [references/file-access.md](references/file-access.md).

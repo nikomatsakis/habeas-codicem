@@ -1,54 +1,76 @@
 ---
 name: habeas-requirements
-description: Design and vet requirements and examples for user-visible behavior changes in a Habeas mdBook project before coding; maintain definitions and references.
+description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, or `habeas:none` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
 ---
 
 # Habeas requirements
 
-## New or changed behavior
+Habeas traces requirements, written in a project's mdBook, to the code and tests
+that implement and verify them. `habeas author` has a model assess each one;
+`cargo test --workspace` checks the results.
 
-When a user requests new or changed user-visible behavior in a Habeas project, first read the relevant requirements, code, and tests. Identify requirements that already express the intended behavior. For gaps, draft the smallest set of observable obligations, including important outcomes and failure cases, without committing to an implementation.
+## Workflow
 
-Run `habeas info <selection>` to read current requirement and named example texts, evidence states, rationales, inputs, and validation findings as Markdown. A selection is a full name, which selects exactly, or a glob where `*` matches any number of characters, including dots, when you need to inspect a group.
+- [ ] 1. Read the relevant requirements, code, and tests. `habeas info <selection>`
+      prints requirement and example texts, evidence states, rationales, and
+      validation findings; a selection is a full name or a glob in which `*`
+      matches any characters, including dots, as in `habeas info 'requirements.cli.*'`.
+- [ ] 2. Draft: list the existing requirements to reuse by full name, and the
+      smallest set of new or changed obligations, with their chapter, full
+      names, and exact fenced text. Write the drafts into the chapter as
+      uncommitted edits and quote them in the conversation. Cover important
+      outcomes and failure cases without committing to an implementation. List
+      open product choices separately.
+- [ ] 3. Review each new or changed requirement with the user in turn: present
+      its exact text, and for a distributed requirement its queries; point out
+      ambiguity, obligations that are hard to test or that nothing would
+      enforce, and conflicts with other requirements; propose specific
+      improvements to accept, revise, or reject; apply the decisions before
+      moving on. You may present several at once, each with its own
+      recommendations, if the user decides on each.
+      **Gate:** no implementation or test code, and no commit of the drafts, until
+      the user agrees. Exact text the user supplied, or explicit agreement earlier
+      in the conversation, counts; a general request to build the feature does not.
+      If you cannot ask the user in this session, stop here and report the drafts
+      and open choices.
+- [ ] 4. Make sure the book contains exactly the approved text and report the
+      full names.
+- [ ] 5. Implement, add tests, and add references (below).
+- [ ] 6. Run `habeas author --all`, then `cargo test --workspace`, and fix the
+      reported gaps, following the habeas-evidence skill.
 
-Show the user the full IDs and text of existing requirements to reuse, plus the proposed chapter location, full IDs, and exact fenced text of any additions or changes. State open product choices separately. Ask the user to agree to or revise this requirement set. User-provided exact requirement text or explicit agreement earlier in the conversation counts as approval; a general request to build the feature does not. Drafts may be uncommitted edits to the book, but do not commit them while review is pending, and do not write implementation or test code yet.
+If implementation shows that an approved obligation must change substantively,
+review the revised text with the user before coding the change. A bug fix whose
+behavior an existing requirement already specifies needs no new requirement:
+confirm the requirement covers it, then fix the code and check its tests and
+references. A refactor that changes no behavior needs no review, but references
+must move with the code.
 
-A good way to reach agreement is to review each new or changed requirement with the user in turn. For each one, present its exact text; identify ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements; and propose specific improvements for the user to accept, revise, or reject. Apply the user's decisions before moving on to the next requirement.
+## Rules
 
-After agreement, install the approved requirements in the mdBook and confirm their names. Then implement the behavior and add tests and traceability references. Run `habeas author --all` to create or refresh evidence through the configured model. The supervising agent must not compose evidence JSON, rationales, determinations, or source snapshots itself or delegate manual evidence writing to another agent. If implementation reveals a substantive change to an approved obligation, review and install the revised requirement before coding that change. Missing or false evidence is expected while implementation is incomplete.
+- Never write evidence JSON, rationales, determinations, or inputs yourself, and
+  never ask another agent to; habeas-evidence explains why.
+- Every end-user-observable result, including errors and input handling, must
+  follow from some agreed requirement. One general requirement, such as "invalid
+  arguments MUST be reported with usage", can cover many branches; propose a new
+  requirement only for behavior no existing one covers, and check that the code
+  adds no observable behavior beyond the requirements.
+- If a behavior follows only from several requirements together, mark each with
+  `{impl}` where it applies and add fenced commentary explaining how they
+  combine. For example, `^C` quits because one requirement maps `^C` to `q` and
+  another says pressing q stops managed forwards; a reference alone would not
+  say why `^C` is accepted.
+- Keep full names stable once agreed: evidence, references, and links use them.
 
-## Reviewing code against requirements
+## Writing requirements
 
-The authoring harness assesses whether the code marked `{impl}` for a requirement implements every obligation completely and exactly as stated, and whether tests cover interesting design cases. It also treats as gaps any code that implements part of the requirement without `{impl}`, including code that only cites it, and any behavior in `{impl}` code that no definition implemented there specifies. When another requirement implements part of the subject, it checks only that the text carries out that part. For absent tests, it assesses whether simplicity or impracticality justifies their absence. For an example, it assesses whether test setup and assertions cover the scenario and expected outcomes. Use these criteria while implementing and fixing reported gaps; leave evidence judgments and rationales to the harness.
-
-Requirement and example judgments have three outcomes: `true`, `false`, or `{"FIXME": ["#125"]}`. The harness uses FIXME when source comments or tests explicitly acknowledge the uncovered aspects, recording their issue references or other identifying content. A documented gap does not excuse other, unacknowledged gaps. Use the `habeas-evidence` skill for the authoring workflow.
-
-Inspect every end-user-observable result and branch, including errors and input handling. Check that the code fulfills each applicable requirement and introduces no additional observable behavior without an agreed requirement. When requirements interact, mark every requirement implemented at the relevant point with `{impl}` and explain how their texts jointly account for the behavior. A reference alone does not explain why a behavior, such as accepting `^C`, is specified.
-
-Every explicit function or method in first-party Rust sources needs its own requirement or example reference in an attached Rust comment or within its body, including trait methods and test helpers. A reference on an enclosing module or `impl` does not cover its functions, and there is no uncited-function waiver.
-
-## Choosing references
-
-Choose each source item's references by Habeas's reference procedure, applied to each definition the item could reference; an item may carry several:
-
-1. If the item is a test or test helper designed to verify the definition, use `{test}`.
-2. Otherwise, if fulfilling the definition depends on the item, use `{impl}`. For code, it makes a decision, performs a check, produces an output, or handles a case the definition specifies. For a type, the definition constrains its shape: its fields, variants, serialized form, or validation.
-3. Otherwise, if the item should be re-checked or kept in sync when the definition changes, use `{cite}`.
-4. If the item has no reference after applying steps 1 to 3 to every definition, cite the built-in `habeas:none` in fenced form, with a body justifying why the item exists.
-
-For internal code, state any invariant worth checking as an ordinary requirement, such as that a cache must not change results, get the user's agreement, and implement it with `{impl}`. Otherwise cite `habeas:none`:
-
-```text
-// :::{cite} habeas:none
-// Joins the outline builders' line splitting; no requirement concerns how.
-// :::
-```
-
-Do not propose grouping requirements that state no checkable obligation, such as one requirement covering an area's internal helpers. An item citing `habeas:none` must not implement end-user-observable behavior that no requirement specifies; propose a requirement for that behavior instead. Every source item outside the book with a `{cite}` gets a citation review from `habeas author --all`, which checks that each citation is sensible, that none should be `{impl}` or `{test}`, and that each `habeas:none` justification holds. `habeas status --all` lists every `habeas:none` citation with its justification.
-
-## Authoring format
-
-Put requirements in the book's Markdown source directory. Define each with a fenced `{req}` directive: the opening line is three or more colons followed by `{req} name`, and the closing line has at least as many colons. Derive the full name from the chapter path relative to that directory: remove `.md`, change `/` to `.`, and append the directive name. For nested chapters, omit a leading `reqs/` and a trailing `/index` or `/README`.
+Put requirements in the book's Markdown source directory: `[book].src` in
+`book.toml`, `src` by default. A requirement is a fenced `{req}` directive: an
+opening line of three or more colons followed by `{req} name`, the body, and a
+closing line of at least as many colons. Its full name is the chapter path
+relative to that directory, without `.md`, with `/` changed to `.`, followed by
+the directive name; omit a leading `reqs/` and a trailing `/index` or `/README`.
+In `md/requirements.md`:
 
 ```text
 :::{req} forwarding.quit
@@ -56,25 +78,84 @@ Pressing q MUST stop managed forwards.
 :::
 ```
 
-Everything between the fences is the requirement body, including headings and diagrams. Use a longer outer colon fence when the body contains a nested colon directive. Use BCP 14 terms when stating obligations.
+defines `requirements.forwarding.quit`. Name segments use only ASCII letters,
+digits, `_`, and `-`; a directive with an invalid name stays literal text and
+silently defines nothing. Add a new chapter to `SUMMARY.md` so it renders.
+Everything between the fences is the body, including headings and diagrams.
+State obligations with BCP 14 terms (MUST, SHOULD, MAY); an unmet SHOULD is a gap
+unless a source comment explains why, and wording a reviewer could read two ways
+is a gap too. Give the outer directive a longer fence, such as `::::{req}`, when
+its body contains a nested colon directive.
 
-Write a concrete case as a separate `{example}` directive with the same chapter-qualified naming and fence rules. Reference at least one requirement it illustrates from the example body: `{test}` when the example is a case the requirement's review should check, `{cite}` when the requirement is context for the example's own review, or both. A true example determination needs test references and an evidence rationale explaining how the tests cover its interesting aspects. Keep names unique across requirements and examples.
-
-Use fully qualified names for implementation, citation, and test references. Place them on the relevant source or book line:
+Write a concrete case as an `{example}` directive, named and fenced the same
+way. Its body must reference at least one requirement it illustrates: `{test}`
+when the requirement's review should check the case, `{cite}` when the
+requirement is context for the example's own review, or both. Tests must
+reference the example with `{test}` for it to be judged true.
 
 ```text
-{impl}`requirements.forwarding.quit`
-{cite}`requirements.forwarding.quit`
-{test}`requirements.forwarding.quit`
+:::{example} forwarding.quit_two
+With two forwards running, pressing q stops both. {test}`requirements.forwarding.quit`
+:::
 ```
 
-Choose the role by what the source does:
+Define shared vocabulary with `:::{definition} name`, one nonempty
+`:phrase: display text` option, and an explanatory body; refer to it with the
+`{term}` role, which renders the phrase as a plain link. A vocabulary definition
+has no evidence of its own and is never the target of `{impl}`, `{test}`, or
+`{cite}`. Changing its phrase or body makes dependent evidence stale. Names are
+unique across requirements, examples, and vocabulary definitions.
 
-- `{impl}`: it implements part of the definition, making a decision, performing a check, producing an output, or handling a case the definition specifies. Calling code that implements the definition, or producing a result a caller uses to meet it, does not count. A requirement that refines another's obligation can `{impl}` it. A convention for every output of a kind, such as every validation error, is implemented by the code that carries it out as a whole.
-- `{test}`: it is designed to verify behavior the definition specifies, through a test's scenario and assertions or an example's concrete case. Incidental setup does not count.
-- `{cite}`: it relies on, supports, or refers to the definition without implementing or testing it.
+If an obligation applies separately at each of many sites, such as a convention
+every validation function follows, or you edit a `{req}` that contains `{sites}`
+or `{violations}`, read
+[references/distributed-requirements.md](references/distributed-requirements.md)
+before drafting.
 
-Any reference may be fenced to attach commentary: a line of three or more colons followed by the role and the name, the commentary, and a closing line of at least as many colons. In a source comment, write both fences inside one comment run of consecutive comment lines; Habeas reads them after removing each line's comment delimiters, and an unclosed fence is a validation error. Inside a `{req}` or `{example}`, give the outer directive a longer fence, such as `::::{req}`, so the reference's closing `:::` does not end the directive. Commentary on an `{impl}` or `{test}` reference outside the book is part of the definition's reference set, so editing it makes the evidence stale.
+## Choosing references
+
+Write each reference with a full name, in a comment on the relevant source line
+or on the book line: `` {impl}`requirements.forwarding.quit` ``, `` {test}`…` ``,
+or `` {cite}`…` ``. A reference inside a string literal does not count. Choose
+each item's references by this procedure, applied to every requirement or
+example it could reference; an item may carry several:
+
+1. If the item is a test or test helper designed to verify the requirement or
+   example, use `{test}`. Incidental setup that a test happens to exercise does
+   not count; a test that verifies one without `{test}` is a gap.
+2. Otherwise, if fulfilling it depends on the item, use `{impl}`. Code qualifies
+   when it makes a decision, performs a check, produces an output, or handles a
+   case the requirement specifies; a type qualifies when the requirement
+   constrains its fields, variants, serialized form, or validation. Calling code
+   that implements it does not count, so a dispatcher that only routes to the
+   implementation gets `{cite}` of what it dispatches to, or `habeas:none`. A
+   requirement that refines another's obligation can `{impl}` it.
+3. Otherwise, if the item should be re-checked or kept in sync when the
+   requirement or example changes, use `{cite}`.
+4. If nothing gives the item a reference, cite the built-in `habeas:none` in
+   fenced form, with a body justifying why the item exists:
+
+   ```text
+   // :::{cite} habeas:none
+   // Joins the outline builders' line splitting; no requirement concerns how.
+   // :::
+   ```
+
+For internal code with an invariant worth checking, such as a cache that must
+not change results, propose a requirement stating the invariant and implement it
+with `{impl}`. Don't propose grouping requirements that state no checkable
+obligation, such as one covering an area's internal helpers. An item citing
+`habeas:none` must not implement observable behavior that no requirement
+specifies.
+
+`{impl}` and `{test}` make the item an input to the assessment, and its evidence
+must cover them. `{cite}` needs no coverage and does not count as implementing
+anything; every `{cite}` gets a citation review checking it should not be
+`{impl}` or `{test}`.
+
+Any reference may be fenced to attach commentary: `:::{impl} name`, the
+commentary, and a closing `:::`. In a source comment, keep both fences in one run
+of consecutive comment lines.
 
 ```text
 // :::{impl} requirements.forwarding.quit
@@ -82,22 +163,45 @@ Any reference may be fenced to attach commentary: a line of three or more colons
 // :::
 ```
 
-`{impl}` and `{test}` make the source an input to the definition's assessment and must be covered by its evidence. `{cite}` makes the cited definition context for the citing requirement or example, needs no coverage, and does not count toward the cited requirement's implementation.
+When a file that implements or tests a requirement cannot carry a reference,
+such as a shipped skill or a stylesheet copied into other projects, anchor it
+with `:impl: <path>` or `:test: <path>` option lines directly after the
+declaration's opening fence (examples accept only `:test:`), or
+`:impl: <path>#<selector>` for one outline node, such as
+`:impl: skills/foo/SKILL.md#section[Workflow]`; `habeas info` shows each input's
+selector. Don't anchor a file whose items can carry a reference themselves.
 
-When a file that implements or tests a requirement cannot or should not carry a reference itself, such as a shipped skill, a stylesheet copied into other projects, or a README, anchor it from the declaration with `:impl: <path>` or `:test: <path>` option lines directly after the opening fence (examples accept only `:test:`). An anchor covers the whole file, or with `:impl: <path>#<selector>` one outline node of it, such as `src/lib.rs#fn[run]` or a Markdown `section[Heading]`. Do not anchor a file when a more precise reference is available, such as a comment attached to the Rust item that implements or tests the requirement.
+## What the review checks
 
-When a requirement or example changes, run `habeas author --all`, then the Cargo tests. Address reported implementation, test, or reference gaps and rerun the harness. Validation itself checks stored evidence without inference.
+The authoring harness judges each requirement `true`, `false`, or FIXME. FIXME
+means the only gaps are ones a `FIXME` comment or test acknowledges,
+conventionally `FIXME(#125)`; a `TODO` does not count. Add a `FIXME` only when
+the user agrees to defer that gap, citing a real issue, never to get past a
+false determination. A requirement's review treats these as gaps:
 
-## Disagreeing assessments
+- an obligation the code marked `{impl}` does not implement completely and
+  exactly as stated;
+- code that implements part of the requirement without `{impl}`, including code
+  that only cites it, and a test that verifies it without `{test}`;
+- observable behavior in `{impl}` code that no requirement implemented there
+  specifies;
+- obligations, boundaries, and failure cases no test exercises and asserts,
+  unless simplicity or impracticality justifies their absence;
+- an unexplained unmet SHOULD, and text with two readings that the code meets
+  under only one.
 
-The goal is that independent assessments of the same subject reach the same determination, because the requirement, code, and tests leave no gap a careful reviewer could find and no reading a careful reviewer could take differently. Assessments of the same subject that disagree are findings against that goal, for example when a `habeas author --confirm` run's assessments differ or a determination flips between runs. Read both rationales and decide whether one assessment found a real gap or the requirement text admits more than one reading. Then fix the source or tests, or tighten the requirement text, rather than re-running an assessment to obtain a different determination. Review substantive requirement changes with the user as for any new or changed requirement. When you reword a requirement for precision, record the old text, new text, reason, and the rationale that prompted the change in the project's audit log, such as `audits/requirement-rewordings/`; escape quoted roles there, as in `\{cite}`, so the log does not add references.
+An example's review checks that tests' setup and assertions cover its scenario
+and each expected outcome. One acknowledged gap does not excuse others. When
+assessments of the same subject disagree, follow "Disagreeing assessments" in
+the habeas-evidence skill.
 
-## Shared vocabulary
+## Gotchas
 
-Use `:::{definition} name` with one nonempty `:phrase: display text` option before
-its explanatory body to define shared vocabulary. Reference its chapter-qualified
-name with the `{term}` role; the book renders the phrase as a plain link, without
-a badge. Names are unique across requirements, examples, and definitions. A
-named definition has no evidence record of its own and cannot substitute for a
-requirement citation. Dependent evidence snapshots its complete declaration;
-review changes to phrases and bodies because they invalidate that evidence.
+- In Rust, every explicit function or method, including trait methods and test
+  helpers, and every struct, enum, and union needs its own reference in an
+  attached comment or its body. A reference on an enclosing module or `impl`
+  does not cover it, and there is no waiver.
+- Editing the commentary of a fenced `{impl}` or `{test}` reference makes that
+  requirement's evidence stale.
+- Inside a `{req}` or `{example}`, a fenced reference's closing `:::` ends the
+  directive unless the directive has a longer fence.

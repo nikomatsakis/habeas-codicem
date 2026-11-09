@@ -5,7 +5,7 @@ Repository validation MUST check that every requirement defined by a fenced `{re
 :::
 
 :::{req} orphans
-Every JSON file directly under `evidence/` MUST correspond to a declared requirement or named example. Habeas MUST report evidence JSON files that do not, and evidence JSON files in any other location under `evidence/`.
+Every JSON file directly under `evidence/` MUST correspond to a declared requirement or named example. Habeas MUST report evidence JSON files that do not, and evidence JSON files in any other location under `evidence/` except the review directories defined by {cite}`requirements.references.citation_review` and {cite}`requirements.references.site_review`.
 :::
 
 :::{req} schema
@@ -39,6 +39,47 @@ separately. When there are no tests, the reviewer MUST assess whether the logic 
 simple enough to need no test or a test is impractical to author, and explain that
 judgment in the rationale.
 
+The reviewer MUST apply these rules in every assessment. MUST and MUST NOT state
+obligations; an unmet SHOULD MUST be treated as a gap unless the subject's text
+or a source comment gives a reason it does not apply; MAY imposes nothing to
+check; examples and sample output in the text illustrate the obligations its
+prose states and bind their exact form only where the text says so. When the subject's
+text admits more than one reasonable reading and the source code conforms under
+one but not another, the ambiguity MUST be treated as a gap and the rationale MUST name
+the readings. A test that verifies the subject without a `{test}` reference to it
+MUST be treated as a marking gap, as for implementing code. A gap MUST be
+reported only for a specific obligation and a specific source item the reviewer
+has read; the reviewer MUST look for unmarked implementations among the sources
+that reference the subject and by targeted search for what its obligations
+produce, not by surveying unrelated code. Style, performance, logging, how
+helpers are factored, and robustness the text does not require MUST NOT be
+treated as gaps, and the reviewer MUST NOT report bugs or issues outside the
+subject's text.
+
+For a distributed requirement under {cite}`requirements.references.distributed`,
+the reviewer MUST also assess the requirement and its queries. Each obligation
+MUST be either one that each site upholds on its own, checked by its review under
+{cite}`requirements.references.site_review`, or one that particular code carries
+out, assessed as above through its `{impl}` and `{test}` references; an
+obligation neither covers MUST be treated as a gap. The site queries MUST select
+every place the text's description of a site covers and no place outside the
+requirement's stated scope. Each query's `match` snippets MUST show each
+alternative way it selects, and its `no_match` snippets MUST include at least one
+near miss for each selection condition: a construct that differs from a match
+only in failing that condition. Because queries are heuristics, the reviewer MUST
+judge them by a preponderance of the evidence, asking whether it is more likely
+than not that the site queries find the places the requirement applies: a
+specific place in the sources that a site query misses or wrongly selects MUST be
+treated as a gap, and a form that does not occur in the sources MUST NOT.
+Obligations that decide which places are sites, such as a naming rule, MUST be
+checked by the reviewer's search of the sources. Violation queries direct site
+reviews to likely problems; the reviewer SHOULD note constructs they miss, but
+their incompleteness MUST NOT by itself make the determination false. Any other
+gap in the queries or snippets MUST make the determination false, even when the
+code is correct. The reviewer SHOULD run each site query once, scan its matches,
+and search briefly for the construct the text describes, and MUST NOT review each
+site or treat a site without an `{impl}` reference as a gap.
+
 For an example, the reviewer MUST assess whether tests exist whose setup and
 assertions cover its scenario and expected outcomes. The rationale MUST identify
 the relevant sources and explain the implementation and testing judgments for a
@@ -62,10 +103,11 @@ The JSON `determination` MUST be `true`, `false`, or an object containing exactl
 `"FIXME"` with a nonempty array of nonempty strings, such as
 `{"FIXME": ["#125", "rust-lang/rust#123"]}`. The expected source convention is
 `FIXME(issue-number)`, for example `FIXME(#125)` or
-`FIXME(rust-lang/rust#123)`. References MAY appear elsewhere in the comment or
-test; the reviewer MUST recognize explicit acknowledgments without requiring
-that spelling. When no issue reference is present, the strings MUST identify the
-documented gap using its source content. A FIXME judgment MUST be grounded in
+`FIXME(rust-lang/rust#123)`. Only a source comment or test that marks the same
+gap with `FIXME` MUST count as acknowledging it; another marker, such as `TODO`,
+or prose without `FIXME` MUST NOT. The issue reference MAY appear elsewhere in
+the comment or test. When no issue reference is present, the strings MUST
+identify the documented gap using its source content. A FIXME judgment MUST be grounded in
 recorded evidence inputs; a bare issue reference without an acknowledged gap
 MUST NOT suffice.
 :::
@@ -119,22 +161,109 @@ with the expected value when available. It is concise because agents are its
 primary readers.
 :::
 
-:::{req} errors
+:::::{req} errors
 Repository validation MUST continue after a failed check and report every failed
 check it finds in one run, each as a {term}`requirements.ci.validation_error`.
 This is a convention for every validation error; the requirement for each check
 states which conditions that check reports. A file that cannot be parsed, such as
 a malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:
 its error MAY report only the first parse or decoding problem in that file, and
-checks that do not depend on its contents MUST still run. Code carries out this
-convention when it decides how validation proceeds after a failed check: it
-continues to later checks, items, or files, substitutes a fallback so later
-checks still run, or omits a second report of a failure another check already
-reports. Code that checks one field or value and reports its failures implements
-that check's requirement, not this convention; code that runs several checks on
-one file, record, or input and continues after one of them fails carries out the
-convention.
-:::
+checks that do not depend on its contents MUST still run.
+
+The code that sequences the repository's checks carries out the first paragraph.
+A repository-validation function that collects validation errors MUST hold them
+in a parameter or local variable named `errors`, and a function with such a
+variable is a site below; authoring code that collects errors only to abort is
+not one. After one of its checks fails, a site MUST still run every later check
+that does not depend on the failed check's result, including later checks in the
+same loop iteration, and MUST NOT report one failure twice.
+
+::::{sites} error_accumulators
+```yaml
+language: rust
+paths: [src]
+exclude: [src/authoring/inputs.rs, src/authoring/tools.rs]
+rule:
+  kind: function_item
+  has:
+    stopBy: { kind: function_item }
+    any:
+      - kind: parameter
+        has: { field: pattern, regex: "^errors$" }
+      - kind: let_declaration
+        has: { field: pattern, regex: "^errors$" }
+  not:
+    inside:
+      stopBy: end
+      kind: mod_item
+      has: { field: name, regex: "^tests$" }
+match:
+  - "fn check(value: &str, errors: &mut Vec<String>) {}"
+  - |
+    fn run() {
+        let mut errors: BTreeSet<String> = BTreeSet::new();
+        check("", &mut errors);
+    }
+no_match:
+  - "fn check(value: &str, discovery_errors: &mut Vec<String>) {}"
+  - |
+    fn run() {
+        let mut problems = Vec::new();
+        check("", &mut problems);
+    }
+  - |
+    mod tests {
+        fn check(errors: &mut Vec<String>) {}
+    }
+```
+::::
+
+::::{violations} early_exits
+```yaml
+language: rust
+paths: [src]
+within: error_accumulators
+rule:
+  any:
+    - kind: try_expression
+    - kind: return_expression
+    - kind: continue_expression
+    - kind: break_expression
+match:
+  - |
+    fn check(v: &Value, errors: &mut Vec<String>) -> Option<u8> {
+        let n = v.as_u64()?;
+        if v.is_null() { errors.push("null".into()); }
+        Some(n as u8)
+    }
+  - |
+    fn check(items: &[Value], errors: &mut Vec<String>) {
+        for item in items {
+            if !item.is_object() { errors.push("object".into()); continue; }
+            if item.is_null() { errors.push("null".into()); }
+        }
+    }
+  - |
+    fn check(v: &Value, errors: &mut Vec<String>) {
+        if !v.is_object() { errors.push("object".into()); return; }
+        if v.is_null() { errors.push("null".into()); }
+    }
+  - |
+    fn check(items: &[Value], errors: &mut Vec<String>) {
+        for item in items {
+            if !item.is_object() { errors.push("object".into()); break; }
+        }
+        if items.is_empty() { errors.push("empty".into()); }
+    }
+no_match:
+  - |
+    fn parse(v: &Value) -> Option<u8> {
+        let n = v.as_u64()?;
+        Some(n as u8)
+    }
+```
+::::
+:::::
 
 :::{req} diagnostics
 When stored requirement text differs from the current chapter text, the

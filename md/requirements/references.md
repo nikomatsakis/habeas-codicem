@@ -12,7 +12,9 @@ procedure, and MAY carry several:
    `{impl}`. For code, this means it makes a decision, performs a check,
    produces an output, or handles a case the definition specifies. For a type,
    this means the definition constrains its shape: fields, variants, serialized
-   form, or validation.
+   form, or validation. An item that is a site of a distributed definition
+   under {cite}`requirements.references.distributed` needs no reference to it;
+   its site review covers it.
 3. Otherwise, if the item should be re-checked or kept in sync when the
    definition changes, it MUST use `{cite}`.
 4. If the item carries no reference after applying steps 1 to 3 to every
@@ -82,7 +84,8 @@ MUST require a current, accepted review for every such item and report stale,
 missing, or orphaned reviews; a review MUST become stale when the item's hash,
 a cited declaration, or its citations or their commentary change. Authoring with
 `--all` MUST include citation reviews, and `habeas author citations:<file>#<selector>`
-MUST author the review of the one item it names, where omitting `#<selector>`
+MUST author the review of the one item it names, under
+{cite}`requirements.authoring.refresh`, where omitting `#<selector>`
 names the file's root node. A citation in a requirement or example
 declaration is reviewed as part of that definition's own assessment instead.
 :::
@@ -197,8 +200,10 @@ token covers. Each text piece MUST be hashed as its ordered list of words, where
 words are separated by whitespace, the whitespace itself, including leading and
 trailing whitespace, is never hashed, and each word is encoded separately, so
 `ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments
-MUST be excluded, except comment kinds the profile includes; the Rust profile
-MUST include doc comments. For an included comment, only its text and its
+MUST be excluded, except comment kinds the profile includes and any comment
+containing the word `FIXME`; the Rust profile MUST include doc comments. Hashing
+`FIXME` comments makes adding, editing, or removing an acknowledgment under
+{cite}`requirements.ci.outcomes` make dependent evidence stale. For an included comment, only its text and its
 profile's comment group MUST be hashed, not its delimiter tokens such as `//`,
 `///`, `//!`, `/*`, `*/`, or a leading `*`; the Rust profile's groups are inner
 and outer doc comments. The words of consecutive included comments of one group
@@ -260,14 +265,98 @@ For consecutive sibling declarations `use alpha::A;` and `use beta::B;`, each se
 For a function preceded by a doc comment, an attribute, and an attached citation comment, an outline input's displayed range starts at the earliest attached line and ends at the function's final line. Inserting lines before the function changes the displayed range without changing the input. Editing the citation comment leaves its hash unchanged; editing the doc comment changes it. {cite}`requirements.ci.outline_inputs` {cite}`requirements.references.structural_hash`
 :::
 
-:::{example} selector_same_line
-For `impl Thing { fn run() {} }` on one line, `habeas add-input --for-requirement requirements.foo --item src/lib.rs:1` adds separate inputs for `impl[Thing]` and `impl[Thing]/fn[run]`, each with its own structural hash. {cite}`requirements.cli.add_input_item`
-:::
-
 :::{example} definition_glob_cases
 Given a requirement `foo.a.bar` and a named example `foo.a.b.bar`, `foo.*.bar` matches both, in full-name order: `foo.a.b.bar` before `foo.a.bar`. A requirements input stores both full names and their complete raw fenced declarations. Adding another matching definition invalidates the existing input. {cite}`requirements.references.definition_globs` {cite}`requirements.ci.requirements_inputs`
 :::
 
+
+## Distributed requirements
+
+:::{req} distributed
+A requirement MAY be distributed: it states an obligation that each of many
+independent sites in the sources must uphold, such as a convention every
+validation function follows. A `{req}` body declares a distributed requirement
+by containing one or more nested query directives: `:::{sites} <name>` for a
+site query, which finds the places the obligation applies, or
+`:::{violations} <name>` for a violation query, which finds constructs likely to
+break it. A requirement with a violation query MUST also have a site query.
+Query names MUST be single identifier segments under
+{cite}`requirements.ci.identifiers`, unique within the requirement. A query
+directive outside a `{req}` body MUST be a validation error. Each query body
+MUST be one fenced `yaml` code block containing a mapping with only these keys:
+
+- `language`, required: the name of an outline profile with a grammar under
+  {cite}`requirements.references.outlines`: `rust`, `python`, `typescript`,
+  `tsx`, `css`, `markdown`, `toml`, or `yaml`.
+- `paths`, optional: project-relative files or directories. Only sources at or
+  under one of them are searched; without it, every source of the language is.
+- `exclude`, optional: project-relative files or directories whose sources are
+  not searched, even under `paths`.
+- `rule`, required, with optional `utils` and `constraints`: an ast-grep rule
+  core in the syntax of Habeas's pinned `ast-grep-config` version, matched
+  against the language's pinned grammar.
+- `within`, optional and only for violation queries: the name of a site query
+  in the same requirement.
+- `match` and `no_match`, required: nonempty lists of source snippets in the
+  query's language. Each `match` snippet MUST contain at least one match of the
+  query, and each `no_match` snippet none, where a violation query with
+  `within` counts only matches inside a site of the named query in the same
+  snippet.
+
+Validation MUST report a query whose body is not such a mapping, whose rule does
+not compile, whose `within` names no site query of the requirement, or one of
+whose snippets fails to parse or has the wrong match result, and a site query
+that matches nothing in the project. Queries MUST search exactly the sources
+reference discovery considers under {cite}`requirements.references.targets`, in
+their original text.
+
+A match's site MUST be the innermost outline node, under
+{cite}`requirements.references.outlines`, whose range contains the match; for a
+violation query with `within`, it MUST instead be the innermost site of the
+named query that contains the match, and a match inside none of that query's
+sites MUST be discarded. A requirement's sites MUST be the distinct sites of all
+its queries' matches. Each site MUST have a site review under
+{cite}`requirements.references.site_review`, and needs no reference to the
+requirement; being a site MUST NOT count as a reference for
+{cite}`requirements.references.rust_item_coverage`, because a distributed
+requirement concerns a cross-cutting obligation, not why the item exists. Upgrading `ast-grep-config` MAY change matches and MUST be treated
+as a deliberate change. The book MUST render each query directive as a badge
+naming its kind and name, followed by its code block.
+:::
+
+:::{req} site_review
+Every site of a distributed requirement under
+{cite}`requirements.references.distributed` MUST have a site review: an
+assessment of whether that site upholds the requirement, recorded at
+`evidence/sites/<full-name>/<file>/<selector>.json`, where `<file>` and
+`<selector>` are encoded as under {cite}`requirements.references.citation_review`.
+The review MUST use the prompt defined by {cite}`requirements.authoring.site_prompt`.
+Mandatory inputs, under {cite}`requirements.authoring.mandatory_inputs`, MUST be
+the site's outline node, the requirement's complete declaration, and each
+declaration the requirement cites. The record MUST contain the requirement's
+full name, the site's file and selector, `queries`, the sorted names of the
+queries with a match at the site, `applies`, `determination`, `rationale`, and
+`inputs`, with determinations under {cite}`requirements.ci.outcomes`. `applies`
+MUST be a Boolean recording whether the requirement applies to the site. A site
+to which the requirement does not apply MUST be judged `true`, and the rationale
+MUST explain why it does not apply. `habeas info` MUST report, for each selected
+distributed requirement, how many of its sites the requirement does not apply
+to.
+
+Validation MUST require a current, accepted review for every site, MUST report
+a false review with its rationale, and MUST report stale, missing, or orphaned
+reviews; a review is orphaned when its file and selector no longer name a site of
+the requirement. A review MUST become stale when the site's hash, the
+requirement's declaration, a cited declaration, or its `queries` change. Each
+site review's determination MUST be checked on its own, independently of the
+requirement's evidence. Authoring with `--all` MUST include site reviews,
+`habeas author sites:<full-name>` MUST author the site reviews of the named
+requirement, and `habeas author sites:<full-name>/<file>#<selector>` MUST author
+the review of the one site it names, under {cite}`requirements.authoring.refresh`, where omitting `#<selector>` names the
+file's root node. `habeas status` MUST report missing, stale, invalid, and false
+site reviews with their requirement, file, and selector, and `habeas info` MUST
+list each selected requirement's sites with their determinations.
+:::
 
 ## References as authoring inputs
 

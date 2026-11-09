@@ -41,6 +41,20 @@ checks fail; grouping MUST NOT hide their validation findings. Malformed
 determinations MUST remain validation errors under {cite}`requirements.ci.outcomes`.
 :::
 
+:::{req} fixme_issues
+A project MAY opt in to checking FIXME issue references by setting
+`[fixme] github = "<owner>/<repo>"` in its `habeas.toml`. `habeas check-issues`
+MUST then look up through the GitHub API every issue that an accepted FIXME
+determination references, recognized as for {cite}`requirements.cli.fixme_summary`,
+resolving `#N` against the configured repository and `owner/repo#N` as written.
+It MUST report each reference whose issue does not exist or is closed, with the
+full names of the determinations that reference it, and MUST exit nonzero when it
+reports any. It MUST authenticate with the `GITHUB_TOKEN` environment variable
+when that is set. Without the setting, it MUST report that no repository is
+configured and exit nonzero. Repository validation MUST NOT contact GitHub, so
+this check runs only when the command is invoked, such as in a CI step.
+:::
+
 :::{req} status_table_alignment
 When `habeas status` or `habeas status --all` displays a Markdown table, it MUST left-align and space-pad the Definition and Evidence columns so every row, including the header and separator row, has its `|` column delimiters in the same positions. Column widths MUST be determined by the widest displayed cell in each column.
 :::
@@ -54,27 +68,6 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :impl: assets/skills/habeas-evidence/SKILL.md
 `habeas info <selection>` MUST show the requirements and named examples matched by the {term}`requirements.references.definition_selection`. It MUST print matches in full-name order as Markdown with the same kind-labeled definition, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid selection or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement or named example.
 :::
-
-:::{req} add_input
-`habeas add-input` MUST accept exactly one evidence target: `--for-requirement <full-name>` or `--for-example <full-name>`. It MUST accept exactly one input mode: `--item` or `--requirements`. It MUST use the same input schema and resolution rules as validation. Repeating a selector for a target MUST refresh its existing input rather than add a duplicate; an unchanged input MUST leave the record unchanged. The command MUST report every input it adds or refreshes. It MUST create a missing target record with a pending determination. Whenever it changes a record, it MUST leave `determination` false with a nonempty rationale indicating that review is pending.
-:::
-
-:::{req} add_input_item
-`habeas add-input --item <file>:<line>` MUST parse the file under {cite}`requirements.references.outlines` and add or refresh one
-outline input for every outline node declared on that line. A named node is
-declared on the line where its name begins in the source. An anonymous node, or
-a named node whose name is not written in the source, such as an extern block
-without an ABI string, is declared on the line where its own syntax starts,
-excluding attached comments and attributes. Each input MUST store the selected `file` under the path
-rules in {cite}`requirements.ci.schema`, the node's selector, and its structural
-hash. The command MUST report every selected node and reject a line on which no
-node is declared.
-:::
-
-:::{req} add_input_requirements
-`habeas add-input --requirements <selection>` MUST add or refresh one requirements input containing the matched full names and their concatenated raw declaration sources. It MUST report the matched names in expansion order and reject a selection that matches no requirement or named example.
-:::
-
 
 :::{req} bootstrap_skill
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
@@ -126,6 +119,61 @@ requirement for precision, the skills MUST direct them to record the old text,
 new text, reason, and the rationale that prompted the change in the project's
 audit log, such as `audits/requirement-rewordings/`.
 :::
+:::{req} distributed_guidance
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-requirements/references/distributed-requirements.md
+:impl: assets/skills/habeas-evidence/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
+Habeas's bundled agent skills MUST explain distributed requirements under
+{cite}`requirements.references.distributed`. They MUST direct agents to make a
+requirement distributed only when its obligation applies on its own at each of
+many sites, such as a convention every validation function follows, and to use
+`{impl}` instead when particular code carries out the requirement as a whole, and
+to mark with `{impl}` the code that carries out any obligation of a distributed
+requirement that its sites do not uphold. They
+MUST direct agents to write site queries that select every place the obligation
+applies and no others, violation queries for every kind of construct that could
+break it, and
+`match` and `no_match` snippets for every query that include near misses. They
+MUST direct agents to describe sites exactly as the site queries select them,
+stating as an obligation any convention the queries rely on, such as how a list
+is named, and to state only per-site obligations that a reviewer can check at the
+site and the helpers it calls. They MUST direct agents to
+present the queries with the requirement text when reviewing the requirement with
+the user. They MUST tell agents that sites need no reference to the requirement,
+that `habeas author --all` authors site reviews under
+{cite}`requirements.references.site_review`, and that a false site review is
+addressed by fixing the site, or by tightening the queries or the requirement
+text when the site should not be covered or the text admits more than one
+reading, under {cite}`requirements.cli.flip_guidance`, not by re-running the
+review. The requirements skill MUST give this guidance as a list of things to do and
+things not to do. The bootstrap skill MUST direct agents to propose a distributed
+requirement for a cross-cutting convention instead of marking each of its sites
+with `{impl}`.
+:::
+
+:::{req} skill_structure
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-requirements/references/distributed-requirements.md
+:impl: assets/skills/habeas-evidence/SKILL.md
+:impl: assets/skills/habeas-evidence/references/configuration.md
+:impl: assets/skills/habeas-evidence/references/file-access.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
+Habeas's bundled agent skills MUST jointly give the direction that the
+requirements on them specify. Each topic MUST be stated in full in one skill,
+its home, and another skill that needs the topic MUST refer to that skill rather
+than restate it. The `habeas-requirements` skill MUST be the home of drafting and
+agreeing requirements, directive syntax, the reference procedure, the review
+criteria, and distributed requirements; the `habeas-evidence` skill MUST be the
+home of the authoring workflow, outcomes and FIXME judgments, citation and site
+reviews, and disagreeing assessments; and the `habeas-bootstrap-requirements`
+skill MUST be the home of deriving an initial requirement set from existing code.
+Each skill's description MUST state when to use it in terms of the user's task
+and name the other skills for neighboring tasks, and each skill MUST open with
+its workflow as ordered steps. Material needed only in specialized situations
+MAY live in files the skill references, each with a statement of when to read it.
+:::
+
 :::{req} invocation
 `habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.
 :::
