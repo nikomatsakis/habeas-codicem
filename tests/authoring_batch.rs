@@ -1320,6 +1320,24 @@ fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
     let output = fixture.run(&["author", "sites:requirements.spread"]);
     assert!(output.status.success());
     assert_eq!(server.subjects().len(), 2);
+    // A single named site review that is current is kept under `--missing`,
+    // the default, without a model or configuration.
+    fs::write(&fixture.config, "not toml [").unwrap();
+    let site = "sites:requirements.spread/src/lib.rs#fn[alpha]";
+    for args in [&["author", site][..], &["author", site, "--missing"]] {
+        let output = fixture.run(args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            format!("{site}: evidence is current; 1 skipped as current (use --force to reassess)")
+        );
+    }
+    assert_eq!(server.subjects().len(), 2, "no model was invoked");
+    fs::write(&fixture.config, &fixture.config_text).unwrap();
     let output = fixture.run(&["author", "sites:requirements.alpha"]);
     assert!(!output.status.success());
     assert!(
@@ -1570,6 +1588,29 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
         String::from_utf8_lossy(&again.stdout).trim(),
         "0 authored; 7 skipped as current; 0 failed"
     );
+    // A single named citation review that is current is kept under
+    // `--missing`, the default, without a model or configuration.
+    fs::write(&fixture.config, "not toml [").unwrap();
+    let citation = "citations:src/lib.rs#fn[helper]";
+    for args in [
+        &["author", citation][..],
+        &["author", citation, "--missing"],
+    ] {
+        let output = fixture.run(args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            format!(
+                "{citation}: evidence is current; 1 skipped as current (use --force to reassess)"
+            )
+        );
+    }
+    assert_eq!(server.subjects().len(), 7, "no model was invoked");
+    fs::write(&fixture.config, &fixture.config_text).unwrap();
     // A citation review can also be named on its own.
     let single = fixture.run(&["author", "citations:src/lib.rs#fn[helper]", "--stdout"]);
     assert!(
