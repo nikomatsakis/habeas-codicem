@@ -36,9 +36,8 @@ that implement and verify them. `habeas author` has a model assess each one;
 - [ ] 4. Make sure the book contains exactly the approved text and report the
       full names.
 - [ ] 5. Implement, add tests, and add references (below).
-- [ ] 6. Follow the habeas-evidence workflow: `git add` new files, run
-      `habeas author --all` and `cargo test --workspace`, and fix the reported
-      gaps.
+- [ ] 6. Follow the habeas-evidence workflow to author evidence and fix the
+      gaps it reports.
 
 If implementation shows that an approved obligation must change substantively,
 review the revised text with the user before coding the change. Log a precision
@@ -75,8 +74,7 @@ Put requirements in the book's Markdown source directory: `[book].src` in
 opening line of three or more colons followed by `{req} name`, the body, and a
 closing line of at least as many colons. Its full name is the chapter path
 relative to that directory, without `.md`, with `/` changed to `.`, followed by
-the directive name; omit a leading `reqs/` and a trailing `/index` or `/README`.
-With `[book] src = "md"`, in `md/requirements.md`:
+the directive name. With `[book] src = "md"`, in `md/requirements.md`:
 
 ```text
 :::{req} forwarding.quit
@@ -88,9 +86,7 @@ defines `requirements.forwarding.quit`. Name segments use only ASCII letters,
 digits, `_`, and `-`; a directive with an invalid name stays literal text and
 silently defines nothing. Add a new chapter to `SUMMARY.md` so it renders.
 Everything between the fences is the body, including headings and diagrams.
-State obligations with BCP 14 terms (MUST, SHOULD, MAY); an unmet SHOULD is a gap
-unless a source comment explains why, and wording a reviewer could read two ways
-is a gap too. Give the outer directive a longer fence, such as `::::{req}`, when
+State obligations with BCP 14 terms (MUST, SHOULD, MAY). Give the outer directive a longer fence, such as `::::{req}`, when
 its body contains a nested colon directive, including a fenced reference;
 otherwise the inner closing `:::` ends the directive.
 
@@ -110,7 +106,7 @@ Define shared vocabulary with `:::{definition} name`, one nonempty
 `:phrase: display text` option, and an explanatory body; refer to it with the
 `{term}` role, which renders the phrase as a plain link. A vocabulary definition
 has no evidence of its own and is never the target of `{impl}`, `{test}`, or
-`{cite}`. Changing its phrase or body makes dependent evidence stale. Names are
+`{cite}`. Names are
 unique across requirements, examples, and vocabulary definitions.
 
 If an obligation applies separately at each of many sites, such as a convention
@@ -123,7 +119,7 @@ before drafting.
 
 Write each reference with a full name, in a comment on the relevant source line
 or on the book line: `` {impl}`requirements.forwarding.quit` ``, `` {test}`…` ``,
-or `` {cite}`…` ``. A reference inside a string literal does not count. Choose
+or `` {cite}`…` ``. Choose
 each item's references by this procedure, applied to every requirement or
 example it could reference; an item may carry several:
 
@@ -175,13 +171,11 @@ of consecutive comment lines.
 // :::
 ```
 
-When a file that implements or tests a requirement cannot carry a reference,
-such as a shipped skill or a stylesheet copied into other projects, anchor it
-with `:impl: <path>` or `:test: <path>` option lines directly after the
-declaration's opening fence (examples accept only `:test:`), or
-`:impl: <path>#<selector>` for one outline node, such as
-`:impl: skills/foo/SKILL.md#section[Workflow]`; `habeas info` shows each input's
-selector. Don't anchor a file whose items can carry a reference themselves.
+To acknowledge a gap the user agrees to defer, use a `{fixme}` reference, as
+the habeas-evidence skill describes. If a file that implements or tests a
+requirement cannot carry a reference, such as a shipped skill or a stylesheet
+copied into other projects, or a name, reference, or vocabulary edit behaves
+unexpectedly, read [references/syntax-details.md](references/syntax-details.md).
 
 ## What the review checks
 
@@ -195,13 +189,11 @@ requirement's review treats these as gaps:
   that only cites it, and a test that verifies it without `{test}`;
 - observable behavior in `{impl}` code that no requirement implemented there
   specifies;
-- obligations, boundaries, and failure cases no test runs and asserts. A
-  missing test is justified only when the code carrying the obligation has no
-  conditional or transformation of its own, or a test would need network
-  services, real elapsed time, or process-wide state such as environment
-  variables or the current directory and no test in the project sets that up;
-  files and directories a test can create do not qualify, and an obligation
-  that a value stays unchanged, distinct, or present always needs a test;
+- obligations, boundaries, and failure cases no test runs and asserts. A test
+  may be omitted only for code with no logic of its own, or code that needs
+  network services, real time, or process-wide state no project test sets up;
+  temporary files don't qualify, and an obligation that a value stays
+  unchanged, distinct, or present always needs a test;
 - an unexplained unmet SHOULD, and text with two readings that the code meets
   under only one.
 

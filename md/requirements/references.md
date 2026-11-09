@@ -98,6 +98,7 @@ declaration is reviewed as part of that definition's own assessment instead.
 
 :::{req} anchors
 :impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-requirements/references/syntax-details.md
 A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`
 declaration MAY list `:test:` options, immediately after its opening fence and
 before its body, one per option line, naming a project file path or

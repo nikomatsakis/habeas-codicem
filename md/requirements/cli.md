@@ -153,8 +153,8 @@ with `{impl}`.
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-requirements/references/distributed-requirements.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-:impl: assets/skills/habeas-evidence/references/configuration.md
-:impl: assets/skills/habeas-evidence/references/file-access.md
+:impl: assets/skills/habeas-evidence/references/authoring-failures.md
+:impl: assets/skills/habeas-requirements/references/syntax-details.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 Habeas's bundled agent skills MUST jointly give the direction that the
 requirements on them specify. Each topic MUST be stated in full in one skill,

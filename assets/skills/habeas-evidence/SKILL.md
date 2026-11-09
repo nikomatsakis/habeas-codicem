@@ -48,8 +48,6 @@ Run commands from the project root, the directory with `book.toml` and
   missing credentials or configuration, stop and report the blocker.
 - Never re-run an assessment to get a different result, or change a judgment to
   make validation pass. Fix the source, tests, references, or requirement text.
-  `--force` is for reassessing after a fix the hash does not see, never for
-  retrying unchanged sources.
 - Don't read evidence files into your context. Use `habeas status` and
   `habeas info`; to survey many rationales at once, ask a subagent to read them
   and return short findings.
@@ -69,7 +67,7 @@ Run commands from the project root, the directory with `book.toml` and
 | Finding | Action |
 | --- | --- |
 | missing or stale evidence | `habeas author --all` |
-| false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all`; if the fix changed only comments that are not hashed (see Gotchas), the record stays current and is skipped, so run `habeas author --force <full-name>` |
+| false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
 | uncovered `{impl}` or `{test}` line | check the reference names the right definition, then re-author that definition |
 | unreferenced Rust item | add references by the procedure in the habeas-requirements skill |
 | orphaned citation or site review | `habeas author --all` deletes it |
@@ -162,6 +160,9 @@ section of `habeas status` after each `habeas author` run.
   or docstrings makes it stale, and so does adding, removing, or changing the
   role of an `{impl}`, `{test}`, or `{fixme}` reference, or editing its
   fenced commentary.
-- If authoring fails on configuration, credentials, or throttling, read
-  [references/configuration.md](references/configuration.md). If it reports a
-  denied read, read [references/file-access.md](references/file-access.md).
+- `habeas author --all` skips current records. After a fix the hash does not
+  see, such as one made only in an ordinary comment, run
+  `habeas author --force <full-name>`; never use `--force` to retry unchanged
+  sources.
+- If authoring fails on configuration, credentials, throttling, or a denied
+  read, read [references/authoring-failures.md](references/authoring-failures.md).

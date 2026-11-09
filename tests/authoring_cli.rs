@@ -1945,11 +1945,11 @@ fn bundled_skill(name: &str) -> String {
             include_str!(
                 "../assets/skills/habeas-requirements/references/distributed-requirements.md"
             ),
+            include_str!("../assets/skills/habeas-requirements/references/syntax-details.md"),
         ],
         "habeas-evidence" => &[
             include_str!("../assets/skills/habeas-evidence/SKILL.md"),
-            include_str!("../assets/skills/habeas-evidence/references/configuration.md"),
-            include_str!("../assets/skills/habeas-evidence/references/file-access.md"),
+            include_str!("../assets/skills/habeas-evidence/references/authoring-failures.md"),
         ],
         "habeas-bootstrap-requirements" => &[include_str!(
             "../assets/skills/habeas-bootstrap-requirements/SKILL.md"
