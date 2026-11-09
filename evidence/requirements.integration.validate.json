@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas::validate()` MUST check the current Cargo and mdBook project and make its Cargo test fail with all validation errors when any requirement evidence is invalid.\nIts failure message MUST instruct the agent to run `habeas author --all`, address\nthe reported gaps, and rerun tests. Validation MUST remain deterministic and MUST\nNOT invoke authoring itself. {cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.deterministic_validation`",
   "determination": true,
-  "rationale": "**Judgment:** `requirements.integration.validate` is satisfied. The implementation covers every obligation, it is marked completely, and the tests cover the main cases and boundaries.\n\n**Implementation (`src/lib.rs`, `fn validate`, marked `{impl}`)**\n- It finds the project root by walking up from the current directory to the first ancestor holding both `Cargo.toml` and `book.toml`. If there is none, it panics with \"cannot find Cargo and mdBook project root\".\n- It calls `validate_repository(root)`, which runs `inspect_repository` over the whole repository. That covers definitions, evidence files, missing and orphan evidence, reference sets, citation reviews, Rust item coverage and committed credentials.\n- If `report.errors` is non-empty, it panics. The panic message lists every error, one per `- ` line, so the Cargo test fails with all validation errors.\n- The message says to run `habeas author --all`, to \"address any reported gaps and rerun the tests\", and not to hand-write judgments or snapshots. This matches the required instruction.\n- Validation is deterministic and does not author. `inspect_repository_with_progress` in `src/evidence.rs` only reads the filesystem and Git index. Its comment says \"inspection never starts authoring\" and marks the missing-evidence check `requirements.authoring.deterministic_validation`. It reports missing evidence as an error, with no model, provider or credential involvement.\n- The only code that implements this requirement is `validate`, and it is marked. The shared inspection code is marked for the requirements it serves, including `requirements.integration.report_api`.\n- `validate` adds no behavior beyond the requirement.\n- The cited requirements `requirements.authoring.batch` and `requirements.authoring.deterministic_validation` are consistent with this behavior. The validation path neither invokes authoring nor needs configuration.\n\n**Tests (`tests/validate.rs`, marked `{test}`)**\n- The tests run `habeas::validate()` in a child process, so they can observe a real failing test.\n- `validate_fails_the_test_with_every_error_and_authoring_instructions`:\n  - It starts from a nested directory and checks that the root is found.\n  - It uses a fixture with two problems: missing evidence for `rules.ready`, and a malformed `evidence/rules.broken.json`. It asserts that both errors appear together, which covers \"all errors\".\n  - It asserts that the message contains the \"Habeas validation failed\" header, \"Run `habeas author --all`\" and \"address any reported gaps and rerun the tests\".\n  - It asserts that nothing was authored: the evidence directory is unchanged and the state directory is empty. This also shows no usage history is written.\n  - It reruns validation and compares the error lines, which checks determinism.\n  - It then writes valid evidence and checks that validation passes.\n- `validate_fails_outside_a_cargo_and_mdbook_project` covers the failure case where the root is not found, in a directory with `Cargo.toml` but no `book.toml`.\n\n**Minor note:** The tests do not exercise stale evidence specifically, but it goes through the same error-aggregation path. This does not change the judgment.",
+  "rationale": "I found no gaps. `habeas::validate()` meets each obligation, and `tests/validate.rs` tests each one.\n\n**Obligations and the code that carries them out**\n1. **Check the current Cargo and mdBook project.** `fn validate` in `src/lib.rs` (marked `{impl}`) walks up from the current directory to the first ancestor with both `Cargo.toml` and `book.toml`. It then calls `validate_repository(root)`, which returns `inspect_repository(root)?.report`.\n2. **Make the Cargo test fail with all validation errors.** `validate` panics when `report.errors` is non-empty. The panic message includes the counts and every error, joined as `- ` lines (`report.errors.join(\"\\n- \")`).\n3. **Failure message instructs the agent.** The message says \"Run `habeas author --all` …, then address any reported gaps and rerun the tests.\"\n4. **Validation stays deterministic and does not invoke authoring.** `validate` only calls `validate_repository`, which only inspects the repository. Nothing in `validate` or `validate_repository` calls an authoring or model path.\n\n**Tests, each marked `{test}`**\n- `validate_fails_the_test_with_every_error_and_authoring_instructions`:\n  - It starts from a nested directory and finds the project root.\n  - It asserts that the run fails.\n  - It asserts that the output contains \"Habeas validation failed\", both errors (`rules.ready` and `evidence/rules.broken.json`), \"Run `habeas author --all`\" and \"address any reported gaps and rerun the tests\".\n  - It asserts that nothing is authored: the evidence directory still holds one file and the state directory is empty.\n  - It asserts that a second run gives the same error lines.\n  - It asserts that valid evidence passes.\n- `validate_fails_outside_a_cargo_and_mdbook_project` covers the case where no project root is found.\n- `validate_child` and `validate_in` are the helpers that run `validate` in a child process.\n\nI read no code that implements the subject without an `{impl}` reference, and no unmarked test of it.",
   "references": "3e2ad8f756389f4b1c51ff653bc033c4b252c9d1745ee052b4c508e81e20cb8c",
   "inputs": [
     {
@@ -26,16 +26,18 @@
       ],
       "text": [
         ":::{req} batch",
-        "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement",
-        "and named example whose evidence is missing, stale, or invalid. It MUST preserve",
-        "current records without invoking a model for them, including accepted FIXME",
-        "judgments and current false judgments. A current false judgment is reassessed",
-        "only when its subject or inputs change, or when it is named explicitly with",
-        "{cite}`requirements.authoring.invocation`.",
-        "`--all` MUST be mutually exclusive with a subject name and `--stdout`.",
+        "`habeas author --all [--config <name>] [--missing | --force] [-v|--verbose]` MUST author",
+        "the evidence of every current requirement and named example, together with the",
+        "reviews {cite}`requirements.references.citation_review` and",
+        "{cite}`requirements.references.site_review` include, under",
+        "{cite}`requirements.authoring.refresh`.",
+        "`--all` MUST be mutually exclusive with a subject name and `--stdout`. It MUST",
+        "also delete each orphaned citation review under",
+        "{cite}`requirements.references.citation_review` and each orphaned site review",
+        "under {cite}`requirements.references.site_review`, and report each deletion; the",
+        "deletion MUST NOT require model configuration or credentials.",
         "Failure to discover declarations or to read, scan, or parse project sources MUST report an error,",
-        "not a successful empty batch. A batch with no assessments needed MUST succeed",
-        "without resolving model configuration or credentials.",
+        "not a successful empty batch.",
         "",
         "Each subject MUST receive an independent assessment with its own prompt, inputs,",
         "judgment, and usage record. The command MUST report aggregate completion and each",
@@ -127,26 +129,6 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "f57612cb9024b02a25debfe955ff88595c5d49a82b57a20eb7745c5a8ab2e650"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest_for]",
-      "hash": "1928a8d338ff5dae6a6dfefeb2599a172e4b76c67b9ab7445c2454b25d6c469b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[is_sha256_hex]",
-      "hash": "c8310eda2bb9b5d8e43b884195a457e3a231734bb5b5a92a308442f609ea2389"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[InputRange]",
-      "hash": "d067d96aed53c4648ab93373ec96546cd75170c30c2758d574bd5adbdf086311"
-    },
-    {
-      "file": "src/evidence.rs",
       "item": "mod[tests]/use@727a0a270d8a",
       "hash": "727a0a270d8a2c7e83b62bb0afa524214301ccf32188029a001382c2937eca32"
     },
@@ -184,31 +166,6 @@
       "file": "src/index.rs",
       "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
       "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository]",
-      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "2610471c9bcec709e6c53f9604660e7be7cecd3622cde2bacacbbb7ebe1ec12c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[discovered_files]",
-      "hash": "69f990566604b1200771831a1303f4a265911f40d930ff504a3139ae843556c2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_committed_credentials]",
-      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[untracked_reference_files]",
-      "hash": "7fe9619969e4bf8021ff67b65e48559f82ce5b4fc98f541d4a374c9f38e40689"
     }
   ]
 }

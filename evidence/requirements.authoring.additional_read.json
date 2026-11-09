@@ -1,7 +1,7 @@
 {
   "example": "The model calls `list_files` to find a directory, then `ripgrep` to find matching\nlines in a Rust file. The listing creates no evidence input; the search returns\nand records the innermost Rust item containing each match. An `outline` request\nfor that file lists its items without content and creates no evidence input. A\n`habeas` request with the file and one item's selector returns and records that\nitem, along with any required terminology. A line-range request omitting\n`line_end` reads through EOF and records the outline nodes it covers.\n{cite}`requirements.authoring.file_discovery`\n{cite}`requirements.authoring.text_search`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "The example is covered by `additional_read_flow_searches_outlines_and_reads_a_rust_file` in `src/authoring/tools.rs`. That test carries a `{test}` reference to `requirements.authoring.additional_read`. It walks the example's scenario in order, using the real `dispatch` tool entry point and `AssessmentSources` recording.\n\n- **Directory listing:** `list_files` on `src` returns `src/lib.rs`, and `listing.inputs` is empty, so the listing creates no evidence input.\n- **Search:** `ripgrep` on the Rust file with `context: 0` returns exactly one input for `src/lib.rs`, and its item is `fn[work]`. That is the innermost Rust item containing the match. The test then records it with `record_inputs`.\n- **Outline:** the `outline` request lists `fn[work]` and `fn[other]` and does not contain the body `fn other()`. It returns no inputs, so it creates no evidence input and shows no content.\n- **Item read:** a `habeas` request with `file` and `item: fn[other]` returns that item with text `fn other() {}`. The test records it, and the recorded set contains the outline input built independently with `crate::inputs::outline_input`. The recorded set also contains the `terms.value` definition input, so the required terminology is recorded.\n- **Line-range read:** a `habeas` request with `line_start: 2` and no `line_end` returns both `fn[work]` and `fn[other]`, so it reads through EOF. Those nodes are recorded.\n\nThe second test, `reading_records_only_delivered_sources_and_their_terms`, adds further coverage:\n- The `habeas` result carries `definitions[0]` = `terms.value`.\n- Nothing is recorded before `record_inputs` is called, and repeated recording is deduplicated.\n- Line ranges past EOF, missing items, and malformed or mixed request forms are rejected.\n\n`search_merges_context_windows_and_respects_ignore_rules` covers search context, merging, and zero-context behavior. The CLI test in `tests/authoring_cli.rs` checks the end-to-end flow. It confirms that the listing adds no usage input and that searched and read line ranges are recorded in evidence once and by selector and hash only.\n\nSetup and assertions cover every step and expected outcome of the example, and the example has `{test}` references.",
+  "rationale": "The example has `{test}` references, and together they cover its whole scenario and each stated outcome.\n\n**Main flow test** (`src/authoring/tools.rs`, `additional_read_flow_searches_outlines_and_reads_a_rust_file`)\n- **Setup:** it builds a project containing a Rust file `src/lib.rs`, with `fn work` carrying a `{term}` reference and `fn other` after it. It also adds a terminology definition, `terms.value`.\n- **`list_files`:** it lists `src` and gets `src/lib.rs`. It asserts `listing.inputs` is empty, so the listing creates no evidence input.\n- **`ripgrep`:** it searches `src/lib.rs` for `work` with `context` set to 0. It asserts a single input whose `item` is `fn[work]`, the innermost Rust item containing the match. It then records the search inputs.\n- **`outline`:** it asserts `outline.inputs` is empty. It asserts the items are `fn[work]` and `fn[other]`, and that the result does not contain the body text `fn other()`. So the outline lists items without content and records nothing.\n- **`habeas` with `file` and `item`:** it requests `fn[other]` and asserts the returned item and its text, then records the inputs.\n- **`habeas` with `line_start` only:** it asserts the range from line 2 through EOF returns `fn[work]` and `fn[other]`.\n- **Recording:** it asserts `recorded_inputs()` contains the outline inputs for both functions, by selector and hash. It also asserts the `terms.value` definition was recorded.\n\n**Terminology test** (`reading_records_only_delivered_sources_and_their_terms`)\n- It reads `fn[work]` by selector and asserts `result[\"definitions\"][0][\"definition\"] == \"terms.value\"`. That covers returning required terminology alongside the item.\n- Nothing is recorded until `record_inputs` is called, and repeated records are deduplicated.\n- It asserts that a `line_start` with no `line_end` returns the covering node, and that out-of-range and invalid requests are errors.\n\n**CLI test** (`tests/authoring_cli.rs`)\n- It runs the whole flow end to end with a model server.\n- It asserts that `list_files` is not recorded as an input and that search and read inputs are recorded once each. The recorded `extra.txt` inputs cover lines 1–12.\n\nI found no uncovered outcome and no gap.",
   "references": "9597e561778130a96dd8b8002e9054cf954a9d45f9890575728231876f59fee9",
   "inputs": [
     {
@@ -68,7 +68,14 @@
         "The harness MUST expose a `ripgrep` tool with this interface:",
         "",
         "```text",
-        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 5 }) -> SearchResult",
+        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 5,",
+        "          referencing: Optional<ReferenceScope> }) -> SearchResult",
+        "",
+        "ReferenceScope {",
+        "    selection: String,                     // full name or definition glob",
+        "    roles: Array<Role> = [\"impl\", \"test\", \"cite\"],",
+        "    scope: \"node\" | \"file\" = \"file\",",
+        "}",
         "",
         "SearchResult {",
         "    inputs: Array<EvidenceInput>,",
@@ -93,6 +100,14 @@
         "the comment belongs to under {cite}`requirements.references.outline_comments`.",
         "Each result MUST include the selected source text for the model.",
         "Setting `context` to zero MUST return only matching lines.",
+        "With `referencing`, the tool MUST search only sources, within `path`, that carry",
+        "a reference in one of `roles` to a requirement or example the `selection`",
+        "matches under {cite}`requirements.references.definition_globs`, including",
+        "anchors under {cite}`requirements.references.anchors`: with `scope` `node`, only",
+        "the outline nodes that contain or are named by those references, and with",
+        "`file`, their whole files. A selection matching no requirement or example, or an",
+        "unknown role or scope, MUST return an explanatory tool error. Its model-facing",
+        "description MUST explain `referencing`.",
         "Search results MUST exclude files disallowed by",
         "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
         "path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.",
@@ -204,7 +219,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "4b45ca0bfccbca860fde291c9859eecae3729e2a7e026b22a7164f1b476e6eb9"
+      "hash": "a601b843f74d73a8ffa2de22014195f0bfbb399b8480823f4e8ad10a1cc93b50"
     }
   ]
 }

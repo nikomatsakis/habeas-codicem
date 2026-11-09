@@ -1,7 +1,7 @@
 {
   "requirement": "Saved configuration MUST remain distinct from resolved runtime configuration.\nSerializing and deserializing a valid configuration MUST preserve its semantic\nvalues, including explicit versus omitted settings. Optional fields MAY be\nomitted on serialization; defaults and environment-derived values MUST NOT be\nmaterialized into omitted fields. TOML comments and formatting need not\nround-trip.\n\nLoading configuration or running a configured feature MUST NOT rewrite the user\nor project configuration as a side effect. Resolved credentials and live runtime\nobjects MUST NOT enter the serialized data structures. Explicitly supplied\ncredential values are permitted only in the fields documented by the authoring\nfeature; credentials resolved from a profile or environment MUST NOT be written\nback to configuration.",
-  "determination": true,
-  "rationale": "**Judgment: the sources satisfy `requirements.configuration.serialization`.**\n\n**Implementation**\n\n- **Round trip and omitted settings.** `UserConfig::parse`/`to_toml` and `WorkspaceConfig::parse`/`to_toml` (src/config.rs:253-316) are marked `{impl}`.\n  - They decode through serde with `deny_unknown_fields` and re-validate before and after.\n  - The serialized types (`UserConfig`, `WorkspaceConfig`, `WorkspaceAuthoringConfig`, `UserAuthoringConfig`, `AuthoringConfig`, `BedrockConfig`, `OllamaConfig`, `EvidenceConfig`) use `#[serde(default, skip_serializing_if = ...)]` on optional fields.\n  - Omitted `endpoint`, `concurrency`, `region`, `aws_profile`, `credentials` and `api_key` stay `None` and are not written back.\n  - A present-but-empty section such as `[authoring]` or `[evidence]` is still written as a table, so presence is preserved.\n  - `UserAuthoringConfig.configs` is required and always written, so an explicit `configs = {}` round-trips.\n  - Empty `options`, `projects` and workspace `configs` are dropped on output. `requirements.authoring.configuration_serialization` says omitted tables deserialize as empty maps, so the semantic values are unchanged.\n- **Defaults and environment values are not materialized.**\n  - The `endpoint()` accessor applies the default at use time.\n  - `effective_concurrency()` applies its default at use time. It lives on `ResolvedAuthoringConfig`, which is not serializable.\n  - `OllamaConfig::api_key_from` (marked `{impl}`) returns a `String` read from the environment and never stores it in a config struct.\n  - `ResolvedAuthoringConfig` derives no `Serialize`, and `resolve_authoring_with_workspace_from` (marked `{impl}`) only copies saved values.\n- **No rewriting as a side effect.** `load_user_config`, `load_workspace_config` and `resolve_authoring*` are marked `{impl}` and only read. A search of `src` found no code that calls `to_toml` or writes either configuration file. The only file writes are evidence and usage records, `book.toml` setup, and the like, none of which touch these files.\n- **Credentials.** The only places a credential value can be serialized are `credentials.*` and `api_key`, through `SecretString`. Those are the fields the authoring credentials feature documents. Credentials resolved from a profile or environment have no field in the serialized structs.\n- **Marking gap, judged minor.** The serde attributes on the structs are marked only with `authoring.configuration_serialization`, `structure` and `feature_sections`, not this requirement. That requirement cites this one for its common rules, and its text carries out the authoring part. `EvidenceConfig` and `SecretString` carry similar attributes. The omission rules are MAY-level, and the MUST obligations are marked at `parse`, `to_toml`, the loaders and the resolvers. I do not count this as a gap.\n\n**Tests** (tests/configuration.rs, all marked `{test}`)\n\n- `absent_and_minimal_configuration_are_distinct_and_read_only`: an absent file stays absent, a minimal file keeps its bytes and comment after loading, and the config round-trips.\n- `backend_configuration_round_trips_without_materializing_defaults`: omitted `endpoint` and `concurrency` are absent from the output, nothing like `http://localhost` is written, and the round trip is equal.\n- `authoring_concurrency_defaults_overrides_and_invalid_values`: the default is not written, an explicit `concurrency = 7` is, and invalid values are rejected.\n- `ollama_authentication_resolves_separately_and_rejects_missing_values`: the env-resolved key `private-value` never appears in the serialization, while the `MODEL_KEY` name does.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it`: the file bytes are unchanged after loading, and the workspace round trip excludes `configs`.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`: explicit credentials round-trip, and malformed, conflicting or empty credential inputs are rejected.\n- `user_and_workspace_authoring_tables_round_trip_every_map`: `projects`, an empty `configs`, and populated `configs` with `options` all round-trip.\n- `workspace_defaults_and_configs_combine_with_existing_user_selections`: resolution combines user and workspace selections.\n\nTogether they cover the explicit-versus-omitted boundary, the no-rewrite property, credential separation, and failure cases.\n\n**Remaining observations (not gaps):** no test hashes the file after a full `resolve_authoring` call. The code has no write path, so that is acceptable. No FIXME is needed.",
+  "determination": false,
+  "rationale": "The behavior and tests largely satisfy the requirement, but the marking is incomplete. Several serialized data-model types in `src/config.rs` implement part of `requirements.configuration.serialization` and carry no `{impl}` reference to it.\n\n**Obligations and where they are carried out**\n- **Saved configuration stays distinct from resolved runtime configuration.**\n  - The saved types are `UserConfig`, `WorkspaceConfig` and `AuthoringConfig`.\n  - `ResolvedAuthoringConfig` is a separate type. It derives `Debug` and `Clone` but not `Serialize`.\n  - `resolve_authoring_with_workspace_from` (lines 926–1027) builds it and is marked `{impl}`.\n  - Test: `workspace_defaults_and_configs_combine_with_existing_user_selections`.\n- **Round trip preserves semantic values, including explicit versus omitted settings.**\n  - `UserConfig::to_toml`, `WorkspaceConfig::to_toml`, `UserConfig::parse` and `WorkspaceConfig::parse` are marked `{impl}`.\n  - Optional fields are `Option` with `skip_serializing_if`.\n  - Tests: `backend_configuration_round_trips_without_materializing_defaults`, `user_and_workspace_authoring_tables_round_trip_every_map`, `authoring_concurrency_defaults_overrides_and_invalid_values` and `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`.\n- **Optional fields may be omitted.** This is a MAY and imposes nothing to check.\n- **Defaults and environment-derived values are not materialized into omitted fields.**\n  - `OllamaConfig.endpoint` stays `None`, and `endpoint()` computes the default without storing it.\n  - `api_key_from` returns the key separately.\n  - Tests: `backend_configuration_round_trips_without_materializing_defaults` (no `endpoint` or `concurrency` in the output) and `ollama_authentication_resolves_separately_and_rejects_missing_values` (the `api_key_env` name is serialized, the resolved value is not).\n- **Loading or running does not rewrite configuration.**\n  - `load_user_config`, `load_workspace_config` and `resolve_authoring*` only read.\n  - A grep of `src` for writes found none that touch configuration; the writes are evidence and usage records.\n  - Tests: `absent_and_minimal_configuration_are_distinct_and_read_only` and `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` assert the file bytes are unchanged.\n- **Resolved credentials and live runtime objects stay out of the serialized structures.** `api_key_from` returns a plain `String`. No resolved Bedrock credentials are stored in any `Serialize` type. Tested as above.\n- **Explicit credentials appear only in documented fields; profile or environment credentials are never written back.**\n  - `SecretString` is used only in `BedrockCredentials`, `BedrockConfig.credentials` and `OllamaConfig.api_key`.\n  - The structs use `deny_unknown_fields`.\n  - `BackendConfig::validate` rejects conflicting credential settings.\n  - Test: `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`.\n\n**Gap: unmarked implementing code**\n\nUnder the marking rules, code that constrains a type's fields or serialized form implements part of the requirement. Several types in `src/config.rs` do exactly that for this requirement but carry no `{impl}` reference to `requirements.configuration.serialization`:\n- `OllamaConfig` (lines ~147–158). `endpoint`, `api_key_env` and `api_key` are optional and skipped when `None`, so defaults are not materialized. `api_key` is the field that may hold an explicit credential.\n- `BedrockConfig` and `BedrockCredentials` (lines ~126–145). Optional `aws_profile`, `region` and `credentials` are skipped when `None`.\n- `SecretString`. It is `#[serde(transparent)]` and is the type that carries explicit credential values into the serialized form.\n- `UserConfig`, `WorkspaceConfig`, `WorkspaceAuthoringConfig`, `UserAuthoringConfig` and `AuthoringConfig`. These carry `skip_serializing_if` rules and `deny_unknown_fields`, and `AuthoringConfig` carries the optional `concurrency` field.\n- `ResolvedAuthoringConfig`. It is the non-serializable runtime counterpart that keeps saved and resolved configuration distinct, and it is marked only for `authoring.concurrency`.\n- `OllamaConfig::endpoint`. It supplies the default at use time rather than writing it into the saved data.\n\nThese types carry `{impl}` references to `authoring.configuration_serialization` or `configuration.structure`, but not to this requirement. Because this implementing code lacks a reference to the subject, the marking is incomplete. No `{fixme}` acknowledges the gap, so the determination is false.",
   "references": "8568e11156882e5f9fa3ff681455163831d68d1a4f6816b022e994dbd51f1dea",
   "inputs": [
     {
@@ -121,51 +121,6 @@
       "file": "src/config.rs",
       "item": "",
       "hash": "7de62507a0c835911fc10f2d09ced5682a29bac4b447c057cfdcf64a132cd2a9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_evidence]",
-      "hash": "55a4844bf88c98810c76d5486185af127d895626d83a9de141ce59be82bbd93d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[workspace_document]",
-      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_workspace_common]",
-      "hash": "7ece2487516745486dfc5e57d408e0ac2dabe0cbc3a56503173e60263743593b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[parse_document]",
-      "hash": "0287b1717cba7e77c7d4c3f8b5264f202094f1b27303f52f763c36a782efbc70"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[decode]",
-      "hash": "18c77225e202f5ac560723436ec3878e6b588615de9c83ab7a18e5008a3db1eb"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[decoded_setting]",
-      "hash": "5e1b71d9894d744a325566cd5baf422130ba6f2006a66db39941b435eb491520"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring]",
-      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "fn[add_definition_inputs]",
-      "hash": "33aa1e4cace467d8d1511df506c97eaeb407f8bc776d6a4f843dd3fb56f38d89"
     },
     {
       "file": "src/authoring/access.rs",
@@ -319,6 +274,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[initial_prompt_carries_the_review_criteria]",
+      "hash": "2b50683f4453691c0e8b2fe2347a56833922db1721ac1d04cec47933ef1dc0e0"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
       "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
     },
@@ -330,7 +290,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
-      "hash": "093c6a6a626fb34de7209772edeb2ff1c84d48398b03bfcd04b863245a6ad272"
+      "hash": "ab79f5f4d3673e062625824501b50a63d512db1126a198c2ccd9837526f1dfb0"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -494,8 +454,8 @@
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]",
-      "hash": "c9f052052854a2e6cb018bd7b54cb916840b0e2c497f6d28819cb72141fe1d8c"
+      "item": "impl[UsageLog]/fn[save]",
+      "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
     },
     {
       "file": "src/evidence.rs",
@@ -566,6 +526,11 @@
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
       "hash": "b56535c1f964615d415eeaf516dff432897e416b902e4b0b0c48810268e4caa6"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[git_index_failure_is_reported_once_and_later_checks_still_run]",
+      "hash": "194dd37674c156fb7fa1fb92bcf1111e638c0b7c052780e7ea5eab6c3d8264cd"
     },
     {
       "file": "src/evidence.rs",
@@ -713,9 +678,9 @@
       "hash": "d3f3bc4ab6a8cf07d968b7b0ee95b6a64ebded467e9f792221b1b3fa6038a5ea"
     },
     {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
+      "file": "src/redaction/tests.rs",
+      "item": "fn[the_user_configuration_file_and_its_aliases_are_configuration_files]",
+      "hash": "0a885bb37069bbbcee4bf3526b2f793e45b54c102b1d69001f91a7306d95fa6e"
     },
     {
       "file": "src/rust_coverage.rs",
@@ -741,132 +706,6 @@
       "file": "src/terms.rs",
       "item": "mod[tests]/fn[term_dependencies_of_every_markdown_extension_skip_literal_roles]",
       "hash": "c51b072ed1253c7ad11d986f565d9ac6da0bb9c68fc3ab02dc51273875d004e6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[indexed]",
-      "hash": "09bbd2cbc6de7161e311a2751ed0c7e2a011c0e3cff97ff2dee7c3426cbccf7a"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]/fn[connect]",
-      "hash": "cb7f6e696b6ceaf0f121d39f5462a13da962cdc583aac325af9d9f52b607dd3b"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_config]",
-      "hash": "7ab162b0d655b45cb67e7829a19541bbff5e40b7e91f6943a66eb0fc37167a8e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[rig_failures_keep_their_provider_report_for_backoff]",
-      "hash": "22658c5f75ef471aeb85fde0e1bd3c534d087f262d44451d17ed4b48586e9ec2"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
-      "hash": "c1dbd0d0c5a946629fa75e628e03d603331a8ae23f9fd6a0e04caf218dac06c4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]/fn[resolved]",
-      "hash": "a230010987fa560c72384e06bc32043fa178610d2c7e9be4a915868d2d2d56ab"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceEvidenceConfig]",
-      "hash": "6ef8de3f201aaf71b6e3a15d9166541b8fe0d1f660887a80b27c5672f87db379"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[SecretString]",
-      "hash": "a0235bf71399d6481804c2fa60803621ede1fe00b6346ef5c214490497466c6a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]",
-      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options_json]",
-      "hash": "bedf723162d521ea21e5fc86045f99e5fbc8d0599fdecb6468ffafb0fcde06ff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "85a75e4507fc47425ea5274b29629a298b9259bce2cfc6d7fa79904e645d111a"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_committed_credentials]",
-      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "struct[CredentialField]",
-      "hash": "52199e49783a7c3fca9a2608d970c08d1fd9d9b77576887d7bbce01509288bfc"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[credential_fields]",
-      "hash": "e1b45f696f356560d6962b98784758c2dc5caa11ab55de13f597fea74b4756df"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[configuration_credential_fields_are_redacted_by_name_whatever_their_values]",
-      "hash": "412e09d365440e96d3084a37a15e6af17d97a411f07a0601ad9234d420d45481"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[hashes_do_not_depend_on_credential_values]",
-      "hash": "495c27757733832de498936ab966e65023bd9caf2eadd297f66ef59f09624e82"
-    },
-    {
-      "requirements": "requirements.authoring.configuration_serialization",
-      "matches": [
-        "requirements.authoring.configuration_serialization"
-      ],
-      "text": [
-        ":::{req} configuration_serialization",
-        "The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace",
-        "table MUST serialize WorkspaceAuthoringConfig. Each",
-        "`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with",
-        "`backend = \"bedrock\"` or `backend = \"ollama\"` and that variant's fields in the same",
-        "table. Backend-specific inference options MUST appear in its `options` subtable.",
-        "Within a present user authoring section, `configs` MUST be present but MAY be empty;",
-        "workspace `configs` MAY be omitted, allowing a workspace default to select a",
-        "named user configuration.",
-        "omitted `projects` and `options` tables MUST deserialize as empty maps.",
-        "Serialization MUST follow the common rules in",
-        "{cite}`requirements.configuration.serialization`.",
-        ":::"
-      ]
-    },
-    {
-      "requirements": "requirements.configuration.structure",
-      "matches": [
-        "requirements.configuration.structure"
-      ],
-      "text": [
-        ":::{req} structure",
-        "The user configuration file MUST be UTF-8 TOML serializing UserConfig. It MUST",
-        "contain `version = 1` and MAY contain the documented feature tables. The common",
-        "root MUST contain only the schema version and those feature tables; feature",
-        "settings MUST NOT occupy unscoped root keys. A user file containing only",
-        "`version = 1` MUST be valid common configuration.",
-        "",
-        "Workspace configuration MUST follow {cite}`requirements.configuration.workspace_structure`.",
-        "The absence of an optional feature section MUST be distinguishable",
-        "from that feature's explicit settings and interpreted according to its own",
-        "requirements.",
-        ":::"
-      ]
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "When preparing the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`, every terminology definition\nreferenced by the subject or any contributed source MUST contribute its complete\nfenced declaration, including its phrase option. Definitions referenced by those\ndefinitions MUST also be included transitively, without duplicates or\nnontermination on cycles.\n\nWhen an additional source read introduces a terminology dependency, the same\ncomplete, transitive definition set MUST be supplied to the model and recorded\nbefore accepting a submission.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** Both obligations are implemented, the implementation is marked, and the tests cover the main design points.\n\n## Implementation\n\n**Initial mandatory set.**\n- `AssessmentSources::prepare` (src/authoring/inputs.rs) builds the contributed selectors:\n  - the subject itself;\n  - `{cite}`d requirements;\n  - `{impl}`/`{test}` source nodes;\n  - `:impl:`/`:test:` anchors.\n- It passes the resulting `mandatory` inputs and the subject text to `definition_inputs`.\n- `definition_inputs` calls `terms::dependencies`, which gathers `{term}` references from:\n  - the subject text;\n  - Rust comments in contributed source nodes;\n  - Markdown or plain text in other files;\n  - bodies of requirement declarations.\n- `terms::close_dependencies` expands them to a fixed point, using a `visited` set and a `BTreeSet`. That gives the transitive closure with no duplicates and guaranteed termination on cycles.\n- Each resulting name goes through `source_input` as an `InputSelector::Definition`. Its text is the complete raw fenced declaration, including the `:phrase:` line.\n- `prepare` appends these to `mandatory` only if not already present, so they are deduplicated.\n- Unresolvable terms produce errors before inference.\n- The built-in texts contain no `{term}` references, so omitting them from term scanning loses nothing.\n\n**Additional reads.**\n- `read` and `search` (src/authoring/tools.rs) call `AssessmentSources::additional_definitions` on the newly delivered inputs.\n  - It returns the transitive definitions, filtered against the delivered inputs and `recorded`.\n  - These are returned in the tool result, so they are supplied to the model, and also added to `ToolDelivery.inputs`.\n- `converse` (src/authoring/mod.rs) pushes the delivered inputs to `pending`. It calls `record_inputs` after the next successful response, including the submission turn and before `parse`. So they are recorded before a submission is accepted.\n- `record_inputs` deduplicates.\n\n**Marking.** The implementing pieces are marked `{impl}` for this requirement: `prepare`, `record_inputs`, `additional_definitions`, `source_input`, `definition_inputs`, `converse`, `read` and `search`. The closure logic in `src/terms.rs` is marked with `requirements.definitions.dependencies` and `requirements.definitions.selection`. Their text covers the transitive, cycle-safe, deduplicated fixed point, which is exactly what this requirement relies on.\n\n## Tests\n\n- **`bundle_combines_direct_references_terms_and_current_existing_selectors`**\n  - A term is referenced by the subject.\n  - The term set is the transitive set `unit` and `value`, where `unit` references `value`.\n  - Exactly 2 definition inputs are asserted, so there are no duplicates.\n  - Earlier evidence inputs are not carried forward.\n- **`mandatory_git_inputs_require_staging_declarations_sources_and_terms`**\n  - A term referenced from a contributed source file becomes a mandatory definition input.\n  - A term declaration file that is not staged produces an error.\n- **`definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission`**\n  - The terms form a cycle (`value` and `unit` reference each other), so cycle termination is tested.\n  - The read introduces the terms. The delivered set is `[\"terms.unit\",\"terms.value\"]`, once each.\n  - Each definition's text starts with `:::{definition}` and `:phrase:`.\n  - The terms are absent from the first request, present in the second request, and in the recorded evidence inputs. This shows they are delivered and recorded before the submission.\n- **`reading_records_only_delivered_sources_and_their_terms`** covers the `habeas` read path and repeated recording without duplicates.\n- **`search_supplies_terminology_clamps_at_eof_and_reports_failures`** covers the `ripgrep` path.\n- **`term_dependencies_of_every_markdown_extension_skip_literal_roles`** (src/terms.rs, marked for `requirements.definitions.dependencies`, not this requirement) covers the scanning rules.\n\nCoverage spans direct, transitive, cyclic, duplicate, source-read, search and recording-before-submission cases. I found no unacknowledged gaps.",
+  "rationale": "I found no gap. Every obligation maps to marked code and to a test that exercises it.\n\n**Obligations**\n1. Every term referenced by the subject or any contributed source contributes its complete fenced declaration, including the phrase option.\n2. Definitions referenced by those definitions are included transitively, once each, and cycles terminate.\n3. When an additional read introduces a terminology dependency, the same complete, transitive set is supplied to the model and recorded before a submission is accepted.\n\n**Mandatory phase (obligations 1 and 2)**\n- `AssessmentSources::prepare` (`src/authoring/inputs.rs`, `{impl}`) builds the contributed selectors: the subject, its cited requirements, impl/test sources and anchors.\n- It then calls `definition_inputs` over those inputs plus the subject text, and appends each result only if `mandatory` doesn't already contain it.\n- `definition_inputs` (`{impl}`) calls `terms::dependencies`.\n  - `direct_references` scans the subject text and each input: Rust comments, Markdown bodies, requirement bodies, and `Definition` selectors.\n  - `close_dependencies` expands those terms to a fixed point using a `visited` set and a `BTreeSet`. That gives no duplicates and no nontermination on cycles.\n- `source_input` (`{impl}`) turns each term into a `Definition` input. Its text is the whole fenced declaration, with the `:::{definition}` fence and the `:phrase:` line, as the tests below show.\n\n**Additional reads (obligation 3)**\n- `read` and `search` in `src/authoring/tools.rs` (`{impl}`) each call `AssessmentSources::additional_definitions`. That runs the same `definition_inputs` closure and filters out definitions already supplied or recorded. The result is returned alongside the read and appended to the delivery's `inputs`.\n- In `converse` (`src/authoring/mod.rs`, `{impl}`), delivered inputs go into `pending`. After the next response, `record_inputs` (`{impl}`) records them before any submission is handled, and it deduplicates.\n- The `ast_grep` tool the book describes doesn't exist in the code. That gap belongs to `structural_search`, not to this requirement, so I don't count it here.\n\n**Tests**\n- `bundle_combines_direct_references_terms_and_current_existing_selectors` (`src/authoring/inputs.rs`) uses mutually referencing terms `unit` and `value`. It asserts exactly two definition inputs in the mandatory set, which covers transitivity, no duplicates and cycles.\n- `mandatory_git_inputs_require_staging_declarations_sources_and_terms` checks that a term cited from a contributed source becomes a mandatory definition input.\n- `definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission` (`src/authoring/mod.rs`) checks a read that introduces a term cycle.\n  - It asserts the transitive set `[terms.unit, terms.value]`, once each, in the recorded evidence.\n  - It asserts each definition's text starts with `:::{definition}` and `:phrase: `.\n  - It asserts the definitions reached the second request, the one before submission, and were absent from the first.\n- `reading_records_only_delivered_sources_and_their_terms` (`src/authoring/tools.rs`) covers the `habeas` outline read: its result lists `terms.value`, and it is recorded.\n- `search_supplies_terminology_clamps_at_eof_and_reports_failures` covers `ripgrep`: the search result carries the definition and it is recorded.\n\nThe line-range form of `habeas` calls the same `additional_definitions` without asserting its definitions list. The text doesn't distinguish that path from the others, so it needs no separate test.",
   "references": "031ed220269195c249e24956661b1f80275d06b232fda20789b4c083287a2a32",
   "inputs": [
     {
@@ -171,47 +171,95 @@
       "hash": "95af724648a6d7edc37e268e348db3c74fad4d48c0fcaabe85f24e9b511cf2f8"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[files_with_extension]",
-      "hash": "4fab710823f8c96ba4bf9d890172091a4c3001a3c726298c099768d7c498073e"
-    },
-    {
       "file": "src/terms.rs",
       "item": "fn[close_dependencies]",
       "hash": "7505912bdea9e2777bb6ca92e2ed4255ac0e6322bb358a0e33dcd732b900ca29"
     },
     {
-      "file": "src/terms.rs",
-      "item": "fn[validate_dependencies]",
-      "hash": "384460cdf651e0a04222f97e6b6f61287c7fc9cc42f7c5ac81b45e282d3cd216"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[escaped_phrase]",
-      "hash": "57b2b69d44ee4dc8e909bd34eda3be6db51c381c7a68ad4bb24703592e31a3ea"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "mod[tests]",
-      "hash": "ca6b407a66154ba8111e1d5cf7973b5e03b13f7232baeaaac569ea80d2866ef6"
-    },
-    {
-      "file": "md/requirements/definitions.md",
-      "item": "section[Named%20definitions]",
-      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
-    },
-    {
-      "definition": "requirements.references.definition_selection",
+      "requirements": "requirements.authoring.source_tools",
+      "matches": [
+        "requirements.authoring.source_tools"
+      ],
       "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
+        ":::{req} source_tools",
+        "The harness MUST expose a `habeas` tool accepting exactly one of these request",
+        "forms. Each form MUST correspond to one existing evidence-input kind:",
         "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
+        "| Request fields | Evidence input returned | Definition |",
+        "| --- | --- | --- |",
+        "| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |",
+        "| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |",
+        "| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |",
+        "| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |",
+        "",
+        "Selector arguments MUST use the syntax defined by",
+        "{cite}`requirements.references.outline_selectors`. Reads MUST use the current",
+        "project working tree, including unstaged changes to tracked files and staged new",
+        "files. By default, source inputs MUST stay within the project root after",
+        "resolving symlinks; in a Git worktree, both the requested file and its resolved",
+        "target MUST be present in the Git index. Projects outside Git MUST use the same",
+        "containment rules without requiring an index. Failure to read an existing",
+        "repository's index MUST be reported as an error.",
+        "The project-root `evidence/` directory MUST be excluded from model reads by",
+        "default, including symlink aliases. Every source the harness supplies to the",
+        "model MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow",
+        "{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST",
+        "follow {cite}`requirements.configuration.evidence_paths`, including explicit",
+        "permission for otherwise excluded inputs. A denied mandatory input or explicit",
+        "read MUST abort under {cite}`requirements.authoring.read_denial`.",
+        "",
+        "Line numbers are only a way to request sources; recorded evidence MUST identify",
+        "sources by outline selector and structural hash, never by line number. Request",
+        "line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read",
+        "through EOF. A line-range request MUST be resolved to the innermost outline",
+        "nodes covering the requested lines, which are `line` nodes in a file using the",
+        "plain-text profile; the result MUST show the model each node's selector, current",
+        "line range, and source text, and the harness MUST record those nodes as outline",
+        "inputs. The model-facing tool description MUST include the argument conventions",
+        "from the cited requirements, including outline selector syntax, definition",
+        "selections, and full definition names, with a short request example for each form.",
+        "",
+        "A successful call MUST return the requested evidence input, populated by the",
+        "harness with the selected source text, using the existing evidence schema.",
+        "{cite}`requirements.ci.schema`",
+        "Required terminology dependencies MUST be returned alongside it as additional",
+        "definition inputs under {cite}`requirements.definitions.authoring_inputs`.",
+        "The result MUST have this shape:",
+        "",
+        "```text",
+        "HabeasResult {",
+        "    input: EvidenceInput,",
+        "    definitions: Array<DefinitionInput>,",
+        "}",
+        "```",
+        "",
+        "`definitions` MUST be empty when no additional terminology is required. The",
+        "harness MUST record inputs supplied to the model in the assessment's evidence.",
+        "A failed read MUST add no evidence input. Access-policy denials MUST abort",
+        "except where {cite}`requirements.authoring.read_denial` makes them ordinary read",
+        "failures; other failed reads MUST return an explanatory tool error.",
         ":::"
       ]
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Search%20syntax%20trees:%20`ast_grep`]",
+      "hash": "b95edf5de88fafe5090f1c22fa944ca9541ff549968c5009f392fafd4ef524d9"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Read%20GitHub%20issues:%20`github`]",
+      "hash": "198ec1b5bda892b6c358de086b263eaca12b5541dbf397e18b11c69a8b0f866f"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "a9bd1156cad31bb1f70ca4dcf346a1d934e8997edbace5ab6ce99d7bf2aceb51"
     }
   ]
 }

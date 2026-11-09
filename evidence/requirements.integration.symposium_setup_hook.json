@@ -1,7 +1,7 @@
 {
   "requirement": "For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project whose manifest lists `habeas` under `[dev-dependencies]`, as {cite}`requirements.cli.setup` adds it, MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.",
-  "determination": true,
-  "rationale": "**Judgment: the requirement is met.**\n\n**Implementation**\n- **Hook delivery.** `Cargo.toml` lines 43–51 declare a `[[package.metadata.symposium.hooks]]` entry named `habeas-setup-check`. It uses event `SessionStart` and format `symposium`, and runs `habeas hook session-start`. This is how an enabled Habeas plugin gets a `SessionStart` hook, and the entry carries the `{impl}` marker.\n- **Dispatch.** `src/main.rs` routes `Command::Hook { SessionStart }` to `hook::session_start()` and carries the `{impl}` marker. The hook is hidden from the CLI help and skips the workspace-evidence loading that other commands do.\n- **Hook logic.** `src/hook.rs` `session_start_response` follows the required order:\n  - It resolves the working directory from the event, falling back to the process directory.\n  - It finds the nearest ancestor with both `Cargo.toml` and `book.toml` (`setup::find_project_root`).\n  - It requires `habeas` under `[dev-dependencies]` (`project_depends_on_habeas`, `has_habeas_dev_dependency`).\n  - It then calls `setup::is_configured`.\n- **Silent cases.** The hook returns an empty `{\"SessionStart\": {}}` when there is no applicable project, when `habeas` is not a dev dependency, or when setup is complete. That matches \"provide no setup advisory\".\n- **Advisory.** When setup is incomplete it returns only `additionalContext`. The text says \"Habeas Codicem is not fully configured\" and suggests running `habeas setup`. It does not block the session.\n- **Completeness check.** `is_configured` checks everything `requirements.cli.setup` creates, and compares the stylesheet and `tests/habeas.rs` against the exact expected contents (`BADGE_CSS`, `TEST_SOURCE`):\n  - the dev dependency;\n  - a `SUMMARY.md` in a valid `book.src` directory;\n  - the `habeas mdbook` preprocessor with renderers `[\"html\"]`;\n  - `output.html.fold.enable`, with any existing value accepted because setup preserves it;\n  - the `additional-css` entry;\n  - the stylesheet file;\n  - `tests/habeas.rs`.\n- **Read-only.** The hook only reads files and never calls `setup::run`. The helpers it shares with setup (`css_relative`, `book_source`, `find_project_root`, `has_habeas_dev_dependency`) are marked with `{impl}` for this requirement. I found no unmarked behaviour beyond what the requirement specifies.\n\n**Tests**\n- **Integration test.** `tests/setup.rs::session_start_advises_only_when_setup_is_incomplete` runs the real binary and checks:\n  - a project without Habeas gets no advisory;\n  - `habeas` under `[dependencies]` only gets no advisory;\n  - a fully set-up project gets no advisory, including when the session starts in a nested directory;\n  - a deleted stylesheet gives the advisory, which mentions \"Habeas Codicem is not fully configured\" and `habeas setup`, and the hook neither recreates the file nor changes `book.toml`;\n  - a wrong preprocessor gives the advisory;\n  - a missing `fold.enable` gives the advisory, while `enable = false` counts as complete;\n  - a project with no `book.toml` gets no advisory.\n- **Custom `book.src`.** `setup_uses_src_when_book_table_or_source_setting_is_absent` covers a missing `[book]` table or `src` setting (default `src`) and an invalid `book.src`.\n- **End-to-end test.** `tests/symposium_hook_smoke.py` runs a real Symposium sync and checks the following:\n  - Symposium registers the session-start hook;\n  - it delivers the advisory before setup;\n  - it stops advising after `habeas setup`.\n- **Minor gaps.** Two failure branches of `is_configured` are not exercised individually: a missing or differing `tests/habeas.rs`, and a missing `additional-css` entry. Each is a simple equality or membership check on the same pattern as the tested branches, so I don't consider this a material gap.\n\nNo FIXMEs are present.",
+  "determination": false,
+  "rationale": "The implementation covers every obligation, but the tests leave two of the hook's setup checks unexercised. The gap is a missing test, not missing code, and no `{fixme}` acknowledges it.\n\n**Obligations and the code that carries them out**\n1. **Hook delivery.** An enabled plugin in a Cargo and mdBook project with `habeas` under `[dev-dependencies]` must receive a `SessionStart` hook.\n   - `Cargo.toml` declares the hook (lines 43–51): `event = \"SessionStart\"`, `format = \"symposium\"`, `args = [\"hook\", \"session-start\"]`.\n   - `src/main.rs` `main` dispatches `Command::Hook` to `hook::session_start`.\n   - `src/hook.rs` `session_start_response` finds the project root with `setup::find_project_root`. It then requires `setup::project_depends_on_habeas`, which calls `has_habeas_dev_dependency` and checks only `[dev-dependencies]`.\n   - The Python smoke test (`tests/symposium_hook_smoke.py`, the `main`/`session_start` block) checks end to end that Symposium registers and runs the hook.\n2. **Check configuration and files.** `setup::is_configured` checks all of the following:\n   - the dev dependency;\n   - the book source and `SUMMARY.md`;\n   - the preprocessor command and renderers;\n   - `output.html.fold.enable`;\n   - the `additional-css` entry;\n   - the `habeas.css` contents;\n   - the `tests/habeas.rs` contents.\n3. **Nonblocking advisory.** When setup is incomplete, `session_start_response` returns `additionalContext`. The text says \"Habeas Codicem is not fully configured … Run `habeas setup`\". It is context only and does not block the session.\n4. **No advisory when complete or not applicable.** When there is no project root, no Habeas dev dependency, or the project is configured, the hook returns `{\"SessionStart\": {}}`.\n5. **No modification and no running setup.** The hook only reads files and writes JSON to stdout.\n\n**Tests that cover these obligations**\n- `session_start_advises_only_when_setup_is_incomplete` in `tests/setup.rs` covers:\n  - no advisory for a project without Habeas;\n  - no advisory when `habeas` is only under `[dependencies]`;\n  - no advisory when setup is complete, from a nested cwd;\n  - an advisory with the required wording when `habeas.css` is deleted, plus assertions that the hook did not recreate it or change `book.toml`;\n  - an advisory for a wrong preprocessor;\n  - an advisory when `fold.enable` is missing, and no advisory when it is `false`;\n  - no advisory when `book.toml` is absent.\n- `setup_uses_src_when_book_table_or_source_setting_is_absent` covers the default `src` source and an invalid `book.src`.\n- The smoke test covers the advisory before setup, its absence after setup, and delivery through Symposium.\n\n**Gap: untested file and configuration checks**\n- The requirement says the hook MUST check that the \"files required by `requirements.cli.setup`\" are present and compatible. `is_configured` (`src/setup.rs`, the last lines) has separate failing branches for a missing or differing `tests/habeas.rs` and for a missing `additional-css` entry.\n- No test makes either branch fail on its own. Search of `tests/setup.rs` found no hook assertion tied to `tests/habeas.rs`.\n- The smoke test only shows an advisory when every item is missing, so it does not isolate these checks.\n- The same applies to a stylesheet that is present but has different content: only deleting the file is tested.\n- These are conditional checks the requirement names, so they need tests, and they have none.\n\nNo unspecified behavior was found in the `{impl}` code.",
   "references": "01b92f18379d46cbe1c99548089841cc6f82e8208470f33b0d013a03d3ef6471",
   "inputs": [
     {
@@ -44,7 +44,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
+      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
     },
     {
       "file": "src/setup.rs",
@@ -133,58 +133,33 @@
     },
     {
       "file": "tests/symposium_hook_smoke.py",
+      "item": "def[interactive_sync]",
+      "hash": "a5f5f7ca74c8a93706dcd175f2c270746a934805f1eb80d6e2d49d4e9fff6fbb"
+    },
+    {
+      "file": "tests/symposium_hook_smoke.py",
       "item": "def[main]",
       "hash": "e225275a81a6d0a67573ef7addd83be5cc6b4615e29795ac5b0991d053484943"
     },
     {
-      "file": "src/hook.rs",
-      "item": "use@a552f69c94db",
-      "hash": "a552f69c94dbd8dd8259fd09e70ee942c67b0f0c57d93f887a4209774044be1c"
-    },
-    {
-      "file": "src/hook.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/hook.rs",
-      "item": "use@3970e6901143",
-      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
-    },
-    {
-      "file": "src/hook.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "src/hook.rs",
-      "item": "use@4bead300e6e4",
-      "hash": "4bead300e6e46d8ff3db1e0dc36730721e995b58874e8aaeddc4d5fad7d0302f"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[project_root]",
-      "hash": "c0707987d208670061b30eb531a4c5a6640c2f948a3a1ea81dceca0fecc42807"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[write_new_or_same]",
-      "hash": "640a71e8514260f13eea89c1796305c7793600d840c0712fdb3e10ab8d5099fc"
-    },
-    {
-      "file": "src/setup.rs",
+      "file": "tests/setup.rs",
       "item": "fn[run]",
-      "hash": "18d26daaec166e7211d87cbca8b548f14885c162805a8be48edb6f60a0c20d11"
+      "hash": "2471aa6f34880ae8f81a94a3808ffa356b9038bda0bf2feb501973634ef36ccb"
     },
     {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "457d88e87ea6e8701cecd57a6df44b7064f6c55c32081a6d3cd82ab95ad780bc"
+      "file": "tests/setup.rs",
+      "item": "fn[setup_is_repeatable]",
+      "hash": "30a39e682c0610b494ff35376499b4be11ce769333c8f3bebdbb82b06e232bab"
     },
     {
-      "file": "src/main.rs",
-      "item": "enum[HookCommand]",
-      "hash": "235dec6e706b8901e3266d08a32782e1c8fc771aabfc0b57cbd5ab9707f4bc0f"
+      "file": "tests/setup.rs",
+      "item": "fn[setup_does_not_overwrite_a_differing_test_or_stylesheet]",
+      "hash": "63d94d003ba5c65a6a71dee87b976992c35b187039ce6a624838281279f6804a"
+    },
+    {
+      "file": "tests/setup.rs",
+      "item": "fn[setup_finds_the_nearest_cargo_and_mdbook_ancestor]",
+      "hash": "cb2306934eb761c635ddcfb354076b085ae5503a971ce55cebf4e5ace10e1349"
     }
   ]
 }

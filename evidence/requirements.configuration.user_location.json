@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST locate its per-user configuration at\n`$XDG_CONFIG_HOME/habeas/config.toml` on Unix when XDG_CONFIG_HOME is an absolute,\nnonempty path, otherwise at `$HOME/.config/habeas/config.toml`. On Windows it MUST\nuse `%APPDATA%/habeas/config.toml`. `HOME` and `APPDATA` MUST likewise be\nabsolute, nonempty paths to be used. If no usable base directory can be\ndetermined, an operation requiring user configuration MUST fail with an\nexplanatory diagnostic naming the variable.\n\nThe same user configuration MUST be usable across projects. Its location MUST\nNOT be selected relative to the current project or changed by project settings.\nUser-local preferences for a project MAY remain in the user configuration;\nworkspace settings MUST use `habeas.toml` under\n{cite}`requirements.configuration.workspace_location`.",
   "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation is complete and marked, and the tests cover the main cases and failure paths.\n\n**Implementation** (`src/config.rs`)\n- `ConfigPlatform::current()` picks Unix or Windows, and `user_config_path()` feeds it the process environment.\n- `user_config_path_from` implements the location rules:\n  - On Unix it uses `XDG_CONFIG_HOME` when that is an absolute path. `absolute_directory` rejects relative values, and an empty string is not absolute either. Otherwise it uses `required_directory(\"HOME\")` joined with `.config`. Both cases end in `habeas/config.toml`.\n  - On Windows it uses `required_directory(\"APPDATA\")` joined with `habeas/config.toml`.\n- `HOME` and `APPDATA` must likewise be absolute and nonempty, because `required_directory` goes through `absolute_directory`.\n- When no usable base exists, `required_directory` returns an `io::Error` reading \"cannot determine Habeas directory: {name} must be an absolute, nonempty path\". This names the variable, as the requirement demands.\n- The operation that needs user configuration, `resolve_authoring`, calls `user_config_path()?`, so it fails with that diagnostic. That function is marked `{impl}` for the authoring and loading requirements rather than `user_location`. I treat the failure propagation as the existing authoring requirement's consumption of this path, not as a missing mark.\n- The path is built only from environment variables and the platform. Nothing uses the project root or workspace settings to choose or change it, so the location is the same across projects and is not project-relative. Per-project preferences stay in the user file under `authoring.projects`, and workspace settings are loaded separately by `workspace_document` under `workspace_location`. I found no unmarked code that implements this requirement. The only other consumer, `redaction::is_configuration_file`, just calls `user_config_path` to recognise the file.\n- All the location code (`ConfigPlatform`, `current`, `user_config_path`, `user_config_path_from`, `absolute_directory`, `required_directory`) carries `{impl}` markers for `requirements.configuration.user_location`. The helpers are shared with `state_location`, and that sharing is marked too.\n\n**Workspace location.** `workspace_location` is cited as context. It is handled by `workspace_document`, which searches upward from the current directory or project root. It stops at the nearest `habeas.toml`, reports unreadable candidates rather than skipping to an ancestor, and treats a missing file as no settings. It never creates a file. The user-location code does not touch it, which matches the \"workspace settings MUST use `habeas.toml`\" clause.\n\n**Tests** (`tests/configuration.rs`)\n- `locations_use_absolute_xdg_values_and_platform_fallbacks`:\n  - an absolute `XDG_CONFIG_HOME` is used;\n  - an empty or relative `XDG_CONFIG_HOME` falls back to `$HOME/.config/habeas/config.toml`;\n  - Windows uses `APPDATA/habeas/config.toml`;\n  - Unix with no variables set returns an error.\n- `base_directories_must_be_absolute_and_nonempty`:\n  - empty and relative `HOME` and `APPDATA` return errors that contain the variable name;\n  - a relative `XDG_CONFIG_HOME` combined with an absolute `HOME` falls back correctly.\n- The tests inject the environment through `user_config_path_from`, so they are deterministic and run on any host.\n- Not covered by a test: an unset `XDG_CONFIG_HOME` with a valid `HOME`, and the diagnostic as surfaced by the whole authoring operation. Both are trivial given the code paths exercised.\n- No test asserts that project settings leave the location unchanged. That property holds by construction: the function takes only environment values.",
+  "rationale": "I found no gaps. Each obligation has marked implementing code and a test that runs it.\n\n**Obligations and their code**\n1. **Unix, absolute nonempty `XDG_CONFIG_HOME`.** `user_config_path_from` in `src/config.rs` (the `ConfigPlatform::Unix` arm) calls `absolute_directory(&lookup, \"XDG_CONFIG_HOME\")`. That helper keeps a value only if `PathBuf::is_absolute()` is true, and an empty or relative value is not absolute. The result is joined with `habeas/config.toml`.\n2. **Unix fallback to `$HOME/.config/habeas/config.toml`.** The `None` branch of the same match uses `required_directory(&lookup, \"HOME\")?.join(\".config\")`.\n3. **Windows uses `%APPDATA%/habeas/config.toml`.** The `ConfigPlatform::Windows` arm uses `required_directory(&lookup, \"APPDATA\")`. `ConfigPlatform::current()` selects the platform with `cfg!(windows)`.\n4. **`HOME` and `APPDATA` must be absolute and nonempty.** `required_directory` goes through `absolute_directory`, so it rejects empty and relative values.\n5. **No usable base directory: fail with a diagnostic naming the variable.** `required_directory` returns an `io::Error` reading \"cannot determine Habeas directory: {name} must be an absolute, nonempty path\". `resolve_authoring` calls `user_config_path()?`, so authoring fails with that error.\n6. **Same configuration usable across projects; location not chosen relative to the project or changed by project settings.** `user_config_path()` takes no project or workspace input. It reads only the environment and the platform, so neither can influence it.\n7. **Workspace settings use `habeas.toml`.** `load_workspace_config` and `workspace_document` implement this under `workspace_location`, which is a cited requirement and not reassessed here.\n\n**Tests**\n- `locations_use_absolute_xdg_values_and_platform_fallbacks` in `tests/configuration.rs`:\n  - Checks the XDG path.\n  - Checks the `HOME` fallback when `XDG_CONFIG_HOME` is empty or relative.\n  - Checks the Windows `APPDATA` path.\n  - Checks an error when nothing is set.\n- `base_directories_must_be_absolute_and_nonempty` in `tests/configuration.rs`:\n  - Checks that empty and relative `HOME` and `APPDATA` are rejected.\n  - Checks that the error message contains the variable name.\n  - Checks that a relative `XDG_CONFIG_HOME` falls back to an absolute `HOME`.\n- Item 6 is satisfied by the function's signature, which has no project input and no conditional on one, so it needs no test of its own.\n\n**Marking.** All the implementing items carry `{impl}` for `user_location`: `ConfigPlatform`, `ConfigPlatform::current`, `user_config_path`, `user_config_path_from`, `absolute_directory` and `required_directory`. Both tests carry `{test}`. The other users of `user_config_path`, `resolve_authoring` and the redaction code, only call it, so they are not gaps.\n\n**Unspecified behavior.** I found none. The `ErrorKind::NotFound` kind on the error is incidental.",
   "references": "a2800054065cedb39cfbad2b80c0a042d1159e4e7bdddddd8ac9e49a6e551787",
   "inputs": [
     {
@@ -108,7 +108,7 @@
     {
       "file": "md/requirements/authoring.md",
       "item": "section[Authoring%20evidence]/section[Configuration]",
-      "hash": "0fcef12172ec45b0395fdf287b0188a6fe1d59f1e26dbf4fcffce40bf4d3120e"
+      "hash": "3fb98f3bdcbc70dfd23333ee296cab4ef9fa79037abffb4fd9bc48f048b1b5ca"
     },
     {
       "file": "md/requirements/configuration.md",
@@ -176,16 +176,6 @@
       "hash": "ebc03768315c3b195b11d48f9e44cef01fbb3be2e10dd12d86b5a82ae2608b4b"
     },
     {
-      "file": "src/add_input.rs",
-      "item": "fn[selectors_for_mode]",
-      "hash": "f068d5494d3e9ef2809ec03e33cf6bae930923f76d7e97bad409a7bb556fda3b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "use@ef65439d8cc7",
-      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
-    },
-    {
       "file": "src/authoring/access.rs",
       "item": "struct[PathPolicy]",
       "hash": "9e45b50bd4280a3e83f6a45351d8af7240cc76b6a46a3151611219b5b0d4343a"
@@ -194,11 +184,6 @@
       "file": "src/authoring/access.rs",
       "item": "impl[PathPolicy]",
       "hash": "682d26ee9171ec9d76183444c82d48e36efdb578d3e036f2a3c29c4476301659"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[load]",
-      "hash": "5950faed829db1612f97208c49aeb78c93701c73e400754bf51198366e39fd31"
     },
     {
       "file": "src/authoring/access.rs",
@@ -212,8 +197,8 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]",
-      "hash": "8c27f8b4bc28ca965ff13ca9b356c20a57dc1ad4c49ee39a6864864418996b6e"
+      "item": "impl[SourceAccess]/fn[load]",
+      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
     },
     {
       "file": "src/authoring/access.rs",
@@ -242,11 +227,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[excluded_from_discovery]",
-      "hash": "783c0e5bf8c9b5e0db70ea8fa331bb5983e44affa49b0967a4cdc57190c24f04"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "fn[matches_rule]",
       "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
     },
@@ -267,11 +247,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[discover_generated_roots]",
-      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "fn[resolve_evidence_file]",
       "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
     },
@@ -279,11 +254,6 @@
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[discovery_considers_indexed_files_except_exclusions_including_credential_configuration]",
       "hash": "c0f7459b67b4ef4b9ee2ff850d2265e3c0a3e5c689ffa80be01eb7c0b2aad331"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
-      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
     },
     {
       "file": "src/authoring/access.rs",
@@ -299,11 +269,6 @@
       "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
       "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]",
-      "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
     },
     {
       "file": "src/authoring/access.rs",
@@ -329,11 +294,6 @@
       "file": "src/authoring/inputs.rs",
       "item": "fn[source_input]",
       "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation]",
-      "hash": "a9f72f30b27102cfaa5697448cc58df1881aa7110ef023ca06f1d13c731c7b5e"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -402,13 +362,8 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "df8166a440166e00a72e0c5e8f4971e3b597d6098ec0e5d342859f53b28c4ac9"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[normalize_bedrock_client_calls]",
-      "hash": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
+      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
+      "hash": "b42c72a2c67dff0921cbf94b97faec5fd6f78f21b9addf21946abc0dc6c901e6"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -424,11 +379,6 @@
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
       "hash": "c1dbd0d0c5a946629fa75e628e03d603331a8ae23f9fd6a0e04caf218dac06c4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]",
-      "hash": "60c92f7fceb20eb4b5beda87d326d6cfd10aff5197a14a484a2ea3d34e95aebe"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -472,11 +422,6 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]",
-      "hash": "9f7806acb89d261b9f39bb31221b3ea96b6d94299d55c8a455a56187a5cf5aae"
-    },
-    {
-      "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
       "hash": "ef49beffaf41308554fcd6a0d2073bd3468263c04334d9e0af2f3ecc94d1f070"
     },
@@ -504,11 +449,6 @@
       "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[save]",
       "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "const[CONFIG_EXAMPLES]",
-      "hash": "70edbe2f510dc5a1da83b1fec874e591b17eb05fcf31db49e6f3279d9fa74e20"
     },
     {
       "file": "src/config.rs",
@@ -552,8 +492,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]",
-      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
+      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
+      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
     },
     {
       "file": "src/config.rs",
@@ -612,11 +552,6 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[parse]",
-      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
-    },
-    {
-      "file": "src/config.rs",
       "item": "impl[UserConfig]/fn[to_toml]",
       "hash": "8c34f89c018dff8bf7dbfe7fd35a58216b70a3d7cff57995787c9aa814454b9a"
     },
@@ -629,11 +564,6 @@
       "file": "src/config.rs",
       "item": "impl[WorkspaceConfig]",
       "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]/fn[parse]",
-      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
     },
     {
       "file": "src/config.rs",
@@ -667,11 +597,6 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
-    },
-    {
-      "file": "src/config.rs",
       "item": "impl[BackendConfig]/fn[model_ref]",
       "hash": "08850ef1baf39ed65e13526a9d8d96e20a2e11a66b6033ffac04b58119c63ee9"
     },
@@ -699,11 +624,6 @@
       "file": "src/config.rs",
       "item": "impl[OllamaConfig]",
       "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]/fn[endpoint]",
-      "hash": "c415f1dc83d441fc82a14831a6748729838d6249d7b6bb4dffe78b73f305610b"
     },
     {
       "file": "src/config.rs",
@@ -759,11 +679,6 @@
       "file": "src/config.rs",
       "item": "fn[decoded_setting]",
       "hash": "5e1b71d9894d744a325566cd5baf422130ba6f2006a66db39941b435eb491520"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
     },
     {
       "file": "src/config.rs",
@@ -823,12 +738,12 @@
     {
       "file": "src/main.rs",
       "item": "enum[Command]",
-      "hash": "457d88e87ea6e8701cecd57a6df44b7064f6c55c32081a6d3cd82ab95ad780bc"
+      "hash": "2a17d748f3a54f43735ce2c7da96a4a600ecab417469f3819459813f63d4f377"
     },
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
+      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
     },
     {
       "file": "src/redaction.rs",

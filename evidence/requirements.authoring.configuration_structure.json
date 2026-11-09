@@ -1,7 +1,7 @@
 {
-  "requirement": "Habeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n}\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock or Ollama\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
-  "determination": true,
-  "rationale": "**Verdict: the requirement is met.** The implementation matches every structure in the requirement, the `{impl}` markings are complete, and the tests cover the main cases and failure modes.\n\n**Implementation (`src/config.rs`)**\n- `UserAuthoringConfig` has `default`, `configs` and `projects` (lines 117–128).\n  - `configs` is required, which fits a plain `Map`.\n  - `projects` is keyed by `PathBuf`, standing in for `CanonicalProjectRoot`. `UserAuthoringConfig::validate` enforces that these keys are canonical absolute paths.\n- `WorkspaceAuthoringConfig` has `default` and `configs`, and `configs` is omitted when empty, so omitted means empty (lines 44–54).\n- `ProjectSelection { config }` matches the requirement (lines 130–136).\n- `AuthoringConfig` has `concurrency: Option<NonZeroUsize>` for `PositiveInteger`. `#[serde(flatten)]` on `BackendConfig`, which is tagged with `backend`, gives the tagged union flattened in TOML (lines 138–156).\n- `BedrockConfig`, `BedrockCredentials` and `OllamaConfig` have exactly the listed fields.\n  - Optional fields are skipped when unset, so defaults such as the Ollama endpoint are not written out.\n  - `OllamaConfig::endpoint()` supplies the `http://localhost:11434` default.\n  - Environment variable names are validated as nonempty with no `=` or NUL.\n- `OptionValue` has String, Boolean, Integer, Float, Array and Map variants. `OptionValue::validate`, called from `BackendConfig::validate`, rejects non-finite floats, including nested ones, which gives `FiniteFloat`.\n- `SecretString` is a transparent newtype. It serializes normally and its `Debug` impl writes `<redacted>`.\n- `ModelRef { backend: BackendKind, model }` carries only the backend kind and the model. `BackendConfig::model_ref` clones the model string exactly, so the identifier is preserved and the profile, region and endpoint are not replaced.\n- Each type carries `{impl}` markers. I found no behavior in the `{impl}` code that no definition covers. The extra validation (names, canonical paths, option-key restrictions, credential rules) is marked against other requirements (`configuration_storage`, `credentials`).\n\n**Tests (`tests/configuration.rs`)**\n- `backend_configuration_round_trips_without_materializing_defaults` covers:\n  - Bedrock and Ollama parsing, with nested options.\n  - Ollama defaults not being serialized.\n  - `ModelRef` for Ollama.\n  - Round-tripping.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` covers valid and invalid (`0`, `-1`, `1.5`, `'2'`) positive-integer concurrency, for both backends.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers:\n  - Credentials round-tripping.\n  - `Debug` redaction.\n  - Malformed credential shapes being rejected.\n- `user_and_workspace_authoring_tables_round_trip_every_map` covers:\n  - Round-tripping the `projects` map.\n  - An empty `configs`.\n  - Populated workspace `configs` with options.\n  - `ModelRef` preserving exact Bedrock ARN and profile IDs while `aws_profile` and `region` stay intact in the config.\n- `storage_rules_reject_each_invalid_field_with_its_setting` covers:\n  - NaN and infinite floats, including nested ones.\n  - Empty model IDs.\n  - Bad `api_key_env` values.\n  - Invalid project keys.\n  - Opaque model IDs with tags and digests being accepted.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` checks that a workspace `authoring` table without `configs` yields empty configs.\n\nI found no gaps in the implementation or the tests, and no FIXME comments.",
+  "requirement": "Habeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n    policy: Optional<AssessmentPolicy>,       // default: Confirm\n}\n\nAssessmentPolicy = Confirm | Once             // TOML: \"confirm\" or \"once\"\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock or Ollama\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
+  "determination": false,
+  "rationale": "The `AuthoringConfig` structure the requirement mandates is not fully defined in the code. The requirement says `AuthoringConfig` has `policy: Optional<AssessmentPolicy>` (default Confirm), and it defines `AssessmentPolicy = Confirm | Once` with TOML values \"confirm\" or \"once\".\n\n**What matches the requirement**\n- `src/config.rs` defines `WorkspaceAuthoringConfig` (`configs` defaults to empty), `UserAuthoringConfig` (`configs` required, `projects` optional), `ProjectSelection`, `BackendConfig` (a tagged union, flattened in `AuthoringConfig`), `BedrockConfig`, `BedrockCredentials`, `OllamaConfig`, `OptionValue`, `BackendKind` and `ModelRef`.\n- `SecretString` is a transparent string with a redacted `Debug` implementation (`src/config.rs` lines 85–104).\n- `BackendConfig::model_ref` (lines 415–428) builds `ModelRef` from the selected backend and copies the exact model string. It does not touch the profile, region or endpoint.\n- `OptionValue::validate` rejects non-finite floats.\n- Tests in `tests/configuration.rs` cover these items:\n  - round trips (`backend_configuration_round_trips_without_materializing_defaults`, `user_and_workspace_authoring_tables_round_trip_every_map`)\n  - `ModelRef` preserving the exact ARN and model ID alongside profile and region\n  - redaction of secrets in `Debug` output\n  - omitted workspace `configs` meaning empty\n\n**The gap**\n- `struct[AuthoringConfig]` (`src/config.rs` lines 139–148) has only `concurrency` and the flattened `backend`. There is no `policy` field.\n- A search of the repository for `AssessmentPolicy`, `policy: Option` and `Once` found no `AssessmentPolicy` type, no Confirm/Once enum, and no \"confirm\"/\"once\" TOML mapping. The only `policy` matches are unrelated path-access policy code.\n- The code does not define the `policy: Optional<AssessmentPolicy>` field or the `AssessmentPolicy` type, so the \"MUST define its authoring configuration using these data structures\" obligation is not met.\n- No `{fixme}` acknowledges this gap, and no test covers a `policy` field.\n\nBecause of this unacknowledged gap, the requirement is not satisfied.",
   "references": "e4fabd07890a5fbaeb527190d2251c8d664f89d3aef4d1899952d2f25c1c2d3f",
   "inputs": [
     {
@@ -32,7 +32,10 @@
         "AuthoringConfig {",
         "    backend: BackendConfig,                   // tagged union, flattened in TOML",
         "    concurrency: Optional<PositiveInteger>,   // simultaneous assessments",
+        "    policy: Optional<AssessmentPolicy>,       // default: Confirm",
         "}",
+        "",
+        "AssessmentPolicy = Confirm | Once             // TOML: \"confirm\" or \"once\"",
         "",
         "BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)",
         "",
@@ -186,9 +189,364 @@
       "hash": "1d5ec2ad2a1a63f42fae93daef815c9f78837090da51165a6e6dc9f7b95b8e57"
     },
     {
-      "file": "src/config.rs",
-      "item": "",
-      "hash": "7de62507a0c835911fc10f2d09ced5682a29bac4b447c057cfdcf64a132cd2a9"
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[check_disallow]",
+      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[SourceAccess]",
+      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[load]",
+      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "0150396844273da1aa3e490d9555b75ce3d48d31e49955e22bf209ba9e82f5b9"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
+      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[has_source_under]",
+      "hash": "5cd20bff921efc9e95b0522656f46f470541445339c2724d6622135be35168a6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]",
+      "hash": "8c27f8b4bc28ca965ff13ca9b356c20a57dc1ad4c49ee39a6864864418996b6e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[DiscoverySources]",
+      "hash": "d41ede64ceca6cda2eedddc6f88391e3b8f5a84145ae93206993582d0e5b6bc5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]/fn[load]",
+      "hash": "56207181948908057dd7fc60fb1b8920bb421d522f64b255914bf4c95eb0ed67"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]/fn[considers]",
+      "hash": "a6f20995e472ab624000c4900d7026807fef17837fb9cbe1c2816d6509dfa8e7"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::error::Error]",
+      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_os_denial]",
+      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "struct[AuthoringOptions]",
+      "hash": "ea01113a93a66d1f44e07adb65e3d495a34d37be3fddf180d40beecb30398b41"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess_subject]",
+      "hash": "2933eb302601dca13c56d9fcc553fe424d298aa59c9b2f634f87bbb0ccea97c3"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "84107a9259ec46ade6010d4a144db27ae64ca207611df223488097261dda445d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[search]",
+      "hash": "18584b69311f4c1849e77121ca674fe1ed924b40dbcfb1177dd66722a141699a"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[discovered_files]",
+      "hash": "69f990566604b1200771831a1303f4a265911f40d930ff504a3139ae843556c2"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "enum[Command]",
+      "hash": "2a17d748f3a54f43735ce2c7da96a4a600ecab417469f3819459813f63d4f377"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]",
+      "hash": "1c52e2de8994a9792a83f6f9e2c6f2861d432ea65327adca6a9ec5dd4c477f1e"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]",
+      "hash": "dc081af3df89c9eea64bd1a339bc22ee8a83c6bdd2ccaac85987f6c65b68a8bd"
+    },
+    {
+      "file": "md/getting_started.md",
+      "item": "section[Getting%20started]",
+      "hash": "1a5c8d7677163a9cd7e8e7a911d0e262e3eb50af521eac9327c7ea7e4fef3fb3"
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]/section[Live%20Bedrock%20tests]",
+      "hash": "430c934bc0bfae92427754ac0a9bc11367477b76f5a57cd8cc747085b904edcf"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]",
+      "hash": "f9d6d8e81e31fad1221695e500e2ef92d07dfba89dd8d3e8cf33da937e3f1d4d"
+    },
+    {
+      "file": "md/requirements/integration.md",
+      "item": "section[Project%20integration]",
+      "hash": "56dc5e26b07c478a91dbe5292ccbef4847c382ebf107d5036bc9274facff43d6"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/bn.h",
+      "item": "line@952ac43e4d72",
+      "hash": "952ac43e4d7222a1d5deabaaedd0c629df97fba9619dc6e6beec968b2e8864e4"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/digest.h",
+      "item": "line@a34462e6b61c",
+      "hash": "a34462e6b61c143c93c087138631e745b1086045c732af0e366099dd58f90247"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/evp.h",
+      "item": "line@31892974109c",
+      "hash": "31892974109c11fd17ff74b9c89f1c8a0b3337e9d21cd01e97eb6c878acedac5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/hpke.h",
+      "item": "line@671b2513a933",
+      "hash": "671b2513a93315f2271dc7867b819856e659a9f1ba38bef767ed10bf1d28b5ec"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/pool.h",
+      "item": "line@cd32b064e271",
+      "hash": "cd32b064e271920414cf8b1cf2566e16f4c462d5a1c197949c86a8e89d29db1d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@fd6fcb78a58b",
+      "hash": "fd6fcb78a58bdce595303306ec56932ec7bb6bb4935ee0a0a0f975b035f088f7"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@17f27d4fa960",
+      "hash": "17f27d4fa960d8335f90c0b26363505a4e243252a2ae89d2c9399ff7e3ae76ce"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@d736ecf6f85d",
+      "hash": "d736ecf6f85d7a58e65d6819aeded26a8289b76358dbc1ee977fa2da071af2ce"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@9d213126f334",
+      "hash": "9d213126f334fe546a444588e23c0840e2f0f521bcde0112cb3710695c3530b7"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@7d3549a8bf77",
+      "hash": "7d3549a8bf77ec7ffaad53a620ccc74b40cfd1417c090520f15abf5cee08c27e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@7c84cae17bac",
+      "hash": "7c84cae17bac348d6d5c03eaf5426b4acfccac0647100ac1e8635bdd978003ec"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@43be0ea81b84",
+      "hash": "43be0ea81b84665c5f954d5463e0f447d1cc1ce334b77731aa1dd348d882f46c"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@aa0d2e4022a8",
+      "hash": "aa0d2e4022a800d18daef5217d771d4a8793ac6a0bca0c980716b25be982aa2e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d77e11f51c46b875/out/include/openssl/ssl.h",
+      "item": "line@4e2d3a929583",
+      "hash": "4e2d3a929583f5d10cd5dd146afd4be97eeb58a3d7df604aea3d8b1c9a0c6d7d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/bn.h",
+      "item": "line@952ac43e4d72",
+      "hash": "952ac43e4d7222a1d5deabaaedd0c629df97fba9619dc6e6beec968b2e8864e4"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/digest.h",
+      "item": "line@a34462e6b61c",
+      "hash": "a34462e6b61c143c93c087138631e745b1086045c732af0e366099dd58f90247"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/evp.h",
+      "item": "line@31892974109c",
+      "hash": "31892974109c11fd17ff74b9c89f1c8a0b3337e9d21cd01e97eb6c878acedac5"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/hpke.h",
+      "item": "line@671b2513a933",
+      "hash": "671b2513a93315f2271dc7867b819856e659a9f1ba38bef767ed10bf1d28b5ec"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/pool.h",
+      "item": "line@cd32b064e271",
+      "hash": "cd32b064e271920414cf8b1cf2566e16f4c462d5a1c197949c86a8e89d29db1d"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@fd6fcb78a58b",
+      "hash": "fd6fcb78a58bdce595303306ec56932ec7bb6bb4935ee0a0a0f975b035f088f7"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@17f27d4fa960",
+      "hash": "17f27d4fa960d8335f90c0b26363505a4e243252a2ae89d2c9399ff7e3ae76ce"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@d736ecf6f85d",
+      "hash": "d736ecf6f85d7a58e65d6819aeded26a8289b76358dbc1ee977fa2da071af2ce"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@9d213126f334",
+      "hash": "9d213126f334fe546a444588e23c0840e2f0f521bcde0112cb3710695c3530b7"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@7d3549a8bf77",
+      "hash": "7d3549a8bf77ec7ffaad53a620ccc74b40cfd1417c090520f15abf5cee08c27e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@7c84cae17bac",
+      "hash": "7c84cae17bac348d6d5c03eaf5426b4acfccac0647100ac1e8635bdd978003ec"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@43be0ea81b84",
+      "hash": "43be0ea81b84665c5f954d5463e0f447d1cc1ce334b77731aa1dd348d882f46c"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@aa0d2e4022a8",
+      "hash": "aa0d2e4022a800d18daef5217d771d4a8793ac6a0bca0c980716b25be982aa2e"
+    },
+    {
+      "file": "target/debug/build/aws-lc-sys-d790907109467695/out/include/openssl/ssl.h",
+      "item": "line@4e2d3a929583",
+      "hash": "4e2d3a929583f5d10cd5dd146afd4be97eeb58a3d7df604aea3d8b1c9a0c6d7d"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/bn.h",
+      "item": "line@952ac43e4d72",
+      "hash": "952ac43e4d7222a1d5deabaaedd0c629df97fba9619dc6e6beec968b2e8864e4"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/digest.h",
+      "item": "line@a34462e6b61c",
+      "hash": "a34462e6b61c143c93c087138631e745b1086045c732af0e366099dd58f90247"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/evp.h",
+      "item": "line@31892974109c",
+      "hash": "31892974109c11fd17ff74b9c89f1c8a0b3337e9d21cd01e97eb6c878acedac5"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/hpke.h",
+      "item": "line@671b2513a933",
+      "hash": "671b2513a93315f2271dc7867b819856e659a9f1ba38bef767ed10bf1d28b5ec"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/pool.h",
+      "item": "line@cd32b064e271",
+      "hash": "cd32b064e271920414cf8b1cf2566e16f4c462d5a1c197949c86a8e89d29db1d"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@fd6fcb78a58b",
+      "hash": "fd6fcb78a58bdce595303306ec56932ec7bb6bb4935ee0a0a0f975b035f088f7"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@17f27d4fa960",
+      "hash": "17f27d4fa960d8335f90c0b26363505a4e243252a2ae89d2c9399ff7e3ae76ce"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@d736ecf6f85d",
+      "hash": "d736ecf6f85d7a58e65d6819aeded26a8289b76358dbc1ee977fa2da071af2ce"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@9d213126f334",
+      "hash": "9d213126f334fe546a444588e23c0840e2f0f521bcde0112cb3710695c3530b7"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@7d3549a8bf77",
+      "hash": "7d3549a8bf77ec7ffaad53a620ccc74b40cfd1417c090520f15abf5cee08c27e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@7c84cae17bac",
+      "hash": "7c84cae17bac348d6d5c03eaf5426b4acfccac0647100ac1e8635bdd978003ec"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@43be0ea81b84",
+      "hash": "43be0ea81b84665c5f954d5463e0f447d1cc1ce334b77731aa1dd348d882f46c"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@aa0d2e4022a8",
+      "hash": "aa0d2e4022a800d18daef5217d771d4a8793ac6a0bca0c980716b25be982aa2e"
+    },
+    {
+      "file": "target/release/build/aws-lc-sys-7144b2acdb0aabe4/out/include/openssl/ssl.h",
+      "item": "line@4e2d3a929583",
+      "hash": "4e2d3a929583f5d10cd5dd146afd4be97eeb58a3d7df604aea3d8b1c9a0c6d7d"
     }
   ]
 }

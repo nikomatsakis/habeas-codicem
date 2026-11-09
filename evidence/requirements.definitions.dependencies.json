@@ -1,8 +1,8 @@
 {
   "requirement": "Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs.\n\nHabeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.\n\nValidation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
   "determination": true,
-  "rationale": "**Judgment: the requirement is met.** The implementation covers every obligation, it is marked as implementing the requirement, and the tests cover the main points of the design space.\n\n## Implementation\n\n- **Direct references.** `direct_references` (src/terms.rs) collects the terms referenced by the subject text and by every reviewed input.\n  - Subject text is scanned as Markdown, and Markdown code protection and escapes are respected.\n  - Definition inputs contribute their own name.\n  - Requirements inputs are scanned by declaration body.\n  - Rust outline inputs are scanned only in comments, using `rust_coverage::comments` and its helpers `quoted_end`, `char_end` and `raw_string_end`.\n  - Markdown outline inputs are scanned as Markdown.\n  - Other outline inputs are scanned as plain text.\n  - Recorded outline inputs that carry no text are re-read from current source.\n- **Fixed point and cycles.** `close_dependencies` is a worklist algorithm with a `visited` set. It repeatedly adds the terms referenced by required definitions. Cycles therefore terminate and never expand twice. It also reports one problem per unresolvable term and does not stop at the first.\n- **Capture.** `update_inputs` (src/add_input.rs) calls `terms::dependencies` and captures each required definition as exactly one definition input.\n  - It removes any duplicates before pushing the input.\n  - Because it works from the resulting record's inputs, it picks up dependencies of reviewed inputs added in the same run.\n  - It leaves an unchanged record unchanged.\n- **Validation.** `validate_dependencies` is called from `validate_evidence_file` (src/evidence.rs).\n  - It reports unresolved terms.\n  - It reports \"expected exactly one definition input for X, found N\", which covers both missing and duplicate inputs.\n  - It only appends errors and never writes the record, so it does not silently refresh snapshots. Snapshot changes are reported by the input validation.\n- **Marking.** The code that implements this behavior carries `{impl}` for the requirement: `referenced_terms`, `dependencies`, `direct_references`, `close_dependencies`, `validate_dependencies`, `update_inputs`, `validate_evidence_file` and the Rust comment scanner. The same dependency logic in `authoring/inputs.rs::definition_inputs` serves the separate `authoring_inputs` requirement and is marked for it, so it is not a gap here.\n\n## Tests\n\n- **Cycles and fixed point (tests/definitions.rs).** `cyclic_dependencies_are_captured_once_and_changes_require_review` uses an A↔B cycle and checks:\n  - exactly 3 inputs are recorded;\n  - re-capture leaves the record byte-identical;\n  - a change to a definition's phrase or body is reported as \"input text changed\" and the file is not modified by validation;\n  - a missing definition input reports \"found 0\" and a duplicate reports \"found 2\";\n  - re-capture repairs the record and sets the determination to false.\n- **Unresolved terms.** `definition_schema_deletion_and_literal_references_are_checked` checks the error for a deleted or unresolvable term. It also checks that literal, escaped and code-block references create no dependency.\n- **Reviewed inputs of different kinds.** `markdown_and_plain_text_inputs_contribute_their_term_references` and `outline_inputs_capture_terms_without_counting_them_as_citations` check that Markdown, plain-text and Rust-comment inputs contribute terms, and that transitive terms are captured and validated.\n- **Example subjects.** `example_subject_and_definition_display_use_the_same_dependencies` covers an example's subject text together with a requirements input.\n- **Markdown extension handling (src/terms.rs).** `term_dependencies_of_every_markdown_extension_skip_literal_roles` covers every Markdown extension, including mixed case, and the plain-text counterpart.\n- **Rust comment scanner (src/rust_coverage.rs).** `comment_scan_skips_string_and_character_literals` is a thorough table of cases: strings, raw strings, byte and C strings, character literals, lifetimes, nested block comments, and unterminated literals and comments.\n\nI found no unmarked implementation and no unspecified behavior in the marked code, and no FIXME-acknowledged gaps.",
-  "references": "073183428584c10b5e1c9beaa7238f8a38e431e20f164f1ddd362051ff20344e",
+  "rationale": "I found no gaps. One marking point is a judgment call (item 6 below).\n\n**Obligations and the code that carries them out**\n\n1. **A definition input for every term referenced by the subject text.**\n   - `terms::direct_references` (src/terms.rs) scans the subject text with `referenced_terms`.\n   - `validate_dependencies` is called from `validate_evidence_file` with the expected declaration text.\n   - Tests: `cyclic_dependencies_are_required_once_and_changes_require_review` (the rule text references `glossary.a`) and `example_subject_and_definition_display_use_the_same_dependencies` (the example's own term).\n2. **A definition input for every term referenced by reviewed inputs.** `direct_references` handles each input form:\n   - Requirements inputs: it scans the declaration bodies from `definition_blocks`.\n   - Rust outline inputs: it scans only comments, found by `rust_coverage::comments` with its helpers `quoted_end`, `char_end` and `raw_string_end`.\n   - Markdown and plain-text outline inputs: it uses the file's Markdown status to decide how to scan.\n   - Definition inputs: it adds the named definition itself.\n   - Literal and escaped references stay out.\n   - Tests:\n     - `markdown_and_plain_text_inputs_contribute_their_term_references` (Markdown paragraph and text line contribute; the code block does not, and a missing term is reported with \"found 0\").\n     - `outline_inputs_capture_terms_without_counting_them_as_citations` (a Rust comment reference).\n     - `term_dependencies_of_every_markdown_extension_skip_literal_roles` (every Markdown extension, and `.txt` is not Markdown).\n     - `comment_scan_skips_string_and_character_literals` (the Rust comment scanner).\n     - `definition_schema_deletion_and_literal_references_are_checked` (literal references need no inputs).\n3. **Repeated inclusion to a fixed point.** `close_dependencies` pops pending names and adds the terms referenced by each definition's body until none remain. Tested by the glossary chain in the cyclic test, where `glossary.b` is reached only through `glossary.a`.\n4. **Exactly one definition input per record.**\n   - `validate_dependencies` reports any required definition whose count is not 1 (\"expected exactly one definition input for X, found N\").\n   - The cyclic test covers both cases, with \"found 0\" after removing `glossary.b` and \"found 2\" after duplicating an input.\n5. **Cycles permitted, no repeated expansion or nontermination.**\n   - `close_dependencies` keeps a `visited` set, so each name is expanded once.\n   - The `glossary.a` and `glossary.b` fixture references each other, and validation terminates with no errors.\n6. **Validation reports missing required inputs.**\n   - `validate_dependencies` reports them, and also reports unresolvable terms (\"no matching named definition\").\n   - Tests: the \"found 0\" assertions above, and the deleted-glossary assertion in `definition_schema_deletion_and_literal_references_are_checked`.\n7. **No silent snapshot refresh.**\n   - Validation only pushes errors and never writes the record.\n   - The cyclic test asserts that the file bytes are unchanged after validation reports changed definition text.\n\n**Marking.** All the code above carries `{impl}` for the subject, and the tests carry `{test}`.\n\nThe authoring side (`definition_inputs` in src/authoring/inputs.rs, and `prepare`) is marked for `requirements.definitions.authoring_inputs`, not for this requirement. It only calls `terms::dependencies` and wraps each name as an input. The requirement that covers that behavior is `authoring_inputs`, so I did not count the missing marking as a gap. That is a judgment call.\n\n**Unspecified behavior.** The Rust comment scanner supports finding term references in reviewed Rust inputs, which falls within \"reviewed inputs\". The unresolved-term error is specified by `requirements.definitions.references`.",
+  "references": "3f9d646ab23a3366c3da0415d82e44682e9915b6ad37ccad0436cde10b95334b",
   "inputs": [
     {
       "requirements": "requirements.definitions.dependencies",
@@ -18,11 +18,6 @@
         "Validation MUST report missing required definition inputs and MUST NOT silently refresh snapshots.",
         ":::"
       ]
-    },
-    {
-      "file": "src/add_input.rs",
-      "item": "fn[update_inputs]",
-      "hash": "f52292ad7119fd0e7af60048f3e28ae8aa74fab808d14ea01bcd431923df7622"
     },
     {
       "file": "src/evidence.rs",
@@ -96,28 +91,33 @@
     },
     {
       "file": "tests/definitions.rs",
-      "item": "fn[cyclic_dependencies_are_captured_once_and_changes_require_review]",
-      "hash": "e8383a7b7d9006b90746474998c85fc30706986810369d4612e46c16c360614f"
+      "item": "fn[capture]",
+      "hash": "6e8f58bda2cfc28e5f1d69b8493d03e1b52f247e17ba7cd22ff5b0ced462b2ac"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[cyclic_dependencies_are_required_once_and_changes_require_review]",
+      "hash": "79ed604f373ea1f89b0c5fa8b03b442de23cdfdc29bb53e725138544095affa0"
     },
     {
       "file": "tests/definitions.rs",
       "item": "fn[markdown_and_plain_text_inputs_contribute_their_term_references]",
-      "hash": "2f68053776a1c3cf7da52c46fd96a43b80d2698e17a8ca218cb27c4cd8fe1751"
+      "hash": "81a43a0c4f65f863fa85603398e737c96e9b5dd89eb4ba509780ff1630f6aa0d"
     },
     {
       "file": "tests/definitions.rs",
       "item": "fn[outline_inputs_capture_terms_without_counting_them_as_citations]",
-      "hash": "f92f368c46a0c959eb5bae0e823c313badde42e78b1e045a5e80421a31db0f02"
+      "hash": "53dd18bacac5bf1addd83d1a4d08d822e7c650c1f380fbe172f093263510d32d"
     },
     {
       "file": "tests/definitions.rs",
       "item": "fn[definition_schema_deletion_and_literal_references_are_checked]",
-      "hash": "8ae4ea21d6333d2f0387bbde69364509558488d4672f0608a66b99709b8188e8"
+      "hash": "c58e035b585fb51c4a5f294e9e35cdc275e828b91c0fceab914b0bfe6c892f87"
     },
     {
       "file": "tests/definitions.rs",
       "item": "fn[example_subject_and_definition_display_use_the_same_dependencies]",
-      "hash": "8837e87dd6d9951838dd5e813079052e350aafc19fb79dca8e6243459e4e53be"
+      "hash": "2b918ac4ab16a82e0effa56f0d278c0c817b443d5556d0ef14f7d5c3885a967e"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -125,29 +125,93 @@
       "hash": "cd3f67cdd56cbd6d5733e8033921f0c837d23f6bd725097b44171ffe48a317ba"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "0c52830b423f401c96a00da36f12bc4109085ca4e58d26e68a6593f3be2ef698"
+      "file": "src/terms.rs",
+      "item": "mod[tests]",
+      "hash": "ca6b407a66154ba8111e1d5cf7973b5e03b13f7232baeaaac569ea80d2866ef6"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "0da87fa1fe0d0450960f73593af7dac0d8eb5dc057a1a376e731a70be84a8fba"
+      "file": "audits/requirement-rewordings/ci-references-definitions.md",
+      "item": "section[Requirement%20rewordings:%20ci,%20references,%20definitions]/section[Code%20fixes%20made%20instead%20of%20rewording]",
+      "hash": "947e56f596a9291d8f63f9be951cc0a9a1a61f83f6617e5774fe6d18fa4a2bd6"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[replace_definitions]",
-      "hash": "d6f8128ea3f877ee9614d552540b6574455baf37a11dd435f271ade95650ba00"
+      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
+      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.index.detail_format`]",
+      "hash": "1fea20fcc270ac6c30ee164cecdef15001848de2cae6274a86fe7a58438556de"
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[replace_inline_references]",
-      "hash": "6911063d11957b6a60f8c6be761507c9044c7566d9652204820729dff5a953cd"
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Evidence]",
+      "hash": "8b4f3cd6888926d1291d36a8d60392d88db5a26997e32b1a31639d57a8f59c40"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Request%20evidence%20inputs:%20`habeas`]",
+      "hash": "b9aec0604376cc3e223a5e1b340c8af0688165be60e7e223073372f4d24b1d2a"
+    },
+    {
+      "file": "md/requirements/ci.md",
+      "item": "section[CI%20and%20evidence%20validation]",
+      "hash": "49e24ceb6633270547f2920b00be97d377caff564c3b34fef37085c9e6663877"
     },
     {
       "file": "md/requirements/definitions.md",
       "item": "section[Named%20definitions]",
-      "hash": "8cef6918ef44a990f61f21a20fc52bcdf0eb03273f319b1583404d272817a5b1"
+      "hash": "2b12927ad04f3ff94c5a5668a10f2e20692a1dbd92b0ec5e08fe2a578c10ace1"
+    },
+    {
+      "file": "md/requirements/index/README.md",
+      "item": "section[Book%20rendering]",
+      "hash": "af89bf5460eb5b197e90801f0590717be42450d69b557859b8043a7d4262ab09"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "ce4d6656387118c7b5897a2ff840e7266d1400d714217e4121743c03034fb9c6"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_citation]",
+      "hash": "da1ac8c3f2775d444caef1f575a986564bbcd5936b7770e5e45248b423b2b9b8"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[additional_definitions]",
+      "hash": "e3388ed319591fc0df5b8e46fb83dff637a95befa4eff8d8e597d4410c6b963c"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
+      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
+      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "tests/definitions.rs",
+      "item": "fn[changed_definition_snapshots_show_a_compact_diff_and_text_is_required]",
+      "hash": "bfb91ac560812ebdb2b3c384b43d25c145bb3be619aa467b6490fca04c1f7a7a"
+    },
+    {
+      "definition": "requirements.ci.validation_error",
+      "text": [
+        ":::{definition} validation_error",
+        ":phrase: validation error",
+        "",
+        "One message in a repository validation report, describing a single failed check.",
+        "It begins with the affected evidence file, requirement, or source location, names",
+        "the failed check, and states the specific missing, invalid, or changed value,",
+        "with the expected value when available. It is concise because agents are its",
+        "primary readers.",
+        ":::"
+      ]
     },
     {
       "definition": "requirements.references.definition_selection",

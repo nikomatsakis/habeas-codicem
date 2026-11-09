@@ -1,7 +1,7 @@
 {
   "requirement": "By default, authoring MUST suppress per-subject `true` judgment lines and show\neach `false` judgment's subject and outcome on stderr, on both terminals and\nredirected output. Existing progress counters and completion summaries MUST remain\navailable; FIXME notices and authoring errors MUST remain visible. Single-subject\nauthoring MUST retain its subject, backend, model, evidence destination, and\nusage-record metadata.\n\n`-v` and `--verbose` MUST additionally show each false judgment's recorded Markdown\nrationale on stderr; rationales MUST be omitted by default. This applies to\nsingle-subject and batch authoring. It MUST\nNOT print true rationales or append recorded\ninput snapshots. Reporting MUST use the completed assessment's existing result,\nwithout additional inference. In `--stdout` mode, stdout MUST remain only the\nevidence JSON; verbose rationale and other diagnostics MUST go to stderr.\nVerbosity MUST NOT change persistence, validation, or exit-status rules.\n{cite}`requirements.authoring.invocation` {cite}`requirements.authoring.batch`",
   "determination": true,
-  "rationale": "**Verdict: the requirement is satisfied.** The implementation carries every obligation, and the tests cover the main points of the design space. I found no unacknowledged gaps.\n\n## Implementation\n\n**Single-subject path (`src/main.rs`, `fn main`, `Command::Author`, marked `{impl}`):**\n- A `true` judgment prints no judgment line. It prints only the summary `subject: backend / model`, plus `Evidence:` and `Usage:`. That keeps the subject, backend, model, evidence destination and usage-record metadata.\n- A `false` judgment prints `\"{subject}: false\"` with `eprintln!`, so it goes to stderr. This is unconditional, so it covers both terminals and redirected output.\n- With `-v` or `--verbose`, a `false` judgment also prints `outcome.rationale` to stderr. `Command::Author` declares `verbose` with `#[arg(short, long)]`, so both flag forms work.\n- `true` and FIXME rationales are never printed. Input snapshots are never printed. Only the final outcome is used.\n- A FIXME result appends \" — FIXME\" to the summary, so the notice stays visible. Errors propagate through `main`'s `Result`, so they stay visible too.\n- In `--stdout` mode the evidence JSON is the only thing written to stdout. In `configured_assessment` (`src/authoring/mod.rs`, around lines 378–425) the evidence JSON goes to stdout. `main` then sends the summary, `Evidence: stdout`, usage and any rationale to stderr.\n- `rationale` is copied from the already-validated evidence record (`evidence[\"rationale\"]`). Reporting therefore makes no extra inference.\n\n**Batch path (`src/authoring/progress.rs`, `src/authoring/batch.rs`):**\n- `BatchProgress::completed` counts every judgment kind. It prints a line only for FIXME (`subject: FIXME (usage: …)`) and for `false` (`subject: false (usage: …)`).\n- Only `false` lines get the rationale appended, and only when `self.verbose` is set. `true` prints nothing.\n- `failed` prints each authoring error.\n- `println` routes through `bar.println` on a terminal and through `eprintln!` otherwise, so output goes to stderr in both cases and stays readable above the progress bar.\n- The progress counters and the final `N authored; M unchanged; K failed` summary are kept. The `AuthoringOptions.verbose` flag is passed through and is `{impl}`-marked.\n- Verbosity affects only what is printed. It does not change persistence, the nonzero exit status on failures, or validation.\n\n**Marking:** every piece of code that implements the reporting behavior carries `{impl}` for this requirement: `main`, `BatchProgress::{completed, failed, println}`, `author_all_with_options` and `AuthoringOptions`. The only unmarked plumbing is the `rationale` field of `AuthoringOutcome`. That is a data carrier and already has an `{impl}` marker for `invocation`, so I don't count it as a gap.\n\n## Tests\n\n- **Batch, redirected stderr** (`batch_reports_false_rationales_only_when_verbose`): runs with and without `--verbose`. It asserts:\n  - there are no `true` lines;\n  - the `false` subject line is present;\n  - the false rationale appears only when verbose;\n  - the true rationale never appears;\n  - the FIXME notice and the authoring error are present;\n  - no recorded input source text appears;\n  - stdout holds only the summary.\n- **Batch, PTY** (`terminal_progress_distinguishes_judgments_from_authoring_errors`): checks that the counters and the `Finished` summary remain, that the `false` and FIXME lines and the error are shown, and that no `true` line or rationale is shown. It also checks that the evidence is persisted.\n- **Batch, PTY, verbose** (`verbose_false_rationale_is_readable_above_terminal_progress`): checks that the rationale is shown on a terminal and that `true` lines and input source text are absent.\n- **Batch failure** (`failed_assessment_keeps_other_results_and_reports_failure`): checks that errors are reported, other results are kept, and the exit status is nonzero.\n- **Single-subject** (`verbose_single_author_reports_only_false_rationale_without_source_inputs`): covers `false -v`, `false --verbose` and `true -v`. It checks that the rationale is printed only for `false`, never to stdout, that no `true` line appears, that no requirement or definition text or source text leaks, that `Evidence:` and `Usage:` are present, and that the evidence matches.\n- **Single-subject, default** (`false_is_a_completed_assessment`): checks that `subject: false` is on stderr, not on stdout, with no rationale by default. It also checks that the evidence is persisted and still rejected by validation.\n- **`--stdout`** (`stdout_emits_only_evidence_json_without_changing_project_files`): covers true, false and FIXME, both with and without verbose. It checks that stdout parses as pure evidence JSON, that stderr carries the metadata (`subject: ollama / model`, `Evidence: stdout`, `Usage:`), and that the rationale appears only for verbose `false`. It also checks that FIXME shows its notice, that no `true` line appears, and that the project files are unchanged.\n\nThese tests cover the default, verbose, terminal, redirected, stdout, FIXME, error, `false` and `true` cases. Persistence is checked too, since evidence and usage records are compared against the expected values.",
+  "rationale": "I found no gaps. Each obligation has code carrying an {impl} reference and a test that asserts its outcome.\n\n**Batch (`--all`) reporting**\n- **Suppressing `true` lines and showing `false` lines on stderr.** `BatchProgress::completed` in `src/authoring/progress.rs` prints nothing for `true`. For `false` it prints `\"<subject>: false (usage: …)\"` through `println`, which uses the progress bar or `eprintln!`. Tests:\n  - `batch_reports_false_rationales_only_when_verbose` covers redirected output.\n  - `terminal_progress_distinguishes_judgments_from_authoring_errors` covers a PTY.\n  - Both assert there is no `: true (usage:` line and that `requirements.alpha: false (usage:` appears.\n- **Progress counters and completion summaries remain.** The `BatchProgress` counters are untouched by the suppression. `main` still prints `\"N authored; M unchanged; K failed\"` on stdout. The PTY test asserts the `true`/`false`/`FIXME`/`errors` counts and `6/6 finished`. The other tests assert the stdout summary.\n- **FIXME notices and authoring errors stay visible.** `completed` prints `\"<subject>: FIXME (usage: …)\"`, and `failed` prints each error. The tests assert both `requirements.beta: FIXME` and `fixture model rejected`. `failed_assessment_keeps_other_results_and_reports_failure` also asserts the failing subject and error appear.\n- **`-v` shows `false` rationales only.** `completed` appends `assessment.rationale` only when `verbose` is set and the judgment is `False`. `batch_reports_false_rationales_only_when_verbose` runs both modes. It asserts the rationale appears exactly when verbose. It asserts the `true` rationale never appears. It asserts no source snapshot text such as `pub fn alpha()` appears. `verbose_false_rationale_is_readable_above_terminal_progress` covers the PTY case.\n- **Existing result, no extra inference.** `completed` reads the stored `AuthoringOutcome`. It makes no new calls.\n\n**Single-subject reporting** (`main`, `Command::Author`)\n- `main` prints `\"{subject}: false\"` to stderr only for a false judgment, and `-v` adds the rationale. `true` prints no per-subject line.\n- Backend, model, `Evidence:` and `Usage:` are still printed. The FIXME marker `— FIXME` is added to the summary.\n- The tests are `false_is_a_completed_assessment`, `verbose_single_author_reports_only_false_rationale_without_source_inputs` and `stdout_emits_only_evidence_json_without_changing_project_files`. Together they cover:\n  - `false` shown, `true` suppressed;\n  - rationale shown only for `false` with `-v` or `--verbose`;\n  - no `true` rationale, requirement text or source in the output;\n  - `Evidence:` and `Usage:` present.\n\n**`--stdout` mode.** `main` sends the summary to stderr when there is no evidence path. `stdout_emits_only_evidence_json_without_changing_project_files` parses stdout as JSON. It checks `Evidence: stdout` and the usage path on stderr. It covers verbose and non-verbose runs for true, false and FIXME judgments.\n\n**Verbosity does not change persistence, validation or exit status.** `verbose` only gates the rationale text. The verbose tests assert the same evidence, usage records and exit status as the non-verbose runs.\n\nNo unspecified behavior turned up in the `{impl}` code, and no {fixme} references are involved.",
   "references": "6926443c91f1e71ffd87cc40815bd8cb273f5a449fa89046c24e1924dcb8aa08",
   "inputs": [
     {
@@ -37,8 +37,9 @@
       ],
       "text": [
         ":::{req} invocation",
-        "`habeas author <full-name> [--config <name>] [--stdout] [-v|--verbose]` MUST assess one",
-        "existing requirement or named example in the current project. It MUST report the",
+        "`habeas author <full-name> [--config <name>] [--missing | --force] [--stdout] [-v|--verbose]`",
+        "MUST author the evidence of one existing requirement or named example in the",
+        "current project, under {cite}`requirements.authoring.refresh`. It MUST report the",
         "selected subject, backend, model, evidence destination, and usage-record path on",
         "completion. The evidence destination MUST identify the evidence-file path by",
         "default or stdout when `--stdout` is selected. In stdout mode, the completion",
@@ -54,16 +55,18 @@
       ],
       "text": [
         ":::{req} batch",
-        "`habeas author --all [--config <name>] [-v|--verbose]` MUST author every current requirement",
-        "and named example whose evidence is missing, stale, or invalid. It MUST preserve",
-        "current records without invoking a model for them, including accepted FIXME",
-        "judgments and current false judgments. A current false judgment is reassessed",
-        "only when its subject or inputs change, or when it is named explicitly with",
-        "{cite}`requirements.authoring.invocation`.",
-        "`--all` MUST be mutually exclusive with a subject name and `--stdout`.",
+        "`habeas author --all [--config <name>] [--missing | --force] [-v|--verbose]` MUST author",
+        "the evidence of every current requirement and named example, together with the",
+        "reviews {cite}`requirements.references.citation_review` and",
+        "{cite}`requirements.references.site_review` include, under",
+        "{cite}`requirements.authoring.refresh`.",
+        "`--all` MUST be mutually exclusive with a subject name and `--stdout`. It MUST",
+        "also delete each orphaned citation review under",
+        "{cite}`requirements.references.citation_review` and each orphaned site review",
+        "under {cite}`requirements.references.site_review`, and report each deletion; the",
+        "deletion MUST NOT require model configuration or credentials.",
         "Failure to discover declarations or to read, scan, or parse project sources MUST report an error,",
-        "not a successful empty batch. A batch with no assessments needed MUST succeed",
-        "without resolving model configuration or credentials.",
+        "not a successful empty batch.",
         "",
         "Each subject MUST receive an independent assessment with its own prompt, inputs,",
         "judgment, and usage record. The command MUST report aggregate completion and each",
@@ -117,12 +120,12 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
+      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[serve]",
-      "hash": "a8829d937f67ead439693b62e2396d1f1e9c83539b87414ed92aef23e4adf318"
+      "hash": "b3b7a12a0c91e4e95043fc6d37522946eeebbd44235a5a59690f2d441a26f690"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -152,7 +155,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[false_is_a_completed_assessment]",
-      "hash": "f4bc297166811ae55126fa690b8007e9808d10cc8568a3c74462fd20a8219e89"
+      "hash": "34cd092a09688bec63f9ad82fccb349f47019b57edd50981d42237f1725c165b"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -171,58 +174,8 @@
     },
     {
       "file": "src/authoring/progress.rs",
-      "item": "impl[BatchProgress]",
-      "hash": "65f6e2c698e4ecc5ac0c62154dfb0e66de8523b06aea74f27987fae7ad7aa950"
-    },
-    {
-      "file": "src/authoring/progress.rs",
       "item": "impl[BatchProgress]/fn[new]",
       "hash": "a6727f1556cf97a83cf5e7adfac2a451c2e80f81b0fa50691f36b6bf35008351"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "mod[tests]/fn[inspection_displays_counts_when_same_phase_discovers_its_total]",
-      "hash": "df7fac364f053515cca34e3fcc2ed30715cb50e32c9436ec5c934a6ab545476e"
-    },
-    {
-      "file": "src/commands.rs",
-      "item": "fn[status_markdown_with_options]",
-      "hash": "7c840acc6555a9ee932033adea2b093e737b1d56164c4d5c827bb14e52696b74"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "impl[FixmeSummary]/fn[add]",
-      "hash": "60511acf3a5fd02f8d220559be8fcc258715e89d87792d1af4331efe039106cd"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "impl[FixmeSummary]/fn[render]",
-      "hash": "00c57ac6eff00ba6181349d768dfdb8c96b93e0fbba63039aeba705430242268"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "mod[tests]/fn[strings]",
-      "hash": "f919b2b31dfc954aa970d26013ba00e7a43ba2cb3e35621502f7dfcb865b3222"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "mod[tests]/fn[verbose_groups]",
-      "hash": "6d6b22200cae6ce84618b4a88a14fbd4e40763cf2db444cca57fee8b9bfc41fc"
-    },
-    {
-      "file": "src/fixme.rs",
-      "item": "mod[tests]/fn[verbose_output_lists_each_judgment_under_every_group_it_belongs_to]",
-      "hash": "a8a7d4b2fd68ce8c8efce71b94a56c390abb3676423724c29b536e2ff3515c59"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "457d88e87ea6e8701cecd57a6df44b7064f6c55c32081a6d3cd82ab95ad780bc"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "b46bf303944bdc51833e0ada845245909dfd4e00937a0341d78d84f853d869cf"
     },
     {
       "file": "src/authoring/progress.rs",
@@ -230,154 +183,9 @@
       "hash": "56720666e3aab86b297346c445b58c918cf63414b3571b076b27c8b576f2ce08"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "const[REQUEST_TIMEOUT]",
-      "hash": "8a2b5ed06084d70442f4320890b2ececef5024114f5aa5eb18ca17cad82a5572"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "struct[AuthoringOutcome]",
-      "hash": "21026d66477d51fce2c68c14fabe2d88c76aa6ab167eb8ac590a08608e8e1a09"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "91b8abb2d031aba706e9031e447e3ca72800f3c04627a959a0c9f32f7b32d946"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "3b8b3aec7e741614c5864597673dbddd5718e23f570ee74f3213e9e5f317c1ec"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess_subject]",
-      "hash": "450b832f896651df6036bab9a4ef65b5df73ff2c153a94d5e212d6c8eb31eb17"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[favorability]",
-      "hash": "25c3afb8b8852be90a1f10894c962870b7ae0cd9f8e88d70b3529dc340cb963b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[initial_prompt]",
-      "hash": "46621901ed7c11cc91da93e80dcfdc052c104b12bdaf9a64d0f1c175e60f4c44"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[verification_prompt]",
-      "hash": "cc421162c4bdccf3981315ce83774047972c4fc346a3cc340f85bb0ad01c299d"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[submission]",
-      "hash": "3f4acd1d1c636179b58366914e69d8b699355c761c96b5b2842314d8d7da1860"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[verification]",
-      "hash": "51ef2dbf56dd310ab066afef6393cecbf528d7454655bfa90ee6c118ace75595"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[tool_definitions_with]",
-      "hash": "b5914d83fc7496395817b8c4860750745e4477db1b1f598fdb5e7b78c1696745"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[record]",
-      "hash": "0a005949d75be310771a207c2f340d09c147eee87c0fb4b4d0f88ad08bc6421b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "70212a0eb3b417cf27f2ae46ecfcda09be4504a1d065155a83c5358153d9811b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[verify]",
-      "hash": "699e7e136f69cef891a9e225c99c196d1e5a93976488f5ea99526b53e77debba"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[JudgmentProvider/CompletionProvider]/fn[complete]",
-      "hash": "a6fd62b403a44e80994835bb8e567c5cf017c7d49ff4f1ccfbba2efa5da696db"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
-      "hash": "65e0bd6b21ab68c0b385d63bd48f62a22116554cede6fffc0c63a1dd15402196"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[submissions_accept_exactly_a_judgment_and_a_nonempty_rationale]",
-      "hash": "75b3f1437a5e9b73d410f356ca62c9ea07f2521a2d107078bbdd4ade9af3c149"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[submit_judgment_advertises_exactly_the_three_outcome_shapes]",
-      "hash": "58ace83d49d13916950c8bb197401d0a46a66229a6d19f07c214950fe3dc9241"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[submit_judgment_is_advertised_with_exactly_its_two_fields]",
-      "hash": "7b8435480fdd91520136a3e9a4ca86364fda898740bce31ff468b33719761b20"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ScriptedProvider/CompletionProvider]",
-      "hash": "2461e47a38453d285e40c89c838448944cacbcd3f5836a9211d148979e08cf50"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[a_submission_finishes_the_assessment_wherever_it_arrives]",
-      "hash": "b5421960bc2d3e3308482c6e72a92d6841fc033381537dcc7f11caf641d7f357"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[RecordingProvider/CompletionProvider]",
-      "hash": "f4a25d7b4d5867ad8a6b995d7a9f2e4e9a0ebab2a8aad76db5f7d32670b3cf36"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[judgment]",
-      "hash": "cbea03643b8bd85ad6bc49e47ae46a30af1670546c6635b426473b8fce7a980b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[verdict]",
-      "hash": "5a36520a3b6b5ebb06eda01046f5b8f72871a79ffef035c1e29d649c2640e8dd"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[confirmed]",
-      "hash": "6f9debaffb229698e3a6807256655b99cc458eacdcf2a53f4ba497732feb245b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[without_confirm_or_after_a_false_judgment_one_assessment_is_recorded]",
-      "hash": "111841924669073135352a536615c9c79e3309ec17ea46b2b68695cb3890866a"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[agreeing_assessments_record_the_first]",
-      "hash": "da113370261b581f9a6ae0e7dc370f480903071d0b0d4177cbfff8e9cc8a73d9"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[disagreeing_assessments_verify_the_less_favorable_one]",
-      "hash": "2b254bc63ad57042331efec878d5911b8ff5771b6c86f9c2af913f983065dfc1"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[verifications_accept_exactly_a_boolean_and_a_nonempty_rationale]",
-      "hash": "8fe405ba4b95ce4bc61b524431183fe24ec7a97c1d0fc41d313867e449dfac85"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[placeholders_are_filled_in_one_pass]",
-      "hash": "c762ad2dc8aad9b47ccc0e035cfe950f53f1e5ec7f5ae344a5f320ebbb423a14"
+      "file": "src/authoring/progress.rs",
+      "item": "mod[tests]/fn[inspection_displays_counts_when_same_phase_discovers_its_total]",
+      "hash": "df7fac364f053515cca34e3fcc2ed30715cb50e32c9436ec5c934a6ab545476e"
     }
   ]
 }

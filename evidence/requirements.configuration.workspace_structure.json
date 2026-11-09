@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.\nIts supported feature tables are `[authoring]` and `[evidence]`; either MAY be\nabsent. Unknown keys, unsupported versions, and invalid field types MUST produce\na diagnostic identifying the file and setting. Invalid TOML, including content\nthat is not UTF-8, MUST produce a diagnostic identifying the file, with the line\nand column of a syntax error.\nFeatures MUST define their own data structures and loading rules under\n{cite}`requirements.configuration.feature_sections`. A file containing only\n`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table\ninside `book.toml`.",
-  "determination": true,
-  "rationale": "**Judgment:** the implementation satisfies `requirements.configuration.workspace_structure`, and the tests cover its main obligations and failure cases. I found a few small gaps in test depth, listed at the end. I judged none of them serious enough to fail the requirement.\n\n**Implementation (`src/config.rs`, `src/evidence.rs`, `src/main.rs`)**\n\n- **Struct and tables.** `WorkspaceConfig` has a `version: u32` field and optional `authoring` and `evidence` tables, with `deny_unknown_fields`. Either table may be absent. `to_toml` validates the config and then serializes it as TOML.\n- **Unsupported versions and unknown keys.** `validate_workspace_common` runs on every load path (`parse`, `load_workspace_config`, `workspace_document`). It requires `version` to be the integer 1, so `'1'`, `2` and a missing version all produce a diagnostic naming `version`. It also rejects any top-level key other than `version`, `authoring` or `evidence`.\n- **Invalid types and nested unknown keys.** `decode` and `decoded_setting` build the full setting path, for example `authoring.configs.cloud` or `evidence.unknown`. `invalid()` formats every diagnostic as `<file>: <setting>: <message>`.\n- **Further `[evidence]` and `[authoring]` checks.** `EvidenceConfig::validate` rejects empty or NUL-containing paths and reports the setting as `evidence.allow[0]`. `WorkspaceConfig::validate` checks authoring names and backends.\n- **Invalid TOML.** `parse_document` reports `invalid TOML syntax at line N, column M`, computed from the error span. The path is read with `fs::read_to_string`, and a non-UTF-8 file fails there with an error that includes the file path.\n- **Version-only file.** Optional fields and defaults make `version = 1` alone valid.\n- **`book.toml`.** `ProjectConfig::from_book_toml` returns `None` when there is no `[habeas]` table, so no table is required.\n- **Feature sections.** The authoring and evidence structs are separate and scoped to their own sections. `load_workspace_evidence` decodes only `[evidence]`. `requirements.configuration.feature_sections` is cited and implemented alongside this requirement.\n- **Marking.** All the relevant functions carry `{impl}` markers: `parse`, `to_toml`, `validate`, `validate_workspace_common`, `parse_document`, `decode`, `decoded_setting`, `invalid`, and the loaders. The call sites in `evidence.rs` and `main.rs` are marked too. I found no unmarked implementation code and no behavior outside what the requirement specifies.\n- **Evidence loader scope.** `load_workspace_evidence` deliberately does not validate unused `[authoring]` content. That follows the loading design; authoring content is validated when the authoring feature loads it.\n\n**Tests**\n\n- `workspace_diagnostics_identify_the_file_and_setting` (`tests/configuration.rs`) tests these cases through both `load_workspace_config` and `WorkspaceConfig::parse`. It asserts the `<file>: <setting>` prefix for each:\n  - a string version and an unsupported version;\n  - an unknown top-level key, an unknown `[authoring]` key, and an unknown `[evidence]` key;\n  - wrong field types in `[authoring]` and `[evidence]`;\n  - an empty evidence path (`evidence.allow[0]`).\n- The same test also checks:\n  - the evidence loader's own diagnostics;\n  - a non-UTF-8 file, which must name the file;\n  - a syntax error, which must name the file and report `line 2, column`.\n- Other tests:\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers the nearest-file round trip and a syntax error.\n  - `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` cover the evidence-only loading path.\n  - `status_loads_nearest_workspace_file_without_validating_authoring` covers the CLI behavior for invalid workspace files.\n  - `feature_sections_are_scoped_and_absent_sections_use_defaults` covers version-only validity, absent sections, and out-of-section keys.\n  - `absent_and_minimal_configuration_are_distinct_and_read_only` covers the missing `[habeas]` table in `book.toml`.\n\n**Minor gaps:** there is no explicit test for a missing `version`. The line/column test checks the `line 2, column` prefix but not the exact column value. These are small, and the code paths are simple and shared with the tested cases.",
+  "determination": false,
+  "rationale": "The code carries out every obligation in the text, but two tests that verify the subject have no `{test}` reference to it. That is a marking gap, and no `{fixme}` acknowledges it.\n\n**Obligations mapped to code**\n- **UTF-8 TOML with `version = 1`; `[authoring]` and `[evidence]` as the only tables, either optional.**\n  - `WorkspaceConfig` in `src/config.rs` has `deny_unknown_fields`, a `version` field, and `Option` fields for `authoring` and `evidence`.\n  - `to_toml` validates before serializing.\n  - Test: `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` serializes and re-parses a config.\n- **Unknown keys, unsupported versions and invalid field types give a diagnostic naming the file and setting.**\n  - Code: `validate_workspace_common`, `WorkspaceConfig::validate`, `decode`, `decoded_setting` and `invalid`.\n  - Tests: `workspace_diagnostics_identify_the_file_and_setting` (checks `file: setting` prefixes for all three failure kinds), `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials`, `validation_checks_workspace_common_config_without_loading_unused_authoring_settings`, and `status_loads_nearest_workspace_file_without_validating_authoring`.\n- **Invalid TOML or non-UTF-8 content gives a diagnostic naming the file, plus line and column for syntax errors.**\n  - `parse_document` adds \"at line L, column C\".\n  - The `read_to_string` error in `workspace_document` is prefixed with the path.\n  - Tests: `workspace_diagnostics_identify_the_file_and_setting` asserts \"invalid TOML syntax at line 2, column\" and file naming for a `\\xff` byte.\n- **Features define their own structures under `feature_sections`.** `load_workspace_evidence` decodes only `[evidence]`, and `validate_workspace_common` allows only the three root keys. This is cited and implemented, not reassessed here.\n- **A file containing only `version = 1` is valid.**\n  - Code: the validation path in `WorkspaceConfig::parse` and `load_workspace_config` accepts it.\n  - The test that verifies it is `feature_sections_are_scoped_and_absent_sections_use_defaults` in `tests/configuration.rs`, which parses `version = 1\\n` and loads evidence from it.\n  - That test carries only `{test}` references to `feature_sections`, `evidence_paths` and `structure`, not to `workspace_structure`.\n- **Settings do not require a `[habeas]` table in `book.toml`.**\n  - Code: `ProjectConfig::from_book_toml` returns `Ok(None)` when no `[habeas]` table is present.\n  - The test that verifies it is `absent_and_minimal_configuration_are_distinct_and_read_only` in `tests/configuration.rs`, which asserts `is_none()` for a book without `[habeas]`.\n  - That test carries only `{test}` references to `structure`, `loading` and `serialization`, not to `workspace_structure`.\n\n**Gap**\nTwo obligations are verified by existing tests that lack a `{test}` reference to `requirements.configuration.workspace_structure`:\n1. \"A file containing only `version = 1` MUST be valid\", verified in `feature_sections_are_scoped_and_absent_sections_use_defaults`.\n2. \"MUST NOT require a `[habeas]` table inside `book.toml`\", verified in `absent_and_minimal_configuration_are_distinct_and_read_only`.\n\nNone of the tests that do carry the subject reference assert either behavior. The task defines a verifying test without the reference as a marking gap. It is fixed by adding the references, with no code change.",
   "references": "1e2a70e536c30bdb29e8e3dae7ece68fb622d628716080cefa7018a4671661be",
   "inputs": [
     {
@@ -138,7 +138,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "ed93ceb1c2673832608ebb9c21db52ad64d8df15e8cb260122d457f829a0312a"
+      "hash": "1ffd2e6c8bbad64f3b44874450245174f06d388784057d3399ede7af487cb3d7"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -176,24 +176,19 @@
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[EvidenceConfig]",
-      "hash": "9d9a20fc5bf46f4dd4df1bd3ec079246bd73834ca09664e5b6037bd0fb73803f"
+      "file": "audits/requirement-rewordings/cli-configuration-integration.md",
+      "item": "section[Requirement%20rewordings:%20cli,%20configuration,%20integration,%20layout,%20index]/section[`requirements.configuration.workspace_structure`]",
+      "hash": "15bbc31dcd1cb1bb5efe385df1d80e5837a712cfb60d9fcb15b21da18d983b8b"
+    },
+    {
+      "file": "md/requirements/configuration.md",
+      "item": "section[Configuration]/section[Common%20data%20structures]",
+      "hash": "0d0dba477a5598f5006f2fc85d8b2dc04a06284fafebd14ef48c9ee398b3de7d"
     },
     {
       "file": "src/config.rs",
       "item": "impl[ProjectConfig]",
       "hash": "e9e434f684e79be2fd86de660957fc5b92c3e773253bf6266ca40588706112fa"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "use@e843693d3cbe",
-      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "use@ec3f2c37f86c",
-      "hash": "ec3f2c37f86c9ab66a39b1503bfbdfa2e740d1f22ddde13f9fab2a4f8bfdfa74"
     },
     {
       "file": "tests/configuration.rs",
@@ -214,6 +209,11 @@
       "file": "tests/configuration.rs",
       "item": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]",
       "hash": "dc081af3df89c9eea64bd1a339bc22ee8a83c6bdd2ccaac85987f6c65b68a8bd"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[documented_configuration_examples_are_complete_valid_files]",
+      "hash": "cd0e8bebfd41057de7b59d10037b63c7d726473ab25ff8cca2759fe0a1c600c9"
     },
     {
       "file": "tests/evidence_boundaries.rs",
