@@ -45,8 +45,11 @@ enum Command {
     // {impl}`requirements.authoring.batch`
     // `--config <name>` selects a configuration for this invocation.
     // {impl}`requirements.authoring.configuration_precedence`
-    // `--confirm` applies to a named subject or `--all`.
-    // {impl}`requirements.authoring.confirmation`
+    // `--missing` and `--force` choose which selected subjects are assessed;
+    // `--stdout` implies `--force`, so it excludes `--missing`.
+    // {impl}`requirements.authoring.refresh`
+    // `--policy <name>` selects the assessment policy for every form.
+    // {impl}`requirements.authoring.policy`
     #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
     Author {
         subject: Option<String>,
@@ -61,10 +64,18 @@ enum Command {
         /// Show the stored rationale for false judgments.
         #[arg(short, long)]
         verbose: bool,
-        /// Confirm true and FIXME results with an independent second
-        /// assessment, verifying the less favorable result when they disagree.
+        /// Assess only subjects whose evidence is missing, stale, or invalid
+        /// (the default).
+        #[arg(long, conflicts_with_all = ["force", "stdout"])]
+        missing: bool,
+        /// Assess every selected subject, including those with current evidence.
         #[arg(long)]
-        confirm: bool,
+        force: bool,
+        /// The assessment policy: `confirm` (the default) checks each true or
+        /// FIXME result in further independent conversations; `once` records a
+        /// single assessment.
+        #[arg(long, value_name = "name")]
+        policy: Option<habeas::config::AssessmentPolicy>,
     },
     #[command(hide = true)]
     Hook {
@@ -168,13 +179,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         // {impl}`requirements.authoring.read_denial`
         // {impl}`requirements.authoring.configuration_precedence`
         // {impl}`requirements.authoring.confirmation`
+        // {impl}`requirements.authoring.refresh`
+        // {impl}`requirements.authoring.policy`
         Command::Author {
             subject,
             all,
             config,
             stdout,
             verbose,
-            confirm,
+            missing: _,
+            force,
+            policy,
         } => {
             let root = setup::project_root()?;
             // Tokio's fixed worker pool is shared by all async assessments.
@@ -193,7 +208,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     )
                     .into());
                 }
-                let options = habeas::authoring::AuthoringOptions { verbose, confirm };
+                let options = habeas::authoring::AuthoringOptions {
+                    verbose,
+                    policy,
+                    force,
+                };
                 let outcome = match sites_of {
                     Some(requirement) => {
                         runtime.block_on(habeas::authoring::author_sites_with_options(
@@ -209,12 +228,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                         options,
                     ))?,
                 };
-                println!(
-                    "{} authored; {} unchanged; {} failed",
+                let mut summary = format!(
+                    "{} authored; {} skipped as current; {} failed",
                     outcome.completed.len(),
                     outcome.unchanged,
                     outcome.failures.len()
                 );
+                if let Some(policy) = outcome.policy {
+                    summary.push_str(&format!("; policy {policy}"));
+                }
+                println!("{summary}");
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
                         "evidence authoring failed for one or more subjects; see diagnostics above",
@@ -228,16 +251,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 habeas::authoring::EvidenceOutput::File
             };
+            let subject = subject.expect("clap requires a subject or --all");
             let outcome = runtime.block_on(habeas::authoring::author_evidence_with_options(
                 &root,
-                &subject.expect("clap requires a subject or --all"),
+                &subject,
                 config.as_deref(),
                 output,
-                habeas::authoring::AuthoringOptions { verbose, confirm },
+                habeas::authoring::AuthoringOptions {
+                    verbose,
+                    policy,
+                    force,
+                },
             ))?;
+            // Under `--missing`, a current record is kept without a model.
+            let Some(outcome) = outcome else {
+                println!(
+                    "{subject}: evidence is current; 1 skipped as current (use --force to reassess)"
+                );
+                return Ok(());
+            };
             let mut summary = format!(
-                "{}: {} / {}",
-                outcome.subject, outcome.backend, outcome.model,
+                "{}: {} / {}; policy {}",
+                outcome.subject, outcome.backend, outcome.model, outcome.policy,
             );
             if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {
                 summary.push_str(" — FIXME");

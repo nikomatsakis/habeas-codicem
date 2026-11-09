@@ -196,6 +196,58 @@ fn authoring_concurrency_defaults_overrides_and_invalid_values() {
     }
 }
 
+// {test}`requirements.authoring.policy`
+// {test}`requirements.authoring.configuration_structure`
+#[test]
+fn authoring_policy_defaults_to_confirm_and_round_trips() {
+    use habeas::config::AssessmentPolicy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let base = "version = 1\n[authoring.configs.model]\nbackend = 'ollama'\nmodel = 'm'\n";
+    let defaults = UserConfig::parse(base, &path).unwrap();
+    let resolved =
+        resolve_authoring_from(&path, Some(&defaults), dir.path(), Some("model")).unwrap();
+    assert_eq!(resolved.policy, None);
+    assert_eq!(resolved.effective_policy(None), AssessmentPolicy::Confirm);
+    assert_eq!(
+        resolved.effective_policy(Some(AssessmentPolicy::Once)),
+        AssessmentPolicy::Once
+    );
+    assert!(!defaults.to_toml().unwrap().contains("policy"));
+    for (name, policy) in [
+        ("confirm", AssessmentPolicy::Confirm),
+        ("once", AssessmentPolicy::Once),
+    ] {
+        let configured = UserConfig::parse(&format!("{base}policy = '{name}'\n"), &path).unwrap();
+        let resolved =
+            resolve_authoring_from(&path, Some(&configured), dir.path(), Some("model")).unwrap();
+        assert_eq!(resolved.policy, Some(policy));
+        assert_eq!(resolved.effective_policy(None), policy);
+        // `--policy` overrides the configuration.
+        let other = match policy {
+            AssessmentPolicy::Confirm => AssessmentPolicy::Once,
+            AssessmentPolicy::Once => AssessmentPolicy::Confirm,
+        };
+        assert_eq!(resolved.effective_policy(Some(other)), other);
+        let serialized = configured.to_toml().unwrap();
+        assert!(
+            serialized.contains(&format!("policy = \"{name}\"")),
+            "{serialized}"
+        );
+        assert_eq!(UserConfig::parse(&serialized, &path).unwrap(), configured);
+        assert_eq!(name.parse::<AssessmentPolicy>(), Ok(policy));
+        assert_eq!(policy.to_string(), name);
+    }
+    for invalid in ["'twice'", "'Confirm'", "true"] {
+        let error = UserConfig::parse(&format!("{base}policy = {invalid}\n"), &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("policy"), "{error}");
+    }
+    assert!("twice".parse::<AssessmentPolicy>().is_err());
+}
+
 // {test}`requirements.authoring.configuration_precedence`
 // {test}`requirements.authoring.configuration_storage`
 // {test}`requirements.authoring.rig_configuration_mapping`
@@ -1222,7 +1274,7 @@ fn authoring_documentation_shows_each_configuration_task() {
     let reference = section(
         "md/reference.md",
         "## Authoring evidence with a model",
-        "### Confirming assessments",
+        "### Assessment policy",
     );
 
     // Each example is a complete user or workspace file, and every placeholder

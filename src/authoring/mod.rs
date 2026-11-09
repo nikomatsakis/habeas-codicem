@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use crate::DefinitionKind;
-use crate::config::{self, BackendKind, ResolvedAuthoringConfig};
+use crate::config::{self, AssessmentPolicy, BackendKind, ResolvedAuthoringConfig};
 use crate::judgment::Judgment;
 use inputs::{AssessmentKind, AssessmentSources};
 use providers::{CompletionProvider, RigProvider};
@@ -40,15 +40,29 @@ pub struct AuthoringOutcome {
     pub usage_path: PathBuf,
     pub determination: Judgment,
     pub rationale: String,
+    /// The assessment policy the subject was assessed under.
+    // {impl}`requirements.authoring.policy`
+    pub policy: AssessmentPolicy,
 }
 
-// {impl}`requirements.authoring.reporting`
+/// The opening of the note a recorded rationale ends with when its
+/// assessments disagreed under the `confirm` policy.
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.cli.status`
+pub(crate) const DISAGREEMENT_NOTE: &str = "**Confirmation:** the assessments disagreed";
+
+// {impl}`requirements.authoring.reporting`
+// {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.refresh`
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuthoringOptions {
     pub verbose: bool,
-    /// Confirm `true` and FIXME results with a second assessment.
-    pub confirm: bool,
+    /// `--policy <name>`, overriding the configuration's `policy`.
+    pub policy: Option<AssessmentPolicy>,
+    /// `--force`: assess every selected subject, including current ones.
+    /// Otherwise (`--missing`), only subjects whose evidence is missing,
+    /// stale, or invalid are assessed.
+    pub force: bool,
 }
 
 // :::{impl} requirements.authoring.invocation
@@ -211,12 +225,15 @@ pub enum EvidenceOutput {
     Stdout,
 }
 
+/// Authors one subject's evidence file under `--missing`, returning `None`
+/// when its evidence is current.
 // {impl}`requirements.authoring.invocation`
+// {impl}`requirements.authoring.refresh`
 pub async fn author_evidence(
     root: &Path,
     subject: &str,
     selection: Option<&str>,
-) -> io::Result<AuthoringOutcome> {
+) -> io::Result<Option<AuthoringOutcome>> {
     author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await
 }
 
@@ -224,12 +241,13 @@ pub async fn author_evidence(
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.refresh`
 pub async fn author_evidence_with_output(
     root: &Path,
     subject: &str,
     selection: Option<&str>,
     output: EvidenceOutput,
-) -> io::Result<AuthoringOutcome> {
+) -> io::Result<Option<AuthoringOutcome>> {
     author_evidence_with_options(
         root,
         subject,
@@ -240,21 +258,28 @@ pub async fn author_evidence_with_output(
     .await
 }
 
-/// Assesses one subject, optionally confirming its result with further
-/// independent conversations.
+/// Assesses one subject under its assessment policy, returning `None`
+/// without resolving configuration or invoking a model when, under
+/// `--missing`, its evidence is current. `--stdout` implies `--force`.
 // {impl}`requirements.authoring.invocation`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.refresh`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
     selection: Option<&str>,
     output: EvidenceOutput,
     options: AuthoringOptions,
-) -> io::Result<AuthoringOutcome> {
+) -> io::Result<Option<AuthoringOutcome>> {
     let root = fs::canonicalize(root)?;
+    let force = options.force || matches!(output, EvidenceOutput::Stdout);
+    if !force && batch::subject_is_current(&root, &AuthoringSubject::parse(subject))? {
+        return Ok(None);
+    }
     let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, subject)?;
     usage.record.evidence_output = match output {
@@ -263,7 +288,7 @@ pub async fn author_evidence_with_options(
     };
     usage.save()?;
     let result = tokio::select! {
-        result = configured_assessment(&root, subject, selection, output, options.confirm, &mut usage) => result,
+        result = configured_assessment(&root, subject, selection, output, options.policy, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, "evidence authoring cancelled")),
@@ -290,7 +315,7 @@ pub async fn author_evidence_with_options(
             ),
         )
     })?;
-    result.map_err(|error| {
+    result.map(Some).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("{error}; usage: {}", usage.path.display()),
@@ -344,11 +369,12 @@ fn resolved_location(path: &Path) -> io::Result<PathBuf> {
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.concurrency`
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.policy`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
-    confirm: bool,
+    policy: AssessmentPolicy,
     mut cancellation: watch::Receiver<Option<&'static str>>,
 ) -> io::Result<PendingAssessment> {
     let root = fs::canonicalize(root)?;
@@ -362,7 +388,7 @@ pub(crate) async fn prepare_assessment(
                 cancellation.borrow().unwrap_or("evidence authoring cancelled"),
             ))
         }
-        result = configured_record(&root, subject, config, confirm, &mut usage) => result,
+        result = configured_record(&root, subject, config, policy, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, "evidence authoring cancelled")),
@@ -383,6 +409,7 @@ pub(crate) async fn prepare_assessment(
                     .as_str()
                     .expect("validated judgment rationale")
                     .to_owned(),
+                policy,
             };
             Ok(PendingAssessment {
                 subject: subject.clone(),
@@ -421,18 +448,20 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.authoring.persistence`
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.policy`
 async fn configured_assessment(
     root: &Path,
     subject: &str,
     selection: Option<&str>,
     output: EvidenceOutput,
-    confirm: bool,
+    policy: Option<AssessmentPolicy>,
     usage: &mut UsageLog,
 ) -> io::Result<AuthoringOutcome> {
     let config = config::resolve_authoring(root, selection)?;
+    let policy = config.effective_policy(policy);
     let parsed = AuthoringSubject::parse(subject);
     let (determination, evidence) =
-        configured_record(root, &parsed, &config, confirm, usage).await?;
+        configured_record(root, &parsed, &config, policy, usage).await?;
     let json = format!("{}\n", serde_json::to_string_pretty(&evidence)?);
     let evidence_path = match output {
         EvidenceOutput::File => {
@@ -461,6 +490,7 @@ async fn configured_assessment(
             .as_str()
             .expect("validated judgment rationale")
             .to_owned(),
+        policy,
     })
 }
 
@@ -473,11 +503,12 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.provider`
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.policy`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
-    confirm: bool,
+    policy: AssessmentPolicy,
     usage: &mut UsageLog,
 ) -> io::Result<(Judgment, Value)> {
     let model = config.model_ref();
@@ -487,6 +518,7 @@ async fn configured_record(
     };
     usage.record.backend = Some(backend.into());
     usage.record.model = Some(model.model.clone());
+    usage.record.policy = Some(policy.name());
     // Mandatory inputs are prepared, and an unreadable one reported, before
     // connecting to the provider.
     let sources = subject.sources(root)?;
@@ -500,10 +532,10 @@ async fn configured_record(
             ))
         })?;
     let state = usage_state_root(root)?;
-    assess_subject(&provider, root, &state, subject, sources, usage, confirm).await
+    assess_subject(&provider, root, &state, subject, sources, usage, policy).await
 }
 
-/// Assesses a subject and, with `confirm`, confirms a `true` or FIXME result
+/// Assesses a subject and, under the `confirm` policy, confirms a `true` or FIXME result
 /// in an independent second conversation, verifying the less favorable of
 /// disagreeing assessments in a third. Each conversation has its own usage
 /// record; `usage` is the first's.
@@ -512,6 +544,7 @@ async fn configured_record(
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.usage_inputs`
+// {impl}`requirements.authoring.policy`
 async fn assess_subject(
     provider: &impl CompletionProvider,
     root: &Path,
@@ -519,13 +552,14 @@ async fn assess_subject(
     subject: &AuthoringSubject,
     mut sources: AssessmentSources,
     usage: &mut UsageLog,
-    confirm: bool,
+    policy: AssessmentPolicy,
 ) -> io::Result<(Judgment, Value)> {
     usage.record.subject_kind = Some(sources.subject_kind.noun().into());
     usage.prepared("mandatory", sources.mandatory_inputs());
     usage.save()?;
     let first = assess(provider, &mut sources, usage).await?;
-    if !confirm || first.0 == Judgment::False {
+    // Under `once`, the single assessment is recorded.
+    if policy == AssessmentPolicy::Once || first.0 == Judgment::False {
         return Ok(first);
     }
     let mut log = followup_log(state, root, subject, usage, "second assessment")?;
@@ -601,7 +635,7 @@ async fn assess_subject(
         chosen.1["applies"] = Value::Bool(verified);
     }
     let note = format!(
-        "**Confirmation:** the assessments disagreed: the first determination was `{first_kind}` and an independent second assessment's was `{second_kind}`. A verifier checked the less favorable `{less_kind}` determination and {conclusion}, so `{}` is recorded.\n\nVerification:\n\n{}",
+        "{DISAGREEMENT_NOTE}: the first determination was `{first_kind}` and an independent second assessment's was `{second_kind}`. A verifier checked the less favorable `{less_kind}` determination and {conclusion}, so `{}` is recorded.\n\nVerification:\n\n{}",
         chosen.0.kind(),
         verification.rationale.trim()
     );
@@ -641,6 +675,7 @@ fn followup_log(
     let mut usage = UsageLog::start(state, root, &format!("{} ({purpose})", subject.label()))?;
     usage.record.backend = first.record.backend.clone();
     usage.record.model = first.record.model.clone();
+    usage.record.policy = first.record.policy;
     usage.record.evidence_output = first.record.evidence_output;
     Ok(usage)
 }
@@ -2165,7 +2200,11 @@ mod tests {
             &subject,
             sources,
             &mut usage,
-            confirm,
+            if confirm {
+                AssessmentPolicy::Confirm
+            } else {
+                AssessmentPolicy::Once
+            },
         )
         .await;
         usage.finish("completed").unwrap();
@@ -2548,7 +2587,7 @@ mod tests {
             &subject,
             sources,
             &mut usage,
-            true,
+            AssessmentPolicy::Confirm,
         )
         .await;
         (result, provider)

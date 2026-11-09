@@ -10,17 +10,22 @@ use super::{
     AuthoringOptions, AuthoringOutcome, AuthoringSubject, PendingAssessment, prepare_assessment,
 };
 use crate::DefinitionKind;
-use crate::config;
+use crate::config::{self, AssessmentPolicy};
 use crate::evidence::{InspectionProgress, RepositoryInspection, inspect_repository_with_progress};
 use crate::index::{EvidenceState, LoadedDetailEvidence};
 
 // {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.refresh`
+// {impl}`requirements.authoring.policy`
 pub struct BatchOutcome {
     pub completed: Vec<AuthoringOutcome>,
     pub failures: Vec<(String, String)>,
+    /// Selected subjects skipped because their evidence is current.
     pub unchanged: usize,
     /// Orphaned review files deleted, relative to the project.
     pub deleted: Vec<String>,
+    /// The policy assessments ran under, when any ran.
+    pub policy: Option<AssessmentPolicy>,
 }
 
 /// The inspection phase that selects definitions and citation reviews.
@@ -47,6 +52,8 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.refresh`
+// {impl}`requirements.authoring.policy`
 pub async fn author_all_with_options(
     root: &Path,
     selection: Option<&str>,
@@ -79,6 +86,8 @@ pub async fn author_sites_with_options(
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.references.site_review`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.refresh`
+// {impl}`requirements.authoring.policy`
 async fn run_batch(
     root: &Path,
     selection: Option<&str>,
@@ -112,22 +121,27 @@ async fn run_batch(
     for path in &deleted {
         progress.println(&format!("Deleted orphaned review {path}"));
     }
-    let (subjects, unchanged) = select_subjects(&root, &inspection, sites_of, &mut |update| {
-        progress.inspect(update)
-    });
+    let (subjects, unchanged) =
+        select_subjects(&root, &inspection, sites_of, options.force, &mut |update| {
+            progress.inspect(update)
+        });
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
         failures: Vec::new(),
         unchanged,
         deleted,
+        policy: None,
     };
+    // With nothing to assess, no configuration or credentials are resolved.
     if subjects.is_empty() {
         return Ok(outcome);
     }
     let config = config::resolve_authoring(&root, selection)?;
     let concurrency = config.effective_concurrency();
+    let policy = config.effective_policy(options.policy);
+    outcome.policy = Some(policy);
     progress.println(&format!(
-        "Authoring {} assessments with concurrency {concurrency}; {unchanged} current records unchanged",
+        "Authoring {} assessments under the {policy} policy with concurrency {concurrency}; {unchanged} current records skipped",
         subjects.len()
     ));
     progress.start(subjects.len());
@@ -155,8 +169,7 @@ async fn run_batch(
             let cancel = cancel.clone();
             tasks.spawn(async move {
                 let result =
-                    prepare_assessment(&root, &subject, &config, options.confirm, cancellation)
-                        .await;
+                    prepare_assessment(&root, &subject, &config, policy, cancellation).await;
                 if let Err(error) = &result {
                     cancel_on_error(&cancel, error);
                 }
@@ -274,18 +287,91 @@ fn delete_orphaned_reviews(
     Ok(deleted)
 }
 
+/// Whether a record is current: valid, an accepted FIXME, or a false
+/// judgment whose subject and inputs are unchanged.
+// {impl}`requirements.authoring.refresh`
+fn current(evidence: &LoadedDetailEvidence) -> bool {
+    matches!(
+        evidence.state(),
+        EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
+    )
+}
+
+/// Whether one named subject's evidence is current, so that `--missing`
+/// keeps it without resolving configuration. A subject naming no current
+/// definition, item, or site is not current; its assessment reports it.
+// {impl}`requirements.authoring.refresh`
+// {impl}`requirements.authoring.invocation`
+pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io::Result<bool> {
+    let mut inspection = crate::evidence::inspect_repository(root)?;
+    if !inspection.discovery_errors.is_empty() {
+        return Err(io::Error::other(inspection.discovery_errors.join("\n")));
+    }
+    // A FIXME record whose acknowledging issue closed is stale.
+    crate::github::add_issue_findings(&mut inspection, &crate::github::GithubIssues::from_env());
+    let path = match subject {
+        AuthoringSubject::Definition(name) => {
+            if inspection
+                .definitions
+                .get(name)
+                .is_none_or(|definition| definition.kind == DefinitionKind::Term)
+            {
+                return Ok(false);
+            }
+            format!("evidence/{name}.json")
+        }
+        AuthoringSubject::Citation { file, item } => {
+            let path = crate::citations::review_path(file, item);
+            let outlines = crate::inputs::OutlineCache::default();
+            let items = crate::citations::citation_items(
+                root,
+                &inspection.definitions,
+                &inspection.references,
+                &outlines,
+            );
+            if !items.values().any(|item| item.review_path() == path) {
+                return Ok(false);
+            }
+            path
+        }
+        AuthoringSubject::Site {
+            requirement,
+            file,
+            item,
+        } => {
+            let path = crate::sites::review_path(requirement, file, item);
+            if !inspection
+                .sites
+                .values()
+                .flatten()
+                .any(|site| site.review_path() == path)
+            {
+                return Ok(false);
+            }
+            path
+        }
+    };
+    Ok(current(&LoadedDetailEvidence::load_path(
+        root,
+        &path,
+        &inspection.report,
+    )))
+}
+
 /// Selects the definitions, citation reviews, and site reviews needing
 /// assessment, or with `sites_of` only that requirement's site reviews,
 /// counting current records as unchanged, and reports selection as one
-/// counted phase.
+/// counted phase. With `force`, every subject is selected.
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.references.site_review`
+// {impl}`requirements.authoring.refresh`
 fn select_subjects(
     root: &Path,
     inspection: &RepositoryInspection,
     sites_of: Option<&str>,
+    force: bool,
     progress: &mut dyn FnMut(InspectionProgress),
 ) -> (Vec<AuthoringSubject>, usize) {
     let mut subjects = Vec::new();
@@ -334,10 +420,7 @@ fn select_subjects(
         if definition.kind != DefinitionKind::Term {
             let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);
             // A current false judgment stays until its subject or inputs change.
-            if matches!(
-                evidence.state(),
-                EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
-            ) {
+            if !force && current(&evidence) {
                 unchanged += 1;
             } else {
                 subjects.push(AuthoringSubject::Definition(name.clone()));
@@ -348,10 +431,7 @@ fn select_subjects(
     for item in items.into_values() {
         let evidence =
             LoadedDetailEvidence::load_path(root, &item.review_path(), &inspection.report);
-        if matches!(
-            evidence.state(),
-            EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
-        ) {
+        if !force && current(&evidence) {
             unchanged += 1;
         } else {
             subjects.push(AuthoringSubject::Citation {
@@ -366,10 +446,7 @@ fn select_subjects(
     for site in sites {
         let evidence =
             LoadedDetailEvidence::load_path(root, &site.review_path(), &inspection.report);
-        if matches!(
-            evidence.state(),
-            EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
-        ) {
+        if !force && current(&evidence) {
             unchanged += 1;
         } else {
             subjects.push(AuthoringSubject::Site {
@@ -469,7 +546,9 @@ mod tests {
         let inspection = crate::evidence::inspect_repository(root).unwrap();
         let mut updates = Vec::new();
         let (subjects, unchanged) =
-            select_subjects(root, &inspection, None, &mut |update| updates.push(update));
+            select_subjects(root, &inspection, None, false, &mut |update| {
+                updates.push(update)
+            });
         assert_eq!(unchanged, 0);
         assert_eq!(
             subjects
@@ -517,7 +596,7 @@ mod tests {
                 .map(AuthoringSubject::label)
                 .collect::<Vec<_>>()
         };
-        let (subjects, unchanged) = select_subjects(root, &inspection, None, &mut |_| {});
+        let (subjects, unchanged) = select_subjects(root, &inspection, None, false, &mut |_| {});
         assert_eq!(
             labels(subjects),
             [
@@ -527,8 +606,13 @@ mod tests {
             ]
         );
         assert_eq!(unchanged, 1);
-        let (subjects, unchanged) =
-            select_subjects(root, &inspection, Some("requirements.rule"), &mut |_| {});
+        let (subjects, unchanged) = select_subjects(
+            root,
+            &inspection,
+            Some("requirements.rule"),
+            false,
+            &mut |_| {},
+        );
         assert_eq!(
             labels(subjects),
             [

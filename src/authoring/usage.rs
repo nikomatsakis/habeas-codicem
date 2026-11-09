@@ -22,6 +22,9 @@ pub(super) struct UsageRecord {
     pub subject_kind: Option<String>,
     pub backend: Option<String>,
     pub model: Option<String>,
+    /// The assessment policy, once a configuration is selected.
+    // {impl}`requirements.authoring.policy`
+    pub policy: Option<&'static str>,
     start_time_ms: u128,
     end_time_ms: Option<u128>,
     elapsed_ms: u128,
@@ -114,6 +117,7 @@ impl UsageLog {
                 subject_kind: None,
                 backend: None,
                 model: None,
+                policy: None,
                 start_time_ms,
                 end_time_ms: None,
                 elapsed_ms: 0,

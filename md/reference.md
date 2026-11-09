@@ -109,9 +109,22 @@ Habeas checks that every requirement and example has evidence, that every eviden
 ## Authoring evidence with a model
 
 `habeas author --all` fills in missing, stale, or invalid evidence for
-requirements and named examples. It preserves current records, including FIXME
-judgments and current false judgments. A false judgment is reassessed when its
-subject or inputs change, or when you name it with `habeas author <full-name>`.
+requirements and named examples, their citation reviews, and site reviews, and
+deletes orphaned citation and site reviews. Every `habeas author` form works this
+way by default (`--missing`): it preserves current records without contacting a
+model, including FIXME judgments and current false judgments, and reports how
+many selected subjects it skipped as current. When nothing needs assessment, it
+succeeds without reading model configuration or credentials. A false judgment is
+reassessed when its subject or inputs change. Add `--force` to reassess every
+selected subject, current or not; `--stdout` implies `--force`, and
+`--missing` and `--force` cannot be combined.
+{cite}`requirements.authoring.refresh`
+
+```sh
+habeas author --all --force
+habeas author requirements.check --force
+```
+
 Each assessment
 gets its own conversation and usage record. Successful results are kept if
 another assessment fails; the command reports failures and exits unsuccessfully.
@@ -421,25 +434,45 @@ book rendering remain deterministic and do not require model configuration or
 credentials. {cite}`requirements.authoring.usage_storage`
 {cite}`requirements.authoring.deterministic_validation`
 
-### Confirming assessments
+### Assessment policy
 
-Add `--confirm` to `habeas author <full-name>` or `habeas author --all` to check
-each `true` or FIXME result with an independent second assessment. When both
-assessments reach the same kind of outcome, the first is recorded. When they
-disagree, a third conversation verifies the less favorable one, where `false` is
-less favorable than FIXME and FIXME than `true`: the verifier receives the
-subject, its mandatory inputs, that assessment's rationale, and the source
-tools, and answers with `submit_verification`, `{"confirmed": true}` or
-`false` with a rationale. A confirmed result is recorded; otherwise the more
-favorable one is. Either way, the recorded rationale ends with a confirmation
-note stating that the assessments disagreed and what the verification
-concluded. Each conversation has its own usage record, whose subject names the
-second assessment or the verification. Without `--confirm`, each subject gets
-one assessment.
+Every `habeas author` form assesses its subjects under an assessment policy,
+`confirm` or `once`. `--policy <name>` selects it for one run; otherwise the
+selected configuration's `policy` applies, and otherwise `confirm`. This
+complete user `config.toml` sets `once` for a `local` configuration; replace
+`MODEL_TAG` with the exact Ollama model tag, and the same table can appear in a
+workspace `habeas.toml`:
+
+```toml
+version = 1
+
+[authoring.configs.local]
+backend = "ollama"
+model = "MODEL_TAG"
+policy = "once"
+```
+
+Under `confirm`, each `true` or FIXME result is checked with an independent
+second assessment. When both assessments reach the same kind of outcome, the
+first is recorded; site reviews that differ only in `applies` disagree. When
+they disagree, a third conversation verifies the less favorable one, where
+`false` is less favorable than FIXME and FIXME than `true`: the verifier
+receives the subject, its mandatory inputs, that assessment's rationale, and the
+source tools, and answers with `submit_verification`, saying whether its
+claimed gaps are real and whether `{fixme}` references acknowledge them. The
+recorded rationale then ends with a confirmation note stating that the
+assessments disagreed and what the verification concluded, and `habeas status`
+lists the record under "Disagreements". Each conversation has its own usage
+record, whose subject names the second assessment or the verification.
+
+Under `once`, each subject gets a single assessment, which uses fewer tokens and
+less time, such as with a slow local model. The completion report names the
+policy used, and each usage record identifies it in `policy`. An unknown policy
+name is rejected. {cite}`requirements.authoring.policy`
 
 ```sh
-habeas author --all --confirm
-habeas author requirements.check --confirm
+habeas author --all --policy once
+habeas author requirements.check --policy confirm
 ```
 
 A disagreement is a finding, not noise to retry away: the requirement, code, or
@@ -686,6 +719,14 @@ issue, compared exactly; any other string, such as a gap description, a bare
 `#N`, or an issue URL, counts as a gap without an issue. Groups with the most
 affected judgments come first.
 {cite}`requirements.cli.fixme_summary`
+
+Every form also lists, in a "Disagreements" section, each selected
+definition, citation review, and site review whose recorded rationale states
+that its assessments disagreed under the `confirm` policy. Validation accepts
+these records, so the section is where they stay visible for review. With a
+selection, a citation review is listed when one of its citations names a
+selected definition, and a site review when its requirement is selected.
+{cite}`requirements.cli.status`
 
 Use `--verbose` to list the actual judgments in each group, with their full names,
 kinds, and recorded FIXME strings. `--all` shows every matching definition and its

@@ -323,7 +323,7 @@ impl Fixture {
         fs::write(project.join("md/requirements.md"), ":::{req} alpha\nalpha MUST return one.\n:::\n\n:::{req} beta\nbeta MUST return two.\n:::\n\n:::{example} alpha_case\nCalling alpha returns one. CITE`requirements.alpha`\n:::\n\n:::{req} delta\ndelta MUST return four.\n:::\n\n:::{req} gamma\ngamma MUST return three.\n:::\n\n:::{example} gamma_case\nCalling gamma returns three. CITE`requirements.gamma`\n:::\n".replace("CITE", "{cite}")).unwrap();
         fs::write(project.join("src/lib.rs"), "// IMPL`requirements.alpha`\npub fn alpha() -> u8 { 1 }\n\n// IMPL`requirements.beta`\npub fn beta() -> u8 { 2 }\n\n// TEST`requirements.alpha_case`\n#[test]\nfn alpha_case() { assert_eq!(alpha(), 1); }\n\n// IMPL`requirements.gamma`\npub fn gamma() -> u8 { 3 }\n\n// IMPL`requirements.delta`\npub fn delta() -> u8 { 4 }\n\n// TEST`requirements.gamma_case`\n#[test]\nfn gamma_case() { assert_eq!(gamma(), 3); }\n".replace("IMPL", "{impl}").replace("TEST", "{test}")).unwrap();
         let mut config_text = format!(
-            "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\nbackend = 'ollama'\nmodel = 'fixture-model'\nendpoint = '{endpoint}'\n"
+            "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\npolicy = 'once'\nbackend = 'ollama'\nmodel = 'fixture-model'\nendpoint = '{endpoint}'\n"
         );
         if let Some(concurrency) = concurrency {
             config_text.push_str(&format!("concurrency = {concurrency}\n"));
@@ -558,7 +558,7 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
         );
         assert_eq!(
             String::from_utf8_lossy(&no_op_terminal.stdout).trim(),
-            "0 authored; 6 unchanged; 0 failed"
+            "0 authored; 6 skipped as current; 0 failed"
         );
         assert!(!String::from_utf8_lossy(&no_op_terminal.stderr).contains("0/0 finished"));
     }
@@ -584,7 +584,7 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     assert_eq!(fixture.usage().len(), 7);
     assert_eq!(
         String::from_utf8_lossy(&updated.stdout).trim(),
-        "1 authored; 5 unchanged; 0 failed"
+        "1 authored; 5 skipped as current; 0 failed; policy once"
     );
     assert_eq!(fixture.evidence("requirements.beta"), beta);
     assert_eq!(fixture.evidence("requirements.alpha_case"), example);
@@ -779,7 +779,10 @@ fn terminal_progress_distinguishes_judgments_from_authoring_errors() {
     assert!(!plain.contains("Fixture false rationale"), "{plain}");
     assert!(plain.contains("requirements.beta: FIXME"), "{plain}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "5 authored; 0 unchanged; 1 failed");
+    assert_eq!(
+        stdout.trim(),
+        "5 authored; 0 skipped as current; 1 failed; policy once"
+    );
     assert_eq!(
         fixture.evidence("requirements.alpha")["determination"],
         false
@@ -834,7 +837,7 @@ fn batch_reports_false_rationales_only_when_verbose() {
         assert!(!diagnostics.contains(&true_rationale), "{diagnostics}");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
-            "5 authored; 0 unchanged; 1 failed"
+            "5 authored; 0 skipped as current; 1 failed; policy once"
         );
     }
 }
@@ -863,7 +866,7 @@ fn verbose_false_rationale_is_readable_above_terminal_progress() {
     assert!(plain.contains("6/6 finished"), "{plain}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "5 authored; 0 unchanged; 1 failed"
+        "5 authored; 0 skipped as current; 1 failed; policy once"
     );
 }
 
@@ -880,13 +883,13 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains('\x1b'), "{stderr}");
     assert!(
-        stderr.contains("Authoring 6 assessments with concurrency 2"),
+        stderr.contains("Authoring 6 assessments under the once policy with concurrency 2"),
         "{stderr}"
     );
     assert!(!stderr.contains("6/6 finished"), "{stderr}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "6 authored; 0 unchanged; 0 failed"
+        "6 authored; 0 skipped as current; 0 failed; policy once"
     );
 }
 
@@ -1150,7 +1153,7 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     assert_eq!(server.subjects().len(), 6, "{:?}", server.subjects());
     assert_eq!(
         String::from_utf8_lossy(&current.stdout).trim(),
-        "0 authored; 6 unchanged; 0 failed"
+        "0 authored; 6 skipped as current; 0 failed"
     );
     assert_eq!(
         fs::read(fixture.project.join("evidence/requirements.alpha.json")).unwrap(),
@@ -1180,7 +1183,7 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     assert_eq!(subjects[6], "requirement requirements.gamma");
     assert_eq!(
         String::from_utf8_lossy(&stale.stdout).trim(),
-        "1 authored; 5 unchanged; 0 failed"
+        "1 authored; 5 skipped as current; 0 failed; policy once"
     );
     assert_eq!(
         fixture.evidence("requirements.gamma")["determination"],
@@ -1250,7 +1253,7 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     assert_eq!(subjects[6], "requirement requirements.delta");
     assert_eq!(
         String::from_utf8_lossy(&stale.stdout).trim(),
-        "1 authored; 5 unchanged; 0 failed"
+        "1 authored; 5 skipped as current; 0 failed; policy once"
     );
     assert_eq!(
         fixture.evidence("requirements.delta")["references"],
@@ -1540,7 +1543,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     let again = fixture.run(&["author", "--all"]);
     assert_eq!(
         String::from_utf8_lossy(&again.stdout).trim(),
-        "0 authored; 7 unchanged; 0 failed"
+        "0 authored; 7 skipped as current; 0 failed"
     );
     // A citation review can also be named on its own.
     let single = fixture.run(&["author", "citations:src/lib.rs#fn[helper]", "--stdout"]);
@@ -1559,7 +1562,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
 fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
-    let output = fixture.run(&["author", "requirements.alpha", "--confirm"]);
+    let output = fixture.run(&["author", "requirements.alpha", "--policy", "confirm"]);
     assert!(
         output.status.success(),
         "{}",
@@ -1600,7 +1603,7 @@ fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
 fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
-    let output = fixture.run(&["author", "--all", "--confirm"]);
+    let output = fixture.run(&["author", "--all", "--policy", "confirm"]);
     assert!(
         output.status.success(),
         "{}",
@@ -1625,6 +1628,225 @@ fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
         .count();
     assert_eq!(seconds * 2, subjects.len(), "{usage:?}");
     assert_eq!(usage.len(), subjects.len(), "{usage:?}");
+}
+
+/// Under `--missing`, the default, a named subject or `--all` keeps current
+/// records without a model or configuration; `--force` reassesses them, and
+/// `--stdout` implies it.
+// {test}`requirements.authoring.refresh`
+// {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.batch`
+#[test]
+fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let first = fixture.run(&["author", "--all"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(server.subjects().len(), 6);
+    let alpha = fixture.evidence("requirements.alpha");
+
+    // Without a usable configuration, current records are still kept: no
+    // configuration is resolved when nothing needs assessment.
+    fs::write(&fixture.config, "not toml [").unwrap();
+    for args in [
+        &["author", "requirements.alpha"][..],
+        &["author", "requirements.alpha", "--missing"],
+        &["author-evidence", "requirements.alpha_case"],
+    ] {
+        let output = fixture.run(args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            format!(
+                "{}: evidence is current; 1 skipped as current (use --force to reassess)",
+                args[1]
+            )
+        );
+    }
+    for args in [&["author", "--all"][..], &["author", "--all", "--missing"]] {
+        let output = fixture.run(args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "0 authored; 6 skipped as current; 0 failed"
+        );
+    }
+    assert_eq!(server.subjects().len(), 6, "no model was invoked");
+    assert_eq!(fixture.usage().len(), 6);
+    assert_eq!(fixture.evidence("requirements.alpha"), alpha);
+
+    // `--missing` and `--force` are mutually exclusive, and `--stdout`
+    // already implies `--force`.
+    for args in [
+        &["author", "requirements.alpha", "--missing", "--force"][..],
+        &["author", "--all", "--missing", "--force"],
+        &["author", "requirements.alpha", "--stdout", "--missing"],
+    ] {
+        let output = fixture.run(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(server.subjects().len(), 6);
+
+    fs::write(&fixture.config, &fixture.config_text).unwrap();
+    let forced = fixture.run(&["author", "requirements.alpha", "--force"]);
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    assert_eq!(
+        server.subjects().last().unwrap(),
+        "requirement requirements.alpha"
+    );
+    assert_eq!(server.subjects().len(), 7);
+    let stdout = fixture.run(&["author", "requirements.alpha", "--stdout"]);
+    assert!(
+        stdout.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stdout.stderr)
+    );
+    let printed: Value = serde_json::from_slice(&stdout.stdout).unwrap();
+    assert_eq!(printed["requirement"], alpha["requirement"]);
+    assert_eq!(server.subjects().len(), 8, "--stdout implies --force");
+    let all = fixture.run(&["author", "--all", "--force"]);
+    assert!(
+        all.status.success(),
+        "{}",
+        String::from_utf8_lossy(&all.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&all.stdout).trim(),
+        "6 authored; 0 skipped as current; 0 failed; policy once"
+    );
+    assert_eq!(server.subjects().len(), 14);
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+/// The policy comes from `--policy`, then the configuration's `policy`,
+/// then defaults to `confirm`; the report and every usage record name it,
+/// and an unknown name is rejected before any model request.
+// {test}`requirements.authoring.policy`
+// {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.authoring.confirmation`
+#[test]
+fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let unconfigured = fixture.config_text.replace("policy = 'once'\n", "");
+    let cases: [(&str, &[&str], &str, usize); 4] = [
+        (&unconfigured, &[], "confirm", 2),
+        (&unconfigured, &["--policy", "once"], "once", 1),
+        (
+            &fixture.config_text.replace("'once'", "'confirm'"),
+            &["--policy", "once"],
+            "once",
+            1,
+        ),
+        (&fixture.config_text, &[], "once", 1),
+    ];
+    let run_ids = || {
+        if fixture.state.exists() {
+            fixture
+                .usage()
+                .into_iter()
+                .map(|run| run["run_id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    };
+    for (config, policy, expected, conversations) in cases {
+        fs::write(&fixture.config, config).unwrap();
+        let before = server.subjects().len();
+        let earlier = run_ids();
+        let mut args = vec!["author", "requirements.alpha", "--force"];
+        args.extend_from_slice(policy);
+        let output = fixture.run(&args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("; policy {expected}")),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(server.subjects().len() - before, conversations, "{args:?}");
+        // Each conversation's usage record identifies the policy.
+        let usage = fixture
+            .usage()
+            .into_iter()
+            .filter(|run| !earlier.contains(&run["run_id"].as_str().unwrap().to_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(usage.len(), conversations, "{args:?}");
+        assert!(
+            usage.iter().all(|run| run["policy"] == expected),
+            "{args:?}: {usage:?}"
+        );
+    }
+    // The batch summary names the policy too.
+    fs::write(&fixture.config, &unconfigured).unwrap();
+    let batch = fixture.run(&["author", "--all", "--force", "--policy", "once"]);
+    assert_eq!(
+        String::from_utf8_lossy(&batch.stdout).trim(),
+        "6 authored; 0 skipped as current; 0 failed; policy once"
+    );
+
+    let before = server.subjects().len();
+    let flag = fixture.run(&[
+        "author",
+        "requirements.alpha",
+        "--force",
+        "--policy",
+        "twice",
+    ]);
+    assert!(!flag.status.success());
+    let stderr = String::from_utf8_lossy(&flag.stderr);
+    assert!(
+        stderr.contains("unknown assessment policy \"twice\""),
+        "{stderr}"
+    );
+    fs::write(
+        &fixture.config,
+        fixture.config_text.replace("'once'", "'twice'"),
+    )
+    .unwrap();
+    for args in [
+        &["author", "requirements.alpha", "--force"][..],
+        &["author", "--all", "--force"],
+    ] {
+        let output = fixture.run(args);
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&fixture.config.display().to_string()) && stderr.contains("policy"),
+            "{args:?}: {stderr}"
+        );
+    }
+    assert_eq!(
+        server.subjects().len(),
+        before,
+        "rejected before any request"
+    );
 }
 
 /// A local stand-in for the GitHub API serving one issue,

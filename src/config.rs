@@ -150,6 +150,9 @@ pub struct ProjectSelection {
 pub struct AuthoringConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<NonZeroUsize>,
+    // {impl}`requirements.authoring.policy`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<AssessmentPolicy>,
     #[serde(flatten)]
     pub backend: BackendConfig,
 }
@@ -212,6 +215,53 @@ pub enum OptionValue {
     Map(BTreeMap<String, OptionValue>),
 }
 
+/// How each subject is assessed: `confirm` checks a `true` or FIXME result
+/// with further independent conversations; `once` records a single
+/// assessment.
+// {impl}`requirements.authoring.configuration_structure`
+// {impl}`requirements.authoring.policy`
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AssessmentPolicy {
+    #[default]
+    Confirm,
+    Once,
+}
+
+impl AssessmentPolicy {
+    /// The policy's name, as written in TOML and on the command line.
+    // {impl}`requirements.authoring.policy`
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Confirm => "confirm",
+            Self::Once => "once",
+        }
+    }
+}
+
+impl std::str::FromStr for AssessmentPolicy {
+    type Err = String;
+
+    /// Parses `--policy <name>`, rejecting an unknown name.
+    // {impl}`requirements.authoring.policy`
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "confirm" => Ok(Self::Confirm),
+            "once" => Ok(Self::Once),
+            _ => Err(format!(
+                "unknown assessment policy {name:?}; expected \"confirm\" or \"once\""
+            )),
+        }
+    }
+}
+
+impl fmt::Display for AssessmentPolicy {
+    // {impl}`requirements.authoring.policy`
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
 // {impl}`requirements.authoring.configuration_structure`
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -236,6 +286,8 @@ pub struct ResolvedAuthoringConfig {
     pub project_root: PathBuf,
     pub name: String,
     pub concurrency: Option<NonZeroUsize>,
+    // {impl}`requirements.authoring.policy`
+    pub policy: Option<AssessmentPolicy>,
     pub backend: BackendConfig,
 }
 
@@ -606,6 +658,13 @@ impl ResolvedAuthoringConfig {
     // {impl}`requirements.authoring.configuration_structure`
     pub fn model_ref(&self) -> ModelRef {
         self.backend.model_ref()
+    }
+
+    /// The policy from `--policy` when given, otherwise from this
+    /// configuration, otherwise `confirm`.
+    // {impl}`requirements.authoring.policy`
+    pub fn effective_policy(&self, explicit: Option<AssessmentPolicy>) -> AssessmentPolicy {
+        explicit.or(self.policy).unwrap_or_default()
     }
 
     // {impl}`requirements.authoring.concurrency`
@@ -1033,6 +1092,7 @@ pub fn resolve_authoring_with_workspace_from(
         project_root,
         name: selected.to_owned(),
         concurrency: config.concurrency,
+        policy: config.policy,
         backend: config.backend.clone(),
     })
 }

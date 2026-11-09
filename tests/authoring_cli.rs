@@ -170,7 +170,7 @@ impl Fixture {
         let evidence = project.join(format!("evidence/{SUBJECT}.json"));
         fs::write(&evidence, &original).unwrap();
         fs::write(config.join("habeas/config.toml"), format!(
-            "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\nbackend = 'ollama'\nmodel = '{MODEL}'\nendpoint = '{endpoint}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n[authoring.configs.mock.options]\ntemperature = 0.25\nnum_ctx = 4096\nthink = false\n")).unwrap();
+            "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\npolicy = 'once'\nbackend = 'ollama'\nmodel = '{MODEL}'\nendpoint = '{endpoint}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n[authoring.configs.mock.options]\ntemperature = 0.25\nnum_ctx = 4096\nthink = false\n")).unwrap();
         Self {
             temp,
             project,
@@ -535,7 +535,7 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
     fs::write(
         &workspace,
         format!(
-            "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\nendpoint = '{}'\napi_key = 'WORKSPACE_LITERAL_KEY'\n",
+            "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\npolicy = 'once'\nbackend = 'ollama'\nmodel = 'workspace-model'\nendpoint = '{}'\napi_key = 'WORKSPACE_LITERAL_KEY'\n",
             server.endpoint
         ),
     )
@@ -1068,7 +1068,10 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
             Some(value) => command.env(variable, value),
             None => command.env_remove(variable).env_remove("HOME"),
         };
-        let output = command.args(["author", SUBJECT]).output().unwrap();
+        let output = command
+            .args(["author", SUBJECT, "--force"])
+            .output()
+            .unwrap();
         assert!(!output.status.success(), "{value:?}: {output:?}");
         assert!(!output.stderr.is_empty(), "{value:?}: {output:?}");
         assert!(output.stdout.is_empty(), "{value:?}: {output:?}");
@@ -1458,7 +1461,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         let aws_config = fixture.temp.path().join("aws-config");
         fs::write(&credentials, "[default]\naws_access_key_id = WRONG_DEFAULT_ACCESS_KEY\naws_secret_access_key = wrong-default-secret\n[habeas-test]\naws_access_key_id = FAKE_PROFILE_ACCESS_KEY\naws_secret_access_key = fake-profile-secret-for-local-test-only\n").unwrap();
         fs::write(&aws_config, "[profile habeas-test]\nregion = eu-west-1\n").unwrap();
-        fs::write(fixture.config.join("habeas/config.toml"), "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'fixture-bedrock-model'\naws_profile = 'habeas-test'\nregion = 'us-west-2'\n[authoring.configs.cloud.options]\ntemperature = 0.25\nmaxTokens = 321\ntopP = 0.75\nstopSequences = ['END']\ntop_k = 12\n").unwrap();
+        fs::write(fixture.config.join("habeas/config.toml"), "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\npolicy = 'once'\nbackend = 'bedrock'\nmodel = 'fixture-bedrock-model'\naws_profile = 'habeas-test'\nregion = 'us-west-2'\n[authoring.configs.cloud.options]\ntemperature = 0.25\nmaxTokens = 321\ntopP = 0.75\nstopSequences = ['END']\ntop_k = 12\n").unwrap();
         let mut command = fixture.command();
         for key in [
             "AWS_ACCESS_KEY_ID",
@@ -1700,7 +1703,7 @@ fn provider_rejection_of_inference_options_is_reported() {
     let fixture = Fixture::new("http://unused");
     fs::write(
         fixture.config.join("habeas/config.toml"),
-        "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\nregion = 'us-west-2'\n[authoring.configs.cloud.options]\ntemperature = 'hot'\n",
+        "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\npolicy = 'once'\nbackend = 'bedrock'\nmodel = 'm'\nregion = 'us-west-2'\n[authoring.configs.cloud.options]\ntemperature = 'hot'\n",
     )
     .unwrap();
     let output = fixture
@@ -1768,7 +1771,7 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
     fs::write(
         fixture.config.join("habeas/config.toml"),
         format!(
-            "version = 1\n[authoring]\ndefault = 'local'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = '{MODEL}'\nendpoint = '{}'\n",
+            "version = 1\n[authoring]\ndefault = 'local'\n[authoring.configs.local]\npolicy = 'once'\nbackend = 'ollama'\nmodel = '{MODEL}'\nendpoint = '{}'\n",
             server.endpoint
         ),
     )
@@ -1801,7 +1804,7 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
     let fixture = Fixture::new(&server.endpoint);
     fs::write(
         fixture.config.join("habeas/config.toml"),
-        "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'default-chain-model'\n",
+        "version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\npolicy = 'once'\nbackend = 'bedrock'\nmodel = 'default-chain-model'\n",
     )
     .unwrap();
     let mut command = fixture.command();
