@@ -567,7 +567,12 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
             continue;
         };
         for (reference, issues) in &fixmes {
-            if reference.name != *name || !reference.is_fixme_edge() {
+            // A `{fixme}` inside one of the requirement's sites belongs to
+            // that site's review.
+            if reference.name != *name
+                || !reference.is_fixme_edge()
+                || crate::sites::in_own_site(&root, &inspection.sites, reference)
+            {
                 continue;
             }
             let body = FixmeBody::parse(reference.commentary.as_deref().unwrap_or(""));
@@ -582,6 +587,41 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
                 if let Some(reason) = not_open(issue) {
                     findings.insert(format!(
                         "{relative}: stale: issue {issue}, named by the acknowledging {{fixme}} to {name} at {}:{}, {reason}; reassess the record",
+                        display_path(&root, &reference.file),
+                        reference.line
+                    ));
+                }
+            }
+        }
+    }
+    // A site review's FIXME record is stale when an issue a `{fixme}` inside
+    // the site names is closed or missing.
+    // {impl}`requirements.references.site_review`
+    for site in inspection.sites.values().flatten() {
+        let relative = site.review_path();
+        let fixme = fs::read_to_string(root.join(&relative))
+            .ok()
+            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+            .and_then(|value| {
+                crate::judgment::Judgment::from_value(value.get("determination")?).ok()
+            })
+            .is_some_and(|judgment| !judgment.fixme_entries().is_empty());
+        if !fixme {
+            continue;
+        }
+        for (reference, issues) in &fixmes {
+            if !site
+                .fixmes(&root, &inspection.references)
+                .iter()
+                .any(|inside| inside.file == reference.file && inside.line == reference.line)
+            {
+                continue;
+            }
+            for issue in issues {
+                if let Some(reason) = not_open(issue) {
+                    findings.insert(format!(
+                        "{relative}: stale: issue {issue}, named by the {{fixme}} to {} inside the site at {}:{}, {reason}; reassess the review",
+                        site.requirement,
                         display_path(&root, &reference.file),
                         reference.line
                     ));
@@ -793,6 +833,49 @@ mod tests {
             GithubIssues::with_api(other.endpoint.clone(), Some(cache.path().to_owned()), None);
         assert_eq!(moved.read("o/r#1"), IssueRead::Missing);
         assert_eq!(other.count(), 1);
+    }
+
+    // {test}`requirements.authoring.github_reads`
+    // {test}`requirements.references.site_review`
+    #[test]
+    fn a_closed_issue_of_a_fixme_inside_a_site_makes_only_its_site_review_stale() {
+        let github = FakeGithub::start(&[("/repos/o/r/issues/1", 200, issue("closed", ""))]);
+        let source = crate::sites::tests::SOURCE.replace(
+            "fn check_two() {}",
+            "fn check_two() {\n    // :::{fixme} requirements.rule\n    // :github: o/r#1\n    // Panics.\n    // :::\n}",
+        );
+        let temp = crate::sites::tests::project(crate::sites::tests::RULE, &source);
+        let root = temp.path();
+        crate::sites::tests::write_review(
+            root,
+            "fn[check_two]",
+            json!({"determination": {"FIXME": ["o/r#1"]}}),
+        );
+        fs::write(
+            root.join("evidence/requirements.rule.json"),
+            json!({"determination": {"FIXME": ["o/r#1"]}}).to_string(),
+        )
+        .unwrap();
+        let mut inspection = crate::evidence::inspect_repository(root).unwrap();
+        let before = inspection.report.errors.len();
+        add_issue_findings(
+            &mut inspection,
+            &GithubIssues::with_api(github.endpoint.clone(), None, None),
+        );
+        let added = inspection.report.errors[before..].to_vec();
+        let review = crate::sites::review_path("requirements.rule", "src/lib.rs", "fn[check_two]");
+        assert!(
+            added.contains(&format!(
+                "{review}: stale: issue o/r#1, named by the {{fixme}} to requirements.rule inside the site at src/lib.rs:3, is closed; reassess the review"
+            )),
+            "{added:#?}"
+        );
+        assert!(
+            !added
+                .iter()
+                .any(|error| error.starts_with("evidence/requirements.rule.json")),
+            "{added:#?}"
+        );
     }
 
     /// A project whose `{fixme}`s name `o/r#1` (closed), `o/r#2` (open),

@@ -8,7 +8,7 @@ mod providers;
 mod tools;
 mod usage;
 
-pub use batch::{BatchOutcome, author_all, author_all_with_options};
+pub use batch::{BatchOutcome, author_all, author_all_with_options, author_sites_with_options};
 
 use std::fs;
 use std::io::{self, Write};
@@ -56,11 +56,18 @@ pub struct AuthoringOptions {
 // command line: the subject the command assesses and reports.
 // :::
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.references.site_review`
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
     /// The citation review of one source item outside the book.
     Citation {
+        file: String,
+        item: String,
+    },
+    /// The review of one site of a distributed requirement.
+    Site {
+        requirement: String,
         file: String,
         item: String,
     },
@@ -70,9 +77,21 @@ impl AuthoringSubject {
     /// Parses a single-subject name: a full requirement or example name, or
     /// `citations:<file>#<selector>` for a citation review, where an omitted
     /// or empty selector names the file's root node.
+    /// `sites:<full-name>/<file>#<selector>` names a site review, where an
+    /// omitted selector names the file's root node.
     // {impl}`requirements.authoring.invocation`
     // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn parse(subject: &str) -> Self {
+        if let Some(rest) = subject.strip_prefix("sites:") {
+            let (requirement, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let (file, item) = path.split_once('#').unwrap_or((path, ""));
+            return Self::Site {
+                requirement: requirement.to_owned(),
+                file: file.to_owned(),
+                item: item.to_owned(),
+            };
+        }
         match subject.strip_prefix("citations:") {
             Some(rest) => {
                 let (file, item) = rest.split_once('#').unwrap_or((rest, ""));
@@ -88,30 +107,48 @@ impl AuthoringSubject {
     // {impl}`requirements.authoring.batch`
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Definition(name) => name.clone(),
             Self::Citation { file, item } => crate::citations::subject_label(file, item),
+            Self::Site {
+                requirement,
+                file,
+                item,
+            } => crate::sites::subject_label(requirement, file, item),
         }
     }
 
     /// Where the subject's record is written.
     // {impl}`requirements.authoring.persistence`
     // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn evidence_path(&self, root: &Path) -> PathBuf {
         match self {
             Self::Definition(name) => root.join("evidence").join(format!("{name}.json")),
             Self::Citation { file, item } => root.join(crate::citations::review_path(file, item)),
+            Self::Site {
+                requirement,
+                file,
+                item,
+            } => root.join(crate::sites::review_path(requirement, file, item)),
         }
     }
 
     /// Prepares the subject's sources and mandatory inputs.
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.references.citation_review`
+    // {impl}`requirements.references.site_review`
     fn sources(&self, root: &Path) -> io::Result<AssessmentSources> {
         match self {
             Self::Definition(name) => AssessmentSources::prepare(root, name),
             Self::Citation { file, item } => AssessmentSources::prepare_citation(root, file, item),
+            Self::Site {
+                requirement,
+                file,
+                item,
+            } => AssessmentSources::prepare_site(root, requirement, file, item),
         }
     }
 }
@@ -497,18 +534,24 @@ async fn assess_subject(
         Err(error) => Err(error),
     };
     let second = finish_followup(log, "second assessment", result)?;
-    if first.0.kind() == second.0.kind() {
+    // A site review's assessments also disagree when only `applies` differs.
+    let applies = |assessment: &(Judgment, Value)| assessment.1["applies"].as_bool();
+    if first.0.kind() == second.0.kind() && applies(&first) == applies(&second) {
         return Ok(first);
     }
-    let first_kind = first.0.kind();
-    let second_kind = second.0.kind();
-    let (less, more) = if favorability(&second.0) < favorability(&first.0) {
+    let describe = |assessment: &(Judgment, Value)| match applies(assessment) {
+        Some(applies) => format!("{}` with applies `{applies}", assessment.0.kind()),
+        None => assessment.0.kind().to_owned(),
+    };
+    let first_kind = describe(&first);
+    let second_kind = describe(&second);
+    let (less, more) = if favorability(&second) < favorability(&first) {
         (second, first)
     } else {
         (first, second)
     };
     let less_judgment = less.0.clone();
-    let less_kind = less.0.kind();
+    let less_kind = describe(&less);
     let less_rationale = less.1["rationale"].as_str().unwrap_or_default().to_owned();
     let mut log = followup_log(state, root, subject, usage, "verification")?;
     let result = match followup_sources(root, subject, &mut log) {
@@ -526,7 +569,20 @@ async fn assess_subject(
     };
     let verification = finish_followup(log, "verification", result)?;
     let (mut chosen, conclusion) = if !verification.real {
-        (more, "found none of its claimed gaps real")
+        // A verifier deciding `applies` otherwise than the more favorable
+        // assessment establishes `true` on its own rationale.
+        match verification.applies {
+            Some(verified) if applies(&more) != Some(verified) => {
+                let mut record = more.1;
+                record["determination"] = Judgment::True.to_value();
+                record["rationale"] = Value::String(verification.rationale.clone());
+                (
+                    (Judgment::True, record),
+                    "found none of its claimed gaps real and decided applies otherwise",
+                )
+            }
+            _ => (more, "found none of its claimed gaps real"),
+        }
     } else {
         let (judgment, conclusion) = if verification.acknowledged {
             (
@@ -540,6 +596,10 @@ async fn assess_subject(
         record["determination"] = judgment.to_value();
         ((judgment, record), conclusion)
     };
+    // A site review records the verifier's `applies`.
+    if let Some(verified) = verification.applies {
+        chosen.1["applies"] = Value::Bool(verified);
+    }
     let note = format!(
         "**Confirmation:** the assessments disagreed: the first determination was `{first_kind}` and an independent second assessment's was `{second_kind}`. A verifier checked the less favorable `{less_kind}` determination and {conclusion}, so `{}` is recorded.\n\nVerification:\n\n{}",
         chosen.0.kind(),
@@ -555,15 +615,17 @@ async fn assess_subject(
     Ok(chosen)
 }
 
-/// Orders determinations: `false` is less favorable than FIXME, and FIXME
-/// than `true`.
+/// Orders assessments: `false` is less favorable than FIXME, and FIXME
+/// than `true`; between site reviews with the same determination, the one
+/// with `applies` true is less favorable.
 // {impl}`requirements.authoring.confirmation`
-fn favorability(judgment: &Judgment) -> u8 {
-    match judgment {
+fn favorability(assessment: &(Judgment, Value)) -> (u8, bool) {
+    let kind = match assessment.0 {
         Judgment::False => 0,
         Judgment::Fixme(_) => 1,
         Judgment::True => 2,
-    }
+    };
+    (kind, assessment.1["applies"] == Value::Bool(false))
 }
 
 /// Starts the usage record of a further conversation about a subject.
@@ -647,6 +709,13 @@ fn shared_blocks() -> [(&'static str, &'static str); 3] {
     ]
 }
 
+/// The account of distributed requirements that the site prompt, the
+/// distributed task, and a site review's verifier receive.
+// {impl}`requirements.authoring.habeas_background`
+fn distributed_background() -> &'static str {
+    approved_text("habeas_background", 2)
+}
+
 /// Replaces `{{name}}` placeholders in one pass, so substituted text that
 /// itself contains a placeholder, such as a requirement quoting a template,
 /// is left as written.
@@ -679,8 +748,19 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 // {impl}`requirements.authoring.requirement_task`
 // {impl}`requirements.authoring.testing_bar`
 // {impl}`requirements.authoring.example_task`
-fn subject_task(kind: &DefinitionKind) -> String {
+// {impl}`requirements.authoring.distributed_task`
+// {impl}`requirements.authoring.habeas_background`
+fn subject_task(kind: &DefinitionKind, distributed: bool) -> String {
     match kind {
+        DefinitionKind::Requirement if distributed => format!(
+            "{}\n{}\n\n{}",
+            approved_text("requirement_task", 0),
+            approved_text("testing_bar", 0),
+            fill(
+                approved_text("distributed_task", 0),
+                &[("distributed_background", distributed_background())]
+            )
+        ),
         DefinitionKind::Requirement => format!(
             "{}\n{}",
             approved_text("requirement_task", 0),
@@ -702,13 +782,15 @@ fn subject_task(kind: &DefinitionKind) -> String {
 // {impl}`requirements.authoring.redaction`
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.site_prompt`
+// {impl}`requirements.authoring.habeas_background`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
-        AssessmentKind::Definition(kind) => {
-            let task = subject_task(kind);
+        AssessmentKind::Definition(kind, distributed) => {
+            let task = subject_task(kind, *distributed);
             values.extend([
                 ("subject_kind", sources.subject_kind.noun()),
                 ("subject_name", &sources.subject_name),
@@ -725,6 +807,17 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
             ]);
             fill(approved_text("citation_prompt", 0), &values)
         }
+        AssessmentKind::Site(site, _) => {
+            let matches = serde_json::to_string(&site.matches_value())?;
+            values.extend([
+                ("requirement_name", site.requirement.as_str()),
+                ("site_file", site.file.as_str()),
+                ("site_selector", site.selector_label()),
+                ("matches", &matches),
+                ("distributed_background", distributed_background()),
+            ]);
+            fill(approved_text("site_prompt", 0), &values)
+        }
     })
 }
 
@@ -740,33 +833,54 @@ fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
 }
 
 /// The criteria an assessment applied, for its verifier: its task section
-/// after the first paragraph, then its "Your task" section.
+/// after the first paragraph, then, for a site review, the account of
+/// distributed requirements, and then its "Your task" section.
 // {impl}`requirements.authoring.verifier_prompt`
-fn review_instructions(prompt: &str) -> String {
+// {impl}`requirements.authoring.habeas_background`
+fn review_instructions(prompt: &str, site: bool) -> String {
     let task = prompt_section(prompt, "Task");
     let named = task.split_once("\n\n").map_or("", |(_, rest)| rest);
-    format!("{named}\n\n{}", prompt_section(prompt, "Your task"))
+    let background = if site {
+        format!("{}\n\n", distributed_background())
+    } else {
+        String::new()
+    };
+    format!(
+        "{named}\n\n{background}{}",
+        prompt_section(prompt, "Your task")
+    )
 }
+
+/// The verifier's added step for a site review.
+// {impl}`requirements.authoring.verifier_prompt`
+const SITE_STEP: &str = "4. Also set applies to whether the requirement governs the site, as the reviewer's step 1 decides it; if it does not, set real to false.";
 
 /// The verifier's prompt for a determination and its rationale.
 // {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.habeas_background`
 fn verification_prompt(
     sources: &AssessmentSources,
     determination: &Judgment,
     rationale: &str,
 ) -> io::Result<String> {
-    let instructions = review_instructions(&initial_prompt(sources)?);
+    let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
+    let instructions = review_instructions(&initial_prompt(sources)?, site);
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let determination = determination.to_value().to_string();
     let mut values = shared_blocks().to_vec();
+    if site {
+        // A site review's verifier gets no reference roles.
+        values.retain(|(name, _)| *name != "reference_roles");
+        values.push(("reference_roles", ""));
+    }
     values.extend([
         ("subject_kind", sources.subject_kind.noun()),
         ("subject_name", sources.subject_name.as_str()),
         ("determination", &determination),
         ("rationale", rationale.trim()),
         ("review_instructions", &instructions),
-        ("site_step", ""),
+        ("site_step", if site { SITE_STEP } else { "" }),
         ("mandatory_inputs", &mandatory),
     ]);
     Ok(fill(approved_text("verifier_prompt", 0), &values))
@@ -793,7 +907,34 @@ fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     Ok((judgment, rationale.to_owned()))
 }
 
-/// A verifier's findings about the claimed gaps of an assessment.
+/// A submitted site review: its judgment, rationale, and `applies`.
+/// `applies` false requires a `true` determination.
+// {impl}`requirements.authoring.site_prompt`
+fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| io::Error::other("submit_judgment expects an object"))?;
+    if object.len() != 3 || !object.contains_key("applies") {
+        return Err(io::Error::other(
+            "submit_judgment requires exactly applies, determination, and rationale",
+        ));
+    }
+    let applies = object["applies"]
+        .as_bool()
+        .ok_or_else(|| io::Error::other("submit_judgment applies must be a boolean"))?;
+    let mut rest = object.clone();
+    rest.remove("applies");
+    let (judgment, rationale) = submission(&Value::Object(rest))?;
+    if !applies && judgment != Judgment::True {
+        return Err(io::Error::other(
+            "submit_judgment determination must be true when applies is false",
+        ));
+    }
+    Ok((judgment, rationale, applies))
+}
+
+/// A verifier's findings about the claimed gaps of an assessment, and, for a
+/// site review, whether the requirement applies to the site.
 // {impl}`requirements.authoring.verifier_prompt`
 #[derive(Debug, PartialEq)]
 struct Verification {
@@ -801,6 +942,7 @@ struct Verification {
     acknowledged: bool,
     acknowledgments: Vec<String>,
     rationale: String,
+    applies: Option<bool>,
 }
 
 /// Parses a `submit_verification` call: exactly booleans `real` and
@@ -852,7 +994,34 @@ fn verification(arguments: &Value) -> io::Result<Verification> {
         acknowledged,
         acknowledgments,
         rationale: rationale.to_owned(),
+        applies: None,
     })
+}
+
+/// Parses a site review's `submit_verification` call: the four fields and a
+/// boolean `applies`; `applies` false with `real` true is invalid.
+// {impl}`requirements.authoring.verifier_prompt`
+// {impl}`requirements.authoring.verifier_outcome`
+fn site_verification(arguments: &Value) -> io::Result<Verification> {
+    let invalid = |message: &str| io::Error::other(format!("submit_verification {message}"));
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| invalid("expects an object"))?;
+    let applies = object
+        .get("applies")
+        .ok_or_else(|| {
+            invalid("requires exactly real, acknowledged, acknowledgments, rationale, and applies")
+        })?
+        .as_bool()
+        .ok_or_else(|| invalid("applies must be a boolean"))?;
+    let mut rest = object.clone();
+    rest.remove("applies");
+    let mut verification = verification(&Value::Object(rest))?;
+    if !applies && verification.real {
+        return Err(invalid("real must be false when applies is false"));
+    }
+    verification.applies = Some(applies);
+    Ok(verification)
 }
 
 /// The source tools and one submission tool.
@@ -860,22 +1029,33 @@ fn verification(arguments: &Value) -> io::Result<Verification> {
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.authoring.verifier_prompt`
-fn tool_definitions_with(submit: &str) -> io::Result<Vec<ToolDefinition>> {
+// {impl}`requirements.authoring.site_prompt`
+fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
-    if submit == "submit_verification" {
-        definitions.push(json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
+    let mut submission = if submit == "submit_verification" {
+        json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
             "parameters": {"type":"object", "additionalProperties": false, "required":["real","acknowledged","acknowledgments","rationale"], "properties": {
                 "real":{"type":"boolean"},
                 "acknowledged":{"type":"boolean"},
                 "acknowledgments":{"type":"array","items":{"type":"string","minLength":1}},
-                "rationale":{"type":"string","minLength":1}}}}));
+                "rationale":{"type":"string","minLength":1}}}})
     } else {
         let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
-        definitions.push(json!({"name": "submit_judgment", "description": "Submit your final judgment exactly once. No other message supplies the result.",
+        json!({"name": "submit_judgment", "description": "Submit your final judgment exactly once. No other message supplies the result.",
             "parameters": {"type":"object", "additionalProperties": false, "required":["determination","rationale"], "properties": {
                 "determination": determination,
-                "rationale":{"type":"string","minLength":1}}}}));
+                "rationale":{"type":"string","minLength":1}}}})
+    };
+    // A site review also records whether the requirement applies.
+    if site {
+        let parameters = &mut submission["parameters"];
+        parameters["properties"]["applies"] = json!({"type": "boolean"});
+        parameters["required"]
+            .as_array_mut()
+            .expect("required fields")
+            .push(json!("applies"));
     }
+    definitions.push(submission);
     definitions
         .into_iter()
         .map(|value| serde_json::from_value(value).map_err(io::Error::other))
@@ -887,7 +1067,7 @@ fn tool_definitions_with(submit: &str) -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.ci.outcomes`
 #[cfg(test)]
 fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
-    tool_definitions_with("submit_judgment")
+    tool_definitions_with("submit_judgment", false)
 }
 
 /// The record a judgment produces: definition evidence, or a citation
@@ -896,9 +1076,21 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.references.citation_review`
-fn record(sources: &AssessmentSources, judgment: &Judgment, rationale: &str) -> Value {
+// {impl}`requirements.references.site_review`
+fn record(
+    sources: &AssessmentSources,
+    judgment: &Judgment,
+    rationale: &str,
+    applies: Option<bool>,
+) -> Value {
     match &sources.subject_kind {
-        AssessmentKind::Definition(kind) => json!({kind.noun(): sources.subject_text,
+        AssessmentKind::Site(site, fixmes) => json!({"requirement": site.requirement,
+            "file": site.file, "item": site.item, "queries": site.queries(),
+            "applies": applies.unwrap_or(true),
+            "fixmes": fixmes.iter().map(crate::sites::SiteFixme::to_value).collect::<Vec<_>>(),
+            "determination": judgment.to_value(), "rationale": rationale,
+            "inputs": sources.recorded_inputs()}),
+        AssessmentKind::Definition(kind, _) => json!({kind.noun(): sources.subject_text,
             "determination": judgment.to_value(), "rationale": rationale,
             "references": sources.reference_set, "inputs": sources.recorded_inputs()}),
         AssessmentKind::Citation(item) => json!({"file": item.file, "item": item.item,
@@ -921,18 +1113,33 @@ async fn assess(
     usage: &mut UsageLog,
 ) -> io::Result<(Judgment, Value)> {
     let prompt = initial_prompt(sources)?;
-    let (judgment, rationale) = converse(
-        provider,
-        sources,
-        usage,
-        prompt,
-        "submit_judgment",
-        submission,
-    )
-    .await?;
+    let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
+    let (judgment, rationale, applies) = if site {
+        let (judgment, rationale, applies) = converse(
+            provider,
+            sources,
+            usage,
+            prompt,
+            ("submit_judgment", true),
+            site_submission,
+        )
+        .await?;
+        (judgment, rationale, Some(applies))
+    } else {
+        let (judgment, rationale) = converse(
+            provider,
+            sources,
+            usage,
+            prompt,
+            ("submit_judgment", false),
+            submission,
+        )
+        .await?;
+        (judgment, rationale, None)
+    };
     usage.record.determination = Some(judgment.kind().into());
     usage.save()?;
-    let evidence = record(sources, &judgment, &rationale);
+    let evidence = record(sources, &judgment, &rationale, applies);
     Ok((judgment, evidence))
 }
 
@@ -948,13 +1155,18 @@ async fn verify(
     rationale: &str,
 ) -> io::Result<Verification> {
     let prompt = verification_prompt(sources, determination, rationale)?;
+    let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
     converse(
         provider,
         sources,
         usage,
         prompt,
-        "submit_verification",
-        verification,
+        ("submit_verification", site),
+        if site {
+            site_verification
+        } else {
+            verification
+        },
     )
     .await
 }
@@ -984,11 +1196,11 @@ async fn converse<T>(
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     prompt: String,
-    submit: &str,
+    (submit, site): (&str, bool),
     parse: impl Fn(&Value) -> io::Result<T>,
 ) -> io::Result<T> {
     let mut request = CompletionRequest::new(prompt);
-    request.tools = tool_definitions_with(submit)?;
+    request.tools = tool_definitions_with(submit, site)?;
     let mut pending = sources.mandatory_inputs().to_vec();
     let mut backoff = providers::ProviderBackoff::default();
     loop {
@@ -1324,6 +1536,7 @@ mod tests {
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.examples.evidence`
+    // {test}`requirements.authoring.habeas_background`
     #[test]
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
@@ -1352,6 +1565,8 @@ mod tests {
             approved_text("testing_bar", 0)
         )));
         assert!(!prompt.contains(approved_text("example_task", 0)));
+        assert!(!prompt.contains("This subject is a distributed requirement."));
+        assert!(!prompt.contains(distributed_background()));
         assert!(!prompt.contains("{{"), "{prompt}");
 
         // An example's task replaces the requirement task.
@@ -2130,6 +2345,7 @@ mod tests {
                 acknowledged: true,
                 acknowledgments: vec!["example/queue#1".into()],
                 rationale: "Checked.".into(),
+                applies: None,
             }
         );
         assert!(
@@ -2151,7 +2367,8 @@ mod tests {
             assert!(verification(&arguments).is_err(), "accepted {arguments}");
         }
         let definitions =
-            serde_json::to_value(tool_definitions_with("submit_verification").unwrap()).unwrap();
+            serde_json::to_value(tool_definitions_with("submit_verification", false).unwrap())
+                .unwrap();
         let submit = definitions
             .as_array()
             .unwrap()
@@ -2282,5 +2499,332 @@ mod tests {
             "{prompt}"
         );
         assert!(!prompt.contains("{{"), "{prompt}");
+    }
+
+    // {test}`requirements.authoring.distributed_task`
+    // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.authoring.initial_prompt`
+    #[test]
+    fn a_distributed_requirement_task_continues_with_the_filled_distributed_task() {
+        let project =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let sources = AssessmentSources::prepare(project.path(), "requirements.rule").unwrap();
+        let prompt = initial_prompt(&sources).unwrap();
+        let task = fill(
+            approved_text("distributed_task", 0),
+            &[("distributed_background", distributed_background())],
+        );
+        assert!(task.starts_with(distributed_background()), "{task}");
+        assert!(
+            prompt.contains(&format!(
+                "{}\n{}\n\n{task}",
+                approved_text("requirement_task", 0),
+                approved_text("testing_bar", 0)
+            )),
+            "{prompt}"
+        );
+        assert!(prompt.contains(approved_text("habeas_background", 1)));
+        assert!(!prompt.contains("{{"), "{prompt}");
+    }
+
+    /// Runs the review of site `fn[check_one]` of `requirements.rule` with
+    /// `turns`, returning the outcome and the provider.
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.references.site_review`
+    async fn site_confirmed(
+        turns: Vec<(&'static str, Value)>,
+    ) -> (io::Result<(Judgment, Value)>, RecordingProvider) {
+        let project =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let state = tempfile::tempdir().unwrap();
+        let subject = AuthoringSubject::parse("sites:requirements.rule/src/lib.rs#fn[check_one]");
+        let sources = subject.sources(project.path()).unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(turns);
+        let result = assess_subject(
+            &provider,
+            project.path(),
+            state.path(),
+            &subject,
+            sources,
+            &mut usage,
+            true,
+        )
+        .await;
+        (result, provider)
+    }
+
+    // {test}`requirements.authoring.site_prompt`
+    // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.references.site_review`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[tokio::test]
+    async fn site_reviews_use_their_prompt_and_record_applies_and_the_site() {
+        let project = crate::sites::tests::project(
+            crate::sites::tests::RULE,
+            &crate::sites::tests::SOURCE.replace(
+                "fn check_two() {}",
+                "fn check_two() {\n    // :::{fixme} requirements.rule\n    // Panics.\n    // :::\n}",
+            ),
+        );
+        let root = project.path();
+        let subject = AuthoringSubject::parse("sites:requirements.rule/src/lib.rs#fn[check_two]");
+        assert_eq!(
+            subject.evidence_path(root),
+            root.join("evidence/sites/requirements.rule/src/lib.rs/fn[check_two].json")
+        );
+        let mut sources = subject.sources(root).unwrap();
+        let mandatory = sources.mandatory_inputs().to_vec();
+        assert_eq!(mandatory[0]["file"], "src/lib.rs");
+        assert_eq!(mandatory[0]["item"], "fn[check_two]");
+        assert_eq!(mandatory[1]["requirements"], "requirements.rule");
+        assert_eq!(mandatory.len(), 2, "{mandatory:#?}");
+
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), root, &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![(
+            "submit_judgment",
+            json!({"applies": true, "determination": {"FIXME": ["Panics."]}, "rationale": "Acknowledged."}),
+        )]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let prompts = provider.prompts();
+        let (prompt, tools) = &prompts[0];
+        let prompt = serde_json::from_str::<Value>(prompt).unwrap();
+        let text = prompt.to_string();
+        let matches =
+            json!([{"kind": "sites", "query": "checkers", "line_start": 2, "line_end": 6}])
+                .to_string();
+        let expected_task = fill(
+            approved_text("site_prompt", 0),
+            &[
+                ("requirement_name", "requirements.rule"),
+                ("site_file", "src/lib.rs"),
+                ("site_selector", "fn[check_two]"),
+                ("matches", &matches),
+            ],
+        );
+        let heading = expected_task.split("\n\n# Background").next().unwrap();
+        assert!(
+            text.contains(serde_json::to_string(heading).unwrap().trim_matches('"')),
+            "{heading}\n{text}"
+        );
+        for block in [
+            approved_text("habeas_background", 0),
+            distributed_background(),
+            approved_text("judgment_rules", 0),
+        ] {
+            assert!(
+                text.contains(serde_json::to_string(block).unwrap().trim_matches('"')),
+                "{block}"
+            );
+        }
+        assert!(
+            !text.contains(
+                serde_json::to_string(approved_text("habeas_background", 1))
+                    .unwrap()
+                    .trim_matches('"')
+            ),
+            "the site prompt has no reference roles"
+        );
+        assert!(!text.contains("{{"), "{text}");
+        assert!(tools.contains(&"submit_judgment".to_owned()));
+        let submit = provider.requests.borrow()[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "submit_judgment")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            submit["parameters"]["required"],
+            json!(["determination", "rationale", "applies"])
+        );
+
+        assert_eq!(record["requirement"], "requirements.rule");
+        assert_eq!(record["file"], "src/lib.rs");
+        assert_eq!(record["item"], "fn[check_two]");
+        assert_eq!(record["queries"], json!(["checkers"]));
+        assert_eq!(record["applies"], true);
+        assert_eq!(
+            record["fixmes"],
+            json!([{"item": "fn[check_two]", "commentary": "Panics."}])
+        );
+        // The recorded review satisfies validation for its site.
+        let path = subject.evidence_path(root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, record.to_string()).unwrap();
+        let errors = crate::validate_repository(root).unwrap().errors;
+        let prefix = crate::sites::review_path("requirements.rule", "src/lib.rs", "fn[check_two]");
+        assert!(
+            !errors.iter().any(|error| error.starts_with(&prefix)),
+            "{errors:#?}"
+        );
+    }
+
+    // {test}`requirements.authoring.site_prompt`
+    #[test]
+    fn site_submissions_require_applies_and_a_true_determination_when_it_is_false() {
+        assert_eq!(
+            site_submission(
+                &json!({"applies": false, "determination": true, "rationale": "Not a checker."})
+            )
+            .unwrap(),
+            (Judgment::True, "Not a checker.".to_owned(), false)
+        );
+        for arguments in [
+            json!({"determination": true, "rationale": "x"}),
+            json!({"applies": "no", "determination": true, "rationale": "x"}),
+            json!({"applies": false, "determination": false, "rationale": "x"}),
+            json!({"applies": false, "determination": {"FIXME": ["a"]}, "rationale": "x"}),
+            json!({"applies": true, "determination": true, "rationale": "x", "extra": 1}),
+        ] {
+            assert!(site_submission(&arguments).is_err(), "accepted {arguments}");
+        }
+    }
+
+    // {test}`requirements.authoring.verifier_prompt`
+    #[test]
+    fn site_verifications_require_applies_and_no_real_gap_when_it_is_false() {
+        let verified = site_verification(&json!({"real": false, "acknowledged": false,
+            "acknowledgments": [], "rationale": "Not a site.", "applies": false}))
+        .unwrap();
+        assert_eq!(verified.applies, Some(false));
+        for arguments in [
+            json!({"real": false, "acknowledged": false, "acknowledgments": [], "rationale": "x"}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": [], "rationale": "x", "applies": false}),
+            json!({"real": true, "acknowledged": false, "acknowledgments": [], "rationale": "x", "applies": 1}),
+        ] {
+            assert!(
+                site_verification(&arguments).is_err(),
+                "accepted {arguments}"
+            );
+        }
+        let definitions =
+            serde_json::to_value(tool_definitions_with("submit_verification", true).unwrap())
+                .unwrap();
+        let submit = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "submit_verification")
+            .unwrap();
+        assert_eq!(
+            submit["parameters"]["required"],
+            json!([
+                "real",
+                "acknowledged",
+                "acknowledgments",
+                "rationale",
+                "applies"
+            ])
+        );
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.verifier_outcome`
+    // {test}`requirements.authoring.habeas_background`
+    #[tokio::test]
+    async fn site_assessments_differing_only_in_applies_are_verified() {
+        let site = |applies: bool, determination: Value, rationale: &str| {
+            (
+                "submit_judgment",
+                json!({"applies": applies, "determination": determination, "rationale": rationale}),
+            )
+        };
+        let check = |applies: bool, real: bool, rationale: &str| {
+            (
+                "submit_verification",
+                json!({"real": real, "acknowledged": false, "acknowledgments": [],
+                    "rationale": rationale, "applies": applies}),
+            )
+        };
+        // Agreement needs the same applies too.
+        let (result, provider) = site_confirmed(vec![
+            site(true, json!(true), "Reports problems."),
+            site(true, json!(true), "Also fine."),
+        ])
+        .await;
+        assert_eq!(result.unwrap().1["rationale"], "Reports problems.");
+        assert_eq!(provider.requests.borrow().len(), 2);
+
+        for (turns, recorded, applies, kept) in [
+            // The verifier finds the requirement does not apply, unlike the
+            // more favorable assessment it keeps: true on its rationale.
+            (
+                vec![
+                    site(false, json!(true), "Not a checker."),
+                    site(true, json!(true), "Reports problems."),
+                    check(true, false, "It is a checker after all."),
+                ],
+                Judgment::True,
+                true,
+                "It is a checker after all.",
+            ),
+            // The verifier agrees with the more favorable assessment.
+            (
+                vec![
+                    site(true, json!(true), "Reports problems."),
+                    site(false, json!(true), "Not a checker."),
+                    check(false, false, "Only a helper."),
+                ],
+                Judgment::True,
+                false,
+                "Not a checker.",
+            ),
+            // A real gap in the applying assessment records false.
+            (
+                vec![
+                    site(false, json!(true), "Not a checker."),
+                    site(true, json!(false), "It panics."),
+                    check(true, true, "It panics at line 1."),
+                ],
+                Judgment::False,
+                true,
+                "It panics.",
+            ),
+        ] {
+            let (result, provider) = site_confirmed(turns.clone()).await;
+            let (judgment, record) = result.unwrap();
+            assert_eq!(judgment, recorded);
+            assert_eq!(record["determination"], judgment.to_value());
+            assert_eq!(record["applies"], applies, "{record}");
+            let rationale = record["rationale"].as_str().unwrap();
+            assert!(rationale.starts_with(kept), "{rationale}");
+            assert!(
+                rationale.contains("the assessments disagreed"),
+                "{rationale}"
+            );
+
+            let prompts = provider.prompts();
+            let (text, tools) = &prompts[2];
+            let text = serde_json::from_str::<Value>(text).unwrap().to_string();
+            let escaped = |value: &str| {
+                serde_json::to_string(value)
+                    .unwrap()
+                    .trim_matches('"')
+                    .to_owned()
+            };
+            assert!(
+                text.contains(&escaped(
+                    "Another reviewer judged site review sites:requirements.rule/src/lib.rs#fn[check_one] as"
+                )),
+                "{text}"
+            );
+            assert!(text.contains(&escaped(SITE_STEP)), "{text}");
+            assert!(
+                text.contains(&escaped(&format!(
+                    "requirement states for each of its sites.\n\n{}\n\nThe mandatory inputs at the end contain the site",
+                    distributed_background()
+                ))),
+                "{text}"
+            );
+            assert!(
+                !text.contains(&escaped(approved_text("habeas_background", 1))),
+                "{text}"
+            );
+            assert!(!text.contains("{{"), "{text}");
+            assert!(tools.contains(&"submit_verification".to_owned()));
+        }
     }
 }

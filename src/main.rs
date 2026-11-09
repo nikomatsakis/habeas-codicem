@@ -179,12 +179,36 @@ fn main() -> Result<(), Box<dyn Error>> {
             let root = setup::project_root()?;
             // Tokio's fixed worker pool is shared by all async assessments.
             let runtime = tokio::runtime::Runtime::new()?;
-            if all {
-                let outcome = runtime.block_on(habeas::authoring::author_all_with_options(
-                    &root,
-                    config.as_deref(),
-                    habeas::authoring::AuthoringOptions { verbose, confirm },
-                ))?;
+            // `sites:<full-name>` without a site authors every site review of
+            // the requirement, as a batch.
+            // {impl}`requirements.references.site_review`
+            let sites_of = subject
+                .as_deref()
+                .and_then(|subject| subject.strip_prefix("sites:"))
+                .filter(|rest| !rest.contains('/'));
+            if all || sites_of.is_some() {
+                if stdout && sites_of.is_some() {
+                    return Err(io::Error::other(
+                        "--stdout requires a single subject; sites:<full-name> names every site review of a requirement",
+                    )
+                    .into());
+                }
+                let options = habeas::authoring::AuthoringOptions { verbose, confirm };
+                let outcome = match sites_of {
+                    Some(requirement) => {
+                        runtime.block_on(habeas::authoring::author_sites_with_options(
+                            &root,
+                            requirement,
+                            config.as_deref(),
+                            options,
+                        ))?
+                    }
+                    None => runtime.block_on(habeas::authoring::author_all_with_options(
+                        &root,
+                        config.as_deref(),
+                        options,
+                    ))?,
+                };
                 println!(
                     "{} authored; {} unchanged; {} failed",
                     outcome.completed.len(),

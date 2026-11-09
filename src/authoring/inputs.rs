@@ -12,22 +12,30 @@ use crate::evidence::{
 };
 use crate::github::GithubIssues;
 use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
+use crate::sites::{SiteFixme, SiteItem};
 use crate::{DefinitionKind, ReferenceKind};
 
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.references.site_review`
 pub(crate) enum AssessmentKind {
-    Definition(DefinitionKind),
+    /// A requirement or example, and whether it is distributed.
+    Definition(DefinitionKind, bool),
     Citation(CitationItem),
+    /// A site of a distributed requirement and the `{fixme}` references
+    /// naming the requirement inside it.
+    Site(SiteItem, Vec<SiteFixme>),
 }
 
 impl AssessmentKind {
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.authoring.initial_prompt`
     // {impl}`requirements.authoring.verifier_prompt`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn noun(&self) -> &'static str {
         match self {
-            Self::Definition(kind) => kind.noun(),
+            Self::Definition(kind, _) => kind.noun(),
             Self::Citation(_) => "citation review",
+            Self::Site(..) => "site review",
         }
     }
 }
@@ -229,7 +237,10 @@ impl AssessmentSources {
             root,
             access,
             subject_name: subject_name.to_owned(),
-            subject_kind: AssessmentKind::Definition(subject.kind),
+            subject_kind: AssessmentKind::Definition(
+                subject.kind,
+                crate::structural::has_query_directive(subject),
+            ),
             subject_text: subject.text.clone(),
             outlines,
             reference_set,
@@ -325,6 +336,121 @@ impl AssessmentSources {
             access,
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
+            subject_text: String::new(),
+            outlines,
+            reference_set: String::new(),
+            mandatory,
+            issue_states,
+            github,
+            recorded: Vec::new(),
+        })
+    }
+
+    /// Prepares the review of one site of a distributed requirement. Its
+    /// mandatory inputs are the site's outline node, the requirement's
+    /// complete declaration, each declaration or built-in text it cites, and
+    /// the terminology they use; a `{fixme}` naming the requirement inside
+    /// the site is part of the site's node.
+    // {impl}`requirements.references.site_review`
+    // {impl}`requirements.authoring.site_prompt`
+    // {impl}`requirements.authoring.read_denial`
+    // {impl}`requirements.authoring.mandatory_inputs`
+    pub(crate) fn prepare_site(
+        root: &Path,
+        requirement: &str,
+        file: &str,
+        item: &str,
+    ) -> io::Result<Self> {
+        let root = fs::canonicalize(root)?;
+        let access = SourceAccess::load(&root)?;
+        let definitions = load_definitions(&root)?;
+        let subject_name = crate::sites::subject_label(requirement, file, item);
+        let declaration = definitions
+            .get(requirement)
+            .filter(|definition| definition.kind == DefinitionKind::Requirement)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "{subject_name}: no requirement named {requirement}"
+                ))
+            })?;
+        let outlines = OutlineCache::default();
+        let mut errors = Vec::new();
+        let files = discovered_files(&root, &mut errors);
+        let references = crate::evidence::collect_references_with_progress(
+            &root,
+            &files,
+            &mut errors,
+            &mut |_| {},
+        );
+        if !errors.is_empty() {
+            return Err(io::Error::other(errors.join("\n")));
+        }
+        let site =
+            crate::sites::requirement_sites(&root, requirement, declaration, &files, &outlines)
+                .map_err(io::Error::other)?
+                .into_iter()
+                .find(|site| site.file == file && site.item == item)
+                .ok_or_else(|| {
+                    io::Error::other(format!("{subject_name}: no site of {requirement} matches"))
+                })?;
+        let mut selectors = vec![
+            InputSelector::Outline {
+                file: file.to_owned(),
+                item: item.to_owned(),
+            },
+            InputSelector::Requirements {
+                requirements: requirement.to_owned(),
+            },
+        ];
+        let mut builtins = Vec::new();
+        for (kind, name) in crate::text_references(&declaration.text, true) {
+            if kind != ReferenceKind::Cite {
+                continue;
+            }
+            if crate::builtins::builtin(&name).is_some() {
+                if !builtins.contains(&name) {
+                    builtins.push(name);
+                }
+            } else if definitions
+                .get(&name)
+                .is_some_and(|definition| definition.kind != DefinitionKind::Term)
+            {
+                insert_selector(
+                    &mut selectors,
+                    InputSelector::Requirements { requirements: name },
+                );
+            }
+        }
+        let mut mandatory = Vec::new();
+        for selector in selectors {
+            mandatory.push(source_input(
+                &root,
+                &access,
+                &definitions,
+                &outlines,
+                &selector,
+            )?);
+        }
+        for input in definition_inputs(&root, &access, &definitions, &outlines, &mandatory, None)? {
+            if !mandatory.contains(&input) {
+                mandatory.push(input);
+            }
+        }
+        mandatory.extend(builtins.iter().map(|name| builtin_input(name)));
+        let github = GithubIssues::from_env();
+        let issue_states = crate::github::input_issue_states(
+            &root,
+            &github,
+            &references,
+            &definitions,
+            &mandatory,
+        );
+        let fixmes = crate::sites::site_fixmes(&root, &site, &references, &outlines);
+        Ok(Self {
+            root,
+            access,
+            subject_name,
+            subject_kind: AssessmentKind::Site(site, fixmes),
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
@@ -755,7 +881,7 @@ pub(super) mod tests {
         let example = AssessmentSources::prepare(root.path(), "requirements.case").unwrap();
         assert!(matches!(
             example.subject_kind,
-            AssessmentKind::Definition(DefinitionKind::Example)
+            AssessmentKind::Definition(DefinitionKind::Example, false)
         ));
         assert_eq!(
             example.mandatory_inputs()[0]["requirements"],

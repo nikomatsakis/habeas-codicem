@@ -19,6 +19,8 @@ pub struct BatchOutcome {
     pub completed: Vec<AuthoringOutcome>,
     pub failures: Vec<(String, String)>,
     pub unchanged: usize,
+    /// Orphaned review files deleted, relative to the project.
+    pub deleted: Vec<String>,
 }
 
 /// The inspection phase that selects definitions and citation reviews.
@@ -50,6 +52,39 @@ pub async fn author_all_with_options(
     selection: Option<&str>,
     options: AuthoringOptions,
 ) -> io::Result<BatchOutcome> {
+    run_batch(root, selection, options, None).await
+}
+
+/// Authors the site reviews of one distributed requirement, as
+/// `habeas author sites:<full-name>`, under the batch's refresh rules.
+// {impl}`requirements.references.site_review`
+// {impl}`requirements.authoring.refresh`
+pub async fn author_sites_with_options(
+    root: &Path,
+    requirement: &str,
+    selection: Option<&str>,
+    options: AuthoringOptions,
+) -> io::Result<BatchOutcome> {
+    run_batch(root, selection, options, Some(requirement)).await
+}
+
+/// Runs a batch over every subject, or, with `sites_of`, over the site
+/// reviews of one distributed requirement.
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.authoring.read_denial`
+// {impl}`requirements.authoring.progress`
+// {impl}`requirements.authoring.reporting`
+// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.references.citation_review`
+// {impl}`requirements.references.site_review`
+// {impl}`requirements.authoring.github_reads`
+async fn run_batch(
+    root: &Path,
+    selection: Option<&str>,
+    options: AuthoringOptions,
+    sites_of: Option<&str>,
+) -> io::Result<BatchOutcome> {
     let root = fs::canonicalize(root)?;
     let mut progress = BatchProgress::new(options.verbose);
     let mut inspection =
@@ -60,12 +95,31 @@ pub async fn author_all_with_options(
     // A FIXME record whose acknowledging issue closed is stale.
     // {impl}`requirements.authoring.github_reads`
     crate::github::add_issue_findings(&mut inspection, &crate::github::GithubIssues::from_env());
-    let (subjects, unchanged) =
-        select_subjects(&root, &inspection, &mut |update| progress.inspect(update));
+    if let Some(requirement) = sites_of
+        && !inspection.sites.contains_key(requirement)
+    {
+        return Err(io::Error::other(format!(
+            "sites:{requirement}: no distributed requirement named {requirement}"
+        )));
+    }
+    // Orphaned reviews are deleted before, and independently of, any model
+    // configuration.
+    let deleted = if sites_of.is_none() {
+        delete_orphaned_reviews(&root, &inspection)?
+    } else {
+        Vec::new()
+    };
+    for path in &deleted {
+        progress.println(&format!("Deleted orphaned review {path}"));
+    }
+    let (subjects, unchanged) = select_subjects(&root, &inspection, sites_of, &mut |update| {
+        progress.inspect(update)
+    });
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
         failures: Vec::new(),
         unchanged,
+        deleted,
     };
     if subjects.is_empty() {
         return Ok(outcome);
@@ -172,14 +226,66 @@ pub async fn author_all_with_options(
     Ok(outcome)
 }
 
-/// Selects the definitions and citation reviews needing assessment, counting
-/// current records as unchanged, and reports selection as one counted phase.
+/// Deletes each citation or site review whose item or site no longer exists,
+/// returning their project-relative paths.
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.references.citation_review`
+// {impl}`requirements.references.site_review`
+fn delete_orphaned_reviews(
+    root: &Path,
+    inspection: &RepositoryInspection,
+) -> io::Result<Vec<String>> {
+    let outlines = crate::inputs::OutlineCache::default();
+    let mut expected = crate::citations::citation_items(
+        root,
+        &inspection.definitions,
+        &inspection.references,
+        &outlines,
+    )
+    .values()
+    .map(|item| item.review_path())
+    .collect::<std::collections::BTreeSet<_>>();
+    expected.extend(
+        inspection
+            .sites
+            .values()
+            .flatten()
+            .map(crate::sites::SiteItem::review_path),
+    );
+    let mut deleted = Vec::new();
+    for directory in [crate::citations::CITATIONS_DIR, crate::sites::SITES_DIR] {
+        let directory = root.join("evidence").join(directory);
+        if !directory.is_dir() {
+            continue;
+        }
+        let mut errors = Vec::new();
+        let files = crate::evidence::files_with_extension(root, &directory, "json", &mut errors);
+        if !errors.is_empty() {
+            return Err(io::Error::other(errors.join("\n")));
+        }
+        for file in files {
+            let relative = crate::evidence::display_path(root, &file);
+            if !expected.contains(&relative) {
+                fs::remove_file(&file)?;
+                deleted.push(relative);
+            }
+        }
+    }
+    Ok(deleted)
+}
+
+/// Selects the definitions, citation reviews, and site reviews needing
+/// assessment, or with `sites_of` only that requirement's site reviews,
+/// counting current records as unchanged, and reports selection as one
+/// counted phase.
 // {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.references.citation_review`
+// {impl}`requirements.references.site_review`
 fn select_subjects(
     root: &Path,
     inspection: &RepositoryInspection,
+    sites_of: Option<&str>,
     progress: &mut dyn FnMut(InspectionProgress),
 ) -> (Vec<AuthoringSubject>, usize) {
     let mut subjects = Vec::new();
@@ -194,13 +300,26 @@ fn select_subjects(
     // Every source item outside the book with citations needs a review.
     // {impl}`requirements.references.citation_review`
     let outlines = crate::inputs::OutlineCache::default();
-    let items = crate::citations::citation_items(
-        root,
-        &inspection.definitions,
-        &inspection.references,
-        &outlines,
-    );
-    let total = inspection.definitions.len() + items.len();
+    let (definitions, items) = if sites_of.is_some() {
+        (Default::default(), Default::default())
+    } else {
+        (
+            inspection.definitions.iter().collect::<Vec<_>>(),
+            crate::citations::citation_items(
+                root,
+                &inspection.definitions,
+                &inspection.references,
+                &outlines,
+            ),
+        )
+    };
+    let sites = inspection
+        .sites
+        .iter()
+        .filter(|(name, _)| sites_of.is_none_or(|selected| selected == *name))
+        .flat_map(|(_, sites)| sites)
+        .collect::<Vec<_>>();
+    let total = definitions.len() + items.len() + sites.len();
     let mut checked = 0;
     let mut advance = |progress: &mut dyn FnMut(InspectionProgress)| {
         progress(InspectionProgress {
@@ -211,7 +330,7 @@ fn select_subjects(
         checked += 1;
     };
     advance(progress);
-    for (name, definition) in &inspection.definitions {
+    for (name, definition) in definitions {
         if definition.kind != DefinitionKind::Term {
             let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);
             // A current false judgment stays until its subject or inputs change.
@@ -238,6 +357,25 @@ fn select_subjects(
             subjects.push(AuthoringSubject::Citation {
                 file: item.file,
                 item: item.item,
+            });
+        }
+        advance(progress);
+    }
+    // Every site of a distributed requirement needs a review.
+    // {impl}`requirements.references.site_review`
+    for site in sites {
+        let evidence =
+            LoadedDetailEvidence::load_path(root, &site.review_path(), &inspection.report);
+        if matches!(
+            evidence.state(),
+            EvidenceState::Valid | EvidenceState::Fixme | EvidenceState::DeterminationFalse
+        ) {
+            unchanged += 1;
+        } else {
+            subjects.push(AuthoringSubject::Site {
+                requirement: site.requirement.clone(),
+                file: site.file.clone(),
+                item: site.item.clone(),
             });
         }
         advance(progress);
@@ -331,7 +469,7 @@ mod tests {
         let inspection = crate::evidence::inspect_repository(root).unwrap();
         let mut updates = Vec::new();
         let (subjects, unchanged) =
-            select_subjects(root, &inspection, &mut |update| updates.push(update));
+            select_subjects(root, &inspection, None, &mut |update| updates.push(update));
         assert_eq!(unchanged, 0);
         assert_eq!(
             subjects
@@ -361,6 +499,78 @@ mod tests {
                 (2, Some(3)),
                 (3, Some(3))
             ]
+        );
+    }
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.references.site_review`
+    #[test]
+    fn selection_includes_site_reviews_and_sites_of_selects_only_them() {
+        let temp =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let root = temp.path();
+        crate::sites::tests::write_review(root, "fn[check_two]", serde_json::json!({}));
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        let labels = |subjects: Vec<AuthoringSubject>| {
+            subjects
+                .iter()
+                .map(AuthoringSubject::label)
+                .collect::<Vec<_>>()
+        };
+        let (subjects, unchanged) = select_subjects(root, &inspection, None, &mut |_| {});
+        assert_eq!(
+            labels(subjects),
+            [
+                "requirements.rule",
+                "sites:requirements.rule/src/lib.rs#fn[check_one]",
+                "sites:requirements.rule/src/lib.rs#mod[inner]/fn[check_three]",
+            ]
+        );
+        assert_eq!(unchanged, 1);
+        let (subjects, unchanged) =
+            select_subjects(root, &inspection, Some("requirements.rule"), &mut |_| {});
+        assert_eq!(
+            labels(subjects),
+            [
+                "sites:requirements.rule/src/lib.rs#fn[check_one]",
+                "sites:requirements.rule/src/lib.rs#mod[inner]/fn[check_three]",
+            ]
+        );
+        assert_eq!(unchanged, 1);
+    }
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.references.site_review`
+    // {test}`requirements.references.citation_review`
+    #[test]
+    fn orphaned_citation_and_site_reviews_are_deleted() {
+        let temp =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let root = temp.path();
+        crate::sites::tests::write_review(root, "fn[check_two]", serde_json::json!({}));
+        crate::sites::tests::write_review(root, "fn[other]", serde_json::json!({}));
+        fs::create_dir_all(root.join("evidence/citations/src/lib.rs")).unwrap();
+        fs::write(
+            root.join("evidence/citations/src/lib.rs/fn[gone].json"),
+            "{}",
+        )
+        .unwrap();
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        assert_eq!(
+            delete_orphaned_reviews(root, &inspection).unwrap(),
+            [
+                "evidence/citations/src/lib.rs/fn[gone].json",
+                "evidence/sites/requirements.rule/src/lib.rs/fn[other].json",
+            ]
+        );
+        assert!(
+            root.join("evidence/sites/requirements.rule/src/lib.rs/fn[check_two].json")
+                .exists()
+        );
+        assert!(
+            !root
+                .join("evidence/sites/requirements.rule/src/lib.rs/fn[other].json")
+                .exists()
         );
     }
 }

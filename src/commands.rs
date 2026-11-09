@@ -120,13 +120,52 @@ pub fn status_markdown_with_github(
         output.push_str(&render_evidence_table(&rows));
     }
 
+    output.push_str(&fixmes);
+    // Site reviews are checked on their own; list those needing attention,
+    // or every one with `--all`, by requirement, file, and selector.
+    // {impl}`requirements.references.site_review`
+    let mut site_rows = Vec::new();
+    for site in inspection
+        .sites
+        .iter()
+        .filter(|(name, _)| glob.is_none_or(|glob| definition_glob::matches(glob, name)))
+        .flat_map(|(_, sites)| sites)
+    {
+        let evidence =
+            LoadedDetailEvidence::load_path(root, &site.review_path(), &inspection.report);
+        for error in evidence.errors() {
+            associated_errors.insert(error.clone());
+        }
+        if !evidence.errors().is_empty() {
+            findings.push_str(&format!(
+                "\n### `{}`\n\n<pre><code>",
+                crate::sites::subject_label(&site.requirement, &site.file, &site.item)
+            ));
+            findings.push_str(&escape_html(&evidence.errors().join("\n\n")));
+            findings.push_str("</code></pre>\n");
+        }
+        if all || evidence.state() != EvidenceState::Valid {
+            site_rows.push(format!(
+                "| `{}` | `{}` | `{}` | {} |\n",
+                site.requirement,
+                site.file,
+                site.selector_label(),
+                evidence.state().label()
+            ));
+        }
+    }
+    if !site_rows.is_empty() {
+        output.push_str(
+            "\n## Site reviews\n\n| Requirement | File | Selector | Evidence |\n| --- | --- | --- | --- |\n",
+        );
+        output.push_str(&site_rows.concat());
+    }
     let other_findings = inspection
         .report
         .errors
         .iter()
         .filter(|error| !associated_errors.contains(error.as_str()))
         .collect::<Vec<_>>();
-    output.push_str(&fixmes);
     // {impl}`requirements.references.no_requirement`
     if all {
         let outlines = crate::inputs::OutlineCache::default();
@@ -205,7 +244,7 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
             continue;
         }
         let evidence = LoadedDetailEvidence::load(root, name, &inspection.report);
-        pages.push(render_cli_detail_page(
+        let mut page = render_cli_detail_page(
             name,
             &definition.source,
             &definition.text,
@@ -218,7 +257,11 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
                 source_links: None,
                 outlines: &outlines,
             },
-        ));
+        );
+        if let Some(sites) = inspection.sites.get(name) {
+            page.push_str(&site_section(root, sites, &inspection.report));
+        }
+        pages.push(page);
     }
     if pages.is_empty() {
         return Err(io::Error::new(
@@ -227,4 +270,46 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
         ));
     }
     Ok(pages.join("\n\n---\n\n"))
+}
+
+/// A distributed requirement's sites for `habeas info`: how many the
+/// requirement does not apply to, and each site with its review's
+/// determination.
+// {impl}`requirements.references.site_review`
+fn site_section(
+    root: &Path,
+    sites: &[crate::sites::SiteItem],
+    report: &crate::evidence::EvidenceReport,
+) -> String {
+    let mut rows = String::new();
+    let mut not_applying = 0;
+    for site in sites {
+        let path = site.review_path();
+        let evidence = LoadedDetailEvidence::load_path(root, &path, report);
+        let record = std::fs::read_to_string(root.join(&path))
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+        let applies = record
+            .as_ref()
+            .and_then(|record| record.get("applies"))
+            .and_then(serde_json::Value::as_bool);
+        if applies == Some(false) {
+            not_applying += 1;
+        }
+        let determination = record
+            .as_ref()
+            .and_then(|record| record.get("determination"))
+            .map_or_else(|| "none".to_owned(), ToString::to_string);
+        rows.push_str(&format!(
+            "| `{}` | `{}` | {} | `{determination}` | {} |\n",
+            site.file,
+            site.selector_label(),
+            applies.map_or("unknown", |applies| if applies { "yes" } else { "no" }),
+            evidence.state().label()
+        ));
+    }
+    format!(
+        "\n\n## Sites\n\n{} sites; the requirement does not apply to {not_applying} of them.\n\n| File | Selector | Applies | Determination | Evidence |\n| --- | --- | --- | --- | --- |\n{rows}",
+        sites.len()
+    )
 }

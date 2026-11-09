@@ -150,11 +150,17 @@ fn serve(
     let subject = prompt
         .lines()
         .find_map(|line| {
-            line.strip_prefix("Subject: ").or_else(|| {
-                // A citation review names its item before its citations.
-                line.strip_prefix("Item under review: ")
-                    .map(|rest| rest.split(" Citations to check:").next().unwrap())
-            })
+            line.strip_prefix("Subject: ")
+                .or_else(|| {
+                    // A citation review names its item before its citations.
+                    line.strip_prefix("Item under review: ")
+                        .map(|rest| rest.split(" Citations to check:").next().unwrap())
+                })
+                .or_else(|| {
+                    // A site review names its site before its requirement.
+                    line.strip_prefix("Site under review: ")
+                        .map(|rest| rest.split(" Requirement:").next().unwrap())
+                })
         })
         .expect("assessment subject")
         .to_owned();
@@ -244,14 +250,15 @@ fn serve(
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
         })
     } else {
+        let mut arguments = json!({"determination": determination, "rationale": rationale});
+        if prompt.contains("Site under review: ") {
+            arguments["applies"] = json!(true);
+        }
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":"judgment", "type":"function", "function":{
-                    "name":"submit_judgment", "arguments":{
-                        "determination":determination,
-                        "rationale":rationale
-                    }
+                    "name":"submit_judgment", "arguments":arguments
                 }
             }]},
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
@@ -1251,6 +1258,65 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     );
     let report = habeas::validate_repository(&fixture.project).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+// {test}`requirements.references.site_review`
+// {test}`requirements.authoring.batch`
+#[test]
+fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let chapter = fs::read_to_string(fixture.project.join("md/requirements.md")).unwrap();
+    fs::write(
+        fixture.project.join("md/requirements.md"),
+        format!(
+            "{chapter}\n:::::{{req}} spread\nEach public function MUST return a constant.\n\n::::{{sites}} public\n```yaml\nlanguage: rust\nrule: {{ kind: function_item, regex: \"^pub fn (alpha|beta)\" }}\nmatch: [\"pub fn alpha() {{}}\"]\nno_match: [\"fn alpha() {{}}\"]\n```\n::::\n:::::\n"
+        ),
+    )
+    .unwrap();
+    let output = fixture.run(&["author", "sites:requirements.spread"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut subjects = server.subjects();
+    subjects.sort();
+    assert_eq!(subjects, ["src/lib.rs fn[alpha]", "src/lib.rs fn[beta]"]);
+    let review = fixture
+        .project
+        .join("evidence/sites/requirements.spread/src/lib.rs/fn[alpha].json");
+    let record: Value = serde_json::from_str(&fs::read_to_string(&review).unwrap()).unwrap();
+    assert_eq!(record["applies"], true);
+    assert_eq!(record["queries"], json!(["public"]));
+    // Current reviews are kept; an unknown requirement is an error.
+    let output = fixture.run(&["author", "sites:requirements.spread"]);
+    assert!(output.status.success());
+    assert_eq!(server.subjects().len(), 2);
+    let output = fixture.run(&["author", "sites:requirements.alpha"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no distributed requirement"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // `--all` deletes a review whose site is gone, without configuration.
+    let orphan = fixture
+        .project
+        .join("evidence/sites/requirements.spread/src/lib.rs/fn[gone].json");
+    fs::write(&orphan, "{}").unwrap();
+    fs::remove_file(&fixture.config).unwrap();
+    let output = fixture.run(&["author", "--all"]);
+    assert!(!orphan.exists());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "Deleted orphaned review evidence/sites/requirements.spread/src/lib.rs/fn[gone].json"
+        ),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(review.exists());
 }
 
 // {test}`requirements.authoring.batch`

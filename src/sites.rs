@@ -61,12 +61,6 @@ impl SiteItem {
         review_path(&self.requirement, &self.file, &self.item)
     }
 
-    /// The single-subject authoring name of the site's review.
-    // {impl}`requirements.references.site_review`
-    pub(crate) fn subject_label(&self) -> String {
-        subject_label(&self.requirement, &self.file, &self.item)
-    }
-
     /// The selector as displayed, `<root>` for the root node.
     // {impl}`requirements.references.site_review`
     // {impl}`requirements.authoring.site_prompt`
@@ -1293,5 +1287,53 @@ no_match: ["struct S;"]
             crate::evidence::reference_set_digest_for(root, "requirements.rule").unwrap(),
             digest
         );
+    }
+
+    // {test}`requirements.references.site_review`
+    #[test]
+    fn status_and_info_report_site_reviews_by_requirement_file_and_selector() {
+        let temp = project(RULE, SOURCE);
+        let root = temp.path();
+        write_review(
+            root,
+            "fn[check_two]",
+            json!({"applies": false, "rationale": "A helper, not a checker."}),
+        );
+        write_review(
+            root,
+            "mod[inner]/fn[check_three]",
+            json!({"queries": ["checkers", "panics"], "determination": false, "rationale": "It panics."}),
+        );
+        let status = crate::status_markdown(root, false).unwrap();
+        for row in [
+            "| `requirements.rule` | `src/lib.rs` | `fn[check_one]` | Missing |",
+            "| `requirements.rule` | `src/lib.rs` | `mod[inner]/fn[check_three]` | Determination false |",
+        ] {
+            assert!(status.contains(row), "{row}\n{status}");
+        }
+        assert!(!status.contains("`fn[check_two]` | Valid"), "{status}");
+        assert!(
+            status.contains("### `sites:requirements.rule/src/lib.rs#mod[inner]/fn[check_three]`"),
+            "{status}"
+        );
+        assert!(
+            status.contains("determination is false: It panics."),
+            "{status}"
+        );
+        let all = crate::status_markdown(root, true).unwrap();
+        assert!(
+            all.contains("| `requirements.rule` | `src/lib.rs` | `fn[check_two]` | Valid |"),
+            "{all}"
+        );
+
+        let info = crate::info_markdown(root, "requirements.rule").unwrap();
+        for text in [
+            "## Sites\n\n3 sites; the requirement does not apply to 1 of them.",
+            "| `src/lib.rs` | `fn[check_one]` | unknown | `none` | Missing |",
+            "| `src/lib.rs` | `fn[check_two]` | no | `true` | Valid |",
+            "| `src/lib.rs` | `mod[inner]/fn[check_three]` | yes | `false` | Determination false |",
+        ] {
+            assert!(info.contains(text), "{text}\n{info}");
+        }
     }
 }
