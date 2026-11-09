@@ -785,20 +785,9 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 // {impl}`requirements.authoring.requirement_task`
 // {impl}`requirements.authoring.testing_bar`
 // {impl}`requirements.authoring.example_task`
-// {impl}`requirements.authoring.distributed_task`
-// {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.ci.review_criteria`
-fn subject_task(kind: &DefinitionKind, distributed: bool) -> String {
+fn subject_task(kind: &DefinitionKind) -> String {
     match kind {
-        DefinitionKind::Requirement if distributed => format!(
-            "{}\n{}\n\n{}",
-            approved_text("requirement_task", 0),
-            approved_text("testing_bar", 0),
-            fill(
-                approved_text("distributed_task", 0),
-                &[("distributed_background", distributed_background())]
-            )
-        ),
         DefinitionKind::Requirement => format!(
             "{}\n{}",
             approved_text("requirement_task", 0),
@@ -808,6 +797,61 @@ fn subject_task(kind: &DefinitionKind, distributed: bool) -> String {
         DefinitionKind::Example | DefinitionKind::Term => {
             approved_text("example_task", 0).to_owned()
         }
+    }
+}
+
+/// The filled distributed task a distributed requirement's subject message
+/// carries, or nothing for any other subject.
+// {impl}`requirements.authoring.initial_prompt`
+// {impl}`requirements.authoring.distributed_task`
+// {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.authoring.prompt_parts`
+fn distributed_task(kind: &DefinitionKind, distributed: bool) -> String {
+    if *kind == DefinitionKind::Requirement && distributed {
+        fill(
+            approved_text("distributed_task", 0),
+            &[("distributed_background", distributed_background())],
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// A conversation's opening: the system prompt, the same for every
+/// assessment of its kind, and the subject message that follows it.
+// {impl}`requirements.authoring.prompt_parts`
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Prompt {
+    system: String,
+    subject: String,
+}
+
+impl Prompt {
+    /// Fills the system and subject blocks of approved prompt `name`.
+    // {impl}`requirements.authoring.prompt_parts`
+    // {impl}`requirements.authoring.initial_prompt`
+    // {impl}`requirements.authoring.citation_prompt`
+    // {impl}`requirements.authoring.site_prompt`
+    // {impl}`requirements.authoring.verifier_prompt`
+    fn filled(name: &str, values: &[(&str, &str)]) -> Self {
+        Self {
+            system: fill(approved_text(name, 0), values),
+            subject: fill(approved_text(name, 1), values),
+        }
+    }
+
+    /// The opening request: the system prompt as a leading system message,
+    /// then the subject message as the user's.
+    // {impl}`requirements.authoring.prompt_parts`
+    fn request(self) -> CompletionRequest {
+        CompletionRequest::new(Message::user(self.subject)).preamble(self.system)
+    }
+
+    /// Both parts, for tests that look for text wherever it is sent.
+    // {test}`requirements.authoring.prompt_parts`
+    #[cfg(test)]
+    fn joined(&self) -> String {
+        format!("{}\n\n{}", self.system, self.subject)
     }
 }
 
@@ -822,19 +866,22 @@ fn subject_task(kind: &DefinitionKind, distributed: bool) -> String {
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.site_prompt`
 // {impl}`requirements.authoring.habeas_background`
-fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
+// {impl}`requirements.authoring.prompt_parts`
+fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
         AssessmentKind::Definition(kind, distributed) => {
-            let task = subject_task(kind, *distributed);
+            let task = subject_task(kind);
+            let distributed = distributed_task(kind, *distributed);
             values.extend([
                 ("subject_kind", sources.subject_kind.noun()),
                 ("subject_name", &sources.subject_name),
                 ("subject_task", &task),
+                ("distributed_task", &distributed),
             ]);
-            fill(approved_text("initial_prompt", 0), &values)
+            Prompt::filled("initial_prompt", &values)
         }
         AssessmentKind::Citation(item) => {
             let citations = serde_json::to_string(&item.model_citations_value())?;
@@ -843,7 +890,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
                 ("item_selector", item.selector_label()),
                 ("citations", &citations),
             ]);
-            fill(approved_text("citation_prompt", 0), &values)
+            Prompt::filled("citation_prompt", &values)
         }
         AssessmentKind::Site(site, _) => {
             let matches = serde_json::to_string(&site.matches_value())?;
@@ -854,7 +901,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
                 ("matches", &matches),
                 ("distributed_background", distributed_background()),
             ]);
-            fill(approved_text("site_prompt", 0), &values)
+            Prompt::filled("site_prompt", &values)
         }
     })
 }
@@ -870,14 +917,14 @@ fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
     body.find("\n\n# ").map_or(body, |end| &body[..end])
 }
 
-/// The criteria an assessment applied, for its verifier: its task section
-/// after the first paragraph, then, for a site review, the account of
-/// distributed requirements, and then its "Your task" section.
+/// The criteria an assessment applied, for its verifier: its subject message
+/// after the "# Subject" heading and before "# Mandatory inputs", then, for a
+/// site review, the account of distributed requirements, and then its "Your
+/// task" section.
 // {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.habeas_background`
-fn review_instructions(prompt: &str, site: bool) -> String {
-    let task = prompt_section(prompt, "Task");
-    let named = task.split_once("\n\n").map_or("", |(_, rest)| rest);
+fn review_instructions(prompt: &Prompt, site: bool) -> String {
+    let named = prompt_section(&prompt.subject, "Subject").trim();
     let background = if site {
         format!("{}\n\n", distributed_background())
     } else {
@@ -885,7 +932,7 @@ fn review_instructions(prompt: &str, site: bool) -> String {
     };
     format!(
         "{named}\n\n{background}{}",
-        prompt_section(prompt, "Your task")
+        prompt_section(&prompt.system, "Your task")
     )
 }
 
@@ -897,11 +944,12 @@ const SITE_STEP: &str = "4. Also set applies to whether the requirement governs 
 // {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.authoring.prompt_parts`
 fn verification_prompt(
     sources: &AssessmentSources,
     determination: &Judgment,
     rationale: &str,
-) -> io::Result<String> {
+) -> io::Result<Prompt> {
     let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
     let instructions = review_instructions(&initial_prompt(sources)?, site);
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
@@ -921,7 +969,7 @@ fn verification_prompt(
         ("site_step", if site { SITE_STEP } else { "" }),
         ("mandatory_inputs", &mandatory),
     ]);
-    Ok(fill(approved_text("verifier_prompt", 0), &values))
+    Ok(Prompt::filled("verifier_prompt", &values))
 }
 
 // {impl}`requirements.authoring.submission`
@@ -1229,15 +1277,16 @@ async fn verify(
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.authoring.prompt_parts`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
-    prompt: String,
+    prompt: Prompt,
     (submit, site): (&str, bool),
     parse: impl Fn(&Value) -> io::Result<T>,
 ) -> io::Result<T> {
-    let mut request = CompletionRequest::new(prompt);
+    let mut request = prompt.request();
     request.tools = tool_definitions_with(submit, site)?;
     let mut pending = sources.mandatory_inputs().to_vec();
     let mut backoff = providers::ProviderBackoff::default();
@@ -1578,7 +1627,7 @@ mod tests {
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let prompt = initial_prompt(&sources).unwrap();
+        let prompt = initial_prompt(&sources).unwrap().joined();
         for criterion in [
             "Subject: requirement requirements.ready\nJudge against: the subject's text.",
             approved_text("habeas_background", 0),
@@ -1615,7 +1664,7 @@ mod tests {
         ));
         fs::write(&requirements, book).unwrap();
         let sources = AssessmentSources::prepare(project.path(), "requirements.case").unwrap();
-        let prompt = initial_prompt(&sources).unwrap();
+        let prompt = initial_prompt(&sources).unwrap().joined();
         assert!(
             prompt.contains("Subject: example requirements.case"),
             "{prompt}"
@@ -1916,7 +1965,7 @@ mod tests {
     fn initial_prompt_conveys_when_to_choose_each_outcome() {
         let project = inputs::tests::project();
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let prompt = initial_prompt(&sources).unwrap();
+        let prompt = initial_prompt(&sources).unwrap().joined();
         for guidance in [
             "Choose true when your task finds no gap, {\"FIXME\": [\"...\"]} when every gap is\nacknowledged, and false otherwise.",
             "Call submit_judgment exactly once with\ndetermination and rationale.",
@@ -2352,7 +2401,7 @@ mod tests {
             let determination = turns[less].1["determination"].to_string();
             let less_rationale = turns[less].1["rationale"].as_str().unwrap();
             let escaped = serde_json::to_string(&format!(
-                "Another reviewer judged requirement requirements.ready as {determination}."
+                "The reviewer judged requirement requirements.ready as {determination}."
             ))
             .unwrap();
             let (text, tools) = &prompts[2];
@@ -2417,28 +2466,35 @@ mod tests {
         for (subject, header, named) in [
             (
                 "requirements.case",
-                "Another reviewer judged example requirements.case as false.",
+                "The reviewer judged example requirements.case as false.",
                 "Subject: example requirements.case",
             ),
             (
                 "citations:src/lib.rs#fn[helper]",
-                "Another reviewer judged citation review citations:src/lib.rs#fn[helper] as false.",
-                "Item under review: src/lib.rs fn[helper] Citations to check:",
+                "The reviewer judged citation review citations:src/lib.rs#fn[helper] as false.",
+                "Item under review: src/lib.rs fn[helper]\nCitations to check:",
             ),
         ] {
             let sources = AuthoringSubject::parse(subject)
                 .sources(project.path())
                 .unwrap();
-            let prompt = verification_prompt(&sources, &Judgment::False, "A claimed gap.").unwrap();
+            let parts = verification_prompt(&sources, &Judgment::False, "A claimed gap.").unwrap();
+            let prompt = parts.joined();
             let initial = initial_prompt(&sources).unwrap();
-            let task = prompt_section(&initial, "Task");
-            // The Task section's first paragraph is not repeated.
-            let (first, rest) = task.split_once("\n\n").unwrap();
+            // The reviewer's criteria are its subject message between the
+            // "# Subject" and "# Mandatory inputs" headings, then its task.
+            let subject_section = prompt_section(&initial.subject, "Subject").trim();
+            let first = prompt_section(&initial.system, "Task");
+            assert!(
+                parts.subject.contains(&format!(
+                    "The criteria the reviewer applied:\n\n{subject_section}\n\n{}",
+                    prompt_section(&initial.system, "Your task")
+                )),
+                "{prompt}"
+            );
             for expected in [
                 header,
                 named,
-                rest,
-                prompt_section(&initial, "Your task"),
                 "A claimed gap.",
                 approved_text("habeas_background", 0),
                 approved_text("habeas_background", 1),
@@ -2449,6 +2505,9 @@ mod tests {
                     "missing {expected:?} in:\n{prompt}"
                 );
             }
+            // The rationale and subject stay out of the system prompt.
+            assert!(!parts.system.contains("A claimed gap."), "{prompt}");
+            assert!(!parts.system.contains(&sources.subject_name), "{prompt}");
             assert!(!prompt.contains(first), "{prompt}");
             assert!(!prompt.contains(SITE_STEP), "{prompt}");
             // Every mandatory input is delivered.
@@ -2629,7 +2688,7 @@ mod tests {
         let sources = AuthoringSubject::parse("citations:notes.txt")
             .sources(project.path())
             .unwrap();
-        let prompt = initial_prompt(&sources).unwrap();
+        let prompt = initial_prompt(&sources).unwrap().joined();
         assert!(
             prompt.contains("Item under review: notes.txt <root>"),
             "{prompt}"
@@ -2652,16 +2711,96 @@ mod tests {
             &[("distributed_background", distributed_background())],
         );
         assert!(task.starts_with(distributed_background()), "{task}");
+        // The requirement task stays in the system prompt; the distributed
+        // task follows the subject line in the subject message.
         assert!(
-            prompt.contains(&format!(
-                "{}\n{}\n\n{task}",
+            prompt.system.contains(&format!(
+                "{}\n{}\n\n# How to judge",
                 approved_text("requirement_task", 0),
                 approved_text("testing_bar", 0)
             )),
-            "{prompt}"
+            "{}",
+            prompt.system
         );
-        assert!(prompt.contains(approved_text("habeas_background", 1)));
-        assert!(!prompt.contains("{{"), "{prompt}");
+        assert!(!prompt.system.contains(&task), "{}", prompt.system);
+        assert!(
+            prompt.subject.contains(&format!(
+                "Judge against: the subject's text.\n\n{task}\n\n# Mandatory inputs"
+            )),
+            "{}",
+            prompt.subject
+        );
+        assert!(
+            prompt
+                .system
+                .contains(approved_text("habeas_background", 1))
+        );
+        assert!(!prompt.joined().contains("{{"), "{}", prompt.joined());
+        // The verifier's criteria carry the distributed task too.
+        let verifier = verification_prompt(&sources, &Judgment::False, "A gap.").unwrap();
+        assert!(verifier.subject.contains(&task), "{}", verifier.subject);
+        assert!(!verifier.system.contains(&task), "{}", verifier.system);
+    }
+
+    /// Every system prompt is the same for two subjects of its kind, and
+    /// every subject-dependent value is in the subject message.
+    // {test}`requirements.authoring.prompt_parts`
+    // {test}`requirements.authoring.initial_prompt`
+    // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.site_prompt`
+    // {test}`requirements.authoring.verifier_prompt`
+    #[test]
+    fn subjects_of_one_kind_share_a_byte_identical_system_prompt() {
+        let project =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let requirements = project.path().join("md/requirements.md");
+        let mut book = fs::read_to_string(&requirements).unwrap();
+        let cite = concat!("{", "cite}`requirements.rule`");
+        book.push_str(&format!(
+            "\n:::{{req}} other\nThe project MUST also work.\n:::\n\n:::{{req}} second\nThe project MUST keep working.\n:::\n\n:::{{example}} first_case\nA case. {cite}\n:::\n\n:::{{example}} second_case\nAnother case. {cite}\n:::\n"
+        ));
+        fs::write(&requirements, book).unwrap();
+        let source = project.path().join("src/lib.rs");
+        let mut text = fs::read_to_string(&source).unwrap();
+        text.push_str(&format!(
+            "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:none\n// Formats output.\n// :::\nfn cites_two() {{}}\n"
+        ));
+        fs::write(&source, text).unwrap();
+        for (first, second) in [
+            ("requirements.other", "requirements.second"),
+            ("requirements.first_case", "requirements.second_case"),
+            (
+                "citations:src/lib.rs#fn[cites_one]",
+                "citations:src/lib.rs#fn[cites_two]",
+            ),
+            (
+                "sites:requirements.rule/src/lib.rs#fn[check_one]",
+                "sites:requirements.rule/src/lib.rs#fn[check_two]",
+            ),
+        ] {
+            let sources = |subject: &str| {
+                AuthoringSubject::parse(subject)
+                    .sources(project.path())
+                    .unwrap()
+            };
+            let (first, second) = (sources(first), sources(second));
+            let (one, two) = (
+                initial_prompt(&first).unwrap(),
+                initial_prompt(&second).unwrap(),
+            );
+            assert_eq!(one.system, two.system, "{}", first.subject_name);
+            assert_ne!(one.subject, two.subject);
+            assert!(one.subject.starts_with("# Subject\n\n"), "{}", one.subject);
+            assert!(!one.system.contains(&first.subject_name));
+            let (one, two) = (
+                verification_prompt(&first, &Judgment::False, "One gap.").unwrap(),
+                verification_prompt(&second, &Judgment::Fixme(vec!["#2".into()]), "Two gaps.")
+                    .unwrap(),
+            );
+            assert_eq!(one.system, two.system, "verifier of {}", first.subject_name);
+            assert!(one.subject.contains("One gap."));
+            assert!(!one.system.contains("One gap."));
+        }
     }
 
     /// Runs the review of site `fn[check_one]` of `requirements.rule` with
@@ -3094,7 +3233,7 @@ no_match:
             };
             assert!(
                 text.contains(&escaped(
-                    "Another reviewer judged site review sites:requirements.rule/src/lib.rs#fn[check_one] as"
+                    "The reviewer judged site review sites:requirements.rule/src/lib.rs#fn[check_one] as"
                 )),
                 "{text}"
             );

@@ -1272,7 +1272,7 @@ mod tests {
         let mandatory = Value::Array(sources.mandatory_inputs().to_vec());
         assert!(!leaks(&mandatory), "{mandatory:#}");
         assert!(mandatory.to_string().contains("[REDACTED:GitHub Token]"));
-        let prompt = super::super::initial_prompt(&sources).unwrap();
+        let prompt = super::super::initial_prompt(&sources).unwrap().joined();
         assert!(!prompt.contains(&token), "{prompt}");
         // A habeas read of the configuration file and a line range.
         let read = dispatch(&sources, "habeas", &json!({"file":"habeas.toml","item":""})).unwrap();
@@ -1300,7 +1300,7 @@ mod tests {
         let citation =
             AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]").unwrap();
         assert!(!leaks(&Value::Array(citation.mandatory_inputs().to_vec())));
-        let prompt = super::super::initial_prompt(&citation).unwrap();
+        let prompt = super::super::initial_prompt(&citation).unwrap().joined();
         assert!(!prompt.contains(&token), "{prompt}");
         assert!(
             prompt.contains("Defaults to [REDACTED:GitHub Token]."),

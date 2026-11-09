@@ -23,6 +23,35 @@ struct Request {
     body: Value,
 }
 
+/// A request's system prompt and subject message, as Ollama's leading
+/// `system` and `user` messages or Bedrock's `system` blocks and first
+/// message.
+// {test}`requirements.authoring.prompt_parts`
+fn opening(body: &Value) -> (String, String) {
+    let text = |value: &Value| value.as_str().unwrap().to_owned();
+    if body.get("system").is_some() {
+        (
+            text(&body["system"][0]["text"]),
+            text(&body["messages"][0]["content"][0]["text"]),
+        )
+    } else {
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["role"], "user");
+        (
+            text(&body["messages"][0]["content"]),
+            text(&body["messages"][1]["content"]),
+        )
+    }
+}
+
+/// A request's system prompt and subject message joined, for checks that
+/// text reaches the model in either.
+// {test}`requirements.authoring.prompt_parts`
+fn prompt_text(body: &Value) -> String {
+    let (system, subject) = opening(body);
+    format!("{system}\n\n{subject}")
+}
+
 // {test}`requirements.authoring.provider`
 struct Server {
     endpoint: String,
@@ -311,7 +340,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         assert_eq!(request.body["think"], false);
         assert_eq!(request.body["stream"], false);
     }
-    let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
+    let prompt = prompt_text(&requests[0].body);
     for text in [
         "Assess whether a project's source code and tests satisfy one requirement.",
         REQUIREMENT,
@@ -686,7 +715,7 @@ fn false_is_a_completed_assessment() {
         String::from_utf8_lossy(&output.stderr)
     );
     let requests = server.finish();
-    let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
+    let prompt = prompt_text(&requests[0].body);
     assert!(prompt.contains("and false otherwise."));
     assert!(prompt.contains("FIXME(#125): zero-capacity insertion panics"));
     assert!(prompt.contains("queue[0] = value"));
@@ -807,9 +836,11 @@ fn approved_text(name: &str, index: usize) -> &'static str {
 }
 
 // {test}`requirements.authoring.initial_prompt`
+// {test}`requirements.authoring.prompt_parts`
 #[test]
 fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
     let template = approved_text("initial_prompt", 0);
+    let subject_template = approved_text("initial_prompt", 1);
     for (subject, kind) in [
         (SUBJECT, "requirement"),
         ("requirements.ready_case", "example"),
@@ -830,9 +861,8 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         let output = fixture.run(&["author", subject]);
         assert!(output.status.success(), "{output:?}");
         let requests = server.finish();
-        let prompt = requests[0].body["messages"][0]["content"].as_str().unwrap();
+        let (system, prompt) = opening(&requests[0].body);
 
-        let (before, after) = template.split_once("{{mandatory_inputs}}").unwrap();
         let task = if kind == "requirement" {
             format!(
                 "{}\n{}",
@@ -842,9 +872,10 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         } else {
             approved_text("example_task", 0).to_owned()
         };
-        let before = before
+        // Apart from the substitutions, the system prompt is the first block
+        // as written, with nothing that names the subject.
+        let expected = template
             .replace("{{subject_kind}}", kind)
-            .replace("{{subject_name}}", subject)
             .replace(
                 "{{habeas_background}}",
                 approved_text("habeas_background", 0),
@@ -852,12 +883,22 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
             .replace("{{reference_roles}}", approved_text("habeas_background", 1))
             .replace("{{subject_task}}", &task)
             .replace("{{judgment_rules}}", approved_text("judgment_rules", 0));
+        assert!(!expected.contains("{{"), "{expected}");
+        assert_eq!(system, expected);
+        assert!(!system.contains(subject), "{system}");
+        let (before, after) = subject_template.split_once("{{mandatory_inputs}}").unwrap();
+        // The subject is not distributed, so its distributed task is empty.
+        let before = before
+            .replace("{{subject_kind}}", kind)
+            .replace("{{subject_name}}", subject)
+            .replace("{{distributed_task}}", "");
         assert!(
             before.contains(&format!("\nSubject: {kind} {subject}\n")),
             "{before}"
         );
         assert!(!before.contains("{{") && !after.contains("{{"));
-        // Apart from the substitutions, the prompt is the template as written.
+        // Apart from the substitutions, the subject message is the second
+        // block as written.
         assert!(prompt.starts_with(&before), "{prompt}");
         assert!(prompt.ends_with(after), "{prompt}");
         let rendered = &prompt[before.len()..prompt.len() - after.len()];
@@ -1557,7 +1598,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
             json!({"temperature":0.25,"maxTokens":321,"topP":0.75,"stopSequences":["END"]})
         );
         assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
-        let prompt = body["messages"][0]["content"][0]["text"].as_str().unwrap();
+        let prompt = prompt_text(body);
         assert!(
             prompt.contains("Assess whether a project's source code")
                 && prompt.contains(REQUIREMENT)
@@ -1766,15 +1807,12 @@ fn provider_rejection_of_inference_options_is_reported() {
 
 /// Returns the first request's prompt and its sorted tool names and descriptions.
 // {test}`requirements.authoring.rig_configuration_mapping`
+// {test}`requirements.authoring.prompt_parts`
 fn prompt_and_tools(body: &Value, bedrock: bool) -> (String, Vec<(String, String)>) {
-    let (prompt, tools, spec) = if bedrock {
-        (
-            &body["messages"][0]["content"][0]["text"],
-            &body["toolConfig"]["tools"],
-            "toolSpec",
-        )
+    let (tools, spec) = if bedrock {
+        (&body["toolConfig"]["tools"], "toolSpec")
     } else {
-        (&body["messages"][0]["content"], &body["tools"], "function")
+        (&body["tools"], "function")
     };
     let mut tools = tools
         .as_array()
@@ -1788,7 +1826,7 @@ fn prompt_and_tools(body: &Value, bedrock: bool) -> (String, Vec<(String, String
         })
         .collect::<Vec<_>>();
     tools.sort();
-    (prompt.as_str().unwrap().to_owned(), tools)
+    (prompt_text(body), tools)
 }
 
 // {test}`requirements.authoring.rig_configuration_mapping`

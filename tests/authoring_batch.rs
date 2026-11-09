@@ -146,7 +146,14 @@ fn serve(
     let mut bytes = vec![0; length.expect("request content length")];
     reader.read_exact(&mut bytes).unwrap();
     let request: Value = serde_json::from_slice(&bytes).unwrap();
-    let prompt = request["messages"][0]["content"].as_str().unwrap();
+    // The subject message follows the system prompt.
+    let prompt = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .unwrap();
     let subject = prompt
         .lines()
         .find_map(|line| {
