@@ -1,13 +1,37 @@
 # References and Rust items
 
 :::{req} targets
-Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. `{cite}` MUST mean that the source relies on, supports, or refers to the definition, and is an edge from the source to the definition. `{impl}` MUST mean that the source implements part of the definition: it makes a decision, performs a check, produces an output, or handles a case that the definition specifies. A requirement MAY implement part of another requirement by refining one of its obligations. Calling code that implements a definition, or producing a result a caller uses to meet it, MUST NOT by itself count as implementing it. A requirement stating a convention for every output of a kind, such as every validation error, is implemented by the source that carries out the convention as a whole, such as the step that collects and reports those outputs. `{test}` MUST mean that the source is designed to verify behavior the definition specifies: a test through its scenario and the assertions about that scenario's outcome, or a named example through the concrete case it describes. `{fixme}` MUST mean that the source acknowledges a known gap in fulfilling the
-definition. It MUST use the fenced form, and its body MUST describe the gap. The
-body MAY begin with option lines naming issues that track the gap, one per line,
-in the form `:github: <owner>/<repo>#<number>`, such as `:github: rust-lang/rust#123`; `github` MUST be the only recognized option, and validation MUST report any other option line, a `:github:` value not in that form, an inline
-`{fixme}`, and a `{fixme}` whose body, without option lines and comment
-delimiters, is empty. `{impl}`, `{test}`, and `{fixme}` are edges from the
-definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Reference discovery MUST consider exactly the project sources that source-access policy permits under {cite}`requirements.authoring.source_tools`: in a Git worktree, files present in the Git index, including staged new files; outside Git, all project files; in both cases excluding the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`. Evidence snapshots and generated build output MUST therefore not be counted as source references.
+Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`, and MAY use the `{fixme}` role in fenced form. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. The roles MUST mean:
+
+- `{cite}`: the source relies on, supports, or refers to the definition. It is an
+  edge from the source to the definition.
+- `{impl}`: the source implements part of the definition: it makes a decision,
+  performs a check, produces an output, or handles a case that the definition
+  specifies. A requirement MAY implement part of another requirement by refining
+  one of its obligations. Calling code that implements a definition, or
+  producing a result a caller uses to meet it, MUST NOT by itself count as
+  implementing it. A check MUST count only if the definition states it, or the
+  source could not meet one of the definition's obligations without it; source
+  that checks it is consistent with a definition, such as recognizing a form the
+  definition specifies in order to decide whether to run other behavior, relies
+  on that definition and calls for `{cite}`. A requirement stating a convention
+  for every output of a kind, such as every validation error, is implemented by
+  the source that carries out the convention as a whole, such as the step that
+  collects and reports those outputs.
+- `{test}`: the source is designed to verify behavior the definition specifies:
+  a test through its scenario and the assertions about that scenario's outcome,
+  or a named example through the concrete case it describes.
+- `{fixme}`: the source acknowledges a known gap in fulfilling the definition. It
+  MUST use the fenced form, and its body MUST describe the gap. The body MAY
+  begin with option lines naming issues that track the gap, one per line, in the
+  form `:github: <owner>/<repo>#<number>`, such as
+  `:github: rust-lang/rust#123`. `github` MUST be the only recognized option.
+  `{fixme}` MAY appear only in sources outside the book. Validation MUST report
+  any other option line, a `:github:` value not in that form, an inline
+  `{fixme}`, a `{fixme}` in a requirement or example declaration, and a
+  `{fixme}` whose body, without option lines and comment delimiters, is empty.
+
+`{impl}`, `{test}`, and `{fixme}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Reference discovery MUST consider exactly the project sources that source-access policy permits under {cite}`requirements.authoring.source_tools`: in a Git worktree, files present in the Git index, including staged new files; outside Git, all project files; in both cases excluding the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`. Evidence snapshots and generated build output MUST therefore not be counted as source references.
 
 A source item MUST choose its references for each candidate definition by this
 procedure, and MAY carry several:
@@ -27,6 +51,9 @@ procedure, and MAY carry several:
    definition, it MUST cite the built-in `habeas:none` under
    {cite}`requirements.references.no_requirement`, justifying why the item
    exists.
+
+A `{fixme}` reference is added independently of this procedure, and MUST NOT
+count as an item's reference for {cite}`requirements.references.rust_item_coverage`.
 
 ```text
 {impl}`requirements.references.targets`
