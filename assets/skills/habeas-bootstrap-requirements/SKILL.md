@@ -67,8 +67,10 @@ references.
 - **Gap list:** each item or behavior you cannot yet map, with its location, the
   reason, and the open question.
 
-Exclude third-party code. Exclude checked-in generated code by disallowing its
-path under `[evidence]` in `habeas.toml`, with the user's agreement.
+Exclude third-party and checked-in generated code. Rust item coverage already
+skips the project-root `vendor` directory; for any other such path, add it to
+`[evidence] disallow` in `habeas.toml` with the user's agreement, which also
+hides it from authoring.
 
 ## Proposing requirements
 

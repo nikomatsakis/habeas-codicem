@@ -192,8 +192,13 @@ requirement's review treats these as gaps:
   that only cites it, and a test that verifies it without `{test}`;
 - observable behavior in `{impl}` code that no requirement implemented there
   specifies;
-- obligations, boundaries, and failure cases no test exercises and asserts,
-  unless simplicity or impracticality justifies their absence;
+- obligations, boundaries, and failure cases no test runs and asserts. A
+  missing test is justified only when the code carrying the obligation has no
+  conditional or transformation of its own, or a test would need network
+  services, real elapsed time, or process-wide state such as environment
+  variables or the current directory and no test in the project sets that up;
+  files and directories a test can create do not qualify, and an obligation
+  that a value stays unchanged, distinct, or present always needs a test;
 - an unexplained unmet SHOULD, and text with two readings that the code meets
   under only one.
 

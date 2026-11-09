@@ -77,10 +77,14 @@ implements, tests, or cites, so fix each failing definition on its own.
 A FIXME judgment, such as `{"FIXME": ["#125"]}`, means a `FIXME` comment or test
 acknowledges every remaining gap, conventionally `FIXME(#125)` or
 `FIXME(rust-lang/rust#123)`; a `TODO` does not count. Validation accepts it like
-`true` when all other checks pass. When a gap is real but the user agrees to
-defer it, add a `FIXME(#N)` comment or test citing a real issue; comments
-containing `FIXME` are hashed, so the evidence becomes stale and the next
-`habeas author --all` reassesses it. Never invent issue numbers, and never add a
+`true` when all other checks pass. When a gap is real but the user agrees to defer it, add a `FIXME(#N)` comment
+citing a real issue where the reviewer looks: for missing or wrong behavior, in
+the `{impl}` code or the code that should contain it; for a missing test, in a
+file of the definition's `{test}` items. A `FIXME` in the book, a string
+literal, or test data does not count. A `FIXME` comment inside one of the
+evidence's input nodes makes the evidence stale, so the next
+`habeas author --all` reassesses it; elsewhere, run
+`habeas author --force <full-name>`. Never invent issue numbers, and never add a
 `FIXME` just to get past a false determination.
 
 ### Citation reviews
@@ -123,9 +127,12 @@ not changed in substance, is the same kind of finding. Validation accepts a reco
 rationale notes a disagreement, so look for these in the "Disagreements"
 section of `habeas status` after each `habeas author` run.
 
-1. Read the rationale and its disagreement note, and decide whether one
-   assessment found a real gap or the requirement text admits more than one
-   reading.
+1. Read both assessments: for a recorded disagreement, the rationale and its
+   note on the other assessment (`habeas info`); for a determination that
+   changed on reassessment, the new rationale and the previous one, which only
+   Git has, such as by asking a subagent to summarize
+   `git show HEAD:evidence/<full-name>.json`. Decide whether one assessment
+   found a real gap or the requirement text admits more than one reading.
 2. Fix the source or tests, or tighten the requirement text, reviewing
    substantive changes with the user. Don't re-run for a different result.
 3. When you reword a requirement for precision, record the old text, new text,
@@ -137,9 +144,10 @@ section of `habeas status` after each `habeas author` run.
 ## Gotchas
 
 - Evidence identifies each source by an outline node, such as `fn[run]` or
-  `impl[Thing]/fn[run]`, and a structural hash of its code. Moving a node, or
-  editing comments the language does not hash, such as Rust `//` comments
-  without `FIXME`, keeps evidence current. Changing code, doc comments,
+  `impl[Thing]/fn[run]`, and a structural hash of its code. Moving a node within its file without changing its selector, or editing
+  comments the language does not hash, such as Rust `//` comments without
+  `FIXME`, keeps evidence current; moving it to another file or renaming it
+  changes its selector and makes the evidence stale or invalid. Changing code, doc comments,
   docstrings, or `FIXME` comments makes it stale, and so does adding, removing,
   or changing the role of an `{impl}` or `{test}` reference, or editing its
   fenced commentary.
