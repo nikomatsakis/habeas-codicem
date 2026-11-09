@@ -34,7 +34,7 @@ example. Each requirement or example evidence file records five fields:
 | Field | Meaning |
 | --- | --- |
 | `requirement` or `example` | The complete body, copied from the corresponding directive. Use the field matching its kind. |
-| `determination` | `true`, `false`, or `{"FIXME": ["#125"]}` for explicitly documented gaps. |
+| `determination` | `true`, `false`, or `{"FIXME": ["example/queue#125"]}` for gaps acknowledged by `{fixme}` references. |
 | `rationale` | A Markdown explanation of that judgment. |
 | `references` | A SHA-256 digest of the definition's reference set: each incoming `{impl}` or `{test}` reference's role, file, and the outline node it belongs to, with the words of a fenced reference's commentary in a source outside the book, plus its `:impl:` and `:test:` anchors. `{cite}` references do not contribute. Adding, removing, or re-roling a reference or anchor, editing its commentary, or moving a reference to another node makes the evidence stale even when no input changed; moving one within its node does not. {cite}`requirements.ci.reference_set` |
 | `inputs` | Sources supporting it. Inputs select an outline node of a file, a definition selection, or a terminology definition. |
@@ -54,13 +54,27 @@ the named subject, using referenced requirements and definitions as context.
 {cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`
 
 The model chooses `true` when that review supports the subject and FIXME when
-source comments or tests explicitly acknowledge the remaining implementation or
-testing gaps; otherwise it chooses `false` for gaps or missing information.
-The FIXME array records the acknowledged gaps' issue references or other
-identifying source content, with each gap and source location explained in the
-rationale. The expected comment
-convention is `FIXME(#125)` or `FIXME(rust-lang/rust#123)`, but the reference may
-appear elsewhere in the comment or test. The harness captures those source inputs.
+fenced `{fixme}` references to the subject acknowledge every remaining
+implementation or testing gap; otherwise it chooses `false` for gaps or missing
+information. A plain `FIXME` or `TODO` comment acknowledges nothing. A `{fixme}`
+names the definition, may begin with `:github: <owner>/<repo>#<number>` lines
+naming the issues that track the gap, and describes the gap in its body:
+
+```text
+// :::{fixme} requirements.queue.full
+// :github: example/queue#125
+// Capacity-zero insertion does not return Full yet.
+// :::
+```
+
+The FIXME array lists each issue the acknowledging `{fixme}` references name, as
+written after `:github:`, and, for one naming no issue, its body's words joined
+by single spaces, with each gap and source location explained in the rationale.
+Validation reports a FIXME string that no current `{fixme}` to the subject
+could have produced. The harness captures those source inputs, and editing a
+`{fixme}` makes the evidence stale. A named `{fixme}` belongs in sources outside
+the book; an unnamed `:::{fixme}` with only `:github:` lines may tie any place,
+including a requirement's text, to the issues it names.
 {cite}`requirements.ci.outcomes`
 
 An input has exactly one of these forms. A source file input names one node of
@@ -653,23 +667,24 @@ Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or chan
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{impl}` and `{test}` references, missing or stale citation reviews, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{impl}`, `{test}`, and `{fixme}` references, misplaced or malformed `{fixme}` references, missing or stale citation reviews, and unreferenced Rust functions. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
 Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are
 summarized by issue, for example:
 
 ```text
-- #123 — affects 22 judgments
-- #45 — affects 3 judgments
+- rust-lang/rust#123 — affects 22 judgments
+- example/queue#45 — affects 3 judgments
 - 16 judgments marked FIXME without an issue
 ```
 
 Each judgment counts once per issue, even if it repeats that reference. A judgment
 with several issues counts in each group; the final group counts judgments with
-no recognized issue reference. References may appear in explanatory text or
-`FIXME(...)`. Qualified references such as `rust-lang/rust#123` and GitHub issue
-URLs are also recognized. Groups with the most affected judgments come first.
+no issue reference. Only a FIXME string that is exactly `owner/repo#N` names an
+issue, compared exactly; any other string, such as a gap description, a bare
+`#N`, or an issue URL, counts as a gap without an issue. Groups with the most
+affected judgments come first.
 {cite}`requirements.cli.fixme_summary`
 
 Use `--verbose` to list the actual judgments in each group, with their full names,
