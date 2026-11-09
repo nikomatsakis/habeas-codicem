@@ -517,10 +517,24 @@ impl AssessmentSources {
         }
     }
 
+    /// Reads a selector as a model-facing input, recording a project-local
+    /// absolute path relative to the project.
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.ci.schema`
     pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {
         let definitions = load_definitions(&self.root)?;
+        let relative;
+        let selector = match selector {
+            InputSelector::Outline { file, item } => {
+                relative = InputSelector::Outline {
+                    file: crate::inputs::project_relative(&self.root, file),
+                    item: item.clone(),
+                };
+                &relative
+            }
+            _ => selector,
+        };
         source_input(
             &self.root,
             &self.access,

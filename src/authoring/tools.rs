@@ -3050,6 +3050,35 @@ mod tests {
         );
     }
 
+    // {test}`requirements.ci.schema`
+    #[test]
+    fn project_local_absolute_paths_are_recorded_relative_to_the_project() {
+        let root = project();
+        fs::write(root.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for path in [
+            root.path().join("src/lib.rs"),
+            fs::canonicalize(root.path()).unwrap().join("src/./lib.rs"),
+        ] {
+            let file = path.to_str().unwrap();
+            for arguments in [
+                json!({"file": file, "item": "fn[work]"}),
+                json!({"file": file, "line_start": 1}),
+            ] {
+                let delivery = dispatch(&sources, "habeas", &arguments).unwrap();
+                let recorded = delivery
+                    .inputs
+                    .iter()
+                    .map(crate::inputs::recorded_input)
+                    .filter(|input| input.get("item").is_some())
+                    .collect::<Vec<_>>();
+                assert_eq!(recorded.len(), 1, "{arguments}: {recorded:?}");
+                assert_eq!(recorded[0]["file"], "src/lib.rs", "{arguments}");
+                assert_eq!(recorded[0]["item"], "fn[work]", "{arguments}");
+            }
+        }
+    }
+
     // {test}`requirements.authoring.result_pages`
     #[test]
     fn next_page_is_advertised_and_paged_tools_explain_their_pages() {

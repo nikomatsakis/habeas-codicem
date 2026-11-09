@@ -411,7 +411,7 @@ pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io:
     // {impl}`requirements.authoring.github_reads`
     crate::github::add_issue_findings(
         &mut inspection,
-        &crate::github::GithubIssues::from_env(&root),
+        &crate::github::GithubIssues::from_env(root),
     );
     let path = match subject {
         AuthoringSubject::Definition(name) => {

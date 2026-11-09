@@ -346,6 +346,36 @@ pub(crate) fn recorded_input(input: &Value) -> Value {
     }
 }
 
+/// The recorded form of a file path: an absolute path inside the project at
+/// the canonical `root` becomes relative to the project for portability. Relative paths, and
+/// paths that leave the project, are kept as given.
+// {impl}`requirements.ci.schema`
+pub(crate) fn project_relative(root: &Path, file: &str) -> String {
+    let path = Path::new(file);
+    if !path.is_absolute() {
+        return file.to_owned();
+    }
+    let Some(base) = path
+        .ancestors()
+        .find(|ancestor| fs::canonicalize(ancestor).is_ok_and(|ancestor| ancestor == root))
+    else {
+        return file.to_owned();
+    };
+    let parts = path
+        .strip_prefix(base)
+        .expect("ancestor is a prefix of its path")
+        .components()
+        .map(|part| match part {
+            std::path::Component::Normal(part) => part.to_str(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    match parts {
+        Some(parts) if !parts.is_empty() => parts.join("/"),
+        _ => file.to_owned(),
+    }
+}
+
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.configuration.evidence_paths`
 fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
