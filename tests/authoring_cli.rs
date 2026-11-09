@@ -1695,7 +1695,9 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
 fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
     let server = Server::start(vec![
         json!({
-            "output":{"message":{"role":"assistant","content":[{"toolUse":
+            "output":{"message":{"role":"assistant","content":[
+                {"reasoningContent":{"reasoningText":{"text":"Read the extra source.","signature":"sig"}}},
+                {"toolUse":
                 {"toolUseId":"read","name":"habeas","input":{"file":"extra.txt","line_start":1}}}]}},
             "stopReason":"tool_use",
             "usage":{"inputTokens":7,"outputTokens":5,"totalTokens":1012,
@@ -1793,6 +1795,13 @@ fn claude_requests_carry_cache_checkpoints_and_record_cache_usage() {
         assert_eq!(body.to_string().matches("cachePoint").count(), 2, "{body}");
     }
     assert_eq!(cached[1]["messages"].as_array().unwrap().len(), 3);
+    // The second request follows a reasoning turn and still ends in a
+    // checkpoint.
+    assert!(
+        cached[1]["messages"][1]
+            .to_string()
+            .contains("reasoningContent")
+    );
     // The checkpoints change nothing else: a model without caching gets the
     // same request without them.
     let (plain, _) = bedrock_run("fixture-uncached-model");

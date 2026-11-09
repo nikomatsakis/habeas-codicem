@@ -1,7 +1,7 @@
 use std::io;
 use std::time::{Duration, SystemTime};
 
-use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse, Message};
+use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse};
 use rig_core::error::ProviderError;
 use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};
 use rig_core::{DynModel, operation::Completion};
@@ -314,23 +314,12 @@ fn bedrock_caches(model: &str) -> bool {
 
 /// Asks Rig for its cache checkpoints, which Bedrock places after the
 /// system prompt and at the end of the last message as separate
-/// `cachePoint` blocks, leaving the request's content unchanged. Bedrock
-/// rejects a message checkpoint after a reasoning turn, so a conversation
-/// holding one is sent without checkpoints rather than failing.
+/// `cachePoint` blocks, leaving the request's content unchanged. They are
+/// placed after reasoning turns too, which Bedrock accepts; the vendored
+/// `rig-bedrock` is patched to allow that.
 // {impl}`requirements.authoring.cache_checkpoints`
 fn place_cache_checkpoints(request: &mut CompletionRequest) {
-    let reasoned = request.chat_history.iter().any(|message| match message {
-        Message::Assistant(turn) => turn.content.iter().any(|block| {
-            matches!(block, AssistantContent::Reasoning(_))
-                || block
-                    .native_item()
-                    .is_some_and(|item| item.get("reasoningContent").is_some())
-        }),
-        _ => false,
-    });
-    if !reasoned {
-        request.options.cache = Some(CacheRetention::Short);
-    }
+    request.options.cache = Some(CacheRetention::Short);
 }
 
 // {impl}`requirements.authoring.configuration_storage`
@@ -345,7 +334,7 @@ fn option_type(name: &str, expected: &str) -> io::Error {
 mod tests {
     use super::*;
     use aws_sdk_bedrockruntime::config::ProvideCredentials;
-    use rig_core::completion::{FinishReason, Usage};
+    use rig_core::completion::{FinishReason, Message, Usage};
     use rig_core::message::{Opaque, Origin, Reasoning, Text};
     use serde_json::json;
 
@@ -602,7 +591,7 @@ mod tests {
 
     // {test}`requirements.authoring.cache_checkpoints`
     #[test]
-    fn cache_checkpoints_are_requested_for_caching_models_without_reasoning_turns() {
+    fn cache_checkpoints_are_requested_for_caching_models() {
         assert!(bedrock_caches(
             "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
         ));
@@ -624,7 +613,7 @@ mod tests {
             serde_json::to_value(&expected).unwrap()
         );
 
-        // Bedrock rejects a message checkpoint after a reasoning turn.
+        // Checkpoints are requested after a reasoning turn too.
         let mut request = CompletionRequest::new("subject").preamble("system");
         request.chat_history.push(Message::Assistant(
             rig_core::message::AssistantMessage::new(vec![AssistantContent::Reasoning(
@@ -632,7 +621,7 @@ mod tests {
             )]),
         ));
         place_cache_checkpoints(&mut request);
-        assert_eq!(request.options.cache, None);
+        assert_eq!(request.options.cache, Some(CacheRetention::Short));
     }
 
     // {test}`requirements.authoring.provider`
