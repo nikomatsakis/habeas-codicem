@@ -55,8 +55,8 @@ Run commands from the project root, the directory with `book.toml` and
   and return short findings.
 - Review a change to an agreed requirement's text with the user first, as the
   habeas-requirements skill describes.
-- When you reword a requirement for precision, whether a false rationale, a
-  site review, or a disagreement prompted it, record the old text, new text,
+- When you reword an agreed requirement for precision, whether a false
+  rationale, a site review, or a disagreement prompted it, record the old text, new text,
   reason, and the rationale that prompted the change in the project's audit
   log, such as `audits/requirement-rewordings/`; if the project has none, ask
   the user before creating one. Escape quoted roles there, as in `\{cite}`, so

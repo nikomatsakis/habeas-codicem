@@ -41,7 +41,8 @@ that implement and verify them. `habeas author` has a model assess each one;
       gaps.
 
 If implementation shows that an approved obligation must change substantively,
-review the revised text with the user before coding the change. A bug fix whose
+review the revised text with the user before coding the change. Log a precision
+rewording of an agreed requirement as the habeas-evidence Rules say. A bug fix whose
 behavior an existing requirement already specifies needs no new requirement:
 confirm the requirement covers it, then fix the code and check its tests and
 references. A refactor that changes no behavior needs no review, but references
