@@ -227,6 +227,20 @@ impl LoadedDetailEvidence {
         &self.errors
     }
 
+    /// The recorded determination's kind, when the record has a valid
+    /// determination, and whether its rationale states that its assessments
+    /// disagreed under the `confirm` policy.
+    // {impl}`requirements.cli.status`
+    pub(crate) fn disagreement(&self) -> Option<&'static str> {
+        let record = serde_json::from_str::<Value>(self.record.as_deref()?).ok()?;
+        let rationale = record.get("rationale")?.as_str()?;
+        if !rationale.contains(crate::authoring::DISAGREEMENT_NOTE) {
+            return None;
+        }
+        let judgment = crate::judgment::Judgment::from_value(record.get("determination")?).ok()?;
+        Some(judgment.kind())
+    }
+
     // {impl}`requirements.cli.status`
     // {impl}`requirements.index.detail_format`
     // {impl}`requirements.cli.fixme_summary`

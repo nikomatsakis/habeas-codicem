@@ -160,6 +160,7 @@ pub fn status_markdown_with_github(
         );
         output.push_str(&site_rows.concat());
     }
+    output.push_str(&disagreements(root, &inspection, glob));
     let other_findings = inspection
         .report
         .errors
@@ -225,6 +226,82 @@ pub fn status_markdown_with_github(
         output.push_str("</code></pre>\n");
     }
     Ok(output)
+}
+
+/// The "Disagreements" section of `habeas status`: each selected definition,
+/// citation review, and site review whose recorded rationale states that its
+/// assessments disagreed, which validation accepts. A citation review is
+/// selected when one of its citations names a selected definition, and a site
+/// review when its requirement is selected; without a selection, all are.
+// {impl}`requirements.cli.status`
+// {impl}`requirements.authoring.confirmation`
+fn disagreements(
+    root: &Path,
+    inspection: &crate::evidence::RepositoryInspection,
+    glob: Option<&str>,
+) -> String {
+    let selected = |name: &str| glob.is_none_or(|glob| definition_glob::matches(glob, name));
+    let mut rows = Vec::new();
+    let mut add = |label: String, relative: &str| {
+        if let Some(kind) =
+            LoadedDetailEvidence::load_path(root, relative, &inspection.report).disagreement()
+        {
+            rows.push(format!("- {label}: `{kind}`\n"));
+        }
+    };
+    for (name, definition) in &inspection.definitions {
+        if definition.kind != crate::DefinitionKind::Term && selected(name) {
+            add(
+                format!("`{name}` ({})", definition.kind.noun()),
+                &format!("evidence/{name}.json"),
+            );
+        }
+    }
+    let outlines = crate::inputs::OutlineCache::default();
+    for item in crate::citations::citation_items(
+        &inspection.root,
+        &inspection.definitions,
+        &inspection.references,
+        &outlines,
+    )
+    .values()
+    {
+        if glob.is_none()
+            || item
+                .citations
+                .iter()
+                .any(|citation| selected(&citation.name))
+        {
+            add(
+                format!(
+                    "`{}`",
+                    crate::citations::subject_label(&item.file, &item.item)
+                ),
+                &item.review_path(),
+            );
+        }
+    }
+    for site in inspection
+        .sites
+        .iter()
+        .filter(|(name, _)| selected(name))
+        .flat_map(|(_, sites)| sites)
+    {
+        add(
+            format!(
+                "`{}`",
+                crate::sites::subject_label(&site.requirement, &site.file, &site.item)
+            ),
+            &site.review_path(),
+        );
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n## Disagreements\n\nThese records' independent assessments disagreed. Validation accepts them, but each disagreement is a finding: read the rationale with `habeas info` and close the gap or tighten the requirement rather than reassessing.\n\n{}",
+        rows.concat()
+    )
 }
 
 // {impl}`requirements.cli.info`
@@ -312,4 +389,120 @@ fn site_section(
         "\n\n## Sites\n\n{} sites; the requirement does not apply to {not_applying} of them.\n\n| File | Selector | Applies | Determination | Evidence |\n| --- | --- | --- | --- | --- |\n{rows}",
         sites.len()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes a record at `relative` whose rationale may carry the
+    /// disagreement note.
+    // {test}`requirements.cli.status`
+    fn write_record(root: &Path, relative: &str, determination: serde_json::Value, note: bool) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut rationale = "Covered.".to_owned();
+        if note {
+            rationale.push_str(&format!(
+                "\n\n{}: the first determination was `true` and an independent second assessment's was `false`.",
+                crate::authoring::DISAGREEMENT_NOTE
+            ));
+        }
+        std::fs::write(
+            path,
+            serde_json::json!({"determination": determination, "rationale": rationale}).to_string(),
+        )
+        .unwrap();
+    }
+
+    // {test}`requirements.cli.status`
+    // {test}`requirements.authoring.confirmation`
+    #[test]
+    fn status_lists_definitions_and_reviews_whose_assessments_disagreed() {
+        let chapter = format!(
+            "{}\n:::{{req}} other\nOther MUST hold.\n:::\n",
+            crate::sites::tests::RULE
+        );
+        let source = format!(
+            "{}// CITE`requirements.other`\nfn cited() {{}}\n",
+            crate::sites::tests::SOURCE
+        )
+        .replace("CITE", "{cite}");
+        let temp = crate::sites::tests::project(&chapter, &source);
+        let root = temp.path();
+        write_record(
+            root,
+            "evidence/requirements.rule.json",
+            serde_json::json!(true),
+            true,
+        );
+        write_record(
+            root,
+            "evidence/requirements.other.json",
+            serde_json::json!(true),
+            false,
+        );
+        write_record(
+            root,
+            &crate::sites::review_path("requirements.rule", "src/lib.rs", "fn[check_two]"),
+            serde_json::json!(true),
+            true,
+        );
+        write_record(
+            root,
+            &crate::sites::review_path("requirements.rule", "src/lib.rs", "fn[check_one]"),
+            serde_json::json!(false),
+            false,
+        );
+        write_record(
+            root,
+            &crate::citations::review_path("src/lib.rs", "fn[cited]"),
+            serde_json::json!({"FIXME": ["example/queue#1"]}),
+            true,
+        );
+        let definition = "- `requirements.rule` (requirement): `true`\n";
+        let site = "- `sites:requirements.rule/src/lib.rs#fn[check_two]`: `true`\n";
+        let citation = "- `citations:src/lib.rs#fn[cited]`: `FIXME`\n";
+        for (all, glob, verbose, expected) in [
+            (false, None, false, &[definition, citation, site][..]),
+            (true, None, false, &[definition, citation, site]),
+            (false, None, true, &[definition, citation, site]),
+            (false, Some("requirements.rule"), false, &[definition, site]),
+            (false, Some("requirements.other"), false, &[citation]),
+        ] {
+            let status = status_markdown_with_options(root, all, glob, verbose).unwrap();
+            let section = status
+                .split_once("\n## Disagreements\n")
+                .unwrap_or_else(|| panic!("{glob:?}: {status}"))
+                .1;
+            let section = section.split("\n## ").next().unwrap();
+            let rows = section
+                .lines()
+                .filter(|line| line.starts_with("- "))
+                .map(|line| format!("{line}\n"))
+                .collect::<Vec<_>>();
+            assert_eq!(rows, expected, "{all} {glob:?}: {status}");
+            assert!(!section.contains("requirements.other` ("), "{status}");
+            assert!(!section.contains("check_one"), "{status}");
+        }
+        // Without a disagreement, there is no section.
+        write_record(
+            root,
+            "evidence/requirements.rule.json",
+            serde_json::json!(true),
+            false,
+        );
+        let status =
+            status_markdown_with_options(root, false, Some("requirements.rule"), false).unwrap();
+        assert!(status.contains("## Disagreements"), "{status}");
+        write_record(
+            root,
+            &crate::sites::review_path("requirements.rule", "src/lib.rs", "fn[check_two]"),
+            serde_json::json!(true),
+            false,
+        );
+        let status =
+            status_markdown_with_options(root, false, Some("requirements.rule"), false).unwrap();
+        assert!(!status.contains("## Disagreements"), "{status}");
+    }
 }
