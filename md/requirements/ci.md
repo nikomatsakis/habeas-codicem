@@ -61,9 +61,7 @@ out, assessed as above through its `{impl}` and `{test}` references; an
 obligation neither covers MUST be treated as a gap. The site queries MUST select
 every place the text's description of a site covers and no place outside the
 requirement's stated scope. Each query's `match` snippets MUST show each
-alternative way it selects, and its `no_match` snippets MUST include at least one
-near miss for each selection condition: a construct that differs from a match
-only in failing that condition. Because queries are heuristics, the reviewer MUST
+alternative way it selects, and its `no_match` snippets MUST include at least one near miss for each selection condition, each `has`, `inside`, `not`, `regex`, and `within`: a construct that differs from a match only in failing that condition. Because queries are heuristics, the reviewer MUST
 judge them by a preponderance of the evidence, asking whether it is more likely
 than not that the site queries find the places the requirement applies: a
 specific place in the sources that a site query misses or wrongly selects MUST be

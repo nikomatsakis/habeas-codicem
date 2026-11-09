@@ -1015,10 +1015,7 @@ its queries:
    variable is named, are checked by this search.
 8. Each query's match snippets must show each alternative way it selects, and
    its no_match snippets must include a near miss for each selection condition:
-   a construct that differs from a match only in failing that condition. Each
-   part of the rule that an otherwise matching construct could fail is a
-   selection condition: the top-level kind, each has, inside, and not clause,
-   each regex, and each any alternative. This applies to violation queries too.
+   a construct that differs from a match only in failing that condition. Each has, inside, and not clause, each regex, and a violation query's within is a selection condition, needing a near miss; each any alternative needs its own match snippet instead. This applies to violation queries too.
 
 Queries are heuristics, so judge them by a preponderance of the evidence: is it
 more likely than not that the site queries find the places the requirement

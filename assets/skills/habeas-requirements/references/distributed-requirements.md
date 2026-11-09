@@ -118,10 +118,7 @@ that contains it.
 - Give every query a `match` snippet for each alternative way it selects, and a
   `no_match` near miss for each selection condition: a construct that differs
   from a match only in failing that condition, such as the right type with the
-  wrong name. Each part of a rule that an otherwise matching construct could
-  fail is a selection condition: the top-level kind, each `has`, `inside`, and
-  `not` clause, each regex, and each `any` alternative. This applies to
-  violation queries too.
+  wrong name. Each `has`, `inside`, and `not` clause, each regex, and a violation query's `within` is a selection condition needing a near miss; each `any` alternative needs its own `match` snippet instead. This applies to violation queries too.
 - Write a violation query, with `within` naming the site query, for every kind
   of construct that could break the obligation, such as each early exit in a
   function that must keep going.
